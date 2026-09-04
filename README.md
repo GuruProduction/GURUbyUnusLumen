@@ -31,10 +31,12 @@ GURU builds reusable automations that control anything it can reach. Your phone,
 
 ## Videos
 
-Watch GURU build and run its own mini games live inside the Portal:
+Watch GURU work, live:
 
 - [GURU Portal mini game: Snake](videos/GURU-portal-mini-game-snake.mp4)
 - [GURU Portal mini game: Space Shooter](videos/GURU-portal-mini-game-space-shooter.mp4)
+- [GURU external control demo](videos/GURU-external-control-demo.mp4)
+- [GURU images rendering](videos/GURU-images-rendering.mp4)
 
 ## Screenshots
 
@@ -50,7 +52,7 @@ A real app, running on a real phone. All images captured live from GURU:
 | ![](screenshots/GURU%20code%20deploying.jpeg) **GURU code deploying** | ![](screenshots/GURU%20full%20apps.jpeg) **GURU full apps** | ![](screenshots/GURU%20live%20dashboards.jpeg) **GURU live dashboards** | ![](screenshots/GURU%20mini%20apps%20in%20app.jpeg) **GURU mini apps in app** | ![](screenshots/GURU%20mini%20games%20demo.jpeg) **GURU mini games demo** | ![](screenshots/GURU%20creating%20new%20photobook%20template.jpeg) **GURU creating new photobook template** |
 | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%201.jpeg) **GURU photobook portal render bristol 1** | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%205.jpeg) **GURU photobook portal render bristol 5** | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%2012.jpeg) **GURU photobook portal render bristol 12** | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%2013.jpeg) **GURU photobook portal render bristol 13** | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%2014.jpeg) **GURU photobook portal render bristol 14** | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%20more.jpeg) **GURU photobook portal render bristol more** |
 | ![](screenshots/GURU%20photobook%20portal%20render%202.jpeg) **GURU photobook portal render 2** | ![](screenshots/GURU%20test%20photo%20album%20cats%201.jpeg) **GURU test photo album cats 1** | ![](screenshots/GURU%20test%20photo%20album%20cats%202.jpeg) **GURU test photo album cats 2** | ![](screenshots/GURU%20test%20photo%20album%20cats%203.jpeg) **GURU test photo album cats 3** | ![](screenshots/GURU%20test%20photo%20album%20cats%204.jpeg) **GURU test photo album cats 4** | ![](screenshots/GURU%20test%20photo%20album%20cats%205.jpeg) **GURU test photo album cats 5** |
-| ![](screenshots/More%20tools%20ui%20GURU.jpeg) **More tools ui GURU** | ![](screenshots/More%20GURU%20tools%20UI.jpeg) **More GURU tools UI** | ![](screenshots/more%20GURU%20tools%20ui%20.jpeg) **more GURU tools ui** | | | |
+| ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%201.jpeg) **GURU installing kodi on my firestick 1** | ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%202.jpeg) **GURU installing kodi on my firestick 2** | ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%203.jpeg) **GURU installing kodi on my firestick 3** | ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%20tools%20calls.jpeg) **GURU installing kodi on my firestick tools calls** | ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%20tools%20ui.jpeg) **GURU installing kodi on my firestick tools ui** | |
 
 ## Who GURU is for
 
