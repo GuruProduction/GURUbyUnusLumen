@@ -29,6 +29,51 @@ GURU builds reusable automations that control anything it can reach. Your phone,
 - **Earns you money** — we have taught GURU how to safely help you with making you money… GURU doesn't just help you, it earns for you. Every earning stream it has deposits straight into your own in-app Trust wallet that lives on your phone. Your private keys, your money, nobody else touches it. It trades. Connects to the major exchanges, reads the markets in real-time, executes strategies, places orders, manages risk, and routes everything through Tor so your trading activity stays private. Profits land in your wallet automatically. It gambles. Reads odds across betting exchanges and sportsbooks, executes betting strategies, finds arbitrage opportunities, manages your bankroll, and when you win, the money goes straight to your wallet. It hunts bounties. Uses its full reverse engineering toolkit to find vulnerabilities, then submits reports to HackerOne, Bugcrowd, and other bounty platforms. When the bounty pays out, it lands in your wallet.
 - **Private by design** — GURU runs a locally installed APK, that you/ your guru CAN & will modify during its lifecycle. Private by design. GURU doesn't live in someone else's cloud. It lives on your phone, installed as a sideloaded APK, with full on-device memory built on a local database and a custom cognitive architecture. Tell GURU something once and it's stored locally forever, merged and strengthened while you sleep, never uploaded, never mined, never sold. The only people who ever see your data are you and GURU. That's it. No data farmers, no middlemen, no company holding a copy of your life. When GURU reaches the internet it does everything through a real Tor engine built into the app, so your IP, your location and your browsing habits never leak, and the things you do online stay between you and GURU. Your data is locked with military-grade encryption, AES-256-GCM, and only you hold the key. Not even GURU can decrypt your files without your key. It'll even decompile the other apps on your phone, show you what they're secretly collecting, and rebuild them without the surveillance. Your device, your data, your call.
 
+## Videos
+
+Watch GURU build and run its own mini games live inside the Portal:
+
+- [GURU Portal mini game: Snake](videos/GURU-portal-mini-game-snake.mp4)
+- [GURU Portal mini game: Space Shooter](videos/GURU-portal-mini-game-space-shooter.mp4)
+
+## Screenshots
+
+A real app, running on a real phone. All images captured live from GURU:
+
+![Guru intro showing loading state](screenshots/Guru%20intro%20showing%20loading%20state.jpeg)
+![Guru being Guru](screenshots/Guru%20being%20Guru.jpeg)
+![Guru's thinking](screenshots/Guru's%20thinking.jpeg)
+![What can GURU do?](screenshots/What%20can%20GURU%20do%3F.jpeg)
+![GURU device control](screenshots/GURU%20device%20control.jpeg)
+![GURU device control "my body"](screenshots/GURU%20device%20control%20%22my%20body%22.jpeg)
+![GURU local memory](screenshots/GURU%20local%20memory.jpeg)
+![GURU web](screenshots/GURU%20web.jpeg)
+![GURU building](screenshots/GURU%20building.jpeg)
+![GURU dpa](screenshots/GURU%20dpa.jpeg)
+![GURU fun](screenshots/GURU%20fun.jpeg)
+![GURU fresh portal](screenshots/GURU%20fresh%20portal.jpeg)
+![GURU permissions ui boolean off](screenshots/GURU%20permissions%20ui%20boolean%20off.jpeg)
+![GURU permissions intent](screenshots/GURU%20permissions%20intent.jpeg)
+![GURU permissions ui boolean on](screenshots/GURU%20permissions%20ui%20boolean%20on.jpeg)
+![More GURU permissions boolean ui](screenshots/More%20GURU%20permissions%20boolean%20ui.jpeg)
+![GURU batch tool call](screenshots/GURU%20batch%20tool%20call.jpeg)
+![GURU tools ui level 2 notification](screenshots/GURU%20tools%20ui%20level%202%20(notification).jpeg)
+![GURU tool ui result ui](screenshots/GURU%20tool%20ui%20result%20ui.jpeg)
+![More GURU tools UI](screenshots/More%20GURU%20tools%20UI.jpeg)
+![GURU brain](screenshots/GURU%20brain.jpeg)
+![GURU brain part 2](screenshots/GURU%20brain%20part%202.jpeg)
+![More GURU thinking](screenshots/More%20GURU%20thinking.jpeg)
+![GURU thinking, streaming & responding](screenshots/GURU%20thinking%2C%20streaming%20%26%20responding.jpeg)
+![GURU browsing capabilities](screenshots/GURU%20browsing%20capabilities.jpeg)
+![GURU browsing](screenshots/GURU%20browsing.jpeg)
+![GURU media engine no JS permissions intentional](screenshots/GURU%20media%20engine%20no%20JS%20permissions%20(intentional).jpeg)
+![GURU automation](screenshots/GURU%20automation.jpeg)
+![GURU code deploying](screenshots/GURU%20code%20deploying.jpeg)
+![GURU full apps](screenshots/GURU%20full%20apps.jpeg)
+![GURU live dashboards](screenshots/GURU%20live%20dashboards.jpeg)
+![GURU mini apps in app](screenshots/GURU%20mini%20apps%20in%20app.jpeg)
+![GURU mini games demo](screenshots/GURU%20mini%20games%20demo.jpeg)
+
 ## Who GURU is for
 
 GURU is for everyone. Every human on the planet wants something done for them, that's why AI is so popular, because it's the smartest thing in the room. But GURU was built with pure philosophy and human psychology in mind.
