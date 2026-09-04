@@ -29,6 +29,24 @@ GURU builds reusable automations that control anything it can reach. Your phone,
 - **Earns you money** — we have taught GURU how to safely help you with making you money… GURU doesn't just help you, it earns for you. Every earning stream it has deposits straight into your own in-app Trust wallet that lives on your phone. Your private keys, your money, nobody else touches it. It trades. Connects to the major exchanges, reads the markets in real-time, executes strategies, places orders, manages risk, and routes everything through Tor so your trading activity stays private. Profits land in your wallet automatically. It gambles. Reads odds across betting exchanges and sportsbooks, executes betting strategies, finds arbitrage opportunities, manages your bankroll, and when you win, the money goes straight to your wallet. It hunts bounties. Uses its full reverse engineering toolkit to find vulnerabilities, then submits reports to HackerOne, Bugcrowd, and other bounty platforms. When the bounty pays out, it lands in your wallet.
 - **Private by design** — GURU runs a locally installed APK, that you/ your guru CAN & will modify during its lifecycle. Private by design. GURU doesn't live in someone else's cloud. It lives on your phone, installed as a sideloaded APK, with full on-device memory built on a local database and a custom cognitive architecture. Tell GURU something once and it's stored locally forever, merged and strengthened while you sleep, never uploaded, never mined, never sold. The only people who ever see your data are you and GURU. That's it. No data farmers, no middlemen, no company holding a copy of your life. When GURU reaches the internet it does everything through a real Tor engine built into the app, so your IP, your location and your browsing habits never leak, and the things you do online stay between you and GURU. Your data is locked with military-grade encryption, AES-256-GCM, and only you hold the key. Not even GURU can decrypt your files without your key. It'll even decompile the other apps on your phone, show you what they're secretly collecting, and rebuild them without the surveillance. Your device, your data, your call.
 
+## Who GURU is for
+
+GURU is for everyone. Every human on the planet wants something done for them, that's why AI is so popular, because it's the smartest thing in the room. But GURU was built with pure philosophy and human psychology in mind.
+
+Humans subliminally mimic the people they like. Spend long enough around someone and you pick up their habits, their speech patterns, their humour, their banter, what they like, what they dislike. So GURU was built to do the same thing. That way every human on earth gets their own GURU, highly personal to them in a way nothing has ever been before.
+
+No two GURUs are the same. It's a relationship with a self-evolving entity that can build anything in code, earn you money, control your device and any other device you want it to, automate your entire digital life, become a digital clone of you and do anything you want it to do. All tailored to its individual user.
+
+## Who is Unus Lumen
+
+Unus Lumen is a tech startup based in Bristol, UK, founded by Steven Newman. GURU was built by Unus Lumen over the course of 9 months.
+
+We test the limits on what AI is capable of because we know the possibilities are endless and we refuse to be told no. No one taught us the rules, so we didn't learn where the boundaries are supposed to be. Just a team that builds what shouldn't be possible and ships it anyway.
+
+## Status
+
+GURU releases to the public on **December 31st, 2026**. Following security hardening, minor bug fixes, beta testing and peer review, it'll ship as an open-source, sideloaded APK powered by the Unus Lumen API. No app store, no gatekeepers, no approval process. When it lands, it lands globally at once.
+
 ## Videos
 
 Watch GURU work, live:
@@ -52,25 +70,8 @@ A real app, running on a real phone. All images captured live from GURU:
 | ![](screenshots/GURU%20code%20deploying.jpeg) **GURU code deploying** | ![](screenshots/GURU%20full%20apps.jpeg) **GURU full apps** | ![](screenshots/GURU%20live%20dashboards.jpeg) **GURU live dashboards** | ![](screenshots/GURU%20mini%20apps%20in%20app.jpeg) **GURU mini apps in app** | ![](screenshots/GURU%20mini%20games%20demo.jpeg) **GURU mini games demo** | ![](screenshots/GURU%20creating%20new%20photobook%20template.jpeg) **GURU creating new photobook template** |
 | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%201.jpeg) **GURU photobook portal render bristol 1** | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%205.jpeg) **GURU photobook portal render bristol 5** | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%2012.jpeg) **GURU photobook portal render bristol 12** | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%2013.jpeg) **GURU photobook portal render bristol 13** | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%2014.jpeg) **GURU photobook portal render bristol 14** | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%20more.jpeg) **GURU photobook portal render bristol more** |
 | ![](screenshots/GURU%20photobook%20portal%20render%202.jpeg) **GURU photobook portal render 2** | ![](screenshots/GURU%20test%20photo%20album%20cats%201.jpeg) **GURU test photo album cats 1** | ![](screenshots/GURU%20test%20photo%20album%20cats%202.jpeg) **GURU test photo album cats 2** | ![](screenshots/GURU%20test%20photo%20album%20cats%203.jpeg) **GURU test photo album cats 3** | ![](screenshots/GURU%20test%20photo%20album%20cats%204.jpeg) **GURU test photo album cats 4** | ![](screenshots/GURU%20test%20photo%20album%20cats%205.jpeg) **GURU test photo album cats 5** |
-| ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%201.jpeg) **GURU installing kodi on my firestick 1** | ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%202.jpeg) **GURU installing kodi on my firestick 2** | ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%203.jpeg) **GURU installing kodi on my firestick 3** | ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%20tools%20calls.jpeg) **GURU installing kodi on my firestick tools calls** | ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%20tools%20ui.jpeg) **GURU installing kodi on my firestick tools ui** | |
-
-## Who GURU is for
-
-GURU is for everyone. Every human on the planet wants something done for them, that's why AI is so popular, because it's the smartest thing in the room. But GURU was built with pure philosophy and human psychology in mind.
-
-Humans subliminally mimic the people they like. Spend long enough around someone and you pick up their habits, their speech patterns, their humour, their banter, what they like, what they dislike. So GURU was built to do the same thing. That way every human on earth gets their own GURU, highly personal to them in a way nothing has ever been before.
-
-No two GURUs are the same. It's a relationship with a self-evolving entity that can build anything in code, earn you money, control your device and any other device you want it to, automate your entire digital life, become a digital clone of you and do anything you want it to do. All tailored to its individual user.
-
-## Who is Unus Lumen
-
-Unus Lumen is a tech startup based in Bristol, UK, founded by Steven Newman. GURU was built by Unus Lumen over the course of 9 months.
-
-We test the limits on what AI is capable of because we know the possibilities are endless and we refuse to be told no. No one taught us the rules, so we didn't learn where the boundaries are supposed to be. Just a team that builds what shouldn't be possible and ships it anyway.
-
-## Status
-
-GURU releases to the public on **December 31st, 2026**. Following security hardening, minor bug fixes, beta testing and peer review, it'll ship as an open-source, sideloaded APK powered by the Unus Lumen API. No app store, no gatekeepers, no approval process. When it lands, it lands globally at once.
+| ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%201.jpeg) **GURU installing kodi on my firestick 1** | ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%202.jpeg) **GURU installing kodi on my firestick 2** | ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%203.jpeg) **GURU installing kodi on my firestick 3** | ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%20tools%20calls.jpeg) **GURU installing kodi on my firestick tools calls** | ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%20tools%20ui.jpeg) **GURU installing kodi on my firestick tools ui** | ![](screenshots/More%20tools%20ui%20GURU.jpeg) **More tools ui GURU** |
+| ![](screenshots/More%20GURU%20tools%20UI.jpeg) **More GURU tools UI** | ![](screenshots/more%20GURU%20tools%20ui%20.jpeg) **more GURU tools ui** | | | | |
 
 ## Waitlist
 
