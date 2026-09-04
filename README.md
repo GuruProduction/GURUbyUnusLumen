@@ -41,7 +41,7 @@ No two GURUs are the same. It's a relationship with a self-evolving entity that 
 
 Unus Lumen is a tech startup based in Bristol, UK, founded by Steven Newman. GURU was built by Unus Lumen over the course of 9 months.
 
-We test the limits on what AI is capable of because we know the possibilities are endless and we refuse to be told no. No investors, no committees, nobody telling us what can't be done. No one taught us the rules, so we didn't learn where the boundaries are supposed to be. Just a team that builds what shouldn't be possible and ships it anyway.
+We test the limits on what AI is capable of because we know the possibilities are endless and we refuse to be told no. No one taught us the rules, so we didn't learn where the boundaries are supposed to be. Just a team that builds what shouldn't be possible and ships it anyway.
 
 ## Status
 
