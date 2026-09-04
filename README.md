@@ -40,39 +40,21 @@ Watch GURU build and run its own mini games live inside the Portal:
 
 A real app, running on a real phone. All images captured live from GURU:
 
-![Guru intro showing loading state](screenshots/Guru%20intro%20showing%20loading%20state.jpeg)
-![Guru being Guru](screenshots/Guru%20being%20Guru.jpeg)
-![Guru's thinking](screenshots/Guru's%20thinking.jpeg)
-![What can GURU do?](screenshots/What%20can%20GURU%20do%3F.jpeg)
-![GURU device control](screenshots/GURU%20device%20control.jpeg)
-![GURU device control "my body"](screenshots/GURU%20device%20control%20%22my%20body%22.jpeg)
-![GURU local memory](screenshots/GURU%20local%20memory.jpeg)
-![GURU web](screenshots/GURU%20web.jpeg)
-![GURU building](screenshots/GURU%20building.jpeg)
-![GURU dpa](screenshots/GURU%20dpa.jpeg)
-![GURU fun](screenshots/GURU%20fun.jpeg)
-![GURU fresh portal](screenshots/GURU%20fresh%20portal.jpeg)
-![GURU permissions ui boolean off](screenshots/GURU%20permissions%20ui%20boolean%20off.jpeg)
-![GURU permissions intent](screenshots/GURU%20permissions%20intent.jpeg)
-![GURU permissions ui boolean on](screenshots/GURU%20permissions%20ui%20boolean%20on.jpeg)
-![More GURU permissions boolean ui](screenshots/More%20GURU%20permissions%20boolean%20ui.jpeg)
-![GURU batch tool call](screenshots/GURU%20batch%20tool%20call.jpeg)
-![GURU tools ui level 2 notification](screenshots/GURU%20tools%20ui%20level%202%20(notification).jpeg)
-![GURU tool ui result ui](screenshots/GURU%20tool%20ui%20result%20ui.jpeg)
-![More GURU tools UI](screenshots/More%20GURU%20tools%20UI.jpeg)
-![GURU brain](screenshots/GURU%20brain.jpeg)
-![GURU brain part 2](screenshots/GURU%20brain%20part%202.jpeg)
-![More GURU thinking](screenshots/More%20GURU%20thinking.jpeg)
-![GURU thinking, streaming & responding](screenshots/GURU%20thinking%2C%20streaming%20%26%20responding.jpeg)
-![GURU browsing capabilities](screenshots/GURU%20browsing%20capabilities.jpeg)
-![GURU browsing](screenshots/GURU%20browsing.jpeg)
-![GURU media engine no JS permissions intentional](screenshots/GURU%20media%20engine%20no%20JS%20permissions%20(intentional).jpeg)
-![GURU automation](screenshots/GURU%20automation.jpeg)
-![GURU code deploying](screenshots/GURU%20code%20deploying.jpeg)
-![GURU full apps](screenshots/GURU%20full%20apps.jpeg)
-![GURU live dashboards](screenshots/GURU%20live%20dashboards.jpeg)
-![GURU mini apps in app](screenshots/GURU%20mini%20apps%20in%20app.jpeg)
-![GURU mini games demo](screenshots/GURU%20mini%20games%20demo.jpeg)
+| | | | |
+|---|---|---|---|
+| ![](screenshots/Guru%20intro%20showing%20loading%20state.jpeg) | ![](screenshots/Guru%20being%20Guru.jpeg) | ![](screenshots/Guru's%20thinking.jpeg) | ![](screenshots/What%20can%20GURU%20do%3F.jpeg) |
+| ![](screenshots/GURU%20device%20control.jpeg) | ![](screenshots/GURU%20device%20control%20%22my%20body%22.jpeg) | ![](screenshots/GURU%20device%20control%20more.jpeg) | ![](screenshots/GURU%20notification.jpeg) |
+| ![](screenshots/GURU%20local%20memory.jpeg) | ![](screenshots/GURU%20web.jpeg) | ![](screenshots/GURU%20building.jpeg) | ![](screenshots/GURU%20dpa.jpeg) |
+| ![](screenshots/GURU%20fun.jpeg) | ![](screenshots/GURU%20fresh%20portal.jpeg) | ![](screenshots/GURU%20permissions%20ui%20boolean%20off.jpeg) | ![](screenshots/GURU%20permissions%20intent.jpeg) |
+| ![](screenshots/GURU%20permissions%20ui%20boolean%20on.jpeg) | ![](screenshots/More%20GURU%20permissions%20boolean%20ui.jpeg) | ![](screenshots/GURU%20batch%20tool%20call.jpeg) | ![](screenshots/GURU%20tools%20ui%20level%202%20(notification).jpeg) |
+| ![](screenshots/GURU%20tool%20ui%20result%20ui.jpeg) | ![](screenshots/More%20GURU%20tools%20UI.jpeg) | ![](screenshots/GURU%20brain.jpeg) | ![](screenshots/GURU%20brain%20part%202.jpeg) |
+| ![](screenshots/More%20GURU%20thinking.jpeg) | ![](screenshots/GURU%20thinking%2C%20streaming%20%26%20responding.jpeg) | ![](screenshots/GURU%20browsing%20capabilities.jpeg) | ![](screenshots/GURU%20browsing.jpeg) |
+| ![](screenshots/GURU%20media%20engine%20no%20JS%20permissions%20(intentional).jpeg) | ![](screenshots/GURU%20automation.jpeg) | ![](screenshots/GURU%20code%20deploying.jpeg) | ![](screenshots/GURU%20full%20apps.jpeg) |
+| ![](screenshots/GURU%20live%20dashboards.jpeg) | ![](screenshots/GURU%20mini%20apps%20in%20app.jpeg) | ![](screenshots/GURU%20mini%20games%20demo.jpeg) | |
+| ![](screenshots/GURU%20creating%20new%20photobook%20template.jpeg) | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%201.jpeg) | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%205.jpeg) | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%2012.jpeg) |
+| ![](screenshots/GURU%20photobook%20portal%20render%20bristol%2013.jpeg) | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%2014.jpeg) | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%20more.jpeg) | ![](screenshots/GURU%20photobook%20portal%20render%202.jpeg) |
+| ![](screenshots/GURU%20test%20photo%20album%20cats%201.jpeg) | ![](screenshots/GURU%20test%20photo%20album%20cats%202.jpeg) | ![](screenshots/GURU%20test%20photo%20album%20cats%203.jpeg) | ![](screenshots/GURU%20test%20photo%20album%20cats%204.jpeg) |
+| ![](screenshots/GURU%20test%20photo%20album%20cats%205.jpeg) | ![](screenshots/More%20tools%20ui%20GURU.jpeg) | | |
 
 ## Who GURU is for
 
