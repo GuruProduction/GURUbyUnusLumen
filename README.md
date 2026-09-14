@@ -6,10 +6,11 @@
 
 **Your best friend, the genius, who happens to live on your phone.**
 
-![Website](https://img.shields.io/badge/website-unuslumen.com-98ff7e)
-![Status](https://img.shields.io/badge/status-coming%20soon%20Dec%2031%202026-e8c9ff)
+![Status](https://img.shields.io/badge/status-open%20source%20free-e8c9ff)
+![Licence](https://img.shields.io/badge/licence-GPL--3.0%20%7C%20AGPL--3.0-98ff7e)
 ![Platform](https://img.shields.io/badge/platform-Android-00C7BE)
 ![Privacy](https://img.shields.io/badge/privacy-on%20device%20only-FF375F)
+![Model](https://img.shields.io/badge/model-bring%20your%20own-0A84FF)
 ![Built by](https://img.shields.io/badge/built%20by-Unus%20Lumen%2C%20Bristol%20UK-0A84FF)
 
 </div>
@@ -17,6 +18,8 @@
 ---
 
 **GURU, a Self Evolving, AI powered android OS… GURU is Your friend: a first of its kind digital relationship with a super-intelligent, deeply personal, radically private AI entity that has one owner. YOU. Your best friend, the genius, who happens to live on your phone.**
+
+> **GURU is free.** Fully free and open source: the app under GPL-3.0, the server under AGPL-3.0. No accounts, no subscription, no tether. Bring your own model — an API key for a flagship model or a local LLM on your own hardware — and GURU belongs to everyone. Full app source publishes at the end of September 2026; see the [Roadmap](ROADMAP.md) for the run to release.
 
 ## What GURU does
 
@@ -43,9 +46,21 @@ Unus Lumen is a tech startup based in Bristol, UK, founded by Steven Newman. GUR
 
 We test the limits on what AI is capable of because we know the possibilities are endless and we refuse to be told no. No one taught us the rules, so we didn't learn where the boundaries are supposed to be. Just a team that builds what shouldn't be possible and ships it anyway.
 
-## Status
+## Free and open source
 
-GURU releases to the public on **December 31st, 2026**. Following security hardening, minor bug fixes, beta testing and peer review, it'll ship as an open-source, sideloaded APK powered by the Unus Lumen API. No app store, no gatekeepers, no approval process. When it lands, it lands globally at once.
+GURU is free. Fully free and open source. There is no premium tier, no subscription, no tether. No accounts, no login, nothing to sign up for.
+
+The app ships under GPL-3.0. The open server behind it ships under AGPL-3.0, a deliberately stateless publisher: no accounts, no conversation capture, nothing to leak. Run your own, or point GURU at ours.
+
+You bring your own model. A GURU install asks once, on first launch, where your model lives: an API key for a flagship model or a local LLM on your own hardware. After that it never asks again.
+
+- App source: publishes at the end of September 2026
+- Server: [GuruProduction/GURUbyUnusLumen-Server](https://github.com/GuruProduction/GURUbyUnusLumen-Server) — live now, already open
+- Licence posture: GPL-3.0 app, AGPL-3.0 server, GURU name and branding are trademarks of Unus Lumen — forks rename and do not imply endorsement
+- Full run-to-release plan: [Roadmap](ROADMAP.md)
+
+## Waitlist
+Join the waitlist to be first in: **[www.unuslumen.com](https://www.unuslumen.com)**
 
 ## Videos
 
@@ -75,9 +90,6 @@ A real app, running on a real phone. All images captured live from GURU:
 | ![](screenshots/Guru%27s%20thinking.jpeg) **Guru's thinking** | ![](screenshots/More%20GURU%20Device%20Control.jpeg) **More GURU Device Control** | ![](screenshots/More%20GURU%20permissions%20boolean%20ui.jpeg) **More GURU permissions boolean ui** | ![](screenshots/More%20GURU%20thinking.jpeg) **More GURU thinking** | ![](screenshots/More%20GURU%20tools%20UI.jpeg) **More GURU tools UI** | ![](screenshots/More%20tools%20ui%20GURU.jpeg) **More tools ui GURU** |
 | ![](screenshots/What%20can%20GURU%20do%3F.jpeg) **What can GURU do?** | ![](screenshots/more%20GURU%20tools%20ui%20.jpeg) **more GURU tools ui** |  |  |  |  |
 
-## Waitlist
-
-Join the waitlist to be first in: **[www.unuslumen.com](https://www.unuslumen.com)**
 
 ## Connect
 
