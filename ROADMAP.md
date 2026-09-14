@@ -37,6 +37,8 @@ So the product changes shape: GURU belongs to everyone. The code is going public
 
 **Then: ship it.** The repo goes public. Sideloaded APK, no app store, no gatekeepers, every region at once.
 
+**Straight about the launch state: public beta, honest.** The source publishing end of this week has not been security hardened yet, the audit pass on the permission boundaries, encryption and Tor routing is still ahead, and there are bugs sitting in corners the author's own use case never touches. The first users are the beta testers. That is not a caveat buried in fine print, it is the deal stated plainly: everyone who installs from here forward is helping find what a 10-month solo build could not catch alone, and the community bug-fixing loop starts on day one.
+
 **Ongoing, forever: in public.** Bugs get fixed with the community. Tools, skills, masks and agent templates flow through the community review pipeline, human-reviewed before they hit the public catalog. And when it works, a marketplace follows: creators selling what they make, the free core never changing.
 
 ---
