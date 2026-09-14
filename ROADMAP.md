@@ -2,7 +2,7 @@
 
 GURU is free. Fully free and open source. There is no premium tier, no subscription, no tether. You bring your own model, an API key for a flagship model or a local LLM on your own hardware, and GURU belongs to everyone.
 
-The full app source is coming as open source, end of September 2026. Below is the honest work between here and there, updated after the pivot to free.
+The full app source is coming as open source, end of this week. Below is the honest work between here and there, updated after the pivot to free.
 
 ---
 
@@ -16,7 +16,7 @@ So the product changes shape: GURU belongs to everyone. The code is going public
 
 ## The new architecture
 
-- **GURU the app** — fully open source, GPL-3.0. Runs standalone. No accounts, no login, nothing to sign up for.
+- **GURU the app** — fully open source, AGPL-3.0. Runs standalone. No accounts, no login, nothing to sign up for.
 - **Bring your own model** — point GURU at a flagship model's API key, or a local LLM on your own hardware. No Unus Lumen dependency for inference. One bootstrap screen, once, on first launch.
 - **The open server** — AGPL-3.0, a deliberately stateless publisher: [GURUbyUnusLumen-Server](https://github.com/GuruProduction/GURUbyUnusLumen-Server). Serves prompts, skills, tool definitions, agent templates, canvas packs and config defaults. No accounts, no conversation capture, nothing to leak. Run your own or point GURU at ours.
 - **Agents run both ways** — GURU ships with its mask system running on-device (21 specialists and counting: Director, Wingman, Archivist, Concierge, Mechanic, Code Engineer, Research Guru, Seer, Deep Thinker, Fixer, Architect, Project Manager, Foreigner, Forge, Doctor, Silk, Signal, Grafter, Vault, Sentinel, Self-Improvement Engine), and the server catalog publishes agent templates the app pulls and registers locally. User GURUs create and persist their own agents locally, and can register them back for community review.
@@ -33,7 +33,7 @@ So the product changes shape: GURU belongs to everyone. The code is going public
 
 **Then: the open server goes live** for public sync, and a public catalog goes up so anyone can browse everything published through the review pipeline.
 
-**Before code drop: licence and cleanup pass.** GPL-3.0 licence lands on the app repo, trademark notice goes in, legacy cruft gets swept.
+**Before code drop: licence and cleanup pass.** The AGPL-3.0 licence and trademark notice are already on the app repo; legacy cruft gets swept before the flip to public.
 
 **Then: ship it.** The repo goes public. Sideloaded APK, no app store, no gatekeepers, every region at once.
 
