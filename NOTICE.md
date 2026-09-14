@@ -2,7 +2,7 @@
 
 GURU is free software, but the name is not yours to rebrand with.
 
-- The **GURU app** and its framework are licensed under the **GNU General Public License v3.0** (see LICENSE).
+- The **GURU app** and its framework are licensed under the **GNU Affero General Public License v3.0-or-later** (see LICENSE).
 - The **GURU open server** is licensed under the **GNU Affero General Public License v3.0-or-later** (see the [server repository](https://github.com/GuruProduction/GURUbyUnusLumen-Server)).
 - The **GURU** name, the GURU logo, and all Unus Lumen branding are **trademarks of Unus Lumen Ltd**, registered in Bristol, UK. These marks are **not** licensed under the GPL or AGPL.
 
