@@ -50,6 +50,8 @@ We test the limits on what AI is capable of because we know the possibilities ar
 
 GURU is free. Fully free and open source. There is no premium tier, no subscription, no tether. No accounts, no login, nothing to sign up for.
 
+**Honest state of the code: this is a public beta.** The full app source publishes end of this week and the security hardening pass is still in progress: the permission boundaries, the on-device encryption and the Tor routing have not yet had a professional audit. There are known bugs, especially in areas outside the author's own daily use, and this build has not been hammered across the full range of Android devices and versions. So the first people to download GURU are the beta testers, plain and simple: install it knowing that, report what you find, and you're helping to ship it. Every issue raised here helps.
+
 The app and the open server behind it both ship under AGPL-3.0, a deliberately stateless publisher: no accounts, no conversation capture, nothing to leak. Run your own, or point GURU at ours.
 
 You bring your own model. A GURU install asks once, on first launch, where your model lives: an API key for a flagship model or a local LLM on your own hardware. After that it never asks again.
