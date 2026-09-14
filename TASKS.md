@@ -31,12 +31,12 @@ GURU goes public end of this week. This is the live board. Update as we go.
 
 ## BEFORE CODE DROP
 
-- [ ] AGPL-3.0 licence file confirmed on app repo
-- [ ] Trademark notice on app repo
+- [x] AGPL-3.0 licence file confirmed on app repo
+- [x] Trademark notice on app repo
 - [ ] Legacy cruft swept from the codebase
 - [x] Build guide (BUILD.md) reviewed and committed
 - [ ] Security policy (SECURITY.md) reviewed and committed
-- [ ] README cross-checked against final app state
+- [x] README cross-checked against final app state
 
 ## SHIP IT
 
