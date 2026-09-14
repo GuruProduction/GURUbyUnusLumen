@@ -24,7 +24,6 @@ So the product changes shape: GURU belongs to everyone. The code is going public
 - **On-device memory** — stays local and stays private. Keyword-driven memory injection happens on-device: GURU's recall layer hears trigger phrases in what you say (Jaro-Winkler fuzzy phrase matching, ported from the old server proxy) and pulls the right memories into context, two-layer retrieval running on the on-device database.
 - **The loading space survives** — the interactive canvas that beams Lottie animations, videos, stickmen playing chess and minigames while GURU thinks stays in the app. The old advertising machinery around it dies; the canvas itself survives as canvas packs served from the API, community-submittable and marketplace-ready.
 - **Content you control** — the app ships with a bundled core prompt pack, syncs from the server of your choosing, blankable, no hard tether.
-- **Unus Lumen stays the centre of gravity** — by running the registry: reviewing community contributions, publishing the catalog, keeping the master prompts and skills flowing. If Unus Lumen does not run it, someone else builds a competing one.
 
 ---
 
