@@ -6,11 +6,11 @@ GURU goes public end of this week. This is the live board. Update as we go.
 
 ## NOW — The Untangle
 
-- [ ] Strip user accounts and login flow from the app
-- [ ] Remove the login gate
-- [ ] Remove account state
+- [x] Strip user accounts and login flow from the app
+- [x] Remove the login gate
+- [x] Remove account state
 - [ ] Replace login with bootstrap model connect (one-time first launch)
-- [ ] Verify the app runs fully with no account anywhere
+- [x] Verify the app runs fully with no account anywhere
 
 ## NEXT — Ecosystem Wiring
 
