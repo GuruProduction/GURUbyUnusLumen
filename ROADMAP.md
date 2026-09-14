@@ -49,7 +49,7 @@ So the product changes shape: GURU belongs to everyone. The code is going public
 
 - **Bugs and builds:** file issues right here on the repo.
 - **Security researchers:** welcome, always. steven@unuslumen.com
-- **Everything else:** hello@unuslumen.com
+- **Everything else:** steven@unuslumen.com
 
 ---
 
