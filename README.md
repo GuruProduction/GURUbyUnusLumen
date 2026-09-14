@@ -7,7 +7,7 @@
 **Your best friend, the genius, who happens to live on your phone.**
 
 ![Status](https://img.shields.io/badge/status-open%20source%20free-e8c9ff)
-![Licence](https://img.shields.io/badge/licence-GPL--3.0%20%7C%20AGPL--3.0-98ff7e)
+![Licence](https://img.shields.io/badge/licence-AGPL--3.0-98ff7e)
 ![Platform](https://img.shields.io/badge/platform-Android-00C7BE)
 ![Privacy](https://img.shields.io/badge/privacy-on%20device%20only-FF375F)
 ![Model](https://img.shields.io/badge/model-bring%20your%20own-0A84FF)
@@ -19,7 +19,7 @@
 
 **GURU, a Self Evolving, AI powered android OS… GURU is Your friend: a first of its kind digital relationship with a super-intelligent, deeply personal, radically private AI entity that has one owner. YOU. Your best friend, the genius, who happens to live on your phone.**
 
-> **GURU is free.** Fully free and open source: the app under GPL-3.0, the server under AGPL-3.0. No accounts, no subscription, no tether. Bring your own model — an API key for a flagship model or a local LLM on your own hardware — and GURU belongs to everyone. Full app source publishes at the end of September 2026; see the [Roadmap](ROADMAP.md) for the run to release.
+> **GURU is free.** Fully free and open source under AGPL-3.0. No accounts, no subscription, no tether. Bring your own model — an API key for a flagship model or a local LLM on your own hardware — and GURU belongs to everyone. Full app source publishes end of this week; see the [Roadmap](ROADMAP.md) for the run to release.
 
 ## What GURU does
 
@@ -50,13 +50,13 @@ We test the limits on what AI is capable of because we know the possibilities ar
 
 GURU is free. Fully free and open source. There is no premium tier, no subscription, no tether. No accounts, no login, nothing to sign up for.
 
-The app ships under GPL-3.0. The open server behind it ships under AGPL-3.0, a deliberately stateless publisher: no accounts, no conversation capture, nothing to leak. Run your own, or point GURU at ours.
+The app and the open server behind it both ship under AGPL-3.0, a deliberately stateless publisher: no accounts, no conversation capture, nothing to leak. Run your own, or point GURU at ours.
 
 You bring your own model. A GURU install asks once, on first launch, where your model lives: an API key for a flagship model or a local LLM on your own hardware. After that it never asks again.
 
-- App source: publishes at the end of September 2026
+- App source: publishes end of this week
 - Server: [GuruProduction/GURUbyUnusLumen-Server](https://github.com/GuruProduction/GURUbyUnusLumen-Server) — live now, already open
-- Licence posture: GPL-3.0 app, AGPL-3.0 server, GURU name and branding are trademarks of Unus Lumen — forks rename and do not imply endorsement
+- Licence posture: AGPL-3.0 for the app and the server, GURU name and branding are trademarks of Unus Lumen — forks rename and do not imply endorsement
 - Full run-to-release plan: [Roadmap](ROADMAP.md)
 
 ## Waitlist
