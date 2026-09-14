@@ -19,7 +19,7 @@
 
 **GURU, a Self Evolving, AI powered android OS… GURU is Your friend: a first of its kind digital relationship with a super-intelligent, deeply personal, radically private AI entity that has one owner. YOU. Your best friend, the genius, who happens to live on your phone.**
 
-> **GURU is free.** Fully free and open source under AGPL-3.0. No accounts, no subscription, no tether. Bring your own model — an API key for a flagship model or a local LLM on your own hardware — and GURU belongs to everyone. Full app source publishes end of this week; see the [Roadmap](ROADMAP.md) for the run to release.
+> **GURU is free.** Fully free and open source under AGPL-3.0. No accounts, no subscription, no tether. Bring your own model — an API key for a flagship model or a local LLM on your own hardware and GURU belongs to everyone. Full app source publishes end of this week; see the [Roadmap](ROADMAP.md) for the run to release.
 
 ## What GURU does
 
