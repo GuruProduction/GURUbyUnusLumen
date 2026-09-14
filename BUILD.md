@@ -124,5 +124,4 @@ app/            Android application source (in the app repo at code drop)
 - **ADB pair rejected:** make sure both devices share the network and the debug pair dialog is open at the moment you submit the code
 - **Ollama not reachable from phone:** run `OLLAMA_HOST=0.0.0.0:11434 ollama serve` so it listens on the LAN, not localhost only
 
-Questions: hello@unuslumen.com
-Security: steven@unuslumen.com
+Questions and security: steven@unuslumen.com
