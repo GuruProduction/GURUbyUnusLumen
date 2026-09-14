@@ -18,14 +18,14 @@ GURU goes public end of this week. This is the live board. Update as we go.
 - [ ] Skills sync (SKILL.md bodies pulled and installed on-device)
 - [ ] Tool definitions sync (downloaded and registered on-device)
 - [ ] Agent mask templates sync
-- [x] Canvas packs sync
-- [x] Config defaults sync
+- [ ] Canvas packs sync
+- [ ] Config defaults sync
 - [ ] Keyword-driven memory injection running fully on-device (Jaro-Winkler trigger matching, two-layer retrieval)
 - [x] Community submissions flow into review pipeline (tools, skills, agents, packs)
 
 ## THEN — Open Server Live
 
-- [x] Open server up for public sync
+- [ ] Open server up for public sync
 - [ ] Public catalog live, browsable from outside the app
 - [x] Catalog covers prompts, skills, tools, agent templates, canvas packs
 
