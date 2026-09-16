@@ -1,6 +1,8 @@
 # BUILD.md — Building GURU by Unus Lumen
 
-GURU is fully open source. You can build the Android app and the open sync server yourself. No accounts, no gatekeepers, nothing hidden.
+GURU is fully open source. You can build the Android app yourself from source. No accounts, no gatekeepers, nothing hidden.
+
+The sync server this app talks to is Unus Lumen's own infrastructure and is closed source (the reasoning is in the [Roadmap](ROADMAP.md)). You don't need to build or run a server to use GURU: the app works fully standalone with its bundled core content pack, and sync is optional.
 
 ---
 
@@ -72,50 +74,25 @@ Each is explained by GURU itself in the onboarding. Grant what you want, GURU de
 
 ---
 
-## Part 2 — The Open Sync Server
+## Part 2 — Model Connect and Sync (the only setup)
 
-A deliberately stateless content publisher in Rust. Serves prompts, skills, tool definitions, agent templates, canvas packs and config defaults. No accounts, no conversation capture, nothing to leak.
-
-### Prerequisites
-
-- Rust 1.80+ (`curl https://sh.rustup.rs -sSf | sh`)
-- Git
-
-### Build and run
-
-```bash
-git clone https://github.com/GuruProduction/GURUbyUnusLumen-Server.git
-cd GURUbyUnusLumen-Server
-cargo build --release
-cargo run --release
-```
-
-The server binds by default on the configured port (see `guru-server` config) and serves everything from the `guru-content` directory.
+The publisher server side of sync is Unus Lumen infrastructure (closed source — [why](ROADMAP.md)). The sync *protocol* is plain, documented HTTP; any compatible publisher works. For daily use you need none of it on first launch beyond a model:
 
 ### How sync works
 
-The app ships preconnected to the UnusLumen open server. First launch just pulls everything it publishes: prompt pack, skills, tool definitions, agent templates, canvas packs, config defaults. Nothing to configure. Install, connect your model, use the app.
+The app ships preconnected to the Unus Lumen publisher. First launch just pulls everything it publishes: prompt pack, skills, tool definitions, agent templates, canvas packs, config defaults. Nothing to configure. Install, connect your model, use the app.
 
-Run your own server instead (optional, privacy maximalist option):
-
-```bash
-cd GURUbyUnusLumen-Server && cargo run --release
-```
-
-Then Settings > Sync > server URL (`http://YOUR_LAN_IP:PORT`). Works fully offline too, the app carries a bundled core pack and keeps whatever it last synced.
+**Point GURU elsewhere (optional, privacy maximalist option):** the sync target is just a URL and the protocol is plain HTTP. Point at any compatible publisher, or at nothing at all — the app carries a bundled core pack, stays fully usable offline, and keeps whatever it last synced. No feature is gated behind our server.
 
 ---
 
 ## Repository layout
 
 ```
-guru-content/   prompts, skills, tool definitions, agent templates served by the server
-guru-db/        server-side database (catalog / review pipeline)
-guru-server/    Rust server source (axum-based, stateless)
-app/            Android application source (in the app repo at code drop)
+app source and the rest of the app repo: this repository (published at code drop)
+sync protocol: documented over-the-wire contract, plain HTTP
+publisher server: Unus Lumen infrastructure, closed source (why in ROADMAP.md)
 ```
-
----
 
 ## Troubleshooting
 
