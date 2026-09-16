@@ -2,7 +2,7 @@
 
 GURU is fully open source. You can build the Android app yourself from source. No accounts, no gatekeepers, nothing hidden.
 
-The sync server this app talks to is Unus Lumen's own infrastructure and is closed source (the reasoning is in the [Roadmap](ROADMAP.md)). You don't need to build or run a server to use GURU: the app works fully standalone with its bundled core content pack, and sync is optional.
+The sync server this app talks to is Unus Lumen's own infrastructure and is closed source (the reasoning is in the [Roadmap](ROADMAP.md)). Be honest about what that means: the publisher feeds the app. Prompts, skills, packs and agent templates arrive over sync — **a GURU disconnected from every publisher boots but does not work as intended.** Pointing it at a publisher you control (or hand-installing content) is a job for technical users who want that isolation. The protocol is documented plain HTTP, so any compatible publisher works.
 
 ---
 
@@ -76,13 +76,13 @@ Each is explained by GURU itself in the onboarding. Grant what you want, GURU de
 
 ## Part 2 — Model Connect and Sync (the only setup)
 
-The publisher server side of sync is Unus Lumen infrastructure (closed source — [why](ROADMAP.md)). The sync *protocol* is plain, documented HTTP; any compatible publisher works. For daily use you need none of it on first launch beyond a model:
+The publisher server side of sync is Unus Lumen infrastructure (closed source — [why](ROADMAP.md)). The sync *protocol* is plain, documented HTTP; any compatible publisher works. Setup is just a model plus sync — one is chosen here, the other arrives preconfigured:
 
 ### How sync works
 
 The app ships preconnected to the Unus Lumen publisher. First launch just pulls everything it publishes: prompt pack, skills, tool definitions, agent templates, canvas packs, config defaults. Nothing to configure. Install, connect your model, use the app.
 
-**Point GURU elsewhere (optional, privacy maximalist option):** the sync target is just a URL and the protocol is plain HTTP. Point at any compatible publisher, or at nothing at all — the app carries a bundled core pack, stays fully usable offline, and keeps whatever it last synced. No feature is gated behind our server.
+**Point GURU elsewhere (for the technical):** the sync target is just a URL and the protocol is plain HTTP. You can point at a publisher you run yourself — that's real and supported. But understand the trade before you pick it: prompts, skills, tool definitions, agent templates, canvas packs and config defaults all arrive over sync. **A GURU with no publisher at all boots, connects to your model, and then underperforms badly — the content that makes it work isn't there.** Going publisher-less means hand-installing content and knowing what you're doing. That isolation is a deliberate expert choice, not the happy default the privacy-maximalist framing might suggest. No feature is locked behind our server technically — but feeding your own GURU yourself is real work.
 
 ---
 
