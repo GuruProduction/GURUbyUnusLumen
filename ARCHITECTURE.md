@@ -4,7 +4,7 @@
 <img src="GURUlogo.png" alt="GURU by Unus Lumen" width="400"/>
 </p>
 
-**GURU is a personal AGI that lives on your phone.** This document describes how the system is actually built: its real modules, the technologies behind each, and the design constraints they obey. It is a structural overview published for transparency. GURU's source ships open-source at release. Until then, no source is published, and nothing here is a blueprint for rebuilding it.
+**GURU is a personal AGI that lives on your phone.** This document describes how the system is actually built: its real modules, the technologies behind each, and the design constraints they obey. It is a structural overview published for transparency. Full app source publishes end of this week at this repository; until then, no source is published, and nothing here is a blueprint for rebuilding it.
 
 ---
 
@@ -17,7 +17,7 @@
 
 ## The Project Tree (Top Levels)
 
-The real shape of the source tree, top two levels, with what each part owns. Deeper levels publish with the open-source release on December 31st, 2026.
+The real shape of the source tree, top two levels, with what each part owns. Deeper levels publish with the open-source release at the end of this week.
 
 ```
 guru/
@@ -61,6 +61,7 @@ guru/
 ├── server/              The Unus Lumen server engine, in Rust: guru-core with
 │   │                    specialist intelligence, request engine, protocol
 │   │                    definitions, authentication and database layers
+│   │                    (stays closed source — see note below)
 │
 └── fastlane/            Build, signing and publishing automation
 ```
@@ -120,6 +121,8 @@ This is the mechanical truth behind self-evolution: the brain can re-write its o
 
 A Rust server-side engine powers the heavy lifting: the guru-core crate with specialist models, a request engine, protocol definitions, authentication and database layers. The app stays private and local; the server provides exchange-intelligence specialists that the earning layer and analysis tools draw on.
 
+**The server engine stays closed source.** Two honest reasons: publishing it ships a complete map of every endpoint and auth path guarding the master-write API, whose single admin credential becomes load-bearing the day the fleet goes public; and the review pipeline and editorial catalog are Unus Lumen's operational layer. The privacy posture is unaffected: the server is stateless by design, sees requests and never memory, and the app runs fully standalone without it — no feature is gated behind our infrastructure. The app↔server sync protocol is plain documented HTTP, and any compatible publisher can serve it.
+
 ## Native Toolkit
 
 GURU ships a real Unix environment inside the APK, compiled for arm64, armv7, x86 and x86_64: OpenSSH, toybox, busybox, curl, rsync, dropbear, jq, tmux, sqlite, make, ncurses, openssl, and an embedded Python runtime, plus a QuickJS JavaScript engine through JNI. That's how shell access, scripting and remote control are real capabilities, not emulations.
@@ -141,7 +144,7 @@ Two registries: bundled skills shipped with the app, and dynamic skills that GUR
 - **No cloud storage** — memories, files, conversations, all live and die on the device
 - **Keys on device** — non-custodial wallet, private keys never leave the phone
 - **Tor by default** — every external request routes anonymously
-- **Open source at release** — full source publishes December 31st, 2026
+- **App source open at release** — full app source publishes at this repo end of this week under AGPL-3.0; the publisher server engine stays closed (reasoning above)
 
 ---
 

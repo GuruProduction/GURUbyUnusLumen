@@ -25,7 +25,7 @@ GURU goes public end of this week. This is the live board. Update as we go.
 
 ## THEN — Open Server Live
 
-- [ ] Open server up for public sync
+- [ ] Publisher server up for public sync (source stays private — see Roadmap reasoning; protocol is documented and open to any compatible publisher)
 - [ ] Public catalog live, browsable from outside the app
 - [x] Catalog covers prompts, skills, tools, agent templates, canvas packs
 
