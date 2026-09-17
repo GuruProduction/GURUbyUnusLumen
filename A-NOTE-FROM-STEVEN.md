@@ -10,7 +10,7 @@ There are a few things you WILL need to know before downloading.
 
 GURU is NOT finished. It is NOT perfect. However, even in its current state, GURU is night and day different to anything you've ever used before.
 
-Some of the tools are stubs and some of the permissions have not been wired in yet. This is a design choice. This will be rectified imminently, however nothing like this has been done yet. I'm working from a completely blank slate with no reference material, so in order to keep the app working as advertised, every little aspect of the build, from wiring a simple permission to engineering and building the toolkit and skills for it to work, has to be thought through and tested meticulously.
+Some of the tools have bugs, some are stubs and some of the permissions have not been wired in yet. THIS DOES NOT AFFECT THE FUNCTIONALIITUY... GURU can fix itself, And will... in real time. This is a design choice. these bugs and stubs will be rectified imminently, however nothing like this has been done yet. I'm working from a completely blank slate with no reference material, so in order to keep the app working as advertised, every little aspect of the build, from wiring a simple permission to engineering and building the toolkit and skills for it to work, has to be thought through and tested meticulously.
 
 It is in good working order and it is very very usable. Actually, it is a very pleasant user experience. YOU DO NOT NEED PERMISSIONS FOR GURU TO WORK. GURU will work fine without permissions, however I designed and engineered this app for it to have these permissions in order to work properly.
 
