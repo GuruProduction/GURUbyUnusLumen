@@ -113,7 +113,7 @@ The main application package wires everything together with dependency injection
 
 ## The Portal and the Prompt Assembly Pipeline
 
-The Portal is where everything happens, and its intelligence is assembled, not hardcoded. GURU's system prompt is built at runtime from five documented sections stored in a local database: Identity, Capabilities, Decision Framework, Context and Reflection. Each section is structured Kotlin with an amendment pipeline layered on top, meaning the AI's own behaviour can be extended and refined without recompiling the app. Identity defines who the AI is and how it speaks. Capabilities document the 500+ tools. The decision framework defines how GURU chooses between acting, building a tool, creating a skill, spawning an agent or scheduling a job. Context handles continuity across sessions. Reflection handles fact extraction, thread discovery, deduplication and conversation titling.
+The Portal is where everything happens, and its intelligence is assembled, not hardcoded. GURU's system prompt is built at runtime from five documented sections stored in a local database: Identity, Capabilities, Decision Framework, Context and Reflection. Each section is structured Kotlin with an amendment pipeline layered on top, meaning the AI's own behaviour can be extended and refined without recompiling the app. Identity defines who the AI is and how it speaks. Capabilities document the nearly 400 tools. The decision framework defines how GURU chooses between acting, building a tool, creating a skill, spawning an agent or scheduling a job. Context handles continuity across sessions. Reflection handles fact extraction, thread discovery, deduplication and conversation titling.
 
 This is the mechanical truth behind self-evolution: the brain can re-write its own instruction set through an amendment pipeline, safely.
 
@@ -129,7 +129,7 @@ GURU ships a real Unix environment inside the APK, compiled for arm64, armv7, x8
 
 ## Luxify: The Skills System
 
-Two registries: bundled skills shipped with the app, and dynamic skills that GURU can search for, download, modify and install at runtime. Skills are methodology packages that wire straight into the prompt assembly pipeline, giving GURU permanent new professional capabilities. 50,000+ available and counting.
+Two registries: bundled skills shipped with the app, and dynamic skills that GURU can search for, download, modify and install at runtime. Skills are methodology packages that wire straight into the prompt assembly pipeline, giving GURU permanent new professional capabilities. New skills arrive and install over sync, and a GURU can also author and install its own at runtime.
 
 ## Privacy By Architecture
 
