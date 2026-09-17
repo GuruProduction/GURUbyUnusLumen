@@ -158,8 +158,8 @@ fun SettingsScreen(
                 )
                 SettingsSectionCard {
                     SettingsNavLinkRow(
-                        monoKey = "io",
                         title = stringResource(R.string.export_import),
+                        icon = painterResource(R.drawable.ic_import_export),
                         onClick = { navController.navigate(Screen.ImportExportScreen) },
                     )
                 }
@@ -173,21 +173,15 @@ fun SettingsScreen(
                 )
                 SettingsSectionCard {
                     SettingsNavLinkRow(
-                        monoKey = "ver",
                         title = stringResource(R.string.app_version) + "  $versionName",
+                        icon = painterResource(R.drawable.ic_info),
                         onClick = { uriHandler.openUri(Constants.GITHUB_RELEASES_LINK) },
                     )
                     SettingsRowDivider()
                     SettingsNavLinkRow(
-                        monoKey = "git",
                         title = stringResource(R.string.project_on_github),
+                        icon = painterResource(R.drawable.ic_github),
                         onClick = { uriHandler.openUri(Constants.PROJECT_GITHUB_LINK) },
-                    )
-                    SettingsRowDivider()
-                    SettingsNavLinkRow(
-                        monoKey = "sec",
-                        title = stringResource(R.string.privacy_policy),
-                        onClick = { uriHandler.openUri(Constants.PRIVACY_POLICY_LINK) },
                     )
                 }
             }
@@ -200,14 +194,14 @@ fun SettingsScreen(
                 )
                 SettingsSectionCard {
                     SettingsNavLinkRow(
-                        monoKey = "bug",
                         title = stringResource(R.string.request_feature_report_bug),
+                        icon = painterResource(R.drawable.ic_feature_issue),
                         onClick = { uriHandler.openUri(Constants.GITHUB_ISSUES_LINK) },
                     )
                     SettingsRowDivider()
                     SettingsNavLinkRow(
-                        monoKey = "map",
                         title = stringResource(R.string.project_roadmap),
+                        icon = painterResource(R.drawable.ic_roadmap),
                         onClick = { uriHandler.openUri(Constants.PROJECT_ROADMAP_LINK) },
                     )
                 }
