@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="guru_accessibility_description">Allows Guru to control your device — tap buttons, type text, navigate settings, and enable debugging features automatically. This is required for full device control.</string>
+</resources>

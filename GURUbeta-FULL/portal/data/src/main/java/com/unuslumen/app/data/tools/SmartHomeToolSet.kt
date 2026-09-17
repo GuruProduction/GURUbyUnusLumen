@@ -1,0 +1,1 @@
+// Migrated to SmartHomeToolDefinitions, SmartHomeToolExecutor, SmartHomeToolResults

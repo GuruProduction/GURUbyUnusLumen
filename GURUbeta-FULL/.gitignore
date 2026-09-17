@@ -1,0 +1,45 @@
+*.iml
+.gradle
+/local.properties
+/.idea/
+!/.idea/.name
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+/app/release
+/.kotlin/
+
+# Secrets and credentials — never commit
+*.jks
+*.keystore
+*.env
+*.hprof
+*.dump
+guru_dev_backup*.dump
+
+# Rust build outputs
+server/target/
+**/target/
+
+# Android build trees (all variants)
+**/build/
+**/build */
+app/build/
+app/.cxx/
+**/intermediates*/
+
+# macOS noise
+*.swp
+*~
+
+# Bundled upstream source trees (kept locally, not versioned)
+native/
+toybox-build/
+
+# Stray work files at root
+*.bak
+*.broken
+*.tflite

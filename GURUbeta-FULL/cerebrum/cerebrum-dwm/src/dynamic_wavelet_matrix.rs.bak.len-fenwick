@@ -1,0 +1,1690 @@
+//! DynamicWaveletMatrix — THE core invention.
+//!
+//! First-ever public implementation of arXiv:2602.13594.
+//!
+//! Co-indexes binary signatures AND token-ID sequences in ONE structure.
+//! Search by semantic similarity (Hamming ball) WITHIN compressed domain —
+//! no decompression needed. Exact token reconstruction from DWM —
+//! no information loss.
+//!
+//! # Bible Specification (§0.2.3)
+//!
+//! ```text
+//! pub struct DynamicWaveletMatrix {
+//!     levels: Vec<DynamicLevel>,    // One level per bit of alphabet
+//!     alphabet_size: usize,         // σ — alphabet size for token IDs
+//!     signature_bits: usize,       // 256 (or 128/512)
+//!     n: usize,                     // Number of memories stored
+//!     token_vocab: TokenVocabulary,  // Token → ID mapping
+//! }
+//!
+//! pub struct DynamicLevel {
+//!     bitvec: SuccinctBitVec,
+//!     boundaries: Vec<usize>,       // Level boundaries for navigation
+//! }
+//! ```
+//!
+//! # Hamming-Ball Search Algorithm
+//!
+//! 1. Sort memories by binary signature (lexicographic)
+//! 2. Build wavelet matrix: 256 levels, one per signature bit
+//! 3. Each level partitions: 0-bits go left, 1-bits go right
+//! 4. boundaries[l] tracks where each partition boundary is
+//! 5. Search: navigate level by level, following query bits
+//!    - For Hamming radius r, allow up to r bit flips
+//!    - Prune branches where remaining bits can't make up the distance deficit
+//! 6. Returns matching MemoryIds + Hamming distances
+//!
+//! # Complexity
+//!
+//! - Insert: O(n log σ) amortized (rebuild)
+//! - Delete: O(n log σ) amortized (rebuild)
+//! - Hamming search: O(K × log n) where K depends on radius and data distribution
+//! - Reconstruction: O(L × log n) where L is token sequence length
+
+use cerebrum_core::{BinarySignature, CerebrumError, DwmStore, MemoryId, TokenSequence};
+use crate::dynamic_succinct::DynamicSuccinctBitVec;
+use crate::dynamic_wavelet_tree::DynamicWaveletTree;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::Path;
+
+// ============================================================================
+// DynamicLevel — Bible-exact struct
+// ============================================================================
+
+/// One level of the Dynamic Wavelet Matrix.
+///
+/// Each level stores a DynamicSuccinctBitVec (the bits at this level for all entries)
+/// and the boundaries between partitions (0-partition and 1-partition).
+///
+/// Per the Build Bible §0.2.3:
+/// ```text
+/// pub struct DynamicLevel {
+///     bitvec: DynamicSuccinctBitVec,
+///     boundaries: Vec<usize>,       // Level boundaries for navigation
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DynamicLevel {
+    /// The bit vector for this level.
+    /// bitvec.access(i) = the i-th bit at this level of the wavelet matrix.
+    pub bitvec: DynamicSuccinctBitVec,
+
+    /// Partition boundaries for this level.
+    ///
+    /// After partitioning at this level, entries with bit=0 come first,
+    /// then entries with bit=1. boundaries[0] = count of 0-bits (= end of 0-partition).
+    ///
+    /// This is the single boundary value needed to navigate from one level to the next:
+    /// - For bit=0: next-level position = rank_0(current_pos)
+    /// - For bit=1: next-level position = boundaries[0] + rank_1(current_pos)
+    pub boundaries: Vec<usize>,
+}
+
+impl DynamicLevel {
+    /// Get the zero-bit boundary (count of 0-bits).
+    #[inline]
+    fn boundary(&self) -> usize {
+        self.boundaries.first().copied().unwrap_or(0)
+    }
+
+    /// Adjust the boundary count by `delta` (positive for insert of 0, negative for delete).
+    /// Initializes the boundary to 0 if the vec is empty, then applies `delta`.
+    #[inline]
+    fn add_to_boundary(&mut self, delta: i64) {
+        if self.boundaries.is_empty() {
+            self.boundaries.push(0);
+        }
+        if let Some(b) = self.boundaries.first_mut() {
+            *b = (*b as i64 + delta) as usize;
+        }
+    }
+}
+
+// ============================================================================
+// DynamicWaveletMatrix — Bible-exact struct
+// ============================================================================
+
+/// The Dynamic Wavelet Matrix — THE core invention.
+///
+/// Per the Build Bible §0.2.3:
+/// ```text
+/// pub struct DynamicWaveletMatrix {
+///     levels: Vec<DynamicLevel>,    // One level per bit of alphabet
+///     alphabet_size: usize,         // σ — alphabet size for token IDs
+///     signature_bits: usize,       // 256 (or 128/512)
+///     n: usize,                     // Number of memories stored
+///     token_vocab: TokenVocabulary,  // Token → ID mapping
+/// }
+/// ```
+///
+/// Implementation notes:
+/// - `levels` contains `signature_bits` DynamicLevel entries for signature search
+/// - Token-ID sequences are stored in a separate DynamicWaveletTree
+/// - Both share the same row ordering (position i refers to the same memory)
+/// - The `boundaries` field in DynamicLevel tracks the 0/1 partition boundary
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DynamicWaveletMatrix {
+    /// Wavelet matrix levels for signature bits.
+    /// signature_bits levels, each a DynamicLevel with bitvec + boundaries.
+    levels: Vec<DynamicLevel>,
+
+    /// Alphabet size for token-ID sequences (default: 65536 for 16-bit tokens).
+    alphabet_size: usize,
+
+    /// Number of bits in binary signatures (default: 256).
+    signature_bits: usize,
+
+    /// Number of memories currently stored.
+    n: usize,
+
+    /// Token-ID sequence storage via DynamicWaveletTree.
+    /// Shares the same position ordering as the signature levels.
+    /// None means the tree is dirty and needs rebuilding.
+    token_dwt: Option<DynamicWaveletTree>,
+
+    /// Token vocabulary ID.
+    token_vocab_id: u32,
+
+    // ---- Internal bookkeeping (not in Bible struct, needed for dynamics) ----
+
+    /// Stored data for rebuild: (MemoryId, BinarySignature, TokenSequence)
+    /// In production, dynamic bit vectors would eliminate the need for this.
+    sig_data: Vec<(MemoryId, BinarySignature, TokenSequence)>,
+
+    /// Mapping from MemoryId to internal position (level-0 sorted position).
+    id_to_pos: HashMap<[u8; 32], usize>,
+
+    /// Mapping from MemoryId to index in sig_data.
+    id_to_sig_idx: HashMap<[u8; 32], usize>,
+
+    /// Ordered MemoryIds at level 0 (position i → MemoryId).
+    memory_ids: Vec<MemoryId>,
+
+    /// Maps leaf (level-256) position to level-0 position.
+    /// The wavelet matrix reorders entries across its 256 levels.
+    /// Level 0 = lexicographic byte sort; level 256 = LSB-first radix sort.
+    /// These orderings differ when bytes beyond byte 2 are non-zero.
+    leaf_to_level0: Vec<usize>,
+}
+
+impl DynamicWaveletMatrix {
+    /// Create a new, empty DynamicWaveletMatrix.
+    pub fn new() -> Self {
+        Self::with_config(256, 65536)
+    }
+
+    /// Create a DWM with custom configuration.
+    pub fn with_config(signature_bits: usize, token_alphabet_size: usize) -> Self {
+        let levels = vec![
+            DynamicLevel {
+                bitvec: DynamicSuccinctBitVec::new(),
+                boundaries: Vec::new(),
+            };
+            signature_bits
+        ];
+        let token_dwt = DynamicWaveletTree::new(token_alphabet_size);
+
+        Self {
+            levels,
+            alphabet_size: token_alphabet_size,
+            signature_bits,
+            n: 0,
+            token_dwt: Some(token_dwt),
+            token_vocab_id: 0,
+            sig_data: Vec::new(),
+            id_to_pos: HashMap::new(),
+            id_to_sig_idx: HashMap::new(),
+            memory_ids: Vec::new(),
+            leaf_to_level0: Vec::new(),
+        }
+    }
+
+    // ========================================================================
+    // Construction / Rebuild
+    // ========================================================================
+
+    /// Rebuild all signature levels from stored sig_data.
+    ///
+    /// This constructs the wavelet matrix level by level:
+    /// 1. Sort entries by signature (lexicographic)
+    /// 2. For each level l (0..signature_bits):
+    ///    a. Collect bit l of each signature → level bitvec
+    ///    b. Count 0-bits → boundary = number of 0-bits
+    ///    c. Reorder entries for next level: 0-bits first, then 1-bits
+    ///
+    /// Used for initial construction and batch insert. Single inserts use
+    /// per-level dynamic insertion (see `insert_memory`).
+    ///
+    /// O(n * signature_bits).
+    fn rebuild_sig_levels(&mut self) {
+        if self.sig_data.is_empty() {
+            // Reset all levels to empty
+            for level in &mut self.levels {
+                level.bitvec = DynamicSuccinctBitVec::new();
+                level.boundaries.clear();
+            }
+            self.memory_ids.clear();
+            self.id_to_pos.clear();
+            self.id_to_sig_idx.clear();
+            self.leaf_to_level0.clear();
+            return;
+        }
+
+        // Rebuild id_to_sig_idx from sig_data
+        self.id_to_sig_idx.clear();
+        for (i, (id, _, _)) in self.sig_data.iter().enumerate() {
+            self.id_to_sig_idx.insert(id.0, i);
+        }
+
+        // Sort by signature (lexicographic byte order)
+        let mut indices: Vec<usize> = (0..self.sig_data.len()).collect();
+        indices.sort_by(|&a, &b| {
+            self.sig_data[a].1.0.cmp(&self.sig_data[b].1.0)
+        });
+
+        // Build level by level
+        let mut current_order: Vec<usize> = indices.clone();
+
+        for level_idx in 0..self.signature_bits {
+            let mut bits = Vec::with_capacity(self.n);
+            let mut zeros = Vec::new();
+            let mut ones = Vec::new();
+
+            for &data_idx in &current_order {
+                let sig = &self.sig_data[data_idx].1;
+                let byte_idx = level_idx / 8;
+                let bit_pos = level_idx % 8;
+                let bit = if byte_idx < sig.0.len() {
+                    (sig.0[byte_idx] >> bit_pos) & 1 == 1
+                } else {
+                    false
+                };
+                bits.push(bit);
+                if bit {
+                    ones.push(data_idx);
+                } else {
+                    zeros.push(data_idx);
+                }
+            }
+
+            // Build the DynamicSuccinctBitVec for this level
+            let bitvec = DynamicSuccinctBitVec::from_bits(&bits);
+
+            // The boundary is the number of 0-bits (= start of 1-partition)
+            let boundary = zeros.len();
+            let boundaries = vec![boundary];
+
+            self.levels[level_idx] = DynamicLevel { bitvec, boundaries };
+
+            // Prepare next level ordering: zeros first, then ones
+            current_order = zeros;
+            current_order.extend(ones);
+        }
+
+        // Update memory_ids ordering to match the sorted order
+        self.memory_ids = indices.iter().map(|&i| self.sig_data[i].0).collect();
+        self.id_to_pos.clear();
+        for (pos, id) in self.memory_ids.iter().enumerate() {
+            self.id_to_pos.insert(id.0, pos);
+        }
+
+        // Build leaf-to-level0 mapping.
+        // current_order now holds sig_data indices in the final (leaf) ordering.
+        // indices holds them in the initial (level-0) ordering.
+        // Both use the same sig_data indices, just in different permutations.
+        let sig_to_level0: std::collections::HashMap<usize, usize> = indices
+            .iter()
+            .enumerate()
+            .map(|(level0_pos, &sig_idx)| (sig_idx, level0_pos))
+            .collect();
+        self.leaf_to_level0 = current_order
+            .iter()
+            .map(|&sig_idx| sig_to_level0[&sig_idx])
+            .collect();
+    }
+
+    // ========================================================================
+    // Queries
+    // ========================================================================
+
+    /// Number of memories stored.
+    pub fn count(&self) -> usize {
+        self.n
+    }
+
+    /// Is the DWM empty?
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+
+    /// Number of signature bits.
+    pub fn signature_bits(&self) -> usize {
+        self.signature_bits
+    }
+
+    /// Token vocabulary ID.
+    pub fn token_vocab_id(&self) -> u32 {
+        self.token_vocab_id
+    }
+
+    /// Set token vocabulary ID.
+    pub fn set_token_vocab_id(&mut self, id: u32) {
+        self.token_vocab_id = id;
+    }
+
+    /// Token alphabet size.
+    pub fn token_alphabet_size(&self) -> usize {
+        self.alphabet_size
+    }
+
+    /// Get the MemoryId at position i.
+    pub fn memory_id_at(&self, pos: usize) -> Option<MemoryId> {
+        self.memory_ids.get(pos).copied()
+    }
+
+    /// Get the position of a MemoryId in the sorted order.
+    pub fn position_of(&self, memory_id: MemoryId) -> Option<usize> {
+        self.id_to_pos.get(&memory_id.0).copied()
+    }
+
+    /// Reconstruct the binary signature at position i from the level bit vectors.
+    ///
+    /// In a wavelet matrix, each level reorders entries. To reconstruct the
+    /// value at position i, we navigate level by level:
+    /// 1. Read bit at current level, current position
+    /// 2. Navigate to next level: if bit=0, pos = rank_0(pos); if bit=1, pos = boundary + rank_1(pos)
+    /// 3. The value is the concatenation of all bits read
+    ///
+    /// O(signature_bits) with O(1) per level (using rank).
+    pub fn reconstruct_signature(&self, pos: usize) -> Option<BinarySignature> {
+        if pos >= self.n {
+            return None;
+        }
+
+        let mut bytes = [0u8; 32];
+        let mut current_pos = pos;
+
+        for level in 0..self.signature_bits.min(256) {
+            if level >= self.levels.len() {
+                break;
+            }
+
+            let level_data = &self.levels[level];
+            let bit = level_data.bitvec.access(current_pos);
+            let byte_idx = level / 8;
+            let bit_idx = level % 8;
+            if bit && byte_idx < 32 {
+                bytes[byte_idx] |= 1 << bit_idx;
+            }
+
+            // Navigate to next level
+            let boundary = if !level_data.boundaries.is_empty() {
+                level_data.boundaries[0]
+            } else {
+                0
+            };
+
+            if bit {
+                // 1-bit: navigate to 1-partition
+                let rank1 = level_data.bitvec.rank(current_pos + 1, true) as usize;
+                current_pos = boundary + rank1 - 1; // -1 because rank is 1-indexed
+            } else {
+                // 0-bit: navigate to 0-partition
+                let rank0 = level_data.bitvec.rank(current_pos + 1, false) as usize;
+                current_pos = rank0 - 1; // -1 because rank is 1-indexed
+            }
+        }
+
+        Some(BinarySignature(bytes))
+    }
+
+    /// Reconstruct the token sequence for a memory.
+    ///
+    /// This is lossless — every token is preserved exactly.
+    pub fn reconstruct_tokens(&mut self, pos: usize) -> Option<TokenSequence> {
+        if pos >= self.n {
+            return None;
+        }
+
+        // Lazily rebuild token DWT if dirty
+        if self.token_dwt.is_none() {
+            self.rebuild_token_dwt();
+        }
+
+        // Get the MemoryId at sorted position, then find its sig_data index.
+        // sig_data is in insertion order (not sorted order), so we must
+        // go through id_to_sig_idx rather than indexing sig_data directly.
+        let mid = self.memory_ids.get(pos)?.clone();
+        let sig_idx = self.id_to_sig_idx.get(&mid.0)?;
+        let token_count = self.sig_data[*sig_idx].2.tokens.len();
+
+        // Compute the starting position in the token DWT.
+        // The DWT stores all tokens concatenated in sig_data order.
+        // So we need to sum up token counts for all sig_data entries before sig_idx.
+        let mut token_start = 0usize;
+        for i in 0..*sig_idx {
+            token_start += self.sig_data[i].2.tokens.len();
+        }
+
+        let mut tokens = Vec::with_capacity(token_count);
+        for j in 0..token_count {
+            if let Some(token_id) = self.token_dwt.as_ref().unwrap().access(token_start + j) {
+                tokens.push(token_id as u32);
+            }
+        }
+
+        Some(TokenSequence {
+            vocabulary_id: self.token_vocab_id,
+            tokens,
+        })
+    }
+
+    // ========================================================================
+    // Modification
+    // ========================================================================
+
+    /// Insert a memory with its binary signature and token sequence.
+    ///
+    /// Uses per-level dynamic insertion into `DynamicSuccinctBitVec` for each
+    /// signature level — O(log n × signature_bits) instead of the old O(n × bits)
+    /// full rebuild. The token DWT is rebuilt from scratch (O(total_tokens)).
+    ///
+    /// # Steps
+    /// 1. Find insertion position in sorted order via binary search over `memory_ids`
+    /// 2. For each level: insert the signature bit, update boundary, compute next position
+    /// 3. Update all metadata (`memory_ids`, `id_to_pos`, `leaf_to_level0`, `id_to_sig_idx`)
+    /// 4. Rebuild the token DWT
+    pub fn insert_memory(
+        &mut self,
+        memory_id: MemoryId,
+        signature: BinarySignature,
+        tokens: TokenSequence,
+    ) -> Result<(), CerebrumError> {
+        if self.id_to_pos.contains_key(&memory_id.0) {
+            return Err(CerebrumError::DwmError(format!(
+                "Memory {:?} already exists in DWM",
+                memory_id
+            )));
+        }
+
+        self.token_vocab_id = tokens.vocabulary_id;
+
+        // Add to sig_data at the end
+        let sig_idx = self.sig_data.len();
+        self.sig_data.push((memory_id, signature, tokens));
+        self.id_to_sig_idx.insert(memory_id.0, sig_idx);
+
+        // Find insertion position in level-0 sorted order
+        let p0 = self.find_insert_position(&signature);
+
+        // Per-level insertion — returns the final leaf position
+        let pf = self.insert_bits_across_levels(p0, &signature);
+
+        // Update metadata: memory_ids, id_to_pos, leaf_to_level0
+        self.memory_ids.insert(p0, memory_id);
+
+        // Shift id_to_pos for entries at or after the insertion point
+        for (_k, pos) in self.id_to_pos.iter_mut() {
+            if *pos >= p0 {
+                *pos += 1;
+            }
+        }
+        self.id_to_pos.insert(memory_id.0, p0);
+
+        // Shift leaf_to_level0 values >= p0 by +1, then insert the new mapping
+        for v in self.leaf_to_level0.iter_mut() {
+            if *v >= p0 {
+                *v += 1;
+            }
+        }
+        self.leaf_to_level0.insert(pf, p0);
+
+        self.n += 1;
+
+        // Invalidate token DWT — will rebuild lazily on next access
+        self.token_dwt = None;
+
+        Ok(())
+    }
+
+    /// Insert multiple memories into the DWM in a single batch.
+    ///
+    /// Much faster than calling `insert_memory` in a loop because
+    /// the wavelet matrix is rebuilt only once at the end.
+    /// O(n * signature_bits) total — same as a single insert's rebuild cost.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CerebrumError::DwmError` if any memory_id is already present.
+    /// On error, no memories are inserted (all-or-nothing).
+    pub fn insert_memories_batch(
+        &mut self,
+        entries: Vec<(MemoryId, BinarySignature, TokenSequence)>,
+    ) -> Result<(), CerebrumError> {
+        // Validate: check for duplicates (both within the batch and against existing)
+        let mut seen = std::collections::HashSet::new();
+        for (mid, _, _) in &entries {
+            if self.id_to_pos.contains_key(&mid.0) {
+                return Err(CerebrumError::DwmError(format!(
+                    "Memory {:?} already exists in DWM",
+                    mid
+                )));
+            }
+            if !seen.insert(mid.0) {
+                return Err(CerebrumError::DwmError(format!(
+                    "Duplicate memory {:?} in batch",
+                    mid
+                )));
+            }
+        }
+
+        // Store all data
+        if !entries.is_empty() {
+            self.token_vocab_id = entries[0].2.vocabulary_id;
+        }
+        for (memory_id, signature, tokens) in entries {
+            self.sig_data.push((memory_id, signature, tokens));
+        }
+
+        // Rebuild once
+        self.n = self.sig_data.len();
+        self.rebuild_sig_levels();
+        self.token_dwt = None;
+
+        Ok(())
+    }
+
+    /// Remove a memory from the DWM.
+    ///
+    /// Uses per-level dynamic deletion from `DynamicSuccinctBitVec` for each
+    /// signature level — O(log n × signature_bits).
+    pub fn remove_memory(&mut self, memory_id: MemoryId) -> Result<TokenSequence, CerebrumError> {
+        let pos = self.id_to_pos.remove(&memory_id.0).ok_or({
+            CerebrumError::NotFound(memory_id)
+        })?;
+
+        // Remove from sig_data (find by MemoryId via id_to_sig_idx)
+        let sig_idx = self.id_to_sig_idx.remove(&memory_id.0)
+            .ok_or_else(|| CerebrumError::DwmError("sig index not found".into()))?;
+        if sig_idx >= self.sig_data.len() {
+            return Err(CerebrumError::DwmError("Position out of bounds".into()));
+        }
+        let removed = self.sig_data.remove(sig_idx);
+        let removed_tokens = removed.2.clone();
+
+        // Update sig indices for entries that shifted in sig_data
+        for (_k, idx) in self.id_to_sig_idx.iter_mut() {
+            if *idx > sig_idx {
+                *idx -= 1;
+            }
+        }
+
+        // Per-level deletion — returns the leaf position of the deleted entry
+        let pf = self.delete_bits_across_levels(pos);
+
+        // Update metadata: memory_ids, id_to_pos, leaf_to_level0
+        self.memory_ids.remove(pos);
+
+        // Shift id_to_pos for entries after the removal point
+        for (_k, id_pos) in self.id_to_pos.iter_mut() {
+            if *id_pos > pos {
+                *id_pos -= 1;
+            }
+        }
+
+        // Remove from leaf_to_level0 and shift values > pos
+        let removed_p0 = self.leaf_to_level0.remove(pf);
+        debug_assert_eq!(removed_p0, pos, "leaf_to_level0 mismatch: expected {pos}, got {removed_p0}");
+        for v in self.leaf_to_level0.iter_mut() {
+            if *v > pos {
+                *v -= 1;
+            }
+        }
+
+        self.n -= 1;
+
+        // Invalidate token DWT — will rebuild lazily on next access
+        self.token_dwt = None;
+
+        Ok(removed_tokens)
+    }
+
+    /// Rebuild the token DWT from sig_data.
+    fn rebuild_token_dwt(&mut self) {
+        // Collect all token IDs in order
+        let mut all_tokens: Vec<usize> = Vec::new();
+        for (_, _, tokens) in &self.sig_data {
+            for &tid in &tokens.tokens {
+                all_tokens.push(tid as usize);
+            }
+        }
+
+        // Rebuild the DWT from scratch
+        self.token_dwt = Some(DynamicWaveletTree::from_values(&all_tokens));
+    }
+
+    // ========================================================================
+    // Dynamic insert/delete helpers
+    // ========================================================================
+
+    /// Find the level-0 insertion position for `signature` in the sorted order.
+    ///
+    /// Binary searches `memory_ids`, comparing signatures at each midpoint by
+    /// calling `sig_data[sig_idx].1` (stored signature). Returns the index at
+    /// which `signature` should be inserted to maintain lexicographic order.
+    fn find_insert_position(&self, signature: &BinarySignature) -> usize {
+        // Edge case: empty DWM
+        if self.n == 0 {
+            return 0;
+        }
+
+        let sig_data = &self.sig_data;
+
+        // Binary search in memory_ids (which are in lexicographic order)
+        let mut lo = 0usize;
+        let mut hi = self.n;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let mid_mem_id = self.memory_ids[mid];
+            let mid_sig_idx = self.id_to_sig_idx[&mid_mem_id.0];
+            let mid_sig = &sig_data[mid_sig_idx].1;
+
+            if mid_sig.0 < signature.0 {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+
+    /// Insert the bits of `signature` across all levels starting at level-0 position `p0`.
+    ///
+    /// For each level l (0..signature_bits):
+    /// 1. Extract bit l from the signature
+    /// 2. Insert the bit into level l's DynamicSuccinctBitVec at the current position
+    /// 3. If bit=0, increment the level's zero-count boundary
+    /// 4. Compute the position for the next level:
+    ///    - If bit=0: p_next = rank_0(p_current + 1) - 1  (position within 0-partition)
+    ///    - If bit=1: p_next = boundary_old + rank_1(p_current + 1) - 1  (position within 1-partition)
+    ///
+    /// Returns the final leaf position (after navigating all 256 levels).
+    fn insert_bits_across_levels(&mut self, p0: usize, signature: &BinarySignature) -> usize {
+        let mut p = p0;
+
+        for level in 0..self.signature_bits {
+            let byte_idx = level / 8;
+            let bit_pos = level % 8;
+            let bit = if byte_idx < signature.0.len() {
+                (signature.0[byte_idx] >> bit_pos) & 1 == 1
+            } else {
+                false
+            };
+
+            // Position `p` must be valid for this level's bitvec (before insertion)
+            debug_assert!(
+                p <= self.levels[level].bitvec.len(),
+                "insert_bits_across_levels: level={} p={} exceeds bitvec len {}",
+                level, p, self.levels[level].bitvec.len()
+            );
+
+            let next_level_len = if level + 1 < self.signature_bits {
+                Some(self.levels[level + 1].bitvec.len())
+            } else {
+                None
+            };
+
+            let level_data = &mut self.levels[level];
+
+            // Insert the bit at position p
+            level_data.bitvec.insert_bit(p, bit);
+
+            // Compute next-level position BEFORE updating boundary
+            // (boundary is the original count of zeros at this level)
+            let boundary = level_data.boundary();
+
+            // Update boundary if we inserted a zero
+            if !bit {
+                level_data.add_to_boundary(1);
+            }
+
+            // Debug-only verification (O(N) per level — MUST NOT run in release)
+            #[cfg(debug_assertions)]
+            {
+                debug_assert_eq!(
+                    level_data.bitvec.access(p), bit,
+                    "Bit corruption at level {}: inserted {} at position {} but read back {}",
+                    level, bit, p, level_data.bitvec.access(p)
+                );
+
+                // Verify boundary matches actual zeros after update
+                let bf_zeros = level_data.bitvec.rank(level_data.bitvec.len(), false) as usize;
+                let stored_boundary = level_data.boundary();
+                debug_assert_eq!(
+                    bf_zeros, stored_boundary,
+                    "BOUNDARY DRIFT at level {}: bf_zeros={} boundary={} bit={} bitvec_len={} p={}",
+                    level, bf_zeros, stored_boundary, bit, level_data.bitvec.len(), p
+                );
+            }
+
+            // Compute next-level position.
+            // rank(p+1, bit) = count of `bit` in [0, p] AFTER insertion = count including the new bit.
+            // For bit=0: next_p = rank_0(p+1) - 1 = zero-count up to and including position p
+            // For bit=1: next_p = boundary + rank_1(p+1) - 1
+            let rank_before = level_data.bitvec.rank(p + 1, bit) as usize;
+
+            let new_p = if bit {
+                boundary + rank_before - 1
+            } else {
+                rank_before - 1
+            };
+
+            // Debug-only: verify next position is valid
+            #[cfg(debug_assertions)]
+            {
+                if let Some(nll) = next_level_len {
+                    debug_assert!(
+                        new_p <= nll,
+                        "Navigation overflow at level {}: p={} bit={} boundary={} rank_before={} => next_p={} but next level bitvec len={}",
+                        level, p, bit, boundary, rank_before, new_p, nll
+                    );
+                }
+            }
+
+            p = new_p;
+        }
+
+        p
+    }
+
+    /// Delete the bits at level-0 position `p0` across all levels.
+    ///
+    /// For each level l (0..signature_bits):
+    /// 1. Read the bit at the current position
+    /// 2. Delete that bit from level l's DynamicSuccinctBitVec
+    /// 3. Compute the next-level position BEFORE the deletion (to navigate correctly)
+    /// 4. If bit=0, decrement the level's zero-count boundary
+    ///
+    /// Returns the leaf position of the deleted entry (before removal, for metadata cleanup).
+    fn delete_bits_across_levels(&mut self, p0: usize) -> usize {
+        let mut p = p0;
+        let mut pf = 0usize;
+
+        for level in 0..self.signature_bits {
+            let level_data = &mut self.levels[level];
+
+            // Read the bit at this position before deletion
+            let bit = level_data.bitvec.access(p);
+            let boundary = level_data.boundary();
+
+            // Compute next-level position BEFORE deletion
+            let rank_before = level_data.bitvec.rank(p + 1, bit) as usize;
+            let next_p = if bit {
+                boundary + rank_before - 1
+            } else {
+                rank_before - 1
+            };
+
+            // Delete the bit
+            level_data.bitvec.delete_bit(p);
+
+            // Update boundary if we deleted a zero
+            if !bit {
+                level_data.add_to_boundary(-1);
+            }
+
+            // We keep the last computed position as the leaf position
+            pf = next_p;
+            p = next_p;
+        }
+
+        pf
+    }
+
+    // ========================================================================
+    // Hamming-Ball Search in Compressed Domain
+    // ========================================================================
+
+    /// Search for memories within a Hamming distance radius of the query signature.
+    ///
+    /// Uses wavelet matrix level navigation to prune the search space:
+    /// 1. Start at level 0 with the full range [0, n)
+    /// 2. At each level, check the query bit:
+    ///    - Follow the matching partition (no distance cost)
+    ///    - Also try the opposite partition (costs 1 Hamming distance)
+    /// 3. Prune branches where accumulated distance + minimum remaining > radius
+    /// 4. At the leaf level, report all positions in the remaining range
+    ///
+    /// Returns (MemoryId, Hamming distance) pairs sorted by distance.
+    pub fn search(
+        &self,
+        query: &BinarySignature,
+        radius: u32,
+        limit: usize,
+    ) -> Vec<(MemoryId, u32)> {
+        if self.n == 0 {
+            return Vec::new();
+        }
+
+        // Wavelet matrix level-by-level search with Hamming ball
+        let mut results: Vec<(usize, u32)> = Vec::new();
+        self.search_levels(query, radius, 0, 0, 0, self.n, &mut results);
+
+        // Sort by Hamming distance, convert to MemoryIds
+        results.sort_by_key(|&(_, d)| d);
+        results.truncate(limit);
+
+        results
+            .into_iter()
+            .filter_map(|(leaf_pos, dist)| {
+                // Map leaf position to level-0 position, then to MemoryId.
+                // The search navigates through all 256 levels, ending at positions
+                // in the leaf ordering (LSB-first radix sort), which differs from
+                // level 0 (lexicographic byte sort).
+                let level0_pos = self.leaf_to_level0.get(leaf_pos).copied()?;
+                self.memory_id_at(level0_pos).map(|id| (id, dist))
+            })
+            .collect()
+    }
+
+    /// Recursive level-by-level search with accumulated Hamming distance.
+    ///
+    /// At each level, we split the range [lo, hi) into 0-partition and 1-partition.
+    /// We follow the query bit (accumulated distance unchanged)
+    /// and also the opposite bit (accumulated distance + 1).
+    /// Prune if accumulated distance > radius.
+    #[allow(clippy::too_many_arguments)]
+    fn search_levels(
+        &self,
+        query: &BinarySignature,
+        max_radius: u32,
+        level: usize,
+        accumulated_dist: u32,
+        range_lo: usize,
+        range_hi: usize,
+        results: &mut Vec<(usize, u32)>,
+    ) {
+        if range_lo >= range_hi {
+            return; // Empty range
+        }
+
+        // Prune: if accumulated distance already exceeds radius, stop
+        if accumulated_dist > max_radius {
+            return;
+        }
+
+        if level >= self.signature_bits {
+            // Leaf level: all positions in [range_lo, range_hi) are candidates.
+            // accumulated_dist IS the exact Hamming distance — we have visited all 256
+            // levels, counting mismatches along the way. No need to reconstruct and
+            // recompute the signature.
+            //
+            // Note: range_lo/range_hi are in leaf (level-256) space. These get mapped
+            // to level-0 positions in the search() caller via leaf_to_level0.
+            for pos in range_lo..range_hi {
+                results.push((pos, accumulated_dist));
+            }
+            return;
+        }
+
+        let level_data = &self.levels[level];
+        let boundary = if !level_data.boundaries.is_empty() {
+            level_data.boundaries[0]
+        } else {
+            0
+        };
+
+        // Query bit at this level
+        let byte_idx = level / 8;
+        let bit_pos = level % 8;
+        let query_bit = if byte_idx < query.0.len() {
+            (query.0[byte_idx] >> bit_pos) & 1 == 1
+        } else {
+            false
+        };
+
+        // Compute 0-partition and 1-partition ranges in the NEXT level.
+        // The mapping: position p in level l maps to:
+        //   if bit=0: rank_0(p+1) - 1 in level l+1's 0-partition
+        //   if bit=1: boundary + rank_1(p+1) - 1 in level l+1's 1-partition
+        //
+        // For a range [lo, hi) in level l:
+        //   0-partition in level l+1: [rank_0(lo), rank_0(hi))
+        //   1-partition in level l+1: [boundary + rank_1(lo), boundary + rank_1(hi))
+        //
+        // Where rank_b(x) = number of b-bits in [0, x) at level l.
+        // This is the number of elements from [lo, hi) that go to partition b.
+        // rank(i, true) + rank(i, false) = i, so derive ones from zeros
+        // to halve rank calls from 4→2 per level.
+        let zeros_at_lo = level_data.bitvec.rank(range_lo, false) as usize;
+        let zeros_at_hi = level_data.bitvec.rank(range_hi, false) as usize;
+        let ones_at_lo = range_lo - zeros_at_lo;
+        let ones_at_hi = range_hi - zeros_at_hi;
+
+        let zero_range = (zeros_at_lo, zeros_at_hi);
+        let one_range = (boundary + ones_at_lo, boundary + ones_at_hi);
+
+        if query_bit {
+            // Follow 1-partition (matching, no cost)
+            self.search_levels(query, max_radius, level + 1, accumulated_dist,
+                               one_range.0, one_range.1, results);
+            // Try 0-partition (mismatch, cost + 1)
+            if accumulated_dist < max_radius {
+                self.search_levels(query, max_radius, level + 1, accumulated_dist + 1,
+                                   zero_range.0, zero_range.1, results);
+            }
+        } else {
+            // Follow 0-partition (matching, no cost)
+            self.search_levels(query, max_radius, level + 1, accumulated_dist,
+                               zero_range.0, zero_range.1, results);
+            // Try 1-partition (mismatch, cost + 1)
+            if accumulated_dist < max_radius {
+                self.search_levels(query, max_radius, level + 1, accumulated_dist + 1,
+                                   one_range.0, one_range.1, results);
+            }
+        }
+    }
+
+    /// Brute-force Hamming search for verification.
+    /// Checks every stored signature against the query.
+    pub fn search_brute_force(
+        &self,
+        query: &BinarySignature,
+        radius: u32,
+        limit: usize,
+    ) -> Vec<(MemoryId, u32)> {
+        let mut results: Vec<(MemoryId, u32)> = Vec::new();
+
+        for (i, stored_id) in self.memory_ids.iter().enumerate() {
+            if let Some(stored_sig) = self.reconstruct_signature(i) {
+                let dist = query.hamming_distance(&stored_sig);
+                if dist <= radius {
+                    results.push((*stored_id, dist));
+                }
+            }
+        }
+
+        results.sort_by_key(|(_, d)| *d);
+        results.truncate(limit);
+        results
+    }
+
+    /// Legacy reconstruct method for DwmStore trait compatibility.
+    pub fn reconstruct(&mut self, memory_id: MemoryId) -> Option<TokenSequence> {
+        let pos = *self.id_to_pos.get(&memory_id.0)?;
+        self.reconstruct_tokens(pos)
+    }
+}
+
+impl Default for DynamicWaveletMatrix {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DwmStore for DynamicWaveletMatrix {
+    fn insert(&mut self, memory_id: MemoryId, signature: BinarySignature, tokens: TokenSequence) {
+        self.token_vocab_id = tokens.vocabulary_id;
+        let _ = self.insert_memory(memory_id, signature, tokens);
+    }
+
+    fn remove(&mut self, memory_id: MemoryId) {
+        let _ = self.remove_memory(memory_id);
+    }
+
+    fn search(&self, query: &BinarySignature, radius: u32, limit: usize) -> Vec<(MemoryId, u32)> {
+        self.search(query, radius, limit)
+    }
+
+    fn reconstruct(&mut self, memory_id: MemoryId) -> Option<TokenSequence> {
+        self.reconstruct(memory_id)
+    }
+
+    fn count(&self) -> usize {
+        self.count()
+    }
+
+    fn persist(&self, _path: &Path) -> Result<(), CerebrumError> {
+        Err(CerebrumError::DwmError(
+            "Use DwmPersistence::save() for persistence".into(),
+        ))
+    }
+
+    fn load(_path: &Path) -> Result<Self, CerebrumError> {
+        Err(CerebrumError::DwmError(
+            "Use DwmPersistence::load() for loading".into(),
+        ))
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_empty_dwm() { let dwm = DynamicWaveletMatrix::new(); assert!(dwm.is_empty()); assert_eq!(dwm.count(), 0); }
+
+    #[test]
+    fn test_insert_and_count() {
+        let mut dwm = DynamicWaveletMatrix::new();
+        let sig = BinarySignature([0xAB; 32]); let tokens = TokenSequence::new(0, vec![1, 2, 3]); let id = MemoryId::new();
+        dwm.insert_memory(id, sig, tokens).unwrap(); assert_eq!(dwm.count(), 1);
+    }
+
+    #[test]
+    fn test_insert_multiple() {
+        let mut dwm = DynamicWaveletMatrix::new();
+        for i in 0..10u32 {
+            let mut sig_bytes = [0u8; 32]; sig_bytes[0] = i as u8; let sig = BinarySignature(sig_bytes);
+            let tokens = TokenSequence::new(0, vec![i, i + 1, i + 2]);
+            let mut id_bytes = [0u8; 32]; id_bytes[0..4].copy_from_slice(&i.to_le_bytes()); let id = MemoryId(id_bytes);
+            dwm.insert_memory(id, sig, tokens).unwrap();
+        }
+        assert_eq!(dwm.count(), 10);
+    }
+
+    #[test]
+    fn test_duplicate_insert_fails() {
+        let mut dwm = DynamicWaveletMatrix::new(); let sig = BinarySignature([0xFF; 32]);
+        let tokens = TokenSequence::new(0, vec![1, 2, 3]); let id = MemoryId::new();
+        dwm.insert_memory(id, sig, tokens.clone()).unwrap();
+        let result = dwm.insert_memory(id, sig, tokens); assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_search_empty() {
+        let dwm = DynamicWaveletMatrix::new(); let query = BinarySignature([0x00; 32]);
+        let results = dwm.search(&query, 10, 10); assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_exact_match() {
+        let mut dwm = DynamicWaveletMatrix::new(); let sig = BinarySignature([0xAB; 32]);
+        let tokens = TokenSequence::new(0, vec![1, 2, 3]); let id = MemoryId::new();
+        dwm.insert_memory(id, sig, tokens).unwrap();
+        let results = dwm.search(&sig, 0, 10); assert!(!results.is_empty()); assert_eq!(results[0].1, 0);
+    }
+
+    #[test]
+    fn test_search_within_radius() {
+        let mut dwm = DynamicWaveletMatrix::new();
+        for i in 0..5u32 {
+            let mut sig_bytes = [0u8; 32]; sig_bytes[0] = (i * 50) as u8; let sig = BinarySignature(sig_bytes);
+            let tokens = TokenSequence::new(0, vec![i, i + 1]);
+            let mut id_bytes = [0u8; 32]; id_bytes[0..4].copy_from_slice(&i.to_le_bytes()); let id = MemoryId(id_bytes);
+            dwm.insert_memory(id, sig, tokens).unwrap();
+        }
+        let query = BinarySignature([0u8; 32]); let results = dwm.search(&query, 100, 10); assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_remove_memory() {
+        let mut dwm = DynamicWaveletMatrix::new(); let sig = BinarySignature([0xFF; 32]);
+        let tokens = TokenSequence::new(0, vec![1, 2, 3]); let id = MemoryId::new();
+        dwm.insert_memory(id, sig, tokens).unwrap(); assert_eq!(dwm.count(), 1);
+        let result = dwm.remove_memory(id); assert!(result.is_ok()); assert_eq!(dwm.count(), 0);
+    }
+
+    #[test]
+    fn test_remove_nonexistent() {
+        let mut dwm = DynamicWaveletMatrix::new(); let id = MemoryId::new();
+        let result = dwm.remove_memory(id); assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_dynamic_level_boundaries() {
+        let mut dwm = DynamicWaveletMatrix::new();
+        let sig1 = BinarySignature([0b00000000; 32]); let sig2 = BinarySignature([0b11111111; 32]);
+        let tokens = TokenSequence::new(0, vec![1]);
+        let mut id1_bytes = [0u8; 32]; id1_bytes[0] = 1; let id1 = MemoryId(id1_bytes);
+        let mut id2_bytes = [0u8; 32]; id2_bytes[0] = 2; let id2 = MemoryId(id2_bytes);
+        dwm.insert_memory(id1, sig1, tokens.clone()).unwrap(); dwm.insert_memory(id2, sig2, tokens).unwrap();
+        for level in 0..8.min(dwm.signature_bits) {
+            assert!(!dwm.levels[level].boundaries.is_empty(), "Level {} should have boundaries", level);
+        }
+    }
+
+    #[test]
+    fn test_signature_reconstruction() {
+        let mut dwm = DynamicWaveletMatrix::new();
+        for i in 0..10u32 {
+            let mut sig_bytes = [0u8; 32]; sig_bytes[0] = (i * 25) as u8; sig_bytes[31] = 255 - i as u8;
+            let sig = BinarySignature(sig_bytes); let tokens = TokenSequence::new(0, vec![i]);
+            let mut id_bytes = [0u8; 32]; id_bytes[0..4].copy_from_slice(&i.to_le_bytes()); let id = MemoryId(id_bytes);
+            dwm.insert_memory(id, sig, tokens).unwrap();
+        }
+        for pos in 0..dwm.count() {
+            let reconstructed = dwm.reconstruct_signature(pos).unwrap();
+            let mid = dwm.memory_id_at(pos).unwrap();
+            let original = dwm.sig_data.iter().find(|(id, _, _)| id.0 == mid.0).unwrap();
+            assert_eq!(reconstructed.0, original.1.0, "Signature mismatch at sorted pos {}", pos);
+        }
+    }
+
+    #[test]
+    fn test_token_reconstruction() {
+        let mut dwm = DynamicWaveletMatrix::new(); let sig = BinarySignature([0x42; 32]);
+        let tokens = TokenSequence::new(0, vec![10, 20, 30, 40, 50]); let id = MemoryId::new();
+        dwm.insert_memory(id, sig, tokens.clone()).unwrap();
+        let reconstructed = dwm.reconstruct_tokens(0).unwrap();
+        assert_eq!(reconstructed.tokens, tokens.tokens);
+    }
+
+    #[test]
+    fn test_search_matches_brute_force() {
+        let mut dwm = DynamicWaveletMatrix::new();
+        for i in 0..20u32 {
+            let mut sig_bytes = [0u8; 32]; sig_bytes[0] = (i * 13) as u8; sig_bytes[1] = (i * 7) as u8; sig_bytes[2] = (i * 23) as u8;
+            let sig = BinarySignature(sig_bytes); let tokens = TokenSequence::new(0, vec![i]);
+            let mut id_bytes = [0u8; 32]; id_bytes[0..4].copy_from_slice(&i.to_le_bytes()); let id = MemoryId(id_bytes);
+            dwm.insert_memory(id, sig, tokens).unwrap();
+        }
+        for query_byte in [0u8, 13, 100, 200] {
+            let mut query_bytes = [0u8; 32]; query_bytes[0] = query_byte; let query = BinarySignature(query_bytes);
+            for radius in [0u32, 5, 20, 100] {
+                let wm_results = dwm.search(&query, radius, 100); let bf_results = dwm.search_brute_force(&query, radius, 100);
+                let mut wm_ids: Vec<_> = wm_results.iter().map(|(id, _)| id.0).collect();
+                let mut bf_ids: Vec<_> = bf_results.iter().map(|(id, _)| id.0).collect();
+                wm_ids.sort(); bf_ids.sort();
+                assert_eq!(wm_ids, bf_ids, "WM and BF mismatch: query_byte={}, radius={}", query_byte, radius);
+            }
+        }
+    }
+
+    /// Test with full 32-byte signatures using LCG — this catches the leaf-position
+    /// mapping bug where level-256 positions differ from level-0 positions.
+    #[test]
+    fn test_search_matches_brute_force_full_signatures() {
+        let mut dwm = DynamicWaveletMatrix::new();
+
+        // Generate 20 memories with full 32-byte signatures using LCG
+        let mut state: u64 = 12345;
+        for i in 0..20u32 {
+            let mut sig_bytes = [0u8; 32];
+            for b in 0..32 {
+                state = state.wrapping_mul(1103515245).wrapping_add(12345);
+                sig_bytes[b] = (state >> 8) as u8;
+            }
+            let sig = BinarySignature(sig_bytes);
+            let tokens = TokenSequence::new(0, vec![i]);
+            let mut id_bytes = [0u8; 32];
+            id_bytes[0..4].copy_from_slice(&i.to_le_bytes());
+            let id = MemoryId(id_bytes);
+            dwm.insert_memory(id, sig, tokens).unwrap();
+        }
+
+        assert_eq!(dwm.count(), 20);
+
+        // Verify signature reconstruction
+        for pos in 0..dwm.count() {
+            let reconstructed = dwm.reconstruct_signature(pos).unwrap();
+            let mid = dwm.memory_id_at(pos).unwrap();
+            let original = dwm.sig_data.iter().find(|(id, _, _)| id.0 == mid.0).unwrap();
+            assert_eq!(
+                reconstructed.0, original.1.0,
+                "Signature mismatch at sorted pos {}",
+                pos
+            );
+        }
+
+        // Query: all-zeros signature
+        let query_zeros = BinarySignature([0u8; 32]);
+
+        // Query: one of the stored signatures (the one at position 0)
+        let sig_at_0 = dwm.reconstruct_signature(0).unwrap();
+
+        // Query: another stored signature (position 10)
+        let sig_at_10 = dwm.reconstruct_signature(10).unwrap();
+
+        let queries = [(&query_zeros, "all-zeros"), (&sig_at_0, "sig-at-0"), (&sig_at_10, "sig-at-10")];
+
+        for &(query, label) in &queries {
+            for radius in [0u32, 5, 20] {
+                let wm_results = dwm.search(query, radius, 100);
+                let bf_results = dwm.search_brute_force(query, radius, 100);
+
+                // Compare result sets (MemoryId → distance)
+                let wm_map: std::collections::HashMap<[u8; 32], u32> = wm_results
+                    .iter()
+                    .map(|(id, d)| (id.0, *d))
+                    .collect();
+                let bf_map: std::collections::HashMap<[u8; 32], u32> = bf_results
+                    .iter()
+                    .map(|(id, d)| (id.0, *d))
+                    .collect();
+
+                assert_eq!(
+                    wm_map.len(),
+                    bf_map.len(),
+                    "WM/BF count mismatch: query={}, radius={}",
+                    label,
+                    radius
+                );
+
+                for (mid, bf_dist) in &bf_map {
+                    let wm_dist = wm_map.get(mid).copied();
+                    assert_eq!(
+                        wm_dist,
+                        Some(*bf_dist),
+                        "WM/BF distance mismatch for {:02x?} at query={}, radius={}: WM={:?}, BF={}",
+                        &mid[0..4],
+                        label,
+                        radius,
+                        wm_dist,
+                        bf_dist
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_insert_memories_batch() {
+        let mut dwm = DynamicWaveletMatrix::new();
+
+        // Create 100 memories
+        let mut entries = Vec::new();
+        for i in 0..100u32 {
+            let id = MemoryId::new();
+            let mut sig_bytes = [0u8; 32];
+            sig_bytes[0] = i as u8;
+            sig_bytes[1] = (i >> 8) as u8;
+            let sig = BinarySignature(sig_bytes);
+            let tokens = TokenSequence::new(0, vec![i]);
+            entries.push((id, sig, tokens));
+        }
+
+        // Insert all at once
+        dwm.insert_memories_batch(entries.clone()).unwrap();
+        assert_eq!(dwm.count(), 100);
+
+        // Verify all are searchable
+        let query_sig = entries[0].1;
+        let results = dwm.search(&query_sig, 0, 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1, 0); // exact match has distance 0
+
+        // Verify all IDs are present
+        for (id, _, _) in &entries {
+            assert!(dwm.position_of(*id).is_some());
+        }
+
+        // Verify reconstruction works
+        for (id, sig, tokens) in &entries {
+            let pos = dwm.position_of(*id).unwrap();
+            let reconstructed_sig = dwm.reconstruct_signature(pos).unwrap();
+            assert_eq!(&reconstructed_sig, sig);
+            let reconstructed_tokens = dwm.reconstruct_tokens(pos).unwrap();
+            assert_eq!(reconstructed_tokens.tokens, tokens.tokens);
+        }
+    }
+
+    #[test]
+    fn test_insert_memories_batch_rejects_duplicates() {
+        let mut dwm = DynamicWaveletMatrix::new();
+
+        let id = MemoryId::new();
+        let sig = BinarySignature([0u8; 32]);
+        let tokens = TokenSequence::new(0, vec![1]);
+
+        dwm.insert_memory(id, sig, tokens.clone()).unwrap();
+
+        // Batch with an already-existing ID should fail
+        let id2 = MemoryId::new();
+        let entries = vec![
+            (id, BinarySignature([1u8; 32]), TokenSequence::new(0, vec![2])),
+            (id2, BinarySignature([2u8; 32]), TokenSequence::new(0, vec![3])),
+        ];
+        let result = dwm.insert_memories_batch(entries);
+        assert!(result.is_err());
+
+        // Original memory should still be there
+        assert_eq!(dwm.count(), 1);
+    }
+
+    #[test]
+    fn test_insert_memories_batch_internal_duplicates() {
+        let mut dwm = DynamicWaveletMatrix::new();
+
+        let id = MemoryId::new();
+        let entries = vec![
+            (id, BinarySignature([0u8; 32]), TokenSequence::new(0, vec![1])),
+            (id, BinarySignature([1u8; 32]), TokenSequence::new(0, vec![2])), // duplicate!
+        ];
+        let result = dwm.insert_memories_batch(entries);
+        assert!(result.is_err());
+        assert_eq!(dwm.count(), 0); // Nothing inserted on failure
+    }
+
+    /// Interleaved insert/delete stress test with full 32-byte signatures.
+    /// After every mutation, verifies:
+    /// 1. Signature reconstruction is lossless for ALL memories
+    /// 2. DWM search matches brute-force for multiple queries/radii
+    /// 3. count() is consistent
+    /// 4. position_of() finds all memories
+    ///
+    /// This catches bugs in per-level insert/delete that rebuild-based tests miss.
+    #[test]
+    fn test_interleaved_insert_delete_search_integrity() {
+        let mut dwm = DynamicWaveletMatrix::new();
+        let mut rng_state: u64 = 54321;
+
+        let mut all_ids: Vec<MemoryId> = Vec::new();
+        let mut all_sigs: Vec<BinarySignature> = Vec::new();
+
+        // Helper: LCG-based signature generation
+        let mut next_sig = || -> BinarySignature {
+            let mut bytes = [0u8; 32];
+            for b in 0..32 {
+                rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
+                bytes[b] = (rng_state >> 8) as u8;
+            }
+            BinarySignature(bytes)
+        };
+
+        // Helper: verify all invariants
+        let verify = |dwm: &DynamicWaveletMatrix, label: &str| {
+            // 1. count matches stored metadata
+            assert_eq!(dwm.count(), dwm.memory_ids.len(), "{}: count mismatch", label);
+
+            // 2. position_of finds all memories
+            for pos in 0..dwm.count() {
+                if let Some(mid) = dwm.memory_id_at(pos) {
+                    assert!(dwm.position_of(mid).is_some(), "{}: position_of missing for {:?}", label, &mid.0[0..4]);
+                }
+            }
+
+            // 3. Signature reconstruction is lossless
+            for pos in 0..dwm.count() {
+                let reconstructed = dwm.reconstruct_signature(pos);
+                assert!(reconstructed.is_some(), "{}: reconstruct failed at pos {}", label, pos);
+                let mid = dwm.memory_id_at(pos).unwrap();
+                let original = dwm.sig_data.iter().find(|(id, _, _)| id.0 == mid.0);
+                assert!(original.is_some(), "{}: sig_data missing for {:?}", label, &mid.0[0..4]);
+                assert_eq!(
+                    reconstructed.unwrap().0,
+                    original.unwrap().1.0,
+                    "{}: signature mismatch at pos {}",
+                    label, pos
+                );
+            }
+
+            // 4. Search matches brute-force
+            let mut q_rng: u64 = 99999;
+            for _ in 0..3 {
+                let mut query_bytes = [0u8; 32];
+                for b in 0..32 {
+                    q_rng = q_rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    query_bytes[b] = (q_rng >> 33) as u8;
+                }
+                let query = BinarySignature(query_bytes);
+                for radius in [0u32, 5, 20] {
+                    let wm = dwm.search(&query, radius, 50);
+                    let bf = dwm.search_brute_force(&query, radius, 50);
+                    let wm_set: std::collections::HashSet<[u8; 32]> = wm.iter().map(|(id, _)| id.0).collect();
+                    let bf_set: std::collections::HashSet<[u8; 32]> = bf.iter().map(|(id, _)| id.0).collect();
+                    assert_eq!(wm_set, bf_set, "{}: search mismatch at radius {}", label, radius);
+                    // Also verify distances match
+                    for (id, wm_dist) in &wm {
+                        let bf_entry = bf.iter().find(|(bid, _)| bid.0 == id.0);
+                        assert!(bf_entry.is_some(), "{}: WM result {:?} not in BF", label, &id.0[0..4]);
+                        assert_eq!(*wm_dist, bf_entry.unwrap().1, "{}: distance mismatch for {:?}", label, &id.0[0..4]);
+                    }
+                }
+            }
+        };
+
+        // Phase 1: Insert 50 memories with LCG-filled signatures
+        for i in 0..50u32 {
+            let sig = next_sig();
+            let tokens = TokenSequence::new(0, vec![i, i + 1]);
+            let mut id_bytes = [0u8; 32];
+            id_bytes[0..4].copy_from_slice(&i.to_le_bytes());
+            let id = MemoryId(id_bytes);
+
+            dwm.insert_memory(id, sig, tokens).unwrap();
+            all_ids.push(id);
+            all_sigs.push(sig);
+
+            // Verify every 10 insertions
+            if (i + 1) % 10 == 0 {
+                verify(&dwm, &format!("After {} insertions", i + 1));
+            }
+        }
+
+        verify(&dwm, "After 50 insertions");
+
+        // Phase 2: Delete every 3rd memory, verify after each batch of 5
+        let to_delete: Vec<MemoryId> = all_ids.iter().enumerate()
+            .filter(|(i, _)| i % 3 == 0)
+            .map(|(_, id)| *id)
+            .collect();
+
+        for (count, id) in to_delete.iter().enumerate() {
+            dwm.remove_memory(*id).unwrap();
+            if (count + 1) % 5 == 0 {
+                verify(&dwm, &format!("After {} deletions", count + 1));
+            }
+        }
+
+        verify(&dwm, "After all deletions");
+
+        // Phase 3: Insert 30 more memories (different IDs)
+        for i in 100..130u32 {
+            let sig = next_sig();
+            let tokens = TokenSequence::new(0, vec![i]);
+            let mut id_bytes = [0u8; 32];
+            id_bytes[0..4].copy_from_slice(&i.to_le_bytes());
+            let id = MemoryId(id_bytes);
+
+            dwm.insert_memory(id, sig, tokens).unwrap();
+
+            if (i - 99) % 10 == 0 {
+                verify(&dwm, &format!("After {} re-insertions", i - 99));
+            }
+        }
+
+        verify(&dwm, "After all re-insertions");
+
+        // Phase 4: Delete 10 more, verify
+        let remaining: Vec<MemoryId> = (0..dwm.count()).filter_map(|i| dwm.memory_id_at(i)).collect();
+        for (count, id) in remaining.iter().take(10).enumerate() {
+            dwm.remove_memory(*id).unwrap();
+            if (count + 1) % 5 == 0 {
+                verify(&dwm, &format!("Phase 4: {} more deletions", count + 1));
+            }
+        }
+
+        verify(&dwm, "Final verification");
+    }
+}
+
+    #[test]
+    fn test_insert_1000_individual_memories() {
+        let mut dwm = DynamicWaveletMatrix::new();
+        let mut rng_state: u64 = 98765;
+
+        let mut next_sig = || -> BinarySignature {
+            let mut bytes = [0u8; 32];
+            for b in 0..32 {
+                rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
+                bytes[b] = (rng_state >> 8) as u8;
+            }
+            BinarySignature(bytes)
+        };
+
+        let mut all_sigs: Vec<BinarySignature> = Vec::with_capacity(1000);
+
+        for i in 0..1000u32 {
+            let sig = next_sig();
+            all_sigs.push(sig);
+            let tokens = TokenSequence::new(0, vec![i]);
+            let mut id_bytes = [0u8; 32];
+            id_bytes[0..4].copy_from_slice(&i.to_le_bytes());
+            let id = MemoryId(id_bytes);
+
+            // Verify level invariants before each insert
+            for level in 0..dwm.signature_bits {
+                let level_data = &dwm.levels[level];
+                if level_data.bitvec.len() > 0 {
+                    let actual_zeros = level_data.bitvec.rank(level_data.bitvec.len(), false) as usize;
+                    let stored_boundary = level_data.boundary();
+                    assert_eq!(
+                        actual_zeros, stored_boundary,
+                        "Level {} boundary invariant VIOLATED before insert {}: bitvec has {} zeros but boundary says {}",
+                        level, i, actual_zeros, stored_boundary
+                    );
+                }
+            }
+
+            dwm.insert_memory(id, sig, tokens).unwrap();
+        }
+
+        // Verify reconstruction is lossless for every stored signature
+        for pos in 0..dwm.count() {
+            let reconstructed = dwm.reconstruct_signature(pos);
+            assert!(reconstructed.is_some(), "Reconstruct failed at pos {}", pos);
+            // The reconstructed signature must exactly match the stored original
+            let mid = dwm.memory_id_at(pos).unwrap();
+            let sig_idx = dwm.id_to_sig_idx.get(&mid.0).unwrap();
+            let original_sig = &dwm.sig_data[*sig_idx].1;
+            let reconstructed = reconstructed.unwrap();
+            assert_eq!(
+                reconstructed.0, original_sig.0,
+                "Signature reconstruction mismatch at pos {}",
+                pos
+            );
+        }
+
+        // Search using a KNOWN stored signature with a reasonable radius
+        // Use the first stored signature as query — radius 0 should find exactly that one
+        let query_exact = all_sigs[0];
+        let results_exact = dwm.search(&query_exact, 0, 50);
+        assert!(results_exact.len() >= 1, "Search with radius=0 on known signature returned 0 results");
+
+        // Search with wider radius — should find more results
+        let results_r10 = dwm.search(&query_exact, 10, 50);
+        assert!(results_r10.len() >= 1, "Search with radius=10 returned 0 results");
+
+        // Compare WM search against brute force for correctness
+        let bf_results = dwm.search_brute_force(&query_exact, 10, 50);
+        let mut wm_ids: Vec<[u8; 32]> = results_r10.iter().map(|(id, _)| id.0).collect();
+        let mut bf_ids: Vec<[u8; 32]> = bf_results.iter().map(|(id, _)| id.0).collect();
+        wm_ids.sort();
+        bf_ids.sort();
+        assert_eq!(wm_ids, bf_ids, "WM and BF search results don't match");
+    }
+
+    #[test]
+    fn test_insert_1000_with_boundary_check() {
+        let mut dwm = DynamicWaveletMatrix::new();
+        let mut rng_state: u64 = 98765;
+
+        let mut next_sig = || -> BinarySignature {
+            let mut bytes = [0u8; 32];
+            for b in 0..32 {
+                rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
+                bytes[b] = (rng_state >> 8) as u8;
+            }
+            BinarySignature(bytes)
+        };
+
+        for i in 0..1000u32 {
+            // Check boundary invariants BEFORE insert
+            for level in 0..dwm.signature_bits {
+                let level_data = &dwm.levels[level];
+                if level_data.bitvec.len() > 0 {
+                    let actual_zeros = level_data.bitvec.rank(level_data.bitvec.len(), false) as usize;
+                    let stored_boundary = level_data.boundary();
+                    if actual_zeros != stored_boundary {
+                        panic!(
+                            "Boundary drift at i={} level={}: actual_zeros={} boundary={} bitvec_len={}",
+                            i, level, actual_zeros, stored_boundary, level_data.bitvec.len()
+                        );
+                    }
+                }
+            }
+
+            let sig = next_sig();
+            let tokens = TokenSequence::new(0, vec![i]);
+            let mut id_bytes = [0u8; 32];
+            id_bytes[0..4].copy_from_slice(&i.to_le_bytes());
+            let id = MemoryId(id_bytes);
+
+            dwm.insert_memory(id, sig, tokens).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_insert_512_boundary_per_insert() {
+        let mut dwm = DynamicWaveletMatrix::new();
+        let mut rng_state: u64 = 98765;
+
+        let mut next_sig = || -> BinarySignature {
+            let mut bytes = [0u8; 32];
+            for b in 0..32 {
+                rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
+                bytes[b] = (rng_state >> 8) as u8;
+            }
+            BinarySignature(bytes)
+        };
+
+        for i in 0..1000u32 {
+            let sig = next_sig();
+            let tokens = TokenSequence::new(0, vec![i]);
+            let mut id_bytes = [0u8; 32];
+            id_bytes[0..4].copy_from_slice(&i.to_le_bytes());
+            let id = MemoryId(id_bytes);
+
+            // BEFORE insert: verify boundary matches brute-force zeros
+            for level in 0..dwm.signature_bits {
+                let level_data = &dwm.levels[level];
+                if level_data.bitvec.len() > 0 {
+                    let mut bf_zeros = 0usize;
+                    for j in 0..level_data.bitvec.len() {
+                        if !level_data.bitvec.access(j) {
+                            bf_zeros += 1;
+                        }
+                    }
+                    let stored = level_data.boundary();
+                    let rank_zeros = level_data.bitvec.rank(level_data.bitvec.len(), false) as usize;
+                    if bf_zeros != stored || bf_zeros != rank_zeros {
+                        panic!(
+                            "PRE-INSERT drift at i={} level={}: bf_zeros={} rank_zeros={} boundary={} bitvec_len={}",
+                            i, level, bf_zeros, rank_zeros, stored, level_data.bitvec.len()
+                        );
+                    }
+                }
+            }
+
+            dwm.insert_memory(id, sig, tokens).unwrap();
+
+            // AFTER insert: verify boundary matches brute-force zeros
+            for level in 0..dwm.signature_bits {
+                let level_data = &dwm.levels[level];
+                if level_data.bitvec.len() > 0 {
+                    let mut bf_zeros = 0usize;
+                    for j in 0..level_data.bitvec.len() {
+                        if !level_data.bitvec.access(j) {
+                            bf_zeros += 1;
+                        }
+                    }
+                    let stored = level_data.boundary();
+                    if bf_zeros != stored {
+                        panic!(
+                            "POST-INSERT drift at i={} level={}: bf_zeros={} boundary={} bitvec_len={}",
+                            i, level, bf_zeros, stored, level_data.bitvec.len()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_insert_with_few_levels() {
+        // Test with only 8 signature bits to speed up debugging
+        let mut dwm = DynamicWaveletMatrix::with_config(8, 256);
+        let mut rng_state: u64 = 98765;
+
+        for i in 0..600u32 {
+            let mut sig_bytes = [0u8; 32];
+            for b in 0..32 {
+                rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
+                sig_bytes[b] = (rng_state >> 8) as u8;
+            }
+            let sig = BinarySignature(sig_bytes);
+            let tokens = TokenSequence::new(0, vec![i]);
+            let mut id_bytes = [0u8; 32];
+            id_bytes[0..4].copy_from_slice(&i.to_le_bytes());
+            let id = MemoryId(id_bytes);
+
+            // Brute-force verify level-0 bitvec before insert
+            let level0 = &dwm.levels[0];
+            if level0.bitvec.len() > 0 {
+                let mut bf_false = 0usize;
+                for j in 0..level0.bitvec.len() {
+                    if !level0.bitvec.access(j) { bf_false += 1; }
+                }
+                let rank_false = level0.bitvec.rank(level0.bitvec.len(), false) as usize;
+                assert_eq!(bf_false, rank_false, "PRE-INSERT rank mismatch at i={}: bf_false={} rank_false={}", i, bf_false, rank_false);
+            }
+
+            dwm.insert_memory(id, sig, tokens).unwrap();
+
+            // Brute-force verify level-0 bitvec after insert
+            let level0 = &dwm.levels[0];
+            let mut bf_false = 0usize;
+            for j in 0..level0.bitvec.len() {
+                if !level0.bitvec.access(j) { bf_false += 1; }
+            }
+            let rank_false = level0.bitvec.rank(level0.bitvec.len(), false) as usize;
+            assert_eq!(bf_false, rank_false, "POST-INSERT rank mismatch at i={}: bf_false={} rank_false={}", i, bf_false, rank_false);
+        }
+    }

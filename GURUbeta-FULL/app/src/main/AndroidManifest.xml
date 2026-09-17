@@ -1,0 +1,517 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- ===== Calendar ===== -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+
+    <!-- ===== Alarms & Boot ===== -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.SET_ALARM" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- ===== Network ===== -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
+
+    <!-- ===== Storage ===== -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+
+    <!-- ===== Contacts ===== -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.WRITE_CONTACTS" />
+    <uses-permission android:name="android.permission.GET_ACCOUNTS" />
+
+    <!-- ===== Phone ===== -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.WRITE_CALL_LOG" />
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
+    <uses-permission android:name="android.permission.PROCESS_OUTGOING_CALLS" />
+    <uses-permission android:name="android.permission.USE_SIP" />
+    <uses-permission android:name="android.permission.ACCEPT_HANDOVER" />
+
+    <!-- ===== SMS ===== -->
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_MMS" />
+    <uses-permission android:name="android.permission.RECEIVE_WAP_PUSH" />
+    <uses-permission android:name="android.permission.READ_CELL_BROADCASTS" />
+
+    <!-- ===== Location ===== -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
+
+    <!-- ===== Camera & Microphone ===== -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- ===== Sensors ===== -->
+    <uses-permission android:name="android.permission.BODY_SENSORS" />
+    <uses-permission android:name="android.permission.BODY_SENSORS_BACKGROUND" />
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <uses-permission android:name="android.permission.USE_FINGERPRINT" />
+
+    <!-- ===== Bluetooth ===== -->
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+
+    <!-- ===== NFC ===== -->
+    <uses-permission android:name="android.permission.NFC" />
+    <uses-permission android:name="android.permission.NFC_TRANSACTION_EVENT" />
+
+    <!-- ===== UWB ===== -->
+    <uses-permission android:name="android.permission.UWB_RANGING" />
+
+    <!-- ===== System Settings ===== -->
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+    <uses-permission android:name="android.permission.INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.DELETE_PACKAGES" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <uses-permission android:name="android.permission.GET_PACKAGE_SIZE" />
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
+    <uses-permission android:name="android.permission.MANAGE_APP_OPS_MODES" />
+
+    <!-- ===== Power & Device ===== -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.DEVICE_POWER" />
+    <uses-permission android:name="android.permission.REBOOT" />
+    <uses-permission android:name="android.permission.SHUTDOWN" />
+    <uses-permission android:name="android.permission.FORCE_STOP_PACKAGES" />
+    <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
+    <uses-permission android:name="android.permission.SET_PROCESS_LIMIT" />
+    <uses-permission android:name="android.permission.SET_TIME" />
+    <uses-permission android:name="android.permission.SET_TIME_ZONE" />
+    <uses-permission android:name="android.permission.CHANGE_CONFIGURATION" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.MASTER_CLEAR" />
+    <uses-permission android:name="android.permission.MOUNT_UNMOUNT_FILESYSTEMS" />
+    <uses-permission android:name="android.permission.MOUNT_FORMAT_FILESYSTEMS" />
+
+    <!-- ===== Display ===== -->
+    <uses-permission android:name="android.permission.SET_WALLPAPER" />
+    <uses-permission android:name="android.permission.SET_WALLPAPER_HINTS" />
+    <uses-permission android:name="android.permission.EXPAND_STATUS_BAR" />
+    <uses-permission android:name="android.permission.MEDIA_PROJECTION" />
+
+    <!-- ===== Input ===== -->
+    <uses-permission android:name="android.permission.INJECT_EVENTS" />
+
+    <!-- ===== App Management ===== -->
+    <uses-permission android:name="android.permission.GET_TASKS" />
+    <uses-permission android:name="android.permission.REORDER_TASKS" />
+    <uses-permission android:name="android.permission.REAL_GET_TASKS" />
+    <uses-permission android:name="android.permission.START_ANY_ACTIVITY" />
+    <uses-permission android:name="android.permission.START_ACTIVITIES_FROM_BACKGROUND" />
+    <uses-permission android:name="android.permission.INTERACT_ACROSS_USERS" />
+    <uses-permission android:name="android.permission.INTERACT_ACROSS_USERS_FULL" />
+    <uses-permission android:name="android.permission.MANAGE_USERS" />
+    <uses-permission android:name="android.permission.CREATE_USERS" />
+    <uses-permission android:name="android.permission.CLEAR_APP_CACHE" />
+
+    <!-- ===== Accounts & Authentication ===== -->
+    <uses-permission android:name="android.permission.AUTHENTICATE_ACCOUNTS" />
+    <uses-permission android:name="android.permission.MANAGE_ACCOUNTS" />
+    <uses-permission android:name="android.permission.USE_CREDENTIALS" />
+
+    <!-- ===== Logs & Diagnostics ===== -->
+    <uses-permission android:name="android.permission.READ_LOGS" />
+    <uses-permission android:name="android.permission.DUMP" />
+    <uses-permission android:name="android.permission.DIAGNOSTIC" />
+    <uses-permission android:name="android.permission.BATTERY_STATS" />
+    <uses-permission android:name="android.permission.READ_PRECISE_PHONE_STATE" />
+
+    <!-- ===== VPN & Network ===== -->
+    <uses-permission android:name="android.permission.CONTROL_VPN" />
+    <uses-permission android:name="android.permission.MANAGE_IPSEC_TUNNELS" />
+    <uses-permission android:name="android.permission.CAPTURE_AUDIO_OUTPUT" />
+    <uses-permission android:name="android.permission.CAPTURE_SECURE_VIDEO_OUTPUT" />
+    <uses-permission android:name="android.permission.CAPTURE_VIDEO_OUTPUT" />
+
+    <!-- ===== Factory Test ===== -->
+    <uses-permission android:name="android.permission.FACTORY_TEST" />
+
+    <!-- ===== Accessibility ===== -->
+    <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE" />
+    <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" />
+
+    <!-- ===== Foreground Service ===== -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.INSTANT_APP_FOREGROUND_SERVICE" />
+
+    <!-- ===== Device Admin ===== -->
+    <uses-permission android:name="android.permission.BIND_DEVICE_ADMIN" />
+
+    <!-- ===== Input Method ===== -->
+    <uses-permission android:name="android.permission.BIND_INPUT_METHOD" />
+
+    <!-- ===== Text Service ===== -->
+    <uses-permission android:name="android.permission.BIND_TEXT_SERVICE" />
+
+    <!-- ===== Wallpaper ===== -->
+    <uses-permission android:name="android.permission.BIND_WALLPAPER" />
+
+    <!-- ===== Notification ===== -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+
+    <!-- ===== Dream ===== -->
+    <uses-permission android:name="android.permission.BIND_DREAM_SERVICE" />
+
+    <!-- ===== Print ===== -->
+    <uses-permission android:name="android.permission.BIND_PRINT_SERVICE" />
+
+    <!-- ===== Quick Settings ===== -->
+    <uses-permission android:name="android.permission.BIND_QUICK_SETTINGS_TILE" />
+
+    <!-- ===== Voice Interaction ===== -->
+    <uses-permission android:name="android.permission.BIND_VOICE_INTERACTION" />
+
+    <!-- ===== Remote ===== -->
+    <uses-permission android:name="android.permission.BIND_TV_INPUT" />
+    <uses-permission android:name="android.permission.BIND_REMOTEVIEWS" />
+
+    <!-- ===== Carrier ===== -->
+    <uses-permission android:name="android.permission.BIND_CARRIER_SERVICES" />
+    <uses-permission android:name="android.permission.BIND_CARRIER_MESSAGING_SERVICE" />
+    <uses-permission android:name="android.permission.BIND_TELECOM_CONNECTION_SERVICE" />
+
+    <!-- ===== Incall ===== -->
+    <uses-permission android:name="android.permission.BIND_INCALL_SERVICE" />
+
+    <!-- ===== Screen ===== -->
+    <uses-permission android:name="android.permission.BIND_SCREENING_SERVICE" />
+
+    <!-- ===== Autofill ===== -->
+    <uses-permission android:name="android.permission.BIND_AUTOFILL_SERVICE" />
+
+    <!-- ===== VR ===== -->
+    <uses-permission android:name="android.permission.BIND_VR_LISTENER_SERVICE" />
+
+    <!-- ===== Visual Voicemail ===== -->
+    <uses-permission android:name="android.permission.BIND_VISUAL_VOICEMAIL_SERVICE" />
+
+    <!-- ===== Trust Agent ===== -->
+    <uses-permission android:name="android.permission.BIND_TRUST_AGENT" />
+
+    <!-- ===== Companion ===== -->
+    <uses-permission android:name="android.permission.BIND_COMPANION_DEVICE_SERVICE" />
+
+    <!-- ===== Slice ===== -->
+    <uses-permission android:name="android.permission.BIND_SLICE" />
+
+    <!-- ===== Call Redirection ===== -->
+    <uses-permission android:name="android.permission.BIND_CALL_REDIRECTION_SERVICE" />
+
+    <!-- ===== Content Capture ===== -->
+    <uses-permission android:name="android.permission.BIND_CONTENT_CAPTURE_SERVICE" />
+
+    <!-- ===== Augmented Reality ===== -->
+    <uses-permission android:name="android.permission.BIND_AUGMENTED_AUTOFILL_SERVICE" />
+
+    <!-- ===== App Predictions ===== -->
+    <uses-permission android:name="android.permission.BIND_APP_PREDICTION_SERVICE" />
+
+    <!-- ===== Time Zone ===== -->
+    <uses-permission android:name="android.permission.BIND_TIME_ZONE_DETECTOR_SERVICE" />
+
+    <!-- ===== Cross Profile ===== -->
+    <uses-permission android:name="android.permission.BIND_CROSS_PROFILE_APPS_SERVICE" />
+
+    <!-- ===== Credential Provider ===== -->
+    <uses-permission android:name="android.permission.BIND_CREDENTIAL_PROVIDER_SERVICE" />
+
+    <!-- ===== Device Lock ===== -->
+    <uses-permission android:name="android.permission.BIND_DEVICE_LOCK_SERVICE" />
+
+    <!-- ===== Health ===== -->
+    <uses-permission android:name="android.permission.BIND_HEALTH_CONNECT_SERVICE" />
+
+    <!-- ===== Tile Service ===== -->
+    <uses-permission android:name="android.permission.BIND_TILE_SERVICE" />
+
+    <!-- ===== Game ===== -->
+    <uses-permission android:name="android.permission.BIND_GAME_SERVICE" />
+
+    <!-- ===== Satellite ===== -->
+    <uses-permission android:name="android.permission.BIND_SATELLITE_SERVICE" />
+
+    <!-- ===== Wallet ===== -->
+    <uses-permission android:name="android.permission.BIND_WALLET_SERVICE" />
+
+    <!-- ===== Thread Network ===== -->
+    <uses-permission android:name="android.permission.BIND_THREAD_NETWORK_SERVICE" />
+
+    <!-- ===== UWB ===== -->
+    <uses-permission android:name="android.permission.BIND_UWB_SERVICE" />
+
+    <!-- ===== Virtual Device ===== -->
+    <uses-permission android:name="android.permission.BIND_VIRTUAL_DEVICE_SERVICE" />
+
+
+    <application
+        android:name=".GuruApplication"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:enableOnBackInvokedCallback="true"
+        android:extractNativeLibs="true"
+        android:fullBackupContent="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.guru"
+        android:usesCleartextTraffic="true"
+        android:networkSecurityConfig="@xml/network_security_config">
+        <activity
+            android:name=".presentation.main.MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.guru"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.BROWSABLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+
+                <data android:scheme="app" />
+                <data android:host="com.unuslumen.app.guru.task_details" />
+                <data android:host="com.unuslumen.app.guru.tasks" />
+                <data android:host="com.unuslumen.app.guru.calendar" />
+                <data android:host="com.unuslumen.app.guru.calendar_event_details" />
+                <data android:host="com.unuslumen.app.guru.notes" />
+                <data android:host="com.unuslumen.app.guru.note_details" />
+            </intent-filter>
+
+        </activity>
+
+        <receiver
+            android:name="com.unuslumen.app.notification.BootBroadcastReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+        <receiver
+            android:name="com.unuslumen.app.notification.AlarmReceiver"
+            android:enabled="true" />
+        <receiver
+            android:name="com.unuslumen.app.notification.TaskActionButtonBroadcastReceiver"
+            android:enabled="true" />
+
+        <activity
+            android:name="com.unuslumen.app.presentation.SaveBookmarkActivity"
+            android:autoRemoveFromRecents="true"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter android:label="@string/save_bookmark">
+                <action android:name="android.intent.action.SEND" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name="com.unuslumen.app.presentation.AddTaskFromShareActivity"
+            android:autoRemoveFromRecents="true"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter android:label="@string/add_to_tasks">
+                <action android:name="android.intent.action.SEND" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name="com.unuslumen.app.presentation.AddNoteFromShareActivity"
+            android:autoRemoveFromRecents="true"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter android:label="@string/add_note">
+                <action android:name="android.intent.action.SEND" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <!-- The Add task tile in the quick settings -->
+        <service
+            android:name="com.unuslumen.app.presentation.AddTaskTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_check"
+            android:label="@string/add_task_to_guru"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- Calendar widget-->
+        <receiver
+            android:name="com.unuslumen.app.widget.calendar.CalendarWidgetReceiver"
+            android:enabled="@bool/glance_appwidget_available"
+            android:exported="true"
+            android:label="@string/calendar">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/calendar_widget_info" />
+        </receiver>
+
+        <!-- Tasks widget-->
+        <receiver
+            android:name="com.unuslumen.app.widget.tasks.TasksWidgetReceiver"
+            android:enabled="@bool/glance_appwidget_available"
+            android:exported="false"
+            android:label="@string/tasks">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/tasks_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name="com.unuslumen.app.widget.tasks.CompleteTaskWidgetReceiver"
+            android:enabled="@bool/glance_appwidget_available"
+            android:exported="false" />
+
+        <!-- Notes widget-->
+        <receiver
+            android:name="com.unuslumen.app.widget.notes.NotesWidgetReceiver"
+            android:enabled="@bool/glance_appwidget_available"
+            android:exported="false"
+            android:label="@string/notes">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/notes_widget_info" />
+        </receiver>
+
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            tools:node="remove" />
+
+        <!-- Guru Accessibility Service for device control -->
+        <service
+            android:name="com.unuslumen.app.util.shell.GuruAccessibilityService"
+            android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/guru_accessibility_service_config" />
+        </service>
+
+        <!-- Guru Floating Orb Service (chat head) -->
+        <service
+            android:name="com.unuslumen.app.util.orb.GuruOrbService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <intent-filter>
+                <action android:name="com.unuslumen.app.guru.action.START_ORB" />
+            </intent-filter>
+        </service>
+
+        <!-- Screen Capture Service (required for MediaProjection on Android 14+) -->
+        <service
+            android:name="com.unuslumen.app.util.service.ScreenCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection">
+        </service>
+
+        <!-- Guru Notification Listener — lets Guru read and manage notifications -->
+        <service
+            android:name="com.unuslumen.app.data.tools.GuruNotificationListener"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <!-- Tor daemon service (bundled tor-android) -->
+        <service
+            android:name="org.torproject.jni.TorService"
+            android:exported="false" />
+
+        <!-- Tor persistent foreground service — keeps Tor alive indefinitely.
+             specialUse, not dataSync: Android 15+ imposes a ~6h runtime limit on
+             dataSync services and throws ForegroundServiceDidNotStopInTimeException
+             (killing the whole app) when the service refuses to stop. Tor runs for
+             the device's entire uptime by design, so it must use specialUse. -->
+        <service
+            android:name="com.unuslumen.app.data.tor.TorPersistentService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Tor SOCKS proxy for private network access, required for the entire device uptime" />
+        </service>
+
+    </application>
+
+</manifest>

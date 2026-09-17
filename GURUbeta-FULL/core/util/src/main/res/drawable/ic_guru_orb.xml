@@ -1,0 +1,19 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Brain/orb icon - a glowing circle with brain-like folds -->
+    <path
+        android:fillColor="#7C4DFF"
+        android:pathData="M12,2C6.48,2 2,6.48 2,12s4.48,10 10,10 10,-4.48 10,-10S17.52,2 12,2z"/>
+    <path
+        android:fillColor="#B388FF"
+        android:pathData="M12,4c-0.55,0 -1,0.45 -1,1v1.07C9.53,6.29 8.5,7.53 8.5,9c0,0.36 0.07,0.71 0.2,1.02C7.69,10.46 7,11.64 7,13c0,2.21 1.79,4 4,4h0.5v1.5c0,0.28 0.22,0.5 0.5,0.5s0.5,-0.22 0.5,-0.5V17h0.5c1.93,0 3.5,-1.57 3.5,-3.5 0,-1.36 -0.69,-2.54 -1.7,-2.98 0.13,-0.31 0.2,-0.66 0.2,-1.02 0,-1.47 -1.03,-2.71 -2.5,-2.93V5c0,-0.55 -0.45,-1 -1,-1z"/>
+    <path
+        android:fillColor="#E0B0FF"
+        android:pathData="M12,8c0.83,0 1.5,0.67 1.5,1.5S12.83,11 12,11s-1.5,-0.67 -1.5,-1.5S11.17,8 12,8z"/>
+    <path
+        android:fillColor="#E0B0FF"
+        android:pathData="M12.5,13.5c0,0.83 -0.67,1.5 -1.5,1.5s-1.5,-0.67 -1.5,-1.5 0.67,-1.5 1.5,-1.5 1.5,0.67 1.5,1.5z"/>
+</vector>

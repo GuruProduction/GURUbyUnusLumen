@@ -1,0 +1,33 @@
+package com.unuslumen.app.data.tools
+
+import com.unuslumen.app.data.tools.registry.ToolExecutionResult
+import com.unuslumen.app.data.tools.registry.ToolExecutor
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import java.io.File
+import java.security.MessageDigest
+import java.security.SecureRandom
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
+import java.util.Base64
+
+class EncryptionToolExecutor : ToolExecutor {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    override suspend fun execute(toolName: String, args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
+        when (toolName) {
+            EncryptionToolDefinitions.ENCRYPT_AES -> { val data = args["data"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'data'"); val key = args["keyBase64"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'keyBase64'"); try { val k = SecretKeySpec(Base64.getDecoder().decode(key), "AES"); val c = Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.ENCRYPT_MODE, k); val iv = c.iv; val enc = c.doFinal(data.toByteArray()); val r = CryptoResult(true, Base64.getEncoder().encodeToString(iv + enc), null); ToolExecutionResult.success(r, json.encodeToString(CryptoResult.serializer(), r)) } catch (e: Exception) { val r = CryptoResult(false, "", "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(CryptoResult.serializer(), r)) } }
+            EncryptionToolDefinitions.DECRYPT_AES -> { val enc = args["encryptedBase64"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'encryptedBase64'"); val key = args["keyBase64"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'keyBase64'"); try { val k = SecretKeySpec(Base64.getDecoder().decode(key), "AES"); val combined = Base64.getDecoder().decode(enc); val iv = combined.copyOfRange(0, 12); val data = combined.copyOfRange(12, combined.size); val c = Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.DECRYPT_MODE, k, IvParameterSpec(iv)); val dec = c.doFinal(data); val r = CryptoResult(true, String(dec), null); ToolExecutionResult.success(r, json.encodeToString(CryptoResult.serializer(), r)) } catch (e: Exception) { val r = CryptoResult(false, "", "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(CryptoResult.serializer(), r)) } }
+            EncryptionToolDefinitions.GENERATE_AES_KEY -> { try { val gen = KeyGenerator.getInstance("AES"); gen.init(256, SecureRandom()); val k = gen.generateKey(); val r = CryptoResult(true, Base64.getEncoder().encodeToString(k.encoded), null); ToolExecutionResult.success(r, json.encodeToString(CryptoResult.serializer(), r)) } catch (e: Exception) { val r = CryptoResult(false, "", "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(CryptoResult.serializer(), r)) } }
+            EncryptionToolDefinitions.HASH_DATA -> { val data = args["data"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'data'"); val algo = args["algorithm"] as? String ?: "SHA-256"; try { val md = MessageDigest.getInstance(algo); val hex = md.digest(data.toByteArray()).joinToString("") { "%02x".format(it) }; val r = CryptoResult(true, hex, null); ToolExecutionResult.success(r, json.encodeToString(CryptoResult.serializer(), r)) } catch (e: Exception) { val r = CryptoResult(false, "", "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(CryptoResult.serializer(), r)) } }
+            EncryptionToolDefinitions.BASE64_ENCODE -> { val data = args["data"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'data'"); val r = CryptoResult(true, Base64.getEncoder().encodeToString(data.toByteArray()), null); ToolExecutionResult.success(r, json.encodeToString(CryptoResult.serializer(), r)) }
+            EncryptionToolDefinitions.BASE64_DECODE -> { val data = args["data"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'data'"); try { val r = CryptoResult(true, String(Base64.getDecoder().decode(data)), null); ToolExecutionResult.success(r, json.encodeToString(CryptoResult.serializer(), r)) } catch (e: Exception) { val r = CryptoResult(false, "", "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(CryptoResult.serializer(), r)) } }
+            EncryptionToolDefinitions.ENCRYPT_FILE -> { val inp = args["inputPath"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'inputPath'"); val out = args["outputPath"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'outputPath'"); val key = args["keyBase64"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'keyBase64'"); try { val k = SecretKeySpec(Base64.getDecoder().decode(key), "AES"); val c = Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.ENCRYPT_MODE, k); val iv = c.iv; val enc = c.doFinal(File(inp).readBytes()); File(out).apply { parentFile?.mkdirs() }.writeBytes(iv + enc); val r = CryptoResult(true, out, null); ToolExecutionResult.success(r, json.encodeToString(CryptoResult.serializer(), r)) } catch (e: Exception) { val r = CryptoResult(false, "", "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(CryptoResult.serializer(), r)) } }
+            EncryptionToolDefinitions.DECRYPT_FILE -> { val inp = args["inputPath"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'inputPath'"); val out = args["outputPath"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'outputPath'"); val key = args["keyBase64"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'keyBase64'"); try { val k = SecretKeySpec(Base64.getDecoder().decode(key), "AES"); val combined = File(inp).readBytes(); val iv = combined.copyOfRange(0, 12); val data = combined.copyOfRange(12, combined.size); val c = Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.DECRYPT_MODE, k, IvParameterSpec(iv)); File(out).apply { parentFile?.mkdirs() }.writeBytes(c.doFinal(data)); val r = CryptoResult(true, out, null); ToolExecutionResult.success(r, json.encodeToString(CryptoResult.serializer(), r)) } catch (e: Exception) { val r = CryptoResult(false, "", "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(CryptoResult.serializer(), r)) } }
+            else -> ToolExecutionResult.error("Unknown tool: $toolName")
+        }
+    }
+}
