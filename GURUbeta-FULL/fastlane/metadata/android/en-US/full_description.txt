@@ -1,4 +1,4 @@
-GURU is technical architecture... It is an AI-powered autonomous operating system for Android, delivered as a side-loaded APK. Guru is designed to be a highly personal, private, self-evolving companion with biological memory, full device control, and the ability to interact with connected devices, SSH into external networks, build full-stack apps, manage social media, trade cryptocurrency & much more. Everything traditional AI cant or wont do. GURU will and can. GURU can do anything a human can do on a computer, but faster and quite frankly… Better. 
+GURU is technical architecture... It is an AI-powered autonomous operating system style app for Android, delivered as a side-loaded APK. Guru is designed to be a highly personal, private, self-evolving companion with biological memory, full device control, and the ability to interact with connected devices, SSH into external networks, build full-stack apps, manage social media, trade cryptocurrency & much more. Everything traditional AI cant or wont do. GURU will and can. GURU can do anything a human can do on a computer, but faster and quite frankly… Better. 
 
 Why do it yourself, when GURU can do it for you?
 
