@@ -8,7 +8,7 @@ GURU is ready to download today! for FREE! complete source and apk.
                   
   There are a few things you WILL need to know before downloading.
 
-  GURU is NOT finished. It is NOT perfect. Even in its current state though, GURU is night and day different
+  GURU is NOT finished. It is NOT perfect. However, even in its current state though, GURU is night and day different
    to anything you've ever used before. This is very immature, category defining technology, and that is
   exactly why I'm open sourcing it. Young, category defining tech should be community driven. Open source is
    the only road now. PRs are VERY welcome. All I've done is show that this level of capability, control and
