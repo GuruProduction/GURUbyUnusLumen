@@ -1,0 +1,11 @@
+[package]
+name = "cerebrum-signatures"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+
+[dependencies]
+cerebrum-core = { path = "../cerebrum-core" }
+cerebrum-token = { path = "../cerebrum-token" }
+rustc-hash = "2.0"
+serde = { version = "1.0", features = ["derive"] }

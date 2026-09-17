@@ -1,0 +1,51 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        google()
+        mavenCentral()
+    }
+}
+plugins {
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '0.10.0'
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        maven { url = 'https://jitpack.io' }
+    }
+}
+rootProject.name = "guru"
+include ':app'
+include ':core:util'
+include ':core:notification'
+include ':tasks:domain'
+include ':core:alarm'
+include ':notes:domain'
+include ':core:preferences'
+include ':core:di'
+include ':core:widget'
+include ':calendar:domain'
+include ':journal:domain'
+include ':Projects:domain'
+include ':core:ui'
+include ':widget'
+include ':settings:domain'
+include ':core:database'
+include ':tasks:presentation'
+include ':notes:data'
+include ':tasks:data'
+include ':notes:presentation'
+include ':journal:presentation'
+include ':Projects:presentation'
+include ':calendar:presentation'
+include ':settings:presentation'
+include ':settings:data'
+include ':journal:data'
+include ':calendar:data'
+include ':Projects:data'
+include ':portal:presentation'
+include ':portal:domain'
+include ':portal:data'
+include ':adspace'

@@ -1,0 +1,1 @@
+GURU is is an AI-powered autonomous operating system for Android, delivered as a side-loaded APK.

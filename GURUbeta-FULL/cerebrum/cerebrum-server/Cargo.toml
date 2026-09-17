@@ -1,0 +1,25 @@
+[package]
+name = "cerebrum-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cerebrum-core = { path = "../cerebrum-core" }
+cerebrum-query = { path = "../cerebrum-query" }
+cerebrum-curate = { path = "../cerebrum-curate" }
+cerebrum-storage = { path = "../cerebrum-storage" }
+cerebrum-decay = { path = "../cerebrum-decay" }
+cerebrum-graph = { path = "../cerebrum-graph" }
+cerebrum-dream = { path = "../cerebrum-dream" }
+cerebrum-prefetch = { path = "../cerebrum-prefetch" }
+cerebrum-episodic = { path = "../cerebrum-episodic" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = "0.4"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tokio-test = "0.4"

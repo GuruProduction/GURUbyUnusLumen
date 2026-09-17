@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "cerebrum-cli",
+    "cerebrum-cluster",
+    "cerebrum-core",
+    "cerebrum-curate",
+    "cerebrum-dream",
+    "cerebrum-dwm",
+    "cerebrum-embeddings",
+    "cerebrum-episodic",
+    "cerebrum-events",
+    "cerebrum-graph",
+    "cerebrum-http",
+    "cerebrum-mcp",
+    "cerebrum-node",
+    "cerebrum-policy",
+    "cerebrum-prefetch",
+    "cerebrum-query",
+    "cerebrum-rl",
+    "cerebrum-server",
+    "cerebrum-signatures",
+    "cerebrum-storage",
+    "cerebrum-token",
+]
