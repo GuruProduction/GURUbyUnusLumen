@@ -2,8 +2,6 @@ package com.unuslumen.app.presentation.integrations
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12,10 +10,16 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.DropdownMenu
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -24,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -178,6 +183,7 @@ fun ModelConnectScreen(
 }
 
 /** The provider dropdown + credential fields + save, on warm paper. */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 private fun ModelConnectBody(
     provider: AiProvider,
@@ -194,14 +200,42 @@ private fun ModelConnectBody(
     var dropdownExpanded by remember { mutableStateOf(false) }
 
     Column {
-        Box {
-            SettingsTextField(
+        // Provider picker: exposed dropdown, NOT a text field with a tap hack.
+        // The old code wrapped an editable OutlinedTextField in clickable{} — the
+        // field stole focus, raised the IME and the menu never opened (the bug
+        // where the keyboard appeared and the dropdown didn't). readOnly + menu
+        // anchor means the whole field is a menu trigger: tap opens the list,
+        // no keyboard, matching AiProviderSection's working pattern.
+        ExposedDropdownMenuBox(
+            expanded = dropdownExpanded,
+            onExpandedChange = { dropdownExpanded = it },
+        ) {
+            OutlinedTextField(
                 value = providerLabel(localProvider),
                 onValueChange = {},
-                label = stringResource(R.string.model_provider),
-                modifier = Modifier.clickable { dropdownExpanded = true },
+                readOnly = true,
+                label = { Text(stringResource(R.string.model_provider)) },
+                trailingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.ArrowDropDown,
+                        contentDescription = null,
+                        tint = SettingsGold,
+                    )
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = SettingsGold.copy(alpha = 0.8f),
+                    unfocusedBorderColor = SettingsGold.copy(alpha = 0.3f),
+                    focusedTextColor = SettingsInk,
+                    unfocusedTextColor = SettingsInk,
+                    cursorColor = SettingsGold,
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .menuAnchor(),
             )
-            DropdownMenu(
+            ExposedDropdownMenu(
                 expanded = dropdownExpanded,
                 onDismissRequest = { dropdownExpanded = false },
             ) {
