@@ -4,8 +4,11 @@ import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.net.HttpURLConnection
-import java.net.URL
+import com.unuslumen.app.data.tor.TorEgress
+import io.ktor.client.HttpClient
+import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.request.get
+import io.ktor.client.statement.bodyAsText
 
 /**
  * Fetches the assembled system prompt from the GURU server at startup.
@@ -26,24 +29,27 @@ object PromptFetcher {
      * unconditional: no auth headers, no gating, the app is wired to the
      * Unus Lumen API from first boot.
      * Runs on IO dispatcher — safe to call from main thread.
+     *
+     * Sovereign egress: rides TorEgress like every other outbound call, so the
+     * user's IP never leaks to the API host over clearnet. Fail-closed when Tor
+     * is down — the catch below keeps the previously cached (or bundled fallback)
+     * prompt, exactly as the "server unreachable" path always has.
      */
     suspend fun fetchAndCache(context: Context) {
         withContext(Dispatchers.IO) {
             try {
-                val url = URL("$BASE_URL/prompts/assembled")
-                val connection = url.openConnection() as HttpURLConnection
-                connection.connectTimeout = 5000
-                connection.readTimeout = 10000
-                connection.requestMethod = "GET"
-
-                val responseCode = connection.responseCode
-                if (responseCode != 200) {
-                    Log.w(TAG, "Server returned $responseCode, keeping cached prompt")
-                    return@withContext
+                val client = HttpClient(TorEgress.newEngine()) {
+                    install(HttpTimeout) {
+                        requestTimeoutMillis = 30000
+                        connectTimeoutMillis = 15000
+                        socketTimeoutMillis = 30000
+                    }
                 }
-
-                val body = connection.inputStream.bufferedReader().readText()
-                connection.disconnect()
+                val body = try {
+                    client.get("$BASE_URL/prompts/assembled").bodyAsText()
+                } finally {
+                    client.close()
+                }
 
                 // Parse the JSON to extract the prompt string
                 val promptStart = body.indexOf("\"prompt\":\"")
