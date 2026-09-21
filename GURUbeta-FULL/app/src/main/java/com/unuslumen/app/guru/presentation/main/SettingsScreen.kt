@@ -24,6 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -97,6 +98,17 @@ fun SettingsScreen(
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            // ─── Personal — your name, what GURU calls you ───
+            item {
+                SettingsSectionTitle(
+                    text = "personal",
+                    modifier = Modifier.padding(start = 4.dp, bottom = 2.dp)
+                )
+                SettingsSectionCard {
+                    item_displayName(viewModel)
+                }
+            }
+
             // ─── Model Connect — first thing everyone needs ───
             item {
                 SettingsSectionCard {
@@ -208,6 +220,54 @@ fun SettingsScreen(
             }
 
             item { Spacer(Modifier.height(60.dp)) }
+        }
+    }
+}
+
+/**
+ * User's display name — what GURU calls its human. Lives in the same
+ * USER_NAME_KEY preference the prompt pipeline, /whoami and the memory
+ * system already read, so a change here lands in GURU's address from the
+ * next send onwards. Restored: the settings redesign shipped without it.
+ */
+@Composable
+private fun item_displayName(viewModel: SettingsViewModel) {
+    val savedName by viewModel
+        .getSettings(stringPreferencesKey(PrefsConstants.USER_NAME_KEY), "")
+        .collectAsStateWithLifecycle("")
+    var editedName by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
+    val currentValue = editedName ?: savedName
+    val changed = currentValue != savedName
+
+    androidx.compose.foundation.layout.Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+    ) {
+        Text(
+            text = stringResource(R.string.your_name),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = stringResource(R.string.your_name_description),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        com.unuslumen.app.presentation.components.SettingsTextField(
+            value = currentValue,
+            onValueChange = { editedName = it },
+            label = stringResource(R.string.your_name),
+            placeholder = stringResource(R.string.your_name_placeholder),
+            singleLine = true,
+        )
+        Spacer(Modifier.height(8.dp))
+        androidx.compose.animation.AnimatedVisibility(visible = changed) {
+            com.unuslumen.app.presentation.components.SettingsPrimaryButton(
+                text = stringResource(R.string.save).uppercase(),
+                onClick = { viewModel.saveSettings(stringPreferencesKey(PrefsConstants.USER_NAME_KEY), currentValue.trim()) },
+            )
         }
     }
 }

@@ -219,6 +219,7 @@
     <string name="byo_seed_label">Seed (default 0)</string>
     <string name="your_name">Your name</string>
     <string name="your_name_description">What Guru should call you</string>
+    <string name="your_name_placeholder">e.g. Steven</string>
     <string name="api_key">API Key</string>
     <string name="ai">AI</string>
     <string name="unuslumen" translatable="false">UnusLumen</string>
