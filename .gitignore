@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Editor / tooling backup files
+*.bak
+*.bak.*
+*.checkpoint
+*.checkpoint-*
+*.bak2
+
+# Duplicate-artefact accidents
+gradlew 2

@@ -1,6 +1,6 @@
 # A Note From Steven Newman, Founder and Developer
 
-**GURU is ready to download today! For FREE! Complete source and apk.**
+**GURU is ready to download today! For FREE! Complete source — build it yourself in minutes (see BUILD.md); a prebuilt APK lands on the GitHub Releases page as soon as release week wraps.**
 
 Hello everyone.
 
@@ -20,7 +20,7 @@ This is very immature, category defining technology, and that is exactly why I'm
 
 By pulling, installing and using GURU you understand that you're beta testing and contributing to a brand new category of app.
 
-GURU works best with Ollama Cloud models or local models. I personally currently use GLM 5.3 Flash because it's multimodal and relatively cheap to run. Any GLM model actually works beautifully within the framework, which leads me to believe Claude will work well in here too. I DID design the framework for people who own their own inference, so there's no token economy inside at all. So beware using GURU with LLMs from big tech. ChatGPT, Claude, xAI and Google are all yet untested within the framework, and honestly I do NOT recommend you use these models. THEY ARE NOT SECURE. Everything you do with these models gets published somewhere. I have just wired these in, and I can almost GUARANTEE you'll be paying hundreds if not thousands of pounds per month to run the model in this framework.
+GURU works best with Ollama Cloud models or local models. I personally currently use GLM 5.3 Flash because it's multimodal and relatively cheap to run. Any GLM model actually works beautifully within the framework, which leads me to believe Claude will work well in here too. I DID design the framework for people who own their own inference, so there's no token economy inside at all. So think hard before using GURU with LLMs from big tech. Anthropic, OpenAI, xAI and Google are all wired in as first-class providers and will work, but I have not tested them in-app myself: I haven't paid for their APIs, and honest testing takes money I don't currently have. What I can say is the cost shape: an agentic framework like this is a token furnace, and flagship cloud models billed per token add up fast at agentic volumes. Separately from cost, big-tech chat logging is a trust problem for a companion that knows your whole life — if that doesn't bother you, the wiring is there.
 
 Instead, I highly recommend you find a server online, find a suitable model on Hugging Face or Ollama, and use that. 1m tokens of context is not required but very beneficial. You'll need to set up a Cloudflare tunnel on the server for the instance to reach your app. You can find some really good cheap servers on https://cloud.vast.ai. Failing that, you can use Ollama Cloud, the most cost effective choice. Ollama Cloud is almost a cheat code for the average Joe. They've got brilliant models to choose from, massive 2.8T multimodal LLMs, smaller agentic coders, and so on.
 

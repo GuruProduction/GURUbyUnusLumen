@@ -24,14 +24,15 @@ cd GURUbyUnusLumen
 
 Option A (Android Studio):
 
-1. Open the project folder
+1. Open the `GURUbeta-FULL` project folder (the Gradle root lives there, not at the repo top level)
 2. Wait for Gradle sync
 3. Build > Build App Bundle(s) / APK(s) > Build APK(s)
-4. Find the APK under `app/build/outputs/apk/`
+4. Find the APK under `GURUbeta-FULL/app/build/outputs/apk/`
 
 Option B (command line, release build):
 
 ```bash
+cd GURUbeta-FULL
 ./gradlew assembleRelease
 ```
 
@@ -39,7 +40,7 @@ Sign the APK for sideloading:
 
 ```bash
 # Use your own keystore, or a debug keystore for personal testing
-apksigner sign --ks /path/to/keystore.jks app/build/outputs/apk/release/app-release-unsigned.apk
+apksigner sign --ks /path/to/keystore.jks GURUbeta-FULL/app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
 ### Sideload it

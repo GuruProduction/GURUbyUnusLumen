@@ -134,7 +134,7 @@ Two registries: bundled skills shipped with the app, and dynamic skills that GUR
 ## Privacy By Architecture
 
 - The entire cognitive system runs on-device. Memory lives in local storage, governed by cerebrum-decay and cerebrum-dream, no cloud copy exists
-- All network traffic routes through an embedded Tor engine; browsing through a full JavaScript-capable browser over the same circuit
+- All external traffic routes through an embedded Tor engine and fails closed: when Tor is not ready, remote requests are refused rather than leaking. Loopback and private LAN addresses stay direct so local model servers work with zero setup; browsing runs through a full JavaScript-capable browser over the same circuit
 - AES-256-GCM encryption with fresh IVs from Java's SecureRandom on every operation; keys never leave the device
 - The non-custodial wallet keeps private keys on the phone, profit from trades, bounties and gigs lands with the user
 - The companion server sees requests, never memory. The hippocampus stays home
@@ -143,7 +143,7 @@ Two registries: bundled skills shipped with the app, and dynamic skills that GUR
 
 - **No cloud storage** — memories, files, conversations, all live and die on the device
 - **Keys on device** — non-custodial wallet, private keys never leave the phone
-- **Tor by default** — every external request routes anonymously
+- **Tor by default** — external requests route through the fail-closed Tor policy; sync fetches fall back to cached content until Tor is ready
 - **App source open at release** — full app source publishes at this repo end of this week under AGPL-3.0; the publisher server engine stays closed (reasoning above)
 
 ---
