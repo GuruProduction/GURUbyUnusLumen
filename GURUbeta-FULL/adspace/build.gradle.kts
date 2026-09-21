@@ -72,4 +72,8 @@ dependencies {
     implementation(libs.ktor.okhttp)
     implementation(libs.ktor.serialization)
     implementation(libs.ktor.content.negotiation)
+
+    // Sovereign egress: TorEgress lives in portal:data's tor package. The ad
+    // client rides the same fail-closed Tor policy as the rest of the app.
+    implementation(project(":portal:data"))
 }

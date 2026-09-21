@@ -2,6 +2,7 @@ package com.unuslumen.app.adspace
 
 import android.content.Context
 import android.util.Log
+import com.unuslumen.app.data.tor.TorEgress
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -31,7 +32,14 @@ class AdSpaceManager(
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    private val httpClient = HttpClient {
+    /**
+     * Sovereign egress: the ad-pack client rides TorEgress like every other
+     * outbound call, so the user's IP never leaks to the API host over
+     * clearnet — the ad poll stays on its exact 30-second cadence, but now
+     * anonymous. Fail-closed when Tor is down: the existing AdPackCache keeps
+     * the ad space showing content until the next successful fetch.
+     */
+    private val httpClient = HttpClient(TorEgress.newEngine()) {
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true })
         }
