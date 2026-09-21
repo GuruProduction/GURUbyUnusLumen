@@ -7,8 +7,11 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.json.Json
-import java.net.HttpURLConnection
-import java.net.URL
+import com.unuslumen.app.data.tor.TorEgress
+import io.ktor.client.HttpClient
+import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.request.get
+import io.ktor.client.statement.bodyAsText
 
 @Serializable
 data class LlmConfig(
@@ -32,23 +35,27 @@ object LlmConfigFetcher {
     private const val BASE_URL = "https://api.unuslumen.com"
     private val json = Json { ignoreUnknownKeys = true }
 
+    /**
+     * Sovereign egress: rides TorEgress like every other outbound call so the
+     * user's IP never leaks to the API host over clearnet. Fail-closed when Tor
+     * is down — the catch below keeps the previously cached config, exactly as
+     * the "server unreachable" path always has.
+     */
     suspend fun fetchAndCache(context: Context) {
         withContext(Dispatchers.IO) {
             try {
-                val url = URL("$BASE_URL/api/llm-config")
-                val connection = url.openConnection() as HttpURLConnection
-                connection.connectTimeout = 5000
-                connection.readTimeout = 10000
-                connection.requestMethod = "GET"
-
-                val responseCode = connection.responseCode
-                if (responseCode != 200) {
-                    Log.w(TAG, "Server returned $responseCode, keeping cached config")
-                    return@withContext
+                val client = HttpClient(TorEgress.newEngine()) {
+                    install(HttpTimeout) {
+                        requestTimeoutMillis = 30000
+                        connectTimeoutMillis = 15000
+                        socketTimeoutMillis = 30000
+                    }
                 }
-
-                val body = connection.inputStream.bufferedReader().readText()
-                connection.disconnect()
+                val body = try {
+                    client.get("$BASE_URL/api/llm-config").bodyAsText()
+                } finally {
+                    client.close()
+                }
 
                 val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 prefs.edit()
