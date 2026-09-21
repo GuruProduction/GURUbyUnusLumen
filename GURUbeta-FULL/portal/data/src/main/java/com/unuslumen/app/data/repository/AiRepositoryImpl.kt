@@ -284,6 +284,12 @@ class AiRepositoryImpl(
 
     init {
         applicationScope.launch {
+            rebuildModelWiringOnce()
+        }
+    }
+
+    private fun rebuildModelWiringOnce() {
+        applicationScope.launch {
             val aiProvider = getPreferenceUseCase(
                 intPreferencesKey(AI_PROVIDER_KEY),
                 AiProvider.UnusLumen.id
@@ -581,6 +587,44 @@ class AiRepositoryImpl(
      * future construction site that forgets the selector.
      */
     private fun sharedLongTimeoutClient(): HttpClient = TorEgress.httpClient()
+
+    /**
+     * Rebuild the model wiring from current device settings immediately.
+     * Called by the settings layer after a BYO save (provider, endpoint, key,
+     * model name) so the change lands on the next send without an app
+     * restart. Runs on the application scope; the next sendMessage/sendPrompt
+     * reads the freshly built executor, model and streaming client.
+     */
+    override fun reinitialise() {
+        android.util.Log.d("guru", "reinitialise: rebuilding model wiring from current settings")
+        rebuildModelWiring(fromSettingsSave = true)
+    }
+
+    /** Serialises rebuild requests so concurrent saves cannot interleave builds. */
+    private val rebuildMutex = kotlinx.coroutines.sync.Mutex()
+    private var rebuildQueued = false
+
+    private fun rebuildModelWiring(fromSettingsSave: Boolean = false) {
+        if (!rebuildMutex.tryLock()) {
+            // A rebuild is already in flight; mark one more pass so the latest
+            // saved settings always win even if they change mid-rebuild.
+            rebuildQueued = true
+            return
+        }
+        applicationScope.launch {
+            try {
+                // A settings save lands through DataStore write-launches; give
+                // the last write a beat to become visible before reading prefs.
+                if (fromSettingsSave) kotlinx.coroutines.delay(500)
+                do {
+                    rebuildQueued = false
+                    rebuildModelWiringOnce()
+                } while (rebuildQueued)
+            } finally {
+                rebuildMutex.unlock()
+            }
+        }
+    }
 
     override suspend fun sendPrompt(prompt: String): PortalResult<String> {
         val model = llModel ?: return PortalResult.OtherError()
