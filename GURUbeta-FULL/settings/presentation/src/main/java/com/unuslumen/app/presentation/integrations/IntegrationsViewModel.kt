@@ -39,6 +39,34 @@ class IntegrationsViewModel(
     private val fileUtilsRepository: FileUtilsRepository
 ) : ViewModel() {
 
+    /**
+     * Lazy AI repository access: only the provider-save events need it. Resolved
+     * through the global Koin context so the ViewModel's constructor signature
+     * (and every existing construction site) stays untouched.
+     */
+    private val aiRepository: com.unuslumen.app.domain.repository.AiRepository? by lazy {
+        try {
+            org.koin.core.context.GlobalContext.get().get()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * BYO changes must land on the next send, not after an app restart. Every
+     * provider-connection save therefore asks the AI repository to rebuild its
+     * executor + streaming client from the freshly written prefs. DataStore
+     * writes are launch-async; the rebuild path already waits half a beat so
+     * the last write is visible before it reads prefs.
+     */
+    private fun notifyAiRepositorySettingsChanged() {
+        try {
+            aiRepository?.reinitialise()
+        } catch (e: Exception) {
+            android.util.Log.w("guru", "Model re-init after save failed: ${e.message}")
+        }
+    }
+
     // ADB pairing state
     private val _adbPairingState = MutableStateFlow<AdbPairingState>(AdbPairingState.Idle)
     val adbPairingState: StateFlow<AdbPairingState> = _adbPairingState
@@ -168,17 +196,20 @@ class IntegrationsViewModel(
                     IntKey(PrefsConstants.AI_PROVIDER_KEY),
                     event.provider.id
                 )
+                notifyAiRepositorySettingsChanged()
             }
 
             is IntegrationsEvent.UpdateApiKey -> {
                 // BYO key: stored on device only, consumed by the AI repository.
                 // Never uploaded anywhere (README: your key stays on your device).
                 saveSettings(stringPreferencesKey(PrefsConstants.BYO_API_KEY_KEY), event.key.trim())
+                notifyAiRepositorySettingsChanged()
             }
 
             is IntegrationsEvent.UpdateModel -> {
                 // Model name as the user's server knows it, saved on device.
                 saveSettings(stringPreferencesKey(PrefsConstants.BYO_MODEL_NAME_KEY), event.model.trim())
+                notifyAiRepositorySettingsChanged()
             }
 
             is IntegrationsEvent.ToggleCustomURL -> {
@@ -193,6 +224,7 @@ class IntegrationsViewModel(
             is IntegrationsEvent.UpdateCustomURL -> {
                 // The user's own OpenAI-compatible / Ollama endpoint.
                 saveSettings(stringPreferencesKey(PrefsConstants.BYO_BASE_URL_KEY), event.url.trim())
+                notifyAiRepositorySettingsChanged()
             }
 
             is IntegrationsEvent.ToggleAiTools -> {
