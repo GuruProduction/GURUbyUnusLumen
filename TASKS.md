@@ -33,7 +33,7 @@ GURU goes public end of this week. This is the live board. Update as we go.
 
 - [x] AGPL-3.0 licence file confirmed on app repo
 - [x] Trademark notice on app repo
-- [ ] Legacy cruft swept from the codebase
+- [x] Legacy cruft swept from the codebase (33 cerebrum-dwm .bak/.checkpoint files, "gradlew 2", .DS_Store — swept 2026-09-21, .gitignore now blocks their return)
 - [x] Build guide (BUILD.md) reviewed and committed
 - [ ] Security policy (SECURITY.md) reviewed and committed
 - [x] README cross-checked against final app state
