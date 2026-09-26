@@ -153,6 +153,7 @@ import com.unuslumen.app.preferences.domain.use_case.GetPreferenceUseCase
 import com.unuslumen.app.preferences.domain.use_case.SavePreferenceUseCase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
@@ -206,6 +207,15 @@ class AiRepositoryImpl(
 
     companion object {
         // AGI doesn't have timeouts
+
+        /**
+         * Process-wide count of LLM sends currently in flight. AiRepository is a
+         * Koin @Factory, so per-instance state would not be shared between the
+         * ViewModel's copy and background workers' copies; a companion counter is
+         * the only shared signal. The heartbeat gate reads it to stand down while
+         * a human chat is live.
+         */
+        val sendsInFlight = java.util.concurrent.atomic.AtomicInteger(0)
     }
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -673,6 +683,20 @@ class AiRepositoryImpl(
 
     @OptIn(InternalAgentToolsApi::class)
     override fun sendMessage(messages: List<AiMessage>, conversationId: String?): Flow<AiMessage> = flow {
+        // Process-wide send accounting so the heartbeat gate can stand down
+        // while any send (human chat or beat) is in flight. The real send
+        // implementation is sendMessageFlow below; this wrapper adds only the
+        // counter, incremented/decremented on every exit path.
+        sendsInFlight.incrementAndGet()
+        try {
+            emitAll(sendMessageFlow(messages, conversationId))
+        } finally {
+            sendsInFlight.decrementAndGet()
+        }
+    }
+
+    /** The actual chat pipeline. Wrapped by [sendMessage] for send accounting. */
+    private fun sendMessageFlow(messages: List<AiMessage>, conversationId: String?): Flow<AiMessage> = flow {
         val model =
             llModel ?: throw AiRepositoryException(PortalResult.OtherError("Model not selected"))
         val executor = llmExecutor
