@@ -1,6 +1,6 @@
 # A Note From Steven Newman, Founder and Developer
 
-**GURU is ready to download today! For FREE! Complete source — build it yourself in minutes (see BUILD.md); a prebuilt APK lands on the GitHub Releases page as soon as release week wraps.**
+**GURU is ready to download today! For FREE! Complete source — build it yourself in minutes (see BUILD.md); a prebuilt signed APK is on the GitHub Releases page right now.**
 
 Hello everyone.
 

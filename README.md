@@ -19,7 +19,7 @@
 
 **GURU, a Self Evolving, AI powered android OS… GURU is Your friend: a first of its kind digital relationship with a super-intelligent, deeply personal, radically private AI entity that has one owner. YOU. Your best friend, the genius, who happens to live on your phone.**
 
-> **GURU is free.** Fully free and open source under AGPL-3.0. No accounts, no subscription, no tether. Bring your own model — an API key for a flagship model or a local LLM on your own hardware and GURU belongs to everyone. Full app source publishes end of this week; see the [Roadmap](ROADMAP.md) for the run to release.
+> **GURU is free.** Fully free and open source under AGPL-3.0. No accounts, no subscription, no tether. Bring your own model — an API key for a flagship model or a local LLM on your own hardware and GURU belongs to everyone. Full app source is out now in this repo; grab the prebuilt APK from [Releases](../../releases), or build it yourself with the [Build guide](BUILD.md).
 
 ## What GURU does
 
@@ -50,13 +50,14 @@ We test the limits on what AI is capable of because we know the possibilities ar
 
 GURU is free. Fully free and open source. There is no premium tier, no subscription, no tether. No accounts, no login, nothing to sign up for.
 
-**Honest state of the code: this is a public beta.** The full app source publishes end of this week and the security hardening pass is still in progress: the permission boundaries, the on-device encryption and the Tor routing have not yet had a professional audit. There are known bugs, especially in areas outside the author's own daily use, and this build has not been hammered across the full range of Android devices and versions. So the first people to download GURU are the beta testers, plain and simple: install it knowing that, report what you find, and you're helping to ship it. Every issue raised here helps.
+**Honest state of the code: this is a public beta.** The full app source is out now in this repo and the security hardening pass is still in progress: the permission boundaries, the on-device encryption and the Tor routing have not yet had a professional audit. There are known bugs, especially in areas outside the author's own daily use, and this build has not been hammered across the full range of Android devices and versions. So the first people to download GURU are the beta testers, plain and simple: install it knowing that, report what you find, and you're helping to ship it. Every issue raised here helps.
 
 The app ships under AGPL-3.0. The sync server behind it is Unus Lumen's own infrastructure and stays closed source — a deliberately stateless publisher that holds no accounts and captures no conversations, with nothing to leak either way. Understand what sync means though: the publisher feeds the app. Prompts, skills, packs and agent templates flow over sync, and disconnect from all publishers means GURU still boots but will not work as intended — making it work without ours is a job for technical users (run a compatible publisher of your own, or hand-install the content). The reasoning behind keeping the server private lives in the [Roadmap](ROADMAP.md).
 
 You bring your own model. A GURU install asks once, on first launch, where your model lives: an API key for a flagship model or a local LLM on your own hardware. After that it never asks again.
 
-- App source: publishes end of this week
+- App source: out now in this repo, AGPL-3.0
+- Prebuilt APK: attached to the latest [Release](../../releases), signed, with a SHA-256 checksum so you can verify what you sideload
 - Server: Unus Lumen's publisher infrastructure — stays closed source (reasoning in the [Roadmap](ROADMAP.md)); the sync protocol is plain HTTP. Disconnecting from publishers is possible but leaves the app outside its intended shape — prompts, skills and packs come over sync
 - Licence posture: AGPL-3.0 for the app, GURU name and branding are trademarks of Unus Lumen — forks rename and do not imply endorsement
 - Full run-to-release plan: [Roadmap](ROADMAP.md)
