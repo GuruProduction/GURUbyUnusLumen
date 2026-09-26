@@ -45,6 +45,7 @@ import com.unuslumen.app.presentation.di.TasksPresentationModule
 import com.unuslumen.app.ui.R
 import com.unuslumen.app.data.tor.TorManager
 import com.unuslumen.app.data.memory.HiveMindWorker
+import com.unuslumen.app.data.heartbeat.HeartbeatScheduler
 import com.unuslumen.app.data.brain.BrainScheduler
 import com.unuslumen.app.data.brain.BrainService
 import com.unuslumen.app.data.jobs.JobScheduler
@@ -149,6 +150,7 @@ class GuruApplication : Application() {
 
         HiveMindWorker.schedulePeriodic(this)
         BrainScheduler.schedule(this)
+        HeartbeatScheduler.schedule(this, getPreference)
         brainService.initialise()
 
         // Reschedule all enabled jobs on app startup (belt and braces for reboots)

@@ -75,4 +75,13 @@ object PrefsConstants {
 
     // Permission gate first-launch tracking
     const val PERMISSION_GATE_SHOWN_KEY = "permission_gate_shown"
+
+    // Heartbeat: periodic framework wake for GURU. Enabled by default with a
+    // 30-minute cadence; quiet hours 23:00-08:00 device-local so a sleeping
+    // human's GURU burns nothing. Interval floor is WorkManager's 15-minute
+    // minimum, clamped in HeartbeatScheduler.
+    const val HEARTBEAT_ENABLED_KEY = "heartbeat_enabled"
+    const val HEARTBEAT_INTERVAL_MIN_KEY = "heartbeat_interval_min"
+    const val HEARTBEAT_QUIET_START_HOUR_KEY = "heartbeat_quiet_start_hour"
+    const val HEARTBEAT_QUIET_END_HOUR_KEY = "heartbeat_quiet_end_hour"
 }
