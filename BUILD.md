@@ -90,7 +90,7 @@ The app ships preconnected to the Unus Lumen publisher. First launch just pulls 
 ## Repository layout
 
 ```
-app source and the rest of the app repo: this repository (published at code drop)
+app source and the rest of the app repo: this repository (published here now)
 sync protocol: documented over-the-wire contract, plain HTTP
 publisher server: Unus Lumen infrastructure, closed source (why in ROADMAP.md)
 ```

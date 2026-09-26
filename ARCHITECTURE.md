@@ -4,7 +4,7 @@
 <img src="GURUlogo.png" alt="GURU by Unus Lumen" width="400"/>
 </p>
 
-**GURU is a personal AGI that lives on your phone.** This document describes how the system is actually built: its real modules, the technologies behind each, and the design constraints they obey. It is a structural overview published for transparency. Full app source publishes end of this week at this repository; until then, no source is published, and nothing here is a blueprint for rebuilding it.
+**GURU is a personal AGI that lives on your phone.** This document describes how the system is actually built: its real modules, the technologies behind each, and the design constraints they obey. It is a structural overview published for transparency, and it sits beside the full app source, which is public in this repository. Read the two together.
 
 ---
 
@@ -17,7 +17,7 @@
 
 ## The Project Tree (Top Levels)
 
-The real shape of the source tree, top two levels, with what each part owns. Deeper levels publish with the open-source release at the end of this week.
+The real shape of the source tree, top two levels, with what each part owns. Every level below this is in the repo, go walk it.
 
 ```
 guru/
@@ -144,7 +144,7 @@ Two registries: bundled skills shipped with the app, and dynamic skills that GUR
 - **No cloud storage** — memories, files, conversations, all live and die on the device
 - **Keys on device** — non-custodial wallet, private keys never leave the phone
 - **Tor by default** — external requests route through the fail-closed Tor policy; sync fetches fall back to cached content until Tor is ready
-- **App source open at release** — full app source publishes at this repo end of this week under AGPL-3.0; the publisher server engine stays closed (reasoning above)
+- **App source open** — full app source is published at this repo under AGPL-3.0; the publisher server engine stays closed (reasoning above)
 
 ---
 
