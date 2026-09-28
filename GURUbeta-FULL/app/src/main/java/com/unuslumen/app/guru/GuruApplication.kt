@@ -112,6 +112,7 @@ class GuruApplication : Application() {
                 calendarDataModule,
                 BookmarksPresentationModule().module,
                 bookmarksDataModule,
+                com.unuslumen.app.presentation.thoughts.di.ThoughtsPresentationModule().module,
                 WidgetModule().module,
                 aiDataModule,
                 AiPresentationModule().module,
