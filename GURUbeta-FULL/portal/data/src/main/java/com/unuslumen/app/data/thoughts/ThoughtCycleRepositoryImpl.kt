@@ -5,6 +5,7 @@ import com.unuslumen.app.database.dao.GuruInsightDao
 import com.unuslumen.app.database.entity.GuruThoughtCycleEntity
 import com.unuslumen.app.database.entity.GuruInsightEntity
 import com.unuslumen.app.domain.model.*
+import com.unuslumen.app.domain.memory.MemoryFact
 import com.unuslumen.app.domain.memory.MemoryRepository
 import com.unuslumen.app.domain.repository.AiRepository
 import com.unuslumen.app.domain.repository.ThoughtCycleRepository
@@ -31,6 +32,30 @@ class ThoughtCycleRepositoryImpl(
 ) : ThoughtCycleRepository {
 
     private val json = Json { ignoreUnknownKeys = true }
+
+    init {
+        // Wire the EVENT cycle dispatcher: every real app event flowing through
+        // HookEventBus now resolves and runs matching EVENT-enabled cycles.
+        com.unuslumen.app.data.hooks.HookEventBus.eventCycleDispatcher = { eventType, _ ->
+            val matches = EventBridge.cycleIdsForEvent(this, eventType, json)
+            if (matches.isNotEmpty()) {
+                android.util.Log.d(
+                    "guru_thoughts",
+                    "Event $eventType matched ${matches.size} cycle(s): ${matches.joinToString { it.second }}"
+                )
+                matches.forEach { (cycleId, cycleName) ->
+                    try {
+                        executeCycle(cycleId)
+                    } catch (e: Exception) {
+                        android.util.Log.w(
+                            "guru_thoughts",
+                            "EVENT cycle '$cycleName' run failed: ${e.message}"
+                        )
+                    }
+                }
+            }
+        }
+    }
 
     override suspend fun createCycle(request: CreateThoughtCycleRequest): GuruThoughtCycle = withContext(Dispatchers.IO) {
         val cycle = GuruThoughtCycleEntity(
@@ -103,52 +128,57 @@ class ThoughtCycleRepositoryImpl(
 
     override suspend fun executeCycle(id: String): ThoughtCycleResult {
         val cycle = getCycle(id) ?: throw IllegalArgumentException("Cycle not found: $id")
-        
+
         if (!cycle.enabled) {
             throw IllegalStateException("Thought cycle '${cycle.name}' is disabled")
         }
-        
+
         val startTime = System.currentTimeMillis()
         val insights = mutableListOf<GuruInsight>()
         val actions = mutableListOf<String>()
         val proposals = mutableListOf<String>()
-        
+
         try {
-            // Execute each thought step
+            // Execute each thought step through the live LLM (runStepThroughLlm
+            // builds the step prompt with memory context and parses the strict-JSON
+            // response). Cycle identity is stamped onto every parsed insight BEFORE
+            // persistence so getInsightsByCycle always links records to their cycle.
             for (step in cycle.thoughtProcess) {
-                val stepResult = executeThoughtStep(step, cycle)
-                
+                val stepResult = runStepThroughLlm(step, cycle)
+
                 when (step.type) {
-                    "ANALYZE" -> {
-                        // Analysis generates insights
-                        stepResult.insights.forEach { insight ->
-                            val created = createInsight(insight)
-                            insights.add(created)
-                            cycleDao.incrementInsightCount(id)
-                        }
+                    "ANALYZE", "REFLECT" -> stepResult.insights.forEach { insight ->
+                        val created = createInsight(
+                            insight.copy(cycleId = cycle.id, cycleName = cycle.name)
+                        )
+                        insights.add(created)
+                        cycleDao.incrementInsightCount(id)
                     }
-                    "REFLECT" -> {
-                        // Reflection can generate all types
-                        stepResult.insights.forEach { insight ->
-                            val created = createInsight(insight)
-                            insights.add(created)
-                            cycleDao.incrementInsightCount(id)
-                        }
-                        actions.addAll(stepResult.actions)
-                        proposals.addAll(stepResult.proposals)
+                    else -> {}
+                }
+                when (step.type) {
+                    "SYNTHESIZE" -> stepResult.actions.forEach {
+                        cycleDao.incrementActionCount(id)
                     }
-                    "SYNTHESIZE" -> {
-                        // Synthesis combines insights
-                        actions.addAll(stepResult.actions)
+                    "REFLECT" -> stepResult.actions.forEach {
+                        cycleDao.incrementActionCount(id)
                     }
-                    "PROPOSE" -> {
-                        // Proposals for changes
-                        proposals.addAll(stepResult.proposals)
+                    else -> {}
+                }
+                when (step.type) {
+                    "PROPOSE" -> stepResult.proposals.forEach {
                         cycleDao.incrementProposalCount(id)
                     }
+                    else -> {}
                 }
+                actions.addAll(stepResult.actions)
+                proposals.addAll(stepResult.proposals)
             }
-            
+
+            // Output-type routing: the cycle's declared outputType decides where
+            // the run's results LAND, on top of the per-step persistence above.
+            routeOutputs(cycle, insights, actions, proposals)
+
             val executionTime = System.currentTimeMillis() - startTime
             recordRun(id, "Success: ${insights.size} insights, ${actions.size} actions, ${proposals.size} proposals")
             
@@ -366,7 +396,9 @@ class ThoughtCycleRepositoryImpl(
             is PortalResult.Success -> {
                 val text = answer.data.trim()
                 if (text.isBlank()) return StepResult()
-                val result = parseStepJson(text) ?: return StepResult()
+                // Parse the strict-JSON response. parseStepJson is total (never null);
+                // the ?: is harmless but silenced here since the compiler flags it.
+                val result = parseStepJson(text)
                 // Each genuine insight that parses is returned; executeCycle persists them.
                 return result
             }
@@ -434,25 +466,85 @@ class ThoughtCycleRepositoryImpl(
         return StepResult(insights = insights, actions = actions, proposals = proposals)
     }
 
-    private suspend fun executeThoughtStep(step: ThoughtStep, cycle: GuruThoughtCycle): StepResult {
-        // This is a simplified implementation
-        // In a real implementation, this would use the LLM to execute the thought step
-        // and generate insights, actions, or proposals based on the step type
-        
-        return when (step.type) {
-            "ANALYZE" -> {
-                // Generate insights based on analysis
-                StepResult(
-                    insights = listOf(
+    /**
+     * Output-type routing (the declared outputType decides where run results
+     * land, on top of the per-step persistence executeCycle already does):
+     *
+     *  - INSIGHT: nothing extra; insights were persisted per step above.
+     *  - MEMORY:  each insight content and proposal becomes a durable memory
+     *             fact in the memory store (category "thought_cycle"), source
+     *             tagged with the cycle name so HiveMind and context building
+     *             pick it up like any other fact.
+     *  - PROPOSAL: each proposal text is recorded as an unacknowledged,
+     *             dismissable insight record so it surfaces in the existing
+     *             insight review UI, marked as a cycle proposal.
+     *  - ACTION:  actions are recorded (incrementActionCount above) and made
+     *             visible as actionable insights so a human can approve them;
+     *             GURU NEVER silently executes device actions from a thought
+     *             run. Propose-only semantics, by design.
+     */
+    private suspend fun routeOutputs(
+        cycle: GuruThoughtCycle,
+        insights: List<GuruInsight>,
+        actions: List<String>,
+        proposals: List<String>
+    ) {
+        when (cycle.outputType) {
+            ThoughtOutputType.INSIGHT -> {
+                // Already handled per-step.
+            }
+            ThoughtOutputType.MEMORY -> {
+                val facts = buildList {
+                    insights.forEach { insight ->
+                        add(
+                            MemoryFact(
+                                id = "tc_${cycle.name}_${insight.id}",
+                                category = "thought_cycle",
+                                fact = insight.content,
+                                confidence = insight.confidence,
+                                sourceConversationIds = emptyList(),
+                                extractedDate = System.currentTimeMillis(),
+                                source = cycle.name
+                            )
+                        )
+                    }
+                    proposals.forEach { proposal ->
+                        add(
+                            MemoryFact(
+                                id = "tc_${cycle.name}_prop_${proposal.hashCode()}",
+                                category = "thought_cycle",
+                                fact = proposal,
+                                confidence = 0.7f,
+                                sourceConversationIds = emptyList(),
+                                extractedDate = System.currentTimeMillis(),
+                                source = cycle.name
+                            )
+                        )
+                    }
+                }
+                if (facts.isNotEmpty()) {
+                    try {
+                        memoryRepository.persistFacts(facts)
+                    } catch (e: Exception) {
+                        android.util.Log.w(
+                            "guru_thoughts",
+                            "MEMORY output persistence failed for '${cycle.name}': ${e.message}"
+                        )
+                    }
+                }
+            }
+            ThoughtOutputType.PROPOSAL -> {
+                proposals.forEach { proposal ->
+                    createInsight(
                         GuruInsight(
                             id = Uuid.random().toString(),
                             cycleId = cycle.id,
                             cycleName = cycle.name,
-                            type = InsightType.PATTERN,
-                            title = "Pattern detected",
-                            content = "Analysis of ${step.input} revealed patterns",
-                            confidence = 0.8f,
-                            source = "{}",
+                            type = InsightType.SUGGESTION,
+                            title = "Proposal from ${cycle.displayName}",
+                            content = proposal,
+                            confidence = 0.75f,
+                            source = "thought_cycle",
                             actionable = false,
                             actionTaken = false,
                             actionType = null,
@@ -462,20 +554,23 @@ class ThoughtCycleRepositoryImpl(
                             dismissedAt = null
                         )
                     )
-                )
+                }
             }
-            "REFLECT" -> {
-                StepResult(
-                    insights = listOf(
+            ThoughtOutputType.ACTION -> {
+                // Actions already recorded and counted above; additionally each
+                // action text is surfaced as an actionable insight awaiting human
+                // approval, so nothing executes silently.
+                actions.forEach { action ->
+                    createInsight(
                         GuruInsight(
                             id = Uuid.random().toString(),
                             cycleId = cycle.id,
                             cycleName = cycle.name,
                             type = InsightType.SUGGESTION,
-                            title = "Reflection insight",
-                            content = "Reflection on ${step.input} generated suggestions",
-                            confidence = 0.7f,
-                            source = "{}",
+                            title = "Proposed action from ${cycle.displayName}",
+                            content = action,
+                            confidence = 0.75f,
+                            source = "thought_cycle",
                             actionable = true,
                             actionTaken = false,
                             actionType = null,
@@ -484,22 +579,9 @@ class ThoughtCycleRepositoryImpl(
                             acknowledgedAt = null,
                             dismissedAt = null
                         )
-                    ),
-                    actions = listOf("Suggested action from reflection"),
-                    proposals = listOf("Suggested proposal from reflection")
-                )
+                    )
+                }
             }
-            "SYNTHESIZE" -> {
-                StepResult(
-                    actions = listOf("Synthesized action from ${step.input}")
-                )
-            }
-            "PROPOSE" -> {
-                StepResult(
-                    proposals = listOf("Proposal: ${step.input}")
-                )
-            }
-            else -> StepResult()
         }
     }
 
