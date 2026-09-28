@@ -15,8 +15,8 @@ android {
         applicationId = "com.unuslumen.app.gurubeta"
         minSdk = 26
         targetSdk = 35
-        versionCode = 23
-        versionName = "3.5.0"
+        versionCode = 24
+        versionName = "3.5.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -171,6 +171,24 @@ dependencies {
     implementation(libs.ktor.logging)
 
     implementation(libs.squircle.shape)
+}
+
+// KSP order fix: app's koin-ksp pass reads the classes.jar published by the
+// thoughts:presentation AAR (ThoughtsPresentationModule). That jar is built
+// by the module's bundleLibCompileToJarDebug task; without an explicit
+// dependency, Gradle can run app:kspDebugKotlin against a stale or missing
+// jar and KSP throws FileNotFoundException. Enforce the order.
+androidComponents {
+    onVariants { variant ->
+        tasks.matching { task ->
+            task.name == "ksp${variant.name.replaceFirstChar { c -> c.uppercase() }}Kotlin"
+        }.configureEach {
+            dependsOn(project(":thoughts:presentation").tasks.matching { t ->
+                t.name == "bundle${variant.name.replaceFirstChar { c -> c.uppercase() }}ToJarDebug" ||
+                    t.name == "bundleLibCompileToJarDebug"
+            })
+        }
+    }
 }
 
 
