@@ -150,7 +150,7 @@ class GuruApplication : Application() {
         HiveMindWorker.schedulePeriodic(this)
         BrainScheduler.schedule(this)
         com.unuslumen.app.data.heartbeat.HeartbeatScheduler.schedule(this)
-        com.unuslumen.app.data.thoughts.ThoughtCycleScheduler.schedule(this)
+        com.unuslumen.app.thoughts.data.thoughts.ThoughtCycleScheduler.schedule(this)
         brainService.initialise()
 
         // Reschedule all enabled jobs on app startup (belt and braces for reboots)

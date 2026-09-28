@@ -209,6 +209,10 @@ tasks.named("preBuild") {
 
 dependencies {
     implementation(project(":portal:domain"))
+    // The thought-cycle engine and its models moved to the thoughts module;
+    // portal dispatches cycles through these (EventCycleBus seam + engine).
+    implementation(project(":thoughts:data"))
+    implementation(project(":thoughts:domain"))
     implementation(project(":core:preferences"))
     implementation(project(":core:database"))
     implementation(project(":core:util"))

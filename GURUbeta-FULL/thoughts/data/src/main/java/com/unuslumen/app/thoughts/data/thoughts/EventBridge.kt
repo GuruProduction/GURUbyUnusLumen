@@ -1,10 +1,10 @@
-package com.unuslumen.app.data.thoughts
+package com.unuslumen.app.thoughts.data.thoughts
 
 import android.util.Log
-import com.unuslumen.app.domain.model.EventThoughtConfig
+import com.unuslumen.app.thoughts.domain.model.EventThoughtConfig
 import com.unuslumen.app.domain.model.HookEventType
-import com.unuslumen.app.domain.model.ThoughtTriggerType
-import com.unuslumen.app.domain.repository.ThoughtCycleRepository
+import com.unuslumen.app.thoughts.domain.model.ThoughtTriggerType
+import com.unuslumen.app.thoughts.domain.repository.ThoughtCycleRepository
 import kotlinx.serialization.json.Json
 
 /**

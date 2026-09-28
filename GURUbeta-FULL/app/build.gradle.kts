@@ -15,8 +15,8 @@ android {
         applicationId = "com.unuslumen.app.gurubeta"
         minSdk = 26
         targetSdk = 35
-        versionCode = 21
-        versionName = "3.3.0"
+        versionCode = 22
+        versionName = "3.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -112,6 +112,7 @@ dependencies {
     implementation(project(":journal:presentation"))
     implementation(project(":settings:presentation"))
     implementation(project(":portal:presentation"))
+    implementation(project(":thoughts:presentation"))
     implementation(project(":adspace"))
 
     implementation(project(":notes:data"))
@@ -120,12 +121,14 @@ dependencies {
     implementation(project(":journal:data"))
     implementation(project(":calendar:data"))
     implementation(project(":portal:data"))
+    implementation(project(":thoughts:data"))
     implementation(project(":settings:data"))
 
     implementation(project(":tasks:domain"))
     implementation(project(":calendar:domain"))
     implementation(project(":journal:domain"))
     implementation(project(":portal:domain"))
+    implementation(project(":thoughts:domain"))
     implementation(project(":Projects:domain"))
 
     implementation(project(":core:notification"))

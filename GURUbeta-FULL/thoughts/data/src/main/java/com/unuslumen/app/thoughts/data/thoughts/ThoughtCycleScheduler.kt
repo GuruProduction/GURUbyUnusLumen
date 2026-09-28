@@ -1,4 +1,4 @@
-package com.unuslumen.app.data.thoughts
+package com.unuslumen.app.thoughts.data.thoughts
 
 import android.content.Context
 import android.util.Log

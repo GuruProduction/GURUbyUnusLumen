@@ -1,6 +1,7 @@
-package com.unuslumen.app.domain.repository
+package com.unuslumen.app.thoughts.domain.repository
 
-import com.unuslumen.app.domain.model.*
+import com.unuslumen.app.thoughts.domain.model.*
+import com.unuslumen.app.domain.repository.ValidationResult
 import kotlinx.coroutines.flow.Flow
 
 interface ThoughtCycleRepository {
