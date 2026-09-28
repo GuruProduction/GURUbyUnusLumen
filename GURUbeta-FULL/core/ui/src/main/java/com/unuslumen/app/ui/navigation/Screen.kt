@@ -95,4 +95,8 @@ sealed class Screen {
 
     @Serializable
     data object SkillsScreen : Screen()
+
+    // Thought cycles — the background reflection engine's own screens
+    @Serializable
+    data object ThoughtCyclesScreen : Screen()
 }

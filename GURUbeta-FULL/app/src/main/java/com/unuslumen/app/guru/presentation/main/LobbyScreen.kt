@@ -56,6 +56,7 @@ private val TintSettings = Color(0xFFDEDAD3)
 private val TintSkills = Color(0xFFD2E2E6)
 private val TintNotes = Color(0xFFDDE3D1)
 private val TintJournal = Color(0xFFE3D6DB)
+private val TintThoughts = Color(0xFFEFD9C6)
 
 /** Header label + divider colours straight from the portal's ink. */
 private val PortalInk = DarkGray
@@ -177,6 +178,15 @@ fun LobbyScreen(
                         image = R.drawable.lobby_settings,
                         tint = TintSettings,
                         onClick = { navController.navigate(Screen.SettingsScreen) }
+                    )
+                }
+                item {
+                    LobbyCard(
+                        title = stringResource(R.string.thoughts),
+                        image = R.drawable.lobby_thoughts,
+                        tint = TintThoughts,
+                        badgeCount = counts.thoughts,
+                        onClick = { navController.navigate(Screen.ThoughtCyclesScreen) }
                     )
                 }
                 item {

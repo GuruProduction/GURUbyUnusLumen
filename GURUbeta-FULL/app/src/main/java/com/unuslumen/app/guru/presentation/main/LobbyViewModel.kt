@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.unuslumen.app.domain.repository.CalendarRepository
 import com.unuslumen.app.domain.repository.LuxifyRepository
 import com.unuslumen.app.domain.repository.ProjectRepository
+import com.unuslumen.app.thoughts.domain.repository.ThoughtCycleRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -24,8 +25,9 @@ import java.time.ZoneId
  * - projects = currently active AI workspace projects
  * - calendar = events scheduled for today
  * - skills   = installed Luxify skills
+ * - thoughts = unacknowledged insights waiting from background cycles
  *
- * Two counts ride repository Flows and update live as data changes.
+ * Counts ride repository Flows and update live as data changes.
  * Today's calendar count is a ranged query re-run when the Lobby is entered.
  * No hardcoded numbers anywhere.
  */
@@ -34,12 +36,14 @@ class LobbyViewModel(
     private val projectRepository: ProjectRepository,
     private val calendarRepository: CalendarRepository,
     private val luxifyRepository: LuxifyRepository,
+    private val thoughtCycleRepository: ThoughtCycleRepository,
 ) : ViewModel() {
 
     data class LobbyCounts(
         val projects: Int = 0,
         val calendarToday: Int = 0,
         val skills: Int = 0,
+        val thoughts: Int = 0,
     )
 
     /** Today's calendar count lives outside the combine because it is a
@@ -49,10 +53,14 @@ class LobbyViewModel(
     private val flowCounts = combine(
         projectRepository.getActiveProjects().map { it.size },
         luxifyRepository.getAllSkillsFlow().map { it.size },
-    ) { projects, skills ->
+        thoughtCycleRepository.getAllInsightsFlow().map { insights ->
+            insights.count { it.acknowledgedAt == null && it.dismissedAt == null }
+        },
+    ) { projects, skills, thoughts ->
         LobbyCounts(
             projects = projects,
             skills = skills,
+            thoughts = thoughts,
         )
     }
 

@@ -394,6 +394,14 @@ fun guruApp(
                 ) {
                     SkillsScreen(navController = navController)
                 }
+                composable<Screen.ThoughtCyclesScreen>(
+                    enterTransition = { slideInTransition() },
+                    exitTransition = { slideOutTransition() },
+                ) {
+                    com.unuslumen.app.presentation.thoughts.ThoughtCyclesScreen(
+                        navController = navController
+                    )
+                }
             }
             if (!appUnlocked) {
                 AuthScreen {
