@@ -1,11 +1,12 @@
 package com.unuslumen.app.data.tools
 
 import com.unuslumen.app.data.tools.registry.ToolResultData
+import com.unuslumen.app.thoughts.domain.model.ThoughtCyclesSummary
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
 
 @Serializable data class CreateThoughtCycleResult(val cycleId: String, val name: String, val displayName: String, val triggerType: String, val outputType: String, val enabled: Boolean, val message: String) : ToolResultData
-@Serializable data class ListThoughtCyclesResult(val cycles: List<ThoughtCycleInfo>, val summary: com.unuslumen.app.domain.model.ThoughtCyclesSummary) : ToolResultData
+@Serializable data class ListThoughtCyclesResult(val cycles: List<ThoughtCycleInfo>, val summary: ThoughtCyclesSummary) : ToolResultData
 @Serializable data class ThoughtCycleInfo(val id: String, val name: String, val displayName: String, val description: String, val triggerType: String, val outputType: String, val enabled: Boolean, val runCount: Int, val insightCount: Int) : ToolResultData
 @Serializable data class GetThoughtCycleResult(val cycle: ThoughtCycleDetails) : ToolResultData
 @Serializable data class ThoughtCycleDetails(val id: String, val name: String, val displayName: String, val description: String, val triggerType: String, val triggerConfig: String, val thoughtProcess: List<Map<String, @Contextual Any>>, val outputType: String, val outputConfig: String?, val enabled: Boolean, val runCount: Int, val insightCount: Int, val actionCount: Int, val proposalCount: Int, val createdAt: Long, val lastRunAt: Long?, val lastResult: String?) : ToolResultData

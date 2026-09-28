@@ -1,4 +1,4 @@
-package com.unuslumen.app.domain.model
+package com.unuslumen.app.thoughts.domain.model
 
 import kotlinx.serialization.Serializable
 

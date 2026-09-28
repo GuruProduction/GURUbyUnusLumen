@@ -90,11 +90,11 @@ import com.unuslumen.app.data.memory.LocalEmbeddingService
 import com.unuslumen.app.data.memory.MemoryRepositoryImpl
 import com.unuslumen.app.data.memory.VectorSearchEngine
 import com.unuslumen.app.data.prompt.PromptRepositoryImpl
-import com.unuslumen.app.data.thoughts.ThoughtCycleRepositoryImpl
+import com.unuslumen.app.thoughts.data.di.thoughtsDataModule
+import com.unuslumen.app.thoughts.domain.repository.ThoughtCycleRepository
 import com.unuslumen.app.data.repository.UnusLumenStreamingClient
 import com.unuslumen.app.domain.memory.MemoryRepository
 import com.unuslumen.app.domain.repository.PromptRepository
-import com.unuslumen.app.domain.repository.ThoughtCycleRepository
 import com.unuslumen.app.domain.di.AiDomainModule
 import org.koin.core.annotation.ComponentScan
 import org.koin.core.annotation.Module
@@ -111,7 +111,7 @@ internal class AiDataModule
 // registry infrastructure at com.unuslumen.app.data.tools.registry.* and per-tool-set Definitions/Executor/Results files.
 
 val aiDataModule = module {
-    includes(AiDomainModule().module, AiDataModule().module)
+    includes(AiDomainModule().module, AiDataModule().module, thoughtsDataModule)
 
     // NoteToolSet migrated to registry — see NoteToolExecutor
     // TaskToolSet migrated to registry — see TaskToolExecutor
@@ -199,7 +199,7 @@ val aiDataModule = module {
 
     single<MemoryRepository> { MemoryRepositoryImpl(get(), get(), get(), get(), get(), get(), get(), get()) }
     single<PromptRepository> { PromptRepositoryImpl(get(), get()) }
-    single<ThoughtCycleRepository> { ThoughtCycleRepositoryImpl(get(), get(), get(), get()) }
+    // ThoughtCycleRepository binding lives in thoughtsDataModule (thoughts module) — see ThoughtsDataModule.kt
     factory { ContextBuilder(get(), get(), get(), get()) }
 
     factory { com.unuslumen.app.domain.use_case.CreateProjectUseCase(get()) }

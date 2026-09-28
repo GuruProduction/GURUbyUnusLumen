@@ -1,14 +1,14 @@
-package com.unuslumen.app.data.thoughts
+package com.unuslumen.app.thoughts.data.thoughts
 
 import android.content.Context
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
-import com.unuslumen.app.domain.model.ScheduledThoughtConfig
-import com.unuslumen.app.domain.model.ThresholdThoughtConfig
-import com.unuslumen.app.domain.model.ThoughtOutputType
-import com.unuslumen.app.domain.model.ThoughtTriggerType
-import com.unuslumen.app.domain.repository.ThoughtCycleRepository
+import com.unuslumen.app.thoughts.domain.model.ScheduledThoughtConfig
+import com.unuslumen.app.thoughts.domain.model.ThresholdThoughtConfig
+import com.unuslumen.app.thoughts.domain.model.ThoughtOutputType
+import com.unuslumen.app.thoughts.domain.model.ThoughtTriggerType
+import com.unuslumen.app.thoughts.domain.repository.ThoughtCycleRepository
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 import kotlinx.serialization.json.Json
@@ -44,9 +44,9 @@ class ThoughtCycleWorker(
     private val metrics: DeviceMetrics.DataSource by lazy {
         DeviceMetrics.InAppMetrics(
             context = applicationContext,
-            jobDao = com.unuslumen.app.data.thoughts.ThoughtCycleProvider.jobDao(),
-            insightDao = com.unuslumen.app.data.thoughts.ThoughtCycleProvider.insightDao(),
-            memoryRepository = com.unuslumen.app.data.thoughts.ThoughtCycleProvider.memoryRepository()
+            jobDao = com.unuslumen.app.thoughts.data.thoughts.ThoughtCycleProvider.jobDao(),
+            insightDao = com.unuslumen.app.thoughts.data.thoughts.ThoughtCycleProvider.insightDao(),
+            memoryRepository = com.unuslumen.app.thoughts.data.thoughts.ThoughtCycleProvider.memoryRepository()
         )
     }
     private val json = Json { ignoreUnknownKeys = true }
@@ -93,7 +93,7 @@ class ThoughtCycleWorker(
      * against the configured interval. THRESHOLD evaluates metric/operator/
      * value plus cooldown. Anything else is skipped upstream.
      */
-    private suspend fun isDue(cycle: com.unuslumen.app.domain.model.GuruThoughtCycle, now: Long): Boolean {
+    private suspend fun isDue(cycle: com.unuslumen.app.thoughts.domain.model.GuruThoughtCycle, now: Long): Boolean {
         return when (cycle.triggerType) {
             ThoughtTriggerType.SCHEDULED -> {
                 val config = try {

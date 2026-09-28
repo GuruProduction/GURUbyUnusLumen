@@ -1,7 +1,7 @@
-package com.unuslumen.app.domain.use_case
+package com.unuslumen.app.thoughts.domain.use_case
 
-import com.unuslumen.app.domain.model.ThoughtCycleResult
-import com.unuslumen.app.domain.repository.ThoughtCycleRepository
+import com.unuslumen.app.thoughts.domain.model.ThoughtCycleResult
+import com.unuslumen.app.thoughts.domain.repository.ThoughtCycleRepository
 import org.koin.core.annotation.Factory
 
 @Factory

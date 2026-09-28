@@ -1,14 +1,15 @@
-package com.unuslumen.app.data.thoughts
+package com.unuslumen.app.thoughts.data.thoughts
 
 import com.unuslumen.app.database.dao.GuruThoughtCycleDao
 import com.unuslumen.app.database.dao.GuruInsightDao
 import com.unuslumen.app.database.entity.GuruThoughtCycleEntity
 import com.unuslumen.app.database.entity.GuruInsightEntity
-import com.unuslumen.app.domain.model.*
+import com.unuslumen.app.thoughts.domain.model.*
+import com.unuslumen.app.domain.model.PortalResult
 import com.unuslumen.app.domain.memory.MemoryFact
 import com.unuslumen.app.domain.memory.MemoryRepository
 import com.unuslumen.app.domain.repository.AiRepository
-import com.unuslumen.app.domain.repository.ThoughtCycleRepository
+import com.unuslumen.app.thoughts.domain.repository.ThoughtCycleRepository
 import com.unuslumen.app.domain.repository.ValidationResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -34,9 +35,12 @@ class ThoughtCycleRepositoryImpl(
     private val json = Json { ignoreUnknownKeys = true }
 
     init {
-        // Wire the EVENT cycle dispatcher: every real app event flowing through
-        // HookEventBus now resolves and runs matching EVENT-enabled cycles.
-        com.unuslumen.app.data.hooks.HookEventBus.eventCycleDispatcher = { eventType, _ ->
+        // Wire the EVENT cycle dispatcher through the portal-domain seam:
+        // every real app event fired by HookEventBus (portal-data) resolves and
+        // runs matching EVENT-enabled cycles here (thoughts-data). The seam
+        // exists because portal-data and thoughts-data may not depend on each
+        // other — see EventCycleBus.
+        com.unuslumen.app.domain.hooks.EventCycleBus.dispatcher = { eventType, _ ->
             val matches = EventBridge.cycleIdsForEvent(this, eventType, json)
             if (matches.isNotEmpty()) {
                 android.util.Log.d(

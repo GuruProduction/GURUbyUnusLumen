@@ -44,9 +44,6 @@ object HookEventBus {
     private var scope: CoroutineScope? = null
     private val fireMutex = Mutex()
 
-    /** EVENT cycle dispatcher, set by ThoughtCycleRepositoryImpl at init. Null = none (cycles are skipped until wired). */
-    internal var eventCycleDispatcher: (suspend (HookEventType, Map<String, Any?>) -> Unit)? = null
-
     /** Called once from Koin module wiring (Application init) — safe to call before any fires. */
     fun init(repository: HookRepository, coroutineScope: CoroutineScope) {
         hookRepository = repository
@@ -84,10 +81,11 @@ object HookEventBus {
                 Log.w("guru_hooks", "Hook dispatch failed for $eventType: ${e.message}")
             }
 
-            // EVENT thought cycles ride the same real events. Isolated below the
-            // hooks pipeline so cycle failures can never touch hook results.
+            // EVENT thought cycles ride the same real events, through the
+            // portal-domain seam (EventCycleBus). Isolated below the hooks
+            // pipeline so cycle failures can never touch hook results.
             try {
-                eventCycleDispatcher?.invoke(eventType, data)
+                com.unuslumen.app.domain.hooks.EventCycleBus.dispatch(eventType, data)
             } catch (e: Exception) {
                 Log.w("guru_hooks", "Thought cycle dispatch failed for $eventType: ${e.message}")
             }

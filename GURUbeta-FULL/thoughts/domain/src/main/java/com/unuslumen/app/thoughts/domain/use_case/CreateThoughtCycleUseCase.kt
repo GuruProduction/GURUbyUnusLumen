@@ -1,8 +1,8 @@
-package com.unuslumen.app.domain.use_case
+package com.unuslumen.app.thoughts.domain.use_case
 
-import com.unuslumen.app.domain.model.CreateThoughtCycleRequest
-import com.unuslumen.app.domain.model.GuruThoughtCycle
-import com.unuslumen.app.domain.repository.ThoughtCycleRepository
+import com.unuslumen.app.thoughts.domain.model.CreateThoughtCycleRequest
+import com.unuslumen.app.thoughts.domain.model.GuruThoughtCycle
+import com.unuslumen.app.thoughts.domain.repository.ThoughtCycleRepository
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -23,13 +23,13 @@ class CreateThoughtCycleUseCase(
         outputConfig: String?
     ): Result<GuruThoughtCycle> = runCatching {
         val type = try {
-            com.unuslumen.app.domain.model.ThoughtTriggerType.valueOf(triggerType.uppercase())
+            com.unuslumen.app.thoughts.domain.model.ThoughtTriggerType.valueOf(triggerType.uppercase())
         } catch (e: IllegalArgumentException) {
             throw IllegalArgumentException("Invalid trigger type: $triggerType")
         }
         
         val output = try {
-            com.unuslumen.app.domain.model.ThoughtOutputType.valueOf(outputType.uppercase())
+            com.unuslumen.app.thoughts.domain.model.ThoughtOutputType.valueOf(outputType.uppercase())
         } catch (e: IllegalArgumentException) {
             throw IllegalArgumentException("Invalid output type: $outputType")
         }
@@ -39,7 +39,7 @@ class CreateThoughtCycleUseCase(
             val array = json.parseToJsonElement(thoughtProcessJson).jsonArray
             array.map { element ->
                 val obj = element.jsonObject
-                com.unuslumen.app.domain.model.ThoughtStep(
+                com.unuslumen.app.thoughts.domain.model.ThoughtStep(
                     type = obj["type"]?.jsonPrimitive?.content ?: "",
                     input = obj["input"]?.jsonPrimitive?.content ?: "",
                     params = obj["params"]?.jsonObject?.mapValues { it.value.jsonPrimitive.content } ?: emptyMap()

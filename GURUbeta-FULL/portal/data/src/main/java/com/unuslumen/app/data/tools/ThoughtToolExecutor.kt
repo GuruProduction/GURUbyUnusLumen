@@ -2,10 +2,10 @@ package com.unuslumen.app.data.tools
 
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
-import com.unuslumen.app.domain.model.InsightType
-import com.unuslumen.app.domain.model.ThoughtOutputType
-import com.unuslumen.app.domain.model.ThoughtTriggerType
-import com.unuslumen.app.domain.repository.ThoughtCycleRepository
+import com.unuslumen.app.thoughts.domain.model.InsightType
+import com.unuslumen.app.thoughts.domain.model.ThoughtOutputType
+import com.unuslumen.app.thoughts.domain.model.ThoughtTriggerType
+import com.unuslumen.app.thoughts.domain.repository.ThoughtCycleRepository
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -14,8 +14,8 @@ import kotlinx.serialization.json.jsonPrimitive
 class ThoughtToolExecutor(private val thoughtCycleRepository: ThoughtCycleRepository) : ToolExecutor {
     private val json = Json { ignoreUnknownKeys = true }
 
-    private fun com.unuslumen.app.domain.model.GuruThoughtCycle.toInfo() = ThoughtCycleInfo(id, name, displayName, description, triggerType.name, outputType.name, enabled, runCount, insightCount)
-    private fun com.unuslumen.app.domain.model.GuruInsight.toInfo() = InsightInfo(id, type.name, title, content, confidence, actionable, actionTaken, createdAt)
+    private fun com.unuslumen.app.thoughts.domain.model.GuruThoughtCycle.toInfo() = ThoughtCycleInfo(id, name, displayName, description, triggerType.name, outputType.name, enabled, runCount, insightCount)
+    private fun com.unuslumen.app.thoughts.domain.model.GuruInsight.toInfo() = InsightInfo(id, type.name, title, content, confidence, actionable, actionTaken, createdAt)
 
     override suspend fun execute(toolName: String, args: Map<String, Any?>): ToolExecutionResult = when (toolName) {
         ThoughtToolDefinitions.CREATE_THOUGHT_CYCLE -> createCycle(args)
@@ -61,7 +61,7 @@ class ThoughtToolExecutor(private val thoughtCycleRepository: ThoughtCycleReposi
         // thoughtProcess accepts a JSON array whose elements are EITHER plain strings
         // (treated as step input, type defaults to ANALYZE) or step objects with
         // {type, input, params: {key: value}}. Bare strings or top-level objects die here.
-        val parsedProcess: MutableList<com.unuslumen.app.domain.model.ThoughtStep> = mutableListOf()
+        val parsedProcess: MutableList<com.unuslumen.app.thoughts.domain.model.ThoughtStep> = mutableListOf()
         try {
             val root = json.parseToJsonElement(normalize(thoughtProcessRaw))
             if (root !is kotlinx.serialization.json.JsonArray) {
@@ -74,7 +74,7 @@ class ThoughtToolExecutor(private val thoughtCycleRepository: ThoughtCycleReposi
                 when (el) {
                     is kotlinx.serialization.json.JsonPrimitive -> {
                         parsedProcess.add(
-                            com.unuslumen.app.domain.model.ThoughtStep(
+                            com.unuslumen.app.thoughts.domain.model.ThoughtStep(
                                 type = "ANALYZE",
                                 input = el.jsonPrimitive.content,
                                 params = emptyMap()
@@ -84,7 +84,7 @@ class ThoughtToolExecutor(private val thoughtCycleRepository: ThoughtCycleReposi
                     is kotlinx.serialization.json.JsonObject -> {
                         val o = el.jsonObject
                         parsedProcess.add(
-                            com.unuslumen.app.domain.model.ThoughtStep(
+                            com.unuslumen.app.thoughts.domain.model.ThoughtStep(
                                 type = o["type"]?.jsonPrimitive?.content ?: "ANALYZE",
                                 input = o["input"]?.jsonPrimitive?.content ?: "",
                                 params = o["params"]?.jsonObject?.mapValues { it.value.jsonPrimitive.content } ?: emptyMap()
@@ -103,7 +103,7 @@ class ThoughtToolExecutor(private val thoughtCycleRepository: ThoughtCycleReposi
             )
         }
 
-        val req = com.unuslumen.app.domain.model.CreateThoughtCycleRequest(name, displayName, description, type, triggerConfig, parsedProcess, output, outputConfig)
+        val req = com.unuslumen.app.thoughts.domain.model.CreateThoughtCycleRequest(name, displayName, description, type, triggerConfig, parsedProcess, output, outputConfig)
         val validation = thoughtCycleRepository.validateCycle(req)
         if (!validation.valid) return ToolExecutionResult.error("Invalid: ${validation.errors.joinToString("; ")}")
         val cycle = thoughtCycleRepository.createCycle(req)
