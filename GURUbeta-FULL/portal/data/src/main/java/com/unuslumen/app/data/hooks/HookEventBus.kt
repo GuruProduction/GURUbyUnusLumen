@@ -19,6 +19,15 @@ import android.util.Log
  * HookRepository.executeHooks, asynchronously and off the caller's critical
  * path. A hook crash never blocks or fails the event's host operation.
  *
+ * EVENT thought cycles: the same real events now also drive EVENT-triggered
+ * thought cycles through ThoughtCycleRepositoryImpl.onAppEvent (which resolves
+ * matching cycles via EventBridge and runs them through executeCycle). Cycle
+ * execution is async on the same application scope; failures are contained
+ * there and never propagate to this bus, the hooks pipeline, or the event's
+ * host operation. Event dispatch stays serial with hooks through fireMutex
+ * only for hooks; cycles launch on their own so one heavy cycle run can
+ * never starve hook handling.
+ *
  * Data conventions for the event maps:
  *  - MESSAGE_SENT:      conversationId, content, messageId
  *  - MESSAGE_RECEIVED:  conversationId, content, messageId
@@ -34,6 +43,9 @@ object HookEventBus {
     private var hookRepository: HookRepository? = null
     private var scope: CoroutineScope? = null
     private val fireMutex = Mutex()
+
+    /** EVENT cycle dispatcher, set by ThoughtCycleRepositoryImpl at init. Null = none (cycles are skipped until wired). */
+    internal var eventCycleDispatcher: (suspend (HookEventType, Map<String, Any?>) -> Unit)? = null
 
     /** Called once from Koin module wiring (Application init) — safe to call before any fires. */
     fun init(repository: HookRepository, coroutineScope: CoroutineScope) {
@@ -70,6 +82,14 @@ object HookEventBus {
                 }
             } catch (e: Exception) {
                 Log.w("guru_hooks", "Hook dispatch failed for $eventType: ${e.message}")
+            }
+
+            // EVENT thought cycles ride the same real events. Isolated below the
+            // hooks pipeline so cycle failures can never touch hook results.
+            try {
+                eventCycleDispatcher?.invoke(eventType, data)
+            } catch (e: Exception) {
+                Log.w("guru_hooks", "Thought cycle dispatch failed for $eventType: ${e.message}")
             }
         }
     }
