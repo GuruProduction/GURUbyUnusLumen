@@ -41,9 +41,12 @@ object TranscriptionEngine {
         val wav = File.createTempFile("media_transcribe_", ".wav", context.cacheDir)
         val extractError = try {
             AudioNative.extractTrackToWav(source, wav)
-        } catch (e: Exception) {
+        } catch (t: Throwable) {
+            // Throwable not Exception: an UnsatisfiedLinkError inside the bundled
+            // engine's own path degrades transcript availability to FAILED, never
+            // kills the app process. (v3.6.0 crash lesson, JNI errors are Errors, not Exceptions.)
             wav.delete()
-            return Result.Failed("Audio extraction threw: ${e.message ?: "unknown"}")
+            return Result.Failed("Audio extraction threw: ${t.message ?: "unknown"}")
         }
         if (extractError != null || !wav.exists() || wav.length() < 100L) {
             wav.delete()
@@ -54,8 +57,12 @@ object TranscriptionEngine {
             wav.delete()
             return Result.Empty("invalid WAV content")
         }
-        val recognized = try {
+        val recognized: SpeechRecognition.Result = try {
             SpeechRecognition.transcribeWav(context, wav, null)
+        } catch (t: Throwable) {
+            // Same Throwable contract as the extraction block above.
+            wav.delete()
+            return Result.Failed("Vosk engine threw: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}")
         } finally {
             wav.delete()
         }

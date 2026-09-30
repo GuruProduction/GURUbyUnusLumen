@@ -150,6 +150,10 @@ private fun PortalScreenScoped(
     val userDisplayName by viewModel.userDisplayName.collectAsStateWithLifecycle()
     val guruTheme by viewModel.guruTheme.collectAsStateWithLifecycle()
     val chatFontScale by viewModel.chatFontScale.collectAsStateWithLifecycle(1.0f)
+    // The media pipeline indicator: true while a send's ingest runs (video
+    // probe / keyframe OCR / transcription), released the moment the strip
+    // docs are ready or the pipeline honestly failed.
+    val mediaProcessing by viewModel.mediaProcessing.collectAsStateWithLifecycle()
 
     // Detect interview markers in the latest assistant message
     val latestAssistant = messages.firstOrNull()?.let { it as? AiMessage.AssistantMessage }
@@ -188,7 +192,8 @@ private fun PortalScreenScoped(
         onDismissToolCallGroup = { viewModel.dismissToolCallGroup(it) },
         userDisplayName = userDisplayName,
         guruTheme = guruTheme,
-        chatFontScale = chatFontScale
+        chatFontScale = chatFontScale,
+        mediaProcessing = mediaProcessing
     )
 }
 
@@ -214,6 +219,7 @@ fun PortalScreenContent(
     userDisplayName: String = "You",
     guruTheme: GuruTheme? = null,
     chatFontScale: Float = 1.0f,
+    mediaProcessing: Boolean = false,
 ) {
     val context = LocalContext.current
     val loading = uiState.loading
@@ -497,7 +503,8 @@ fun PortalScreenContent(
                 ) {
                 PortalChatBar(
                     text = text,
-                    enabled = aiEnabled && (text.isNotBlank() || attachments.isNotEmpty()),
+                    mediaProcessing = mediaProcessing,
+                    enabled = aiEnabled && (text.isNotBlank() || attachments.isNotEmpty()) && !mediaProcessing,
                     attachments = attachments,
                     onTextChange = { text = it },
                     onAttachClick = { attachmentsMenuExpanded = true },
