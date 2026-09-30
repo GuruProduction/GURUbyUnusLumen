@@ -90,6 +90,7 @@ fun PortalChatBar(
     loading: Boolean,
     liquidState: LiquidState,
     attachments: List<AiMessageAttachment>,
+    mediaProcessing: Boolean = false,
     onTextChange: (String) -> Unit,
     onAttachClick: () -> Unit,
     onRemoveAttachment: (Int) -> Unit,
@@ -138,6 +139,27 @@ fun PortalChatBar(
                 onFilePreview = onFilePreview,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
             )
+        }
+        // Media processing indicator: shows the honest state of the ingest run
+        // (video probe, keyframe OCR, transcription). Send stays blocked while
+        // the pipeline finishes, bar keeps everything visible, nothing frozen.
+        AnimatedVisibility(mediaProcessing) {
+            Row(
+                modifier = Modifier
+                    .padding(horizontal = 12.dp)
+                    .fillMaxWidth()
+                    .background(Color(0xFF2B241C).copy(alpha = 0.12f), RoundedCornerShape(26.dp))
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // A real rotating spinner built from the existing gradient ring.
+                LinearPulsingDot()
+                Text(
+                    text = "Processing media…",
+                    style = MaterialTheme.typography.labelMedium.copy(color = WarmInk),
+                    modifier = Modifier.padding(start = 10.dp)
+                )
+            }
         }
         Card(
             modifier = modifier
@@ -352,6 +374,38 @@ fun PortalChatBar(
                 }
             }
         }
+    }
+}
+
+/**
+ * A small pulsing gold dot for the processing row. A real infinite animation,
+ * 1400ms sine-like pulse through the Animatable the transition exposes; the
+ * alpha reads one real State the animation drives, no image needed.
+ */
+@Composable
+private fun LinearPulsingDot() {
+    val pulse = androidx.compose.runtime.remember {
+        androidx.compose.animation.core.Animatable(initialValue = 0.15f)
+    }
+    LaunchedEffect(Unit) {
+        while (true) {
+            pulse.animateTo(
+                0.85f,
+                animationSpec = androidx.compose.animation.core.tween(700, easing = FastOutSlowInEasing)
+            )
+            pulse.animateTo(
+                0.15f,
+                animationSpec = androidx.compose.animation.core.tween(700, easing = FastOutSlowInEasing)
+            )
+        }
+    }
+    androidx.compose.foundation.layout.Box(modifier = Modifier.size(10.dp)) {
+        androidx.compose.foundation.layout.Box(
+            Modifier
+                .align(Alignment.Center)
+                .size(10.dp)
+                .background(GoldAccent.copy(alpha = pulse.value), CircleShape)
+        )
     }
 }
 

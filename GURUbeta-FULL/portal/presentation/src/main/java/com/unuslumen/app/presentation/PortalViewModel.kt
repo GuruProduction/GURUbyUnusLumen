@@ -110,6 +110,15 @@ class PortalViewModel(
     private val _userDisplayName = MutableStateFlow("You")
     val userDisplayName: StateFlow<String> = _userDisplayName.asStateFlow()
 
+    /**
+     * Media processing state for the send gate: true from the moment a send
+     * with media attachments starts the ingest pipeline until the strip
+     * documents are ready (or honestly failed). The chat input bar shows the
+     * processing indicator on it, so a slow video send never looks frozen.
+     */
+    private val _mediaProcessing = MutableStateFlow(false)
+    val mediaProcessing: StateFlow<Boolean> = _mediaProcessing.asStateFlow()
+
     val guruTheme: StateFlow<GuruTheme> = guruThemeRepository.getGuruTheme()
         .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(5000), GuruTheme.DEFAULT)
 
@@ -334,14 +343,43 @@ class PortalViewModel(
                         delay(50)
                     }
 
+                    // Media pipeline runs before the message lands in view so the
+                    // strip documents ship inside the SAME send; the processing
+                    // indicator guards the whole span (visible on the input bar).
+                    val hasMedia = event.attachments.any { att ->
+                        att is AiMessageAttachment.File && (
+                            att.mimeType.startsWith("video/") ||
+                                att.mimeType.startsWith("image/") ||
+                                att.mimeType.startsWith("audio/")
+                            )
+                    }
+                    if (hasMedia) _mediaProcessing.value = true
 
-                    val message = AiMessage.UserMessage(
-                        content = event.content,
-                        attachments = event.attachments,
-                        attachmentsText = buildAttachmentText(event.attachments),
-                        time = now(),
-                        uuid = Uuid.random().toString()
-                    )
+                    val message = try {
+                        AiMessage.UserMessage(
+                            content = event.content,
+                            attachments = event.attachments,
+                            attachmentsText = buildAttachmentText(event.attachments),
+                            time = now(),
+                            uuid = Uuid.random().toString()
+                        )
+                    } catch (t: Throwable) {
+                        // JNI/linkage Errors from the bundled engines degrade to a
+                        // real FAILED note in attachmentsText, nothing kills the app.
+                        _mediaProcessing.value = false
+                        val staticText = try {
+                            getAttachmentText(event.attachments)
+                        } catch (e2: Exception) { "" }
+                        Log.e("PortalViewModel", "Media pipeline threw during send; strip degraded:", t)
+                        AiMessage.UserMessage(
+                            content = event.content,
+                            attachments = event.attachments,
+                            attachmentsText = staticText + "\nMedia processing failed: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}\n(A saved copy lands in the media library; transcription may be unavailable for this clip)",
+                            time = now(),
+                            uuid = Uuid.random().toString()
+                        )
+                    }
+                    _mediaProcessing.value = false
 
                     _messages.value = listOf(message) + _messages.value
                     _attachments.value = emptyList()
