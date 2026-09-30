@@ -51,6 +51,7 @@ import org.koin.androidx.compose.koinViewModel
 
 /** Whisper tints — desaturated paper tones that read as one family over the cream. */
 private val TintProjects = Color(0xFFE4CEB7)
+private val TintMedia = Color(0xFFCBC6DC)
 private val TintCalendar = Color(0xFFDED3E3)
 private val TintSettings = Color(0xFFDEDAD3)
 private val TintSkills = Color(0xFFD2E2E6)
@@ -77,9 +78,11 @@ fun LobbyScreen(
 ) {
     val counts by viewModel.counts.collectAsStateWithLifecycle()
 
-    // Re-query today's calendar range every time the Lobby enters composition.
+    // Re-query today's calendar range and the media library count every time
+    // the Lobby enters composition.
     androidx.compose.runtime.LaunchedEffect(Unit) {
         viewModel.refreshTodayEvents()
+        viewModel.refreshMediaCount()
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -161,6 +164,15 @@ fun LobbyScreen(
                         tint = TintProjects,
                         badgeCount = counts.projects,
                         comingSoon = true
+                    )
+                }
+                item {
+                    LobbyCard(
+                        title = "Media",
+                        image = R.drawable.lobby_notes,
+                        tint = TintMedia,
+                        badgeCount = counts.media,
+                        onClick = { navController.navigate(Screen.MediaScreen) }
                     )
                 }
                 item {

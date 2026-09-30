@@ -80,7 +80,8 @@ class PortalViewModel(
     private val guruThemeRepository: GuruThemeRepository,
     private val visionCommandHandler: VisionCommandHandler,
     private val chatHostRouter: ChatHostRouter,
-    private val application: android.app.Application
+    private val application: android.app.Application,
+    private val mediaDeliveryPort: com.unuslumen.app.domain.media.MediaDeliveryPort,
 ) : ViewModel() {
 
     private val _messages = MutableStateFlow<List<AiMessage>>(emptyList())
@@ -333,10 +334,11 @@ class PortalViewModel(
                         delay(50)
                     }
 
+
                     val message = AiMessage.UserMessage(
                         content = event.content,
                         attachments = event.attachments,
-                        attachmentsText = getAttachmentText(event.attachments),
+                        attachmentsText = buildAttachmentText(event.attachments),
                         time = now(),
                         uuid = Uuid.random().toString()
                     )
@@ -585,6 +587,30 @@ class PortalViewModel(
                 }
             }
         }
+    }
+
+    /**
+     * Composes the attachment text plus, for every media attachment on the
+     * message, one real ingest run with the strip document built from storage.
+     */
+    private suspend fun buildAttachmentText(attachments: List<AiMessageAttachment>): String {
+        val staticAttachmentText = getAttachmentText(attachments)
+        val mediaPort = mediaDeliveryPort
+        if (attachments.none { att -> att is AiMessageAttachment.File && (att.mimeType.startsWith("video/") || att.mimeType.startsWith("image/") || att.mimeType.startsWith("audio/")) }) {
+            return staticAttachmentText
+        }
+        // One ingest run for the message's whole media set, exactly once per turn.
+        val deliveryMessage = AiMessage.UserMessage(
+            content = "",
+            attachments = attachments,
+            attachmentsText = "",
+            time = now(),
+            uuid = Uuid.random().toString()
+        )
+        val mediaStrip = mediaPort.buildDeliveryText(deliveryMessage)
+        return if (mediaStrip.isBlank()) staticAttachmentText
+        else if (staticAttachmentText.isBlank()) mediaStrip
+        else "$staticAttachmentText\n$mediaStrip"
     }
 
     private suspend fun getAttachmentText(attachments: List<AiMessageAttachment>): String {

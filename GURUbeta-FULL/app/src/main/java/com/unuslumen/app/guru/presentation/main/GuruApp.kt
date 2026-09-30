@@ -402,6 +402,22 @@ fun guruApp(
                         navController = navController
                     )
                 }
+                composable<Screen.MediaScreen>(
+                    enterTransition = { slideInTransition() },
+                    exitTransition = { slideOutTransition() },
+                ) {
+                    com.unuslumen.app.guru.media.ui.MediaScreen(navController = navController)
+                }
+                composable<Screen.MediaDetailScreen>(
+                    enterTransition = { slideInTransition() },
+                    exitTransition = { slideOutTransition() },
+                ) {
+                    val args = it.toRoute<Screen.MediaDetailScreen>()
+                    com.unuslumen.app.guru.media.ui.MediaDetailScreen(
+                        mediaId = args.mediaId,
+                        navController = navController
+                    )
+                }
             }
             if (!appUnlocked) {
                 AuthScreen {

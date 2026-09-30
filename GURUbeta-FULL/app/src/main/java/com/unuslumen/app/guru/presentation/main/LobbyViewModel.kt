@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.unuslumen.app.domain.repository.CalendarRepository
 import com.unuslumen.app.domain.repository.LuxifyRepository
 import com.unuslumen.app.domain.repository.ProjectRepository
+import com.unuslumen.app.guru.media.MediaLibraryRepository
 import com.unuslumen.app.thoughts.domain.repository.ThoughtCycleRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -26,9 +27,11 @@ import java.time.ZoneId
  * - calendar = events scheduled for today
  * - skills   = installed Luxify skills
  * - thoughts = unacknowledged insights waiting from background cycles
+ * - media    = items ingested into the on-device media library
  *
  * Counts ride repository Flows and update live as data changes.
- * Today's calendar count is a ranged query re-run when the Lobby is entered.
+ * Today's calendar and media counts are snapshot queries re-run when the
+ * Lobby screen is entered (refreshTodayEvents / refreshMediaCount).
  * No hardcoded numbers anywhere.
  */
 @KoinViewModel
@@ -37,6 +40,7 @@ class LobbyViewModel(
     private val calendarRepository: CalendarRepository,
     private val luxifyRepository: LuxifyRepository,
     private val thoughtCycleRepository: ThoughtCycleRepository,
+    private val mediaLibraryRepository: MediaLibraryRepository,
 ) : ViewModel() {
 
     data class LobbyCounts(
@@ -44,11 +48,17 @@ class LobbyViewModel(
         val calendarToday: Int = 0,
         val skills: Int = 0,
         val thoughts: Int = 0,
+        val media: Int = 0,
     )
 
     /** Today's calendar count lives outside the combine because it is a
      *  snapshot query, not a flow. Merged into the public state below. */
     private val calendarToday = MutableStateFlow(0)
+
+    /** Media count rides a manual snapshot like the calendar count: the
+     *  media library has no flow repository, it is a counted library, so
+     *  the value refreshes on Lobby entry through refreshMediaCount(). */
+    private val mediaCount = MutableStateFlow(0)
 
     private val flowCounts = combine(
         projectRepository.getActiveProjects().map { it.size },
@@ -64,8 +74,8 @@ class LobbyViewModel(
         )
     }
 
-    val counts: StateFlow<LobbyCounts> = combine(flowCounts, calendarToday) { base, today ->
-        base.copy(calendarToday = today)
+    val counts: StateFlow<LobbyCounts> = combine(flowCounts, calendarToday, mediaCount) { base, today, media ->
+        base.copy(calendarToday = today, media = media)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), LobbyCounts())
 
     private val todayRange: Pair<Long, Long> by lazy {
@@ -77,6 +87,7 @@ class LobbyViewModel(
 
     init {
         refreshTodayEvents()
+        refreshMediaCount()
     }
 
     /** Re-queries today's calendar range. Call whenever the Lobby composes. */
@@ -84,6 +95,13 @@ class LobbyViewModel(
         viewModelScope.launch {
             val (start, end) = todayRange
             calendarToday.value = calendarRepository.getEvents(start, end).size
+        }
+    }
+
+    /** Re-reads the real COUNT(*) of the media library. Call whenever the Lobby composes. */
+    fun refreshMediaCount() {
+        viewModelScope.launch {
+            mediaCount.value = mediaLibraryRepository.count()
         }
     }
 }
