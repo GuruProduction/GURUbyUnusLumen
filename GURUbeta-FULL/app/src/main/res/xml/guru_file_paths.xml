@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- The media library lives entirely in the app's internal storage; every
+         share path resolves from files/media_library by the module's contract. -->
+    <files-path
+        name="media_library"
+        path="media_library/" />
+
+    <!-- The attachment cache carries the file bytes from their ingest time;
+         this makes their full-file shares work for share-from-detail-view. -->
+    <cache-path
+        name="attached_files"
+        path="attached_files/" />
+
+    <!-- The extract path for the zoom frames that live in the internal files dir -->
+    <files-path
+        name="media_zoom_frames"
+        path="media_library/" />
+</paths>

@@ -7,6 +7,19 @@ plugins {
     alias(libs.plugins.kotlin.compose.compiler)
 }
 
+// Phase 0 packaging fix: Vosk's Java layer talks to Android through JNA, and
+// vosk-android 0.3.47 declares net.java.dev.jna:jna:5.13.0 (aar). A sibling
+// dependency in the graph ships an older JNA (5.6.0 in the Gradle cache), so
+// without a pin the merged runtime classpath can drift between the dex'd
+// com.sun.jna classes and the shipped libjnidispatch.so; Native crashes first
+// link with UnsatisfiedLinkError "Can't obtain peer field ID for
+// com.sun.jna.Pointer". Forcing one version aligns jar + native everywhere.
+configurations.all {
+    resolutionStrategy {
+        force("net.java.dev.jna:jna:5.13.0")
+    }
+}
+
 android {
     namespace = "com.unuslumen.app.guru"
     compileSdk = 37
@@ -15,8 +28,8 @@ android {
         applicationId = "com.unuslumen.app.gurubeta"
         minSdk = 26
         targetSdk = 35
-        versionCode = 24
-        versionName = "3.5.1"
+        versionCode = 25
+        versionName = "3.6.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -146,6 +159,7 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.core.ktx)
     implementation(libs.bundles.compose)
+    implementation(libs.coil.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
     testImplementation(libs.junit)

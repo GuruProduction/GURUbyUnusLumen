@@ -99,4 +99,12 @@ sealed class Screen {
     // Thought cycles — the background reflection engine's own screens
     @Serializable
     data object ThoughtCyclesScreen : Screen()
+
+    // Media — the persistent on-device media library every attachment lands in
+    @Serializable
+    data object MediaScreen : Screen()
+    @Serializable
+    data class MediaDetailScreen(
+        val mediaId: String
+    ) : Screen()
 }

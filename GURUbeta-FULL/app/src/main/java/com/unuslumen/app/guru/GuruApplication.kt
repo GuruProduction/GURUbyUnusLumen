@@ -28,6 +28,7 @@ import com.unuslumen.app.data.noteRoomModule
 import com.unuslumen.app.data.tasksDataModule
 import com.unuslumen.app.database.di.databaseModule
 import com.unuslumen.app.di.coroutinesModule
+import com.unuslumen.app.guru.di.mediaApplicationModule
 import com.unuslumen.app.guru.di.MainPresentationModule
 import com.unuslumen.app.guru.di.platformModule
 import com.unuslumen.app.preferences.PrefsConstants
@@ -98,6 +99,7 @@ class GuruApplication : Application() {
                 MainPresentationModule().module,
                 AlarmModule().module,
                 databaseModule,
+                mediaApplicationModule,
                 coroutinesModule,
                 PreferencesModule().module,
                 NotePresentationModule().module,
@@ -134,6 +136,12 @@ class GuruApplication : Application() {
             val hookRepository: com.unuslumen.app.domain.repository.HookRepository by inject()
             com.unuslumen.app.data.hooks.HookEventBus.init(hookRepository, applicationScope)
             android.util.Log.d("guru", "HookEventBus initialised for automatic hook dispatch")
+            // One-time media library backfill: attachment cache files that never
+            // met the media module get ingested now. Idempotent through sha256,
+            // so every future boot is a no-op for the files already saved.
+            val mediaHook: com.unuslumen.app.guru.media.MediaAttachmentHook by inject()
+            runCatching { mediaHook.backfillAttachedCache() }
+            android.util.Log.d("guru_media", "Media library backfill pass complete (idempotent, sha256-guarded)")
         }
 
         createRemindersNotificationChannel()

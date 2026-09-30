@@ -53,6 +53,7 @@ import com.unuslumen.app.data.tools.WebServicesToolDefinitions
 import com.unuslumen.app.data.tools.DeviceControlToolDefinitions
 import com.unuslumen.app.data.tools.NoteToolDefinitions
 import com.unuslumen.app.data.tools.MediaToolDefinitions
+import com.unuslumen.app.data.tools.MediaToolDefinitionsPlus
 import com.unuslumen.app.data.tools.SmartHomeToolDefinitions
 import com.unuslumen.app.data.tools.ProductivityToolDefinitions
 import com.unuslumen.app.data.tools.ThemeToolDefinitions
@@ -167,6 +168,7 @@ object GeneratedToolRegistrations {
         ProductivityToolDefinitions,
         ThemeToolDefinitions,
         ProjectToolDefinitions,
-        NoteToSelfToolDefinitions
+        NoteToSelfToolDefinitions,
+        MediaToolDefinitionsPlus
     )
 }
