@@ -32,6 +32,14 @@ object SpeechRecognition {
      * Unzip the bundled asset model to filesDir exactly once. Vosk's Model class
      * needs a real directory path; Android assets can't be read as one, so the
      * first call materialises the archive to storage and every later call reuses it.
+     *
+     * Model-layout law (root-cause of the v3.6.x "Failed to create a model")
+     * the archive carries a single wrapper folder, vosk-model-small-en-us-0.15/,
+     * while Model(ROOT) demands conf/model.conf + am/ exactly AT the ROOT it is
+     * given. ensureModelDir flattens: the one top-level dir the zip holds
+     * becomes the extraction target itself, so am/, conf/, graph/, ivector/
+     * land directly under filesDir/vosk-model. The .model_ok marker is only
+     * ever written after the root verifies with the real file set.
      */
     private fun ensureModelDir(context: Context): File {
         val dir = modelDir(context)
@@ -47,8 +55,63 @@ object SpeechRecognition {
             unzip(tmp, dir)
             tmp.delete()
         }
+        flattenSingleTopLevelDir(dir)
+
+        if (!validVoskModelRoot(dir)) {
+            throw IllegalStateException(
+                "Bundled vosk model did not materialise as a valid root (missing conf/model.conf or am/)."
+            )
+        }
         tag.writeText("ok")
         return dir
+    }
+
+    /**
+     * When the extraction produced exactly one nested top folder and NOTHING
+     * beside it (the alphacephei-zip layout), hoist every entry of that one
+     * child into dir itself and drop the now-empty wrapper. Multi-entry
+     * archives stay untouched, no invented merges.
+     */
+    private fun flattenSingleTopLevelDir(dir: File) {
+        val children = dir.list().orEmpty().map { child -> File(dir, child) }
+        val onlyTop = children.singleOrNull()?.takeIf { it.isDirectory }
+        if (onlyTop == null) return
+        val hasModelSignature = File(onlyTop, "conf/model.conf").isFile &&
+            File(onlyTop, "am").isDirectory
+        if (!hasModelSignature) return  // Wrapper with unexpected shape; layout untouched, verify step below fails loudly.
+
+        val markerSuffix = "__hoist_tmp"
+        val hoistTarget = File(dir, markerSuffix)
+        hoistTarget.deleteRecursively()
+        if (!onlyTop.renameTo(hoistTarget)) {
+            return  // Rename failed on this FS; verification step below keeps everything honest instead of pretending.
+        }
+        val hoisted = hoistTarget.listFiles().orEmpty()
+        var allMoved = true
+        for (entry in hoisted) {
+            val moved = entry.renameTo(File(dir, entry.name))
+            if (!moved) { allMoved = false; break }
+        }
+        if (allMoved) {
+            hoistTarget.deleteRecursively()
+        } else {
+            // Roll back to the exact pre-hoist state so nothing half-broken persists on disk.
+            hoistTarget.deleteRecursively()
+            dir.deleteRecursively()
+        }
+    }
+
+    /**
+     * Validate the layout Vosk's Kaldi base code requires at the model ROOT:
+     * conf/model.conf reading is the canonical first op when creating, then
+     * am/final.mdl for acoustic weights existence conf.
+     */
+    private fun validVoskModelRoot(root: File): Boolean {
+        if (!root.isDirectory) return false
+        if (!File(root, "conf/model.conf").isFile) return false
+        if (!File(root, "am").isDirectory) return false
+        if (!File(root, "graph").isDirectory) return false
+        return true
     }
 
     private fun unzip(zip: File, target: File) {
