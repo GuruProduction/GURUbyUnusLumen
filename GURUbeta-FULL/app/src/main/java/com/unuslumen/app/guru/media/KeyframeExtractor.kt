@@ -100,10 +100,24 @@ object KeyframeExtractor {
         return storedList
     }
 
+    /**
+     * Full-duration spread law (root-cause of the v3.6.x tail-gap defect):
+     * caps in the spec scale DOWNSAMPLING DENSITY, frames must never cram at
+     * the head and dead-zone the tail. count = min(natural slots, cap), then
+     * step = duration/count so the whole 0..duration range is spanned evenly.
+     * The last real frame sits strictly below duration so every keyframe's
+     * endSec (capped in extract at durationSec) remains a real, non-empty
+     * span; no invented coverage.
+     */
     private fun secondsList(durationSec: Double, intervalSec: Double, cap: Int): List<Double> {
-        val allSlots = ((durationSec / intervalSec).toInt().coerceAtLeast(1)).coerceAtMost(cap)
-        return (0 until allSlots).map { slot -> slot * intervalSec }
+        val naturalSlots = (durationSec / intervalSec).toInt().coerceAtLeast(1)
+        val count = naturalSlots.coerceAtMost(cap).coerceIn(1, cap)
+        val step = durationSec / count.toDouble()
+        val stamps = (0 until count).map { slot -> (slot * step) }
+        return if (stamps.size < 2) stamps else stamps.dropLast(1) + (durationSec - MIN_TAIL_OFFSET_SEC).coerceAtLeast(stamps.last())
     }
+
+    private const val MIN_TAIL_OFFSET_SEC = 0.05
 
     private fun downscaledLongEdge(raw: Bitmap, edgeLimit: Int): Bitmap {
         val longEdge = maxOf(raw.width, raw.height)
