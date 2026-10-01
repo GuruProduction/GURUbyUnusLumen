@@ -1,6 +1,7 @@
 package com.unuslumen.app.data.tools
 
 import android.content.Context
+import android.util.Log
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
@@ -12,11 +13,24 @@ import java.io.FileOutputStream
  * Zero network, zero API keys, zero cloud. The model ships inside the APK at
  * assets/model-vosk-en-us-small.zip and is unpacked to filesDir on first use.
  *
- * Input: a 16-bit PCM WAV file (AudioNative.extractTrackToWav output). The
- * recogniser decodes it in chunks and returns the final recognised text with a
- * mean confidence over accepted hypotheses.
+ * Layout law: the alphacephei archive carries ONE wrapper directory,
+ * vosk-model-small-en-us-0.15/, while Model(ROOT) demands conf/, am/,
+ * graph/, ivector/ exactly AT ROOT. Extraction strips the wrapper prefix on
+ * the fly so the model files materialise flat at filesDir/vosk-model.
+ * Validity checks the REAL files Kaldi opens (am/final.mdl, graph/HCLr.fst,
+ * ivector/final.ie, conf/model.conf); the .model_ok marker is honoured only
+ * on a root that verifies, so a legacy stale marker sitting above a bad
+ * layout can never pin that bad layout in place; a bad root self-heals by
+ * full wipe + fresh flat extraction and is re-verified before Model() runs.
  */
 object SpeechRecognition {
+
+    private const val TAG = "guru_vosk"
+
+    // The exact wrapper prefix alphacephei's vosk-model-small-en-us-0.15.zip
+    // places on every entry; this object strips it at unzip time.
+    private const val VOSK_MODEL_ENTRY_PREFIX = "vosk-model-small-en-us-0.15/"
+    private const val VOSK_MODEL_ASSET_NAME = "model-vosk-en-us-small.zip"
 
     sealed class Result {
         data class Ok(val text: String, val confidence: Float?) : Result()
@@ -29,108 +43,114 @@ object SpeechRecognition {
     private fun modelDir(context: Context): File = File(context.filesDir, "vosk-model")
 
     /**
-     * Unzip the bundled asset model to filesDir exactly once. Vosk's Model class
-     * needs a real directory path; Android assets can't be read as one, so the
-     * first call materialises the archive to storage and every later call reuses it.
-     *
-     * Model-layout law (root-cause of the v3.6.x "Failed to create a model")
-     * the archive carries a single wrapper folder, vosk-model-small-en-us-0.15/,
-     * while Model(ROOT) demands conf/model.conf + am/ exactly AT the ROOT it is
-     * given. ensureModelDir flattens: the one top-level dir the zip holds
-     * becomes the extraction target itself, so am/, conf/, graph/, ivector/
-     * land directly under filesDir/vosk-model. The .model_ok marker is only
-     * ever written after the root verifies with the real file set.
-     */
-    private fun ensureModelDir(context: Context): File {
-        val dir = modelDir(context)
-        val tag = File(dir, ".model_ok")
-        if (dir.exists() && tag.exists()) return dir
-
-        dir.deleteRecursively()
-        dir.mkdirs()
-        val zipName = "model-vosk-en-us-small.zip"
-        context.assets.open(zipName).use { input ->
-            val tmp = File(context.cacheDir, zipName)
-            FileOutputStream(tmp).use { output -> input.copyTo(output) }
-            unzip(tmp, dir)
-            tmp.delete()
-        }
-        flattenSingleTopLevelDir(dir)
-
-        if (!validVoskModelRoot(dir)) {
-            throw IllegalStateException(
-                "Bundled vosk model did not materialise as a valid root (missing conf/model.conf or am/)."
-            )
-        }
-        tag.writeText("ok")
-        return dir
-    }
-
-    /**
-     * When the extraction produced exactly one nested top folder and NOTHING
-     * beside it (the alphacephei-zip layout), hoist every entry of that one
-     * child into dir itself and drop the now-empty wrapper. Multi-entry
-     * archives stay untouched, no invented merges.
-     */
-    private fun flattenSingleTopLevelDir(dir: File) {
-        val children = dir.list().orEmpty().map { child -> File(dir, child) }
-        val onlyTop = children.singleOrNull()?.takeIf { it.isDirectory }
-        if (onlyTop == null) return
-        val hasModelSignature = File(onlyTop, "conf/model.conf").isFile &&
-            File(onlyTop, "am").isDirectory
-        if (!hasModelSignature) return  // Wrapper with unexpected shape; layout untouched, verify step below fails loudly.
-
-        val markerSuffix = "__hoist_tmp"
-        val hoistTarget = File(dir, markerSuffix)
-        hoistTarget.deleteRecursively()
-        if (!onlyTop.renameTo(hoistTarget)) {
-            return  // Rename failed on this FS; verification step below keeps everything honest instead of pretending.
-        }
-        val hoisted = hoistTarget.listFiles().orEmpty()
-        var allMoved = true
-        for (entry in hoisted) {
-            val moved = entry.renameTo(File(dir, entry.name))
-            if (!moved) { allMoved = false; break }
-        }
-        if (allMoved) {
-            hoistTarget.deleteRecursively()
-        } else {
-            // Roll back to the exact pre-hoist state so nothing half-broken persists on disk.
-            hoistTarget.deleteRecursively()
-            dir.deleteRecursively()
-        }
-    }
-
-    /**
-     * Validate the layout Vosk's Kaldi base code requires at the model ROOT:
-     * conf/model.conf reading is the canonical first op when creating, then
-     * am/final.mdl for acoustic weights existence conf.
+     * Files Vosk's Kaldi Model(root) actually reads for this small en-US
+     * model, checked as a full file set. Anything less or wrongly placed is
+     * an invalid root and triggers the self-heal wipe + re-extract path.
      */
     private fun validVoskModelRoot(root: File): Boolean {
         if (!root.isDirectory) return false
         if (!File(root, "conf/model.conf").isFile) return false
-        if (!File(root, "am").isDirectory) return false
-        if (!File(root, "graph").isDirectory) return false
+        if (!File(root, "conf/mfcc.conf").isFile) return false
+        if (!File(root, "am/final.mdl").isFile) return false
+        if (!File(root, "graph/HCLr.fst").isFile) return false
+        if (!File(root, "graph/Gr.fst").isFile) return false
+        if (!File(root, "ivector/final.ie").isFile) return false
         return true
     }
 
-    private fun unzip(zip: File, target: File) {
-        val zis = java.util.zip.ZipInputStream(zip.inputStream().buffered())
-        while (true) {
-            val entry = zis.nextEntry ?: break
-            val outFile = File(target, entry.name).canonicalFile
-            if (!outFile.path.startsWith(target.canonicalFile.path)) {
-                throw SecurityException("Blocked zip slip path: ${entry.name}")
-            }
-            if (entry.isDirectory) {
-                outFile.mkdirs()
-            } else {
-                outFile.parentFile?.mkdirs()
-                FileOutputStream(outFile).use { output -> zis.copyTo(output) }
-            }
-            zis.closeEntry()
+    /**
+     * Unpack the bundled asset zip to target with the single alphacephei
+     * wrapper directory stripped on the fly, so am/, conf/, graph/, ivector/
+     * land FLAT at target. Zip-slip defense stays enforced. Entries that do
+     * NOT carry the wrapper prefix (and are neither empty-string roots nor
+     * the wrapper's own dir entry) mean the source layout changed; extraction
+     * is abandoned and nothing is trusted downstream.
+     */
+    private fun unzipFlat(assetName: String, target: File, context: Context) {
+        File(target, VOSK_MODEL_ENTRY_PREFIX).let { // no-op, purely to document the expected root entry
         }
-        zis.close()
+
+        context.assets.open(assetName).use { assetStream ->
+            val zis = java.util.zip.ZipInputStream(assetStream.buffered())
+            while (true) {
+                val entry = zis.nextEntry ?: break
+                val name = entry.name
+                when {
+                    name == VOSK_MODEL_ENTRY_PREFIX -> {
+                        // The wrapper dir entry itself; nothing to write, target IS it.
+                        zis.closeEntry()
+                        continue
+                    }
+                    name.startsWith(VOSK_MODEL_ENTRY_PREFIX) -> {
+                        // The normal case: strip the wrapper, write flat.
+                        val relative = name.removePrefix(VOSK_MODEL_ENTRY_PREFIX)
+                        if (relative.isBlank()) {
+                            zis.closeEntry()
+                            continue
+                        }
+                        val outFile = File(target, relative).canonicalFile
+                        if (!outFile.path.startsWith(target.canonicalFile.path)) {
+                            throw SecurityException("Blocked zip slip path: $name")
+                        }
+                        if (entry.isDirectory) {
+                            outFile.mkdirs()
+                        } else {
+                            outFile.parentFile?.mkdirs()
+                            FileOutputStream(outFile).use { output -> zis.copyTo(output) }
+                        }
+                        zis.closeEntry()
+                    }
+                    else -> {
+                        // Any unexpected entry inside the archive: refuse and tear it all
+                        // down instead of letting a foreign tree stand under Model().
+                        zis.close()
+                        val cause = IllegalStateException(
+                            "Bundled vosk zip no longer matches the expected single-wrapper layout: unexpected top-level entry '$name'"
+                        )
+                        target.deleteRecursively()
+                        throw cause
+                    }
+                }
+            }
+            zis.close()
+        }
+    }
+
+    /**
+     * Ensures, idempotent, that a Kaldi-verified FLAT model root exists under
+     * filesDir/vosk-model, and then returns it. Cache: valid root + marker.
+     * Valid-root-with-missing-marker is self-corrected in place (rare; the
+     * marker is always written by this function only after verified passes).
+     * Anything else wipes and re-extracts; verification runs before marker;
+     * on verification failure the tree is destroyed so no half-broken state
+     * can ever survive, and the error carries the full context.
+     */
+    private fun ensureModelDir(context: Context): File {
+        val dir = modelDir(context)
+        val tag = File(dir, ".model_ok")
+        val layoutValid: Boolean = validVoskModelRoot(dir)
+        Log.d(TAG, "vosk dir=${dir.absolutePath} exists=${dir.exists()} layoutValid=$layoutValid marker=${tag.exists()}")
+        if (layoutValid == true && tag.exists()) return dir
+        if (layoutValid == true) {
+            tag.writeText("ok") // Verified, marker omitted last run; fix cheaply, cache thereafter.
+            return dir
+        }
+        Log.d(TAG, "vosk layout invalid or missing, rebuilding from asset zip now.")
+
+        dir.deleteRecursively()
+        dir.mkdirs()
+
+        unzipFlat(VOSK_MODEL_ASSET_NAME, dir, context)
+
+        if (!validVoskModelRoot(dir)) {
+            dir.deleteRecursively()
+            throw IllegalStateException(
+                "Bundled vosk model did not materialise as a valid root following flat extraction: ${dir.absolutePath}"
+            )
+        }
+
+        tag.writeText("ok")
+        return dir
     }
 
     private fun obtainModel(context: Context): Model {
