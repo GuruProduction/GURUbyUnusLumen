@@ -165,19 +165,34 @@ object SpeechRecognition {
     }
 
     /**
-     * Transcribe a 16-bit PCM WAV file. Thread-blocking; call from IO dispatch.
+     * Transcribe a 16-bit PCM WAV file at exactly 16kHz mono — the format the
+     * bundled Vosk model is trained on. Feeding anything else used to arrive as
+     * filler-shaped garbage ("ah ah oh oh"), so the input gate refuses loudly:
+     * wrong rate/channels/depth is a Named FAILED reason, never a pretend run.
+     * Thread-blocking; call from IO dispatch.
      */
     fun transcribeWav(context: Context, wav: File, language: String?): Result {
         try {
             val model = obtainModel(context)
+            val header = readWavHeader(wav)
+                ?: return Result.Failed("Not a valid WAV file (missing RIFF header)")
+            if (header.bitsPerSample != 16) {
+                return Result.Failed("Expected 16-bit PCM WAV, got ${header.bitsPerSample}-bit")
+            }
+            if (header.sampleRate != 16000) {
+                return Result.Failed(
+                    "Vosk en-US model is a 16000 Hz model; got ${header.sampleRate} Hz WAV. " +
+                        "Resample before feeding the recogniser."
+                )
+            }
+            if (header.channelCount != 1) {
+                return Result.Failed(
+                    "Vosk en-US model needs mono; got ${header.channelCount}-channel WAV. " +
+                        "Downmix to mono before feeding the recogniser."
+                )
+            }
             val recognizer = Recognizer(model, 16000.0f)
             try {
-                val header = readWavHeader(wav)
-                    ?: return Result.Failed("Not a valid WAV file (missing RIFF header)")
-                if (header.bitsPerSample != 16) {
-                    return Result.Failed("Expected 16-bit PCM WAV, got ${header.bitsPerSample}-bit")
-                }
-
                 val fullText = StringBuilder()
                 val confidences = mutableListOf<Float>()
 
@@ -219,7 +234,7 @@ object SpeechRecognition {
         }
     }
 
-    private data class WavHeader(val dataOffset: Long, val bitsPerSample: Int)
+    private data class WavHeader(val dataOffset: Long, val bitsPerSample: Int, val sampleRate: Int, val channelCount: Int)
 
     /**
      * Parse the RIFF/WAVE header to find the start of actual PCM data. Handles
@@ -234,6 +249,8 @@ object SpeechRecognition {
             if (String(wave) != "WAVE") return null
 
             var bitsPerSample = 16
+            var sampleRate = 16000
+            var channelCount = 1
             while (true) {
                 val chunkId = ByteArray(4)
                 if (raf.read(chunkId) < 4) return null
@@ -247,12 +264,17 @@ object SpeechRecognition {
                         val fmtBody = ByteArray(chunkSize); raf.readFully(fmtBody)
                         // fmt layout: audioFormat(2) channels(2) sampleRate(4) byteRate(4) blockAlign(2) bitsPerSample(2)
                         if (chunkSize >= 16) {
+                            channelCount = ((fmtBody[2].toInt() and 0xFF)) or ((fmtBody[3].toInt() and 0xFF) shl 8)
+                            sampleRate = ((fmtBody[4].toInt() and 0xFF)) or
+                                    ((fmtBody[5].toInt() and 0xFF) shl 8) or
+                                    ((fmtBody[6].toInt() and 0xFF) shl 16) or
+                                    ((fmtBody[7].toInt() and 0xFF) shl 24)
                             bitsPerSample = ((fmtBody[14].toInt() and 0xFF)) or ((fmtBody[15].toInt() and 0xFF) shl 8)
                         }
                     }
                     "data" -> {
                         val pos = raf.filePointer
-                        return WavHeader(pos, bitsPerSample)
+                        return WavHeader(pos, bitsPerSample, sampleRate, channelCount)
                     }
                     else -> raf.skipBytes(chunkSize + (chunkSize % 2)) // chunks are word-aligned
                 }

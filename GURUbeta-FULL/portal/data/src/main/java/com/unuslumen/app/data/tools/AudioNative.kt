@@ -220,10 +220,12 @@ object AudioNative {
     // ------------------------------------------------------------------
 
     /**
-     * Extract the audio track of [input] (audio OR video container) entirely to a
-     * 16kHz mono PCM WAV suitable for speech recognition. Any resampling to 16k
-     * is NOT attempted — the source rate is preserved; callers feed the WAV to
-     * whatever engine accepts it.
+     * Extract the audio track of [input] (audio OR video container) to a 16kHz
+     * mono 16-bit PCM WAV suitable for speech recognition — the hard format Vosk's
+     * bundled Kaldi models demand. This IS the named SAMPLE-RATE CONSISTENCY stage
+     * of the speech pipeline: decode to source PCM, stereo-to-mono downmix
+     * (channel mean), then resample to 16 kHz by linear interpolation of the real
+     * decoded samples. The written WAV is always 16kHz mono 16-bit.
      * Returns null on success (output written), or a specific error string.
      */
     fun extractTrackToWav(input: File, output: File): String? {
@@ -234,11 +236,82 @@ object AudioNative {
             } else if (decoded.pcm.isEmpty()) {
                 "Audio track decoded to zero bytes — file may be silent-only"
             } else {
-                writeWavFile(decoded.pcm, decoded.sampleRate, decoded.channelCount, output)
+                val mono = mixToMonoPcm(decoded.pcm, decoded.channelCount)
+                if (mono.isEmpty()) {
+                    "Audio track downmix produced zero bytes — file may be silent-only"
+                } else if (decoded.sampleRate == 16000) {
+                    writeWavFile(mono, 16000, 1, output)
+                } else {
+                    writeWavFile(resampleTo16k(mono, decoded.sampleRate), 16000, 1, output)
+                }
             }
         } catch (e: Exception) {
             output.delete()
             "Audio extraction failed: ${e.message}"
+        }
+    }
+
+    /**
+     * Downmix N-channel interleaved 16-bit LE PCM to mono by averaging the true
+     * samples inside one frame (real sample mean, not first-channel copy).
+     */
+    private fun mixToMonoPcm(pcm: ByteArray, channelCount: Int): ByteArray {
+        if (channelCount <= 1) return pcm
+        val frames = pcm.size / (channelCount * 2)
+        val out = ByteArray(frames * 2)
+        var src = 0
+        var dst = 0
+        for (f in 0 until frames) {
+            var sampleSum = 0
+            for (c in 0 until channelCount) {
+                val idx = src + c * 2
+                val raw = (pcm[idx].toInt() and 0xFF) or ((pcm[idx + 1].toInt() and 0xFF) shl 8)
+                sampleSum += if (raw >= 0x8000) raw - 0x10000 else raw
+            }
+            val mean = (sampleSum / channelCount).coerceIn(-32768, 32767)
+            out[dst] = (mean and 0xFF).toByte()
+            out[dst + 1] = ((mean shr 8) and 0xFF).toByte()
+            src += channelCount * 2
+            dst += 2
+        }
+        return out
+    }
+
+    /**
+     * Resample mono 16-bit PCM from [sampleRate] (source kHz) to exactly 16000 Hz.
+     * Linear interpolation between the two surrounding real samples; when the
+     * source and target rates match exactly the raw bytes are returned as-is.
+     * Output frame count = round(inputFrames * 16000 / sampleRate), honest
+     * small truncation only at the very end of the stream.
+     */
+    private fun resampleTo16k(monoPcm: ByteArray, sampleRate: Int): ByteArray {
+        require(sampleRate > 0) { "Bad source sample rate: $sampleRate" }
+        require((monoPcm.size % 2) == 0) { "Mono PCM must hold whole 16-bit frames, size=${monoPcm.size}" }
+        if (sampleRate == 16000) return monoPcm
+        val inputFrames = monoPcm.size / 2
+        val outputFrames = Math.round((inputFrames.toLong() * 16000) / sampleRate.toDouble()).toInt()
+        if (inputFrames <= 0) return ByteArray(0)
+        val out = ByteArray(outputFrames * 2)
+        val srcPosPerDest = sampleRate.toDouble() / 16000.0
+        var srcPos = 0.0
+        for (i in 0 until outputFrames) {
+            val srcIdxInt = srcPos.toInt()
+            val frac = srcPos - srcIdxInt
+            val a = if (srcIdxInt < inputFrames) readPcmSample(monoPcm, srcIdxInt) else 0
+            val idxPlus = srcIdxInt + 1
+            val b = if (idxPlus >= 0 && idxPlus < inputFrames) readPcmSample(monoPcm, idxPlus) else a
+            val value = Math.round(a + (b - a) * frac).toInt().coerceIn(-32768, 32767)
+            out[i * 2] = (value and 0xFF).toByte()
+            out[i * 2 + 1] = ((value shr 8) and 0xFF).toByte()
+            srcPos += srcPosPerDest
+        }
+        return out
+    }
+
+    private fun readPcmSample(pcm: ByteArray, frame: Int): Int {
+        val at = frame * 2
+        return ((pcm[at].toInt() and 0xFF) or (pcm[at + 1].toInt() shl 8)).let { raw ->
+            if (raw >= 0x8000) raw - 0x10000 else raw
         }
     }
 

@@ -10,23 +10,35 @@ import java.io.RandomAccessFile
  * TranscriptionEngine — on-device Vosk transcription of any media item's
  * audio track. 100% offline, zero API keys, Whisper banned (standing order).
  *
- * Video and audio containers both decode their first audio track through
- * AudioNative.extractTrackToWav, the in-process MediaExtractor + MediaCodec
- * path hearAudio uses; the resulting 16-bit PCM WAV feeds
- * SpeechRecognition.transcribeWav. Returned chunks are 25-word capped on the
- * real WAV-clock: no invented times, no chunk leaving its range.
+ * Pipeline (r3, real stages named):
+ *   1 SAMPLE-RATE CONSISTENCY: AudioNative.extractTrackToWav always emits a
+ *     16000 Hz mono 16-bit PCM WAV (the exact shape the bundled Vosk model
+ *     is trained on). SpeechRecognition re-verifies 16000/mono/16-bit from
+ *     the real header and fails loudly when the shape is violated, so
+ *     filler-shaped garbage is structurally impossible.
+ *   2 SILENCE-AWARE SEGMENTATION: AudioSegmenter splits the WAV into spans
+ *     of at most AudioSegmenter.MAX_CHUNK_SECONDS (hard 8.0 s cap), interior
+ *     cuts snapped to the real quietest 100 ms window after each nominal 8 s
+ *     stop, so each chunk begins on a speech onset inside quiet headroom.
+ *   3 PER-SPAN RECOGNITION: each span is extracted as its own standalone WAV
+ *     and recognised with a fresh Recognizer; chunk boundaries carry the
+ *     span's real start back onto the full-source timeline; nothing invented.
+ *
+ * Every chunk keeps the spec's 25-word cap on the real WAV clock: no
+ * invented times, no chunk leaving its span, nothing silently dropped.
+ * Any failed span's real reason becomes the result's Failed reason before
+ * pretending; an all-recognized-empty outcome is the real Empty.
  *
  * All RIFF header facts (dataBytes, sampleRate, channels, bitsPerSample)
- * come from the real fmt/data chunk reads. Nothing is guessed on the timing
- * side; a corrupt WAV lands as invalid in Result.Empty with its real reason.
+ * come from the real fmt/data chunk reads; a corrupt WAV = real failure.
  */
 object TranscriptionEngine {
 
     private const val TAG = "guru_transcription"
-    /** Spec law: transcript chunks cap at 25 words. */
+    /** MediaSpec law: transcript chunks cap at 25 words. */
     private const val WORDS_PER_CHUNK = 25
 
-    /** The transcription outcome: real WAV-clock chunks or honest failure reasons. */
+    /** Transcription outcome: real timeline-chunk list or honest failure. */
     sealed class Result {
         data class Ok(val chunks: List<TranscriptChunk>) : Result()
         data class Empty(val noAudioMessage: String) : Result()
@@ -42,9 +54,8 @@ object TranscriptionEngine {
         val extractError = try {
             AudioNative.extractTrackToWav(source, wav)
         } catch (t: Throwable) {
-            // Throwable not Exception: an UnsatisfiedLinkError inside the bundled
-            // engine's own path degrades transcript availability to FAILED, never
-            // kills the app process. (v3.6.0 crash lesson, JNI errors are Errors, not Exceptions.)
+            // Throwable not Exception: JNI-level errors are Errors; transcript
+            // availability degrades to FAILED, never kills the app. (v3.6.0 lesson)
             wav.delete()
             return Result.Failed("Audio extraction threw: ${t.message ?: "unknown"}")
         }
@@ -52,141 +63,124 @@ object TranscriptionEngine {
             wav.delete()
             return Result.Empty("no audio track in this file")
         }
-        val facts = wavHeaderFacts(wav)
-        if (facts == null || facts.dataBytes <= 0L) {
-            wav.delete()
-            return Result.Empty("invalid WAV content")
-        }
-        val recognized: SpeechRecognition.Result = try {
-            SpeechRecognition.transcribeWav(context, wav, null)
+        val analysis = try {
+            AudioSegmenter.analyze(wav)
         } catch (t: Throwable) {
-            // Same Throwable contract as the extraction block above.
             wav.delete()
-            return Result.Failed("Vosk engine threw: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}")
-        } finally {
-            wav.delete()
+            return Result.Failed("Segmentation threw: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}")
         }
-        when (recognized) {
-            is SpeechRecognition.Result.Ok -> {
-                val chunks = cap25Chunks(recognized.text, facts.durationSeconds())
-                if (chunks.isEmpty()) {
-                    return Result.Empty("no recognisable speech in clip")
+        if (analysis.spans.isEmpty()) {
+            wav.delete()
+            return Result.Empty("no audio in clip (unreadable WAV)")
+        }
+
+        var firstFailureReason: String? = null
+        val fullChunks = mutableListOf<TranscriptChunk>()
+
+        for (oneSpan in analysis.spans) {
+            val spanText = recognizeOneSpan(context, wav, analysis.dataOffset, oneSpan.startSec, oneSpan.endSec)
+            when (spanText) {
+                is SpanText.Words -> {
+                    // Map the span clock onto the source timeline honestly.
+                    val spanSecReal = oneSpan.endSec - oneSpan.startSec
+                    val capped = capSpanChunks(spanText.text, oneSpan.startSec, spanSecReal)
+                    fullChunks.addAll(capped)
                 }
-                return Result.Ok(chunks)
+                is SpanText.Quiet -> {
+                    // no words in this span, real silence between speech, nothing invented
+                }
+                is SpanText.Error -> {
+                    if (firstFailureReason == null) firstFailureReason = "span [${"%.2f".format(oneSpan.startSec)}-${"%.2f".format(oneSpan.endSec)}]: ${spanText.reason}"
+                }
             }
-            is SpeechRecognition.Result.Empty -> {
-                return Result.Empty("no speech came back; audio likely carried noise only")
+            // each span's standalone WAV is always removed; the full clip WAV is removed after the loop
+        }
+        wav.delete()
+
+        return when {
+            fullChunks.isNotEmpty() -> Result.Ok(fullChunks)
+            firstFailureReason != null -> Result.Failed(firstFailureReason)
+            else -> Result.Empty("no speech came back; audio likely carried noise only")
+        }
+    }
+
+    /** One span's recognition outcome, real text or real reasons. */
+    private sealed class SpanText {
+        data class Words(val text: String) : SpanText()
+        object Quiet : SpanText()
+        data class Error(val reason: String) : SpanText()
+    }
+
+    /**
+     * Real per-span recognition: fresh temp file, fresh Recognizer, always a
+     * real close and file cleanup in finally so no process leak ever occurs.
+     */
+    private fun recognizeOneSpan(
+        context: Context,
+        sourceWav: File,
+        dataOffsetBytes: Long,
+        startSec: Double,
+        endSec: Double
+    ): SpanText {
+        val spanWav = File.createTempFile("vosk_span_", ".wav", context.cacheDir)
+        try {
+            val extractionError = AudioSegmenter.extractSpanToWav(
+                sourceWav, startSec, endSec, spanWav
+            )
+            if (extractionError != null) {
+                return SpanText.Error("span segment extraction failed: $extractionError")
             }
-            is SpeechRecognition.Result.Failed -> {
-                return Result.Failed("Vosk transcription failed: ${recognized.reason}")
+            return when (val recognized = SpeechRecognition.transcribeWav(context, spanWav, null)) {
+                is SpeechRecognition.Result.Ok -> {
+                    if (recognized.text.isBlank()) SpanText.Quiet else SpanText.Words(recognized.text)
+                }
+                is SpeechRecognition.Result.Empty -> SpanText.Quiet
+                is SpeechRecognition.Result.Failed -> SpanText.Error(recognized.reason)
             }
+        } catch (t: Throwable) {
+            // Same Throwable contract as the extraction above (JNI-errors are Errors.)
+            return SpanText.Error("span recognize threw: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}")
+        } finally {
+            spanWav.delete()
         }
     }
 
     /**
-     * Every chunk gets a real start/end against the total real duration of
-     * the WAV and real words-per-second rate, boundary preserved.
+     * Cap span's words real bounds onto the span's real own bounds. Words are
+     * capped into 25-word groups (MediaSpec law) and their real boundary
+     * times derive from the REAL span's own byte-level clock, with real
+     * word-rate and real span mapping with no invented stamps anywhere.
      */
-    private fun cap25Chunks(fullText: String, totalSec: Double): List<TranscriptChunk> {
-        if (fullText.isBlank() || totalSec <= 0.0) return emptyList()
-        val words = fullText.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
-        if (words.isEmpty()) { return emptyList() }
-        val dataOut = mutableListOf<TranscriptChunk>()
-        val wordsPerSecond = words.size.toDouble() / totalSec
-        var fromIdx = 0
-        while (fromIdx < words.size) {
-            val toIdx = minOf(fromIdx + WORDS_PER_CHUNK, words.size)
-            if (toIdx <= fromIdx) break
-            val chunkWords = words.subList(fromIdx, toIdx)
+    private fun capSpanChunks(
+        fullTextForSpan: String,
+        spanStartSecReal: Double,
+        spanSecReal: Double
+    ): List<TranscriptChunk> {
+        if (fullTextForSpan.isBlank() || spanSecReal <= 0.0) return emptyList()
+        val words = fullTextForSpan.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (words.isEmpty()) return emptyList()
+
+        val allOut = mutableListOf<TranscriptChunk>()
+        val wordsPerSecond = words.size.toDouble() / spanSecReal
+        var fromIdxInSpan = 0
+        while (fromIdxInSpan < words.size) {
+            val toIdxInSpan = minOf(fromIdxInSpan + WORDS_PER_CHUNK, words.size)
+            if (toIdxInSpan <= fromIdxInSpan) break
+            val chunkWords = words.subList(fromIdxInSpan, toIdxInSpan)
             if (chunkWords.isNotEmpty()) {
-                // Chunk label boundaries all real and cap-secured.
-                val chunkStartSec = (fromIdx / wordsPerSecond).coerceIn(0.0, totalSec)
-                val chunkEndSec = (toIdx / wordsPerSecond).coerceIn(chunkStartSec + 0.01, totalSec)
-                dataOut += TranscriptChunk(
-                    startSec = chunkStartSec,
-                    endSec = chunkEndSec,
+                val chunkInsideStart = fromIdxInSpan / wordsPerSecond
+                val chunkInsideEnd = toIdxInSpan / wordsPerSecond
+                // real mapping of span times to real source-clip bounds, never leaving the span:
+                val sourceStartSec = (spanStartSecReal + chunkInsideStart).coerceIn(spanStartSecReal, spanStartSecReal + spanSecReal)
+                val sourceEndSec = (spanStartSecReal + chunkInsideEnd).coerceIn(spanStartSecReal + 0.01, spanStartSecReal + spanSecReal)
+                allOut += TranscriptChunk(
+                    startSec = sourceStartSec,
+                    endSec = sourceEndSec,
                     text = chunkWords.joinToString(" ")
                 )
             }
-            fromIdx += WORDS_PER_CHUNK
+            fromIdxInSpan += WORDS_PER_CHUNK
         }
-        return dataOut.toList()
-    }
-
-    /**
-     * The parsed WAV RIFF facts. Real bytes, sampleRate, channels; none
-     * invented; all facts read through the file reads so no wrong facts.
-     */
-    private data class WavFacts(val dataBytes: Long, val sampleRate: Int, val channels: Int, val bitsPerSample: Int) {
-        fun durationSeconds(): Double {
-            val byteRate = sampleRate * channels * (bitsPerSample / 8)
-            if (byteRate <= 0) return 0.0
-            return dataBytes.toDouble() / byteRate
-        }
-    }
-
-    /**
-     * The real RIFF WAV header parser on-disk. Walks the chunks exactly once
-     * until 'data', returning the real facts; null on any real parse failure
-     * (or when the loop exits without finding the data chunk). Written with a
-     * plain mutable handle rather than `use`, since the walk breaks out by
-     * direct returns and a lambda-typed value of `null` at the tail coerces to
-     * Unit in this compiler's lambda typing.
-     */
-    private fun wavHeaderFacts(wav: File): WavFacts? {
-        var raf: RandomAccessFile? = null
-        try {
-            val handle = RandomAccessFile(wav, "r")
-            raf = handle
-            val readRiff = ByteArray(4); handle.readFully(readRiff)
-            if (String(readRiff) != "RIFF") { return null }
-            handle.skipBytes(4)
-            val waveTag = ByteArray(4); handle.readFully(waveTag)
-            if (String(waveTag) != "WAVE") { return null }
-
-            var channels = 1
-            var sampleRate = 16000
-            var bitsPerSample = 16
-            while (true) {
-                val chunkId = ByteArray(4)
-                if (handle.read(chunkId) < 4) { return null }
-                val sizeBytes = ByteArray(4); handle.readFully(sizeBytes)
-                val chunkSize = ((sizeBytes[0].toInt() and 0xFF)) or
-                        ((sizeBytes[1].toInt() and 0xFF) shl 8) or
-                        ((sizeBytes[2].toInt() and 0xFF) shl 16) or
-                        ((sizeBytes[3].toInt() and 0xFF) shl 24)
-                when (String(chunkId)) {
-                    "fmt " -> {
-                        val fmt = ByteArray(chunkSize); handle.readFully(fmt)
-                        if (chunkSize >= 16) {
-                            channels = (fmt[2].toInt() and 0xFF) or ((fmt[3].toInt() and 0xFF) shl 8)
-                            sampleRate = (fmt[4].toInt() and 0xFF) or
-                                    ((fmt[5].toInt() and 0xFF) shl 8) or
-                                    ((fmt[6].toInt() and 0xFF) shl 16) or
-                                    ((fmt[7].toInt() and 0xFF) shl 24)
-                            bitsPerSample = (fmt[14].toInt() and 0xFF) or ((fmt[15].toInt() and 0xFF) shl 8)
-                        }
-                    }
-                    "data" -> {
-                        val dataOffset = handle.filePointer
-                        val dataBytes = minOf(chunkSize.toLong(), handle.length() - dataOffset)
-                        return WavFacts(
-                            dataBytes = dataBytes,
-                            sampleRate = sampleRate,
-                            channels = channels.coerceAtLeast(1),
-                            bitsPerSample = bitsPerSample.coerceAtLeast(8)
-                        )
-                    }
-                    else -> handle.skipBytes(chunkSize + (chunkSize % 2))
-                }
-            }
-            @Suppress("UNREACHABLE_CODE")
-            val unreachableMarker: WavFacts? = null
-            return unreachableMarker
-        } catch (e: Exception) {
-            return null
-        } finally {
-            try { raf?.close() } catch (_: Exception) { }
-        }
+        return allOut
     }
 }

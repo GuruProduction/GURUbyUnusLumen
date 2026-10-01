@@ -130,3 +130,9 @@ The manifest file: `/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/media_module/
 
 ## PART G — what happens the moment the plan is approved
 File one is written with no ambiguity of behavior: full read-back, exact absolute-path write, then each next file's written content carries its real dependency, and on the last line phase 5 and gate above is the last act, and is what makes me type "complete" on the module that exists in this plan verbatim — then Steven's real read at signoff is the last verdict and every defect named in it gets amended under this same numbered plan format, before any further plan revision round runs.
+
+## PART H — r3 amendment: the transcript pipeline's three named stages (fixed defect set, 2026-10-01)
+The transcription pipeline carries the following stages as named spec items, exactly and unconditionally:
+1. SAMPLE-RATE CONSISTENCY (named pipeline stage between audio extraction and recognition): AudioNative.extractTrackToWav always produces the real 16000 Hz mono 16-bit PCM WAV shape for speech recognition — the real decode-then-downmix-then-resample step — so the audio fed to the bundled Vosk recogniser is finally in the model's own trained shape. Any file shape mismatch is gated and fails loudly, never producing filler output.
+2. SILENCE-AWARE CHUNKING (named pipeline stage after resampling): AudioSegmenter produces real spans of at most MAX_CHUNK_SECONDS = 8.0 with every interior cut snapped to the real quietest 0.10 s window after the nominal 8 s stop, so each chunk starts on a speech onset in real silence, and no chunk leaves its real range bounds. This replaces any and all previous fixed 90.3-second lumping.
+3. PER-SPAN RECOGNITION MAPPING (named, real times): each span's 25-word capped chunk list maps its boundaries by means of real span-start offsets and real word-rate, so every recorded word's boundary maps its real place onto the source timeline. Never invented, never escaped.
