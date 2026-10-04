@@ -174,6 +174,6 @@ Category defining tech should be community driven. Open source is the only road 
 
 ---
 
-**Unus Lumen** — Bristol, UK
+**Unus Lumen** — STEVEN NEWMAN - Bristol, UK
 
 steven@unuslumen.com
