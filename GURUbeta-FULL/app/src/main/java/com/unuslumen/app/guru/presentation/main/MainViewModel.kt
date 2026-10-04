@@ -248,6 +248,30 @@ class MainViewModel(
         }
     }
 
+    /**
+     * Heartbeat battery-exemption one-shot gate (corner 1 of the plan): the system
+     * dialog for ignoring battery optimizations is requested exactly once ever,
+     * tracked with the same boolean DataStore one-shot pattern as the permission gate.
+     */
+    fun hasBatteryAskShownOnce(): Boolean {
+        return try {
+            val flow = getPreference(
+                booleanPreferencesKey(PrefsConstants.HEARTBEAT_BATTERY_ASK_SHOWN_KEY), false
+            )
+            kotlinx.coroutines.runBlocking { flow.first() }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    fun markBatteryAskShownOnce() {
+        viewModelScope.launch {
+            savePreference(
+                booleanPreferencesKey(PrefsConstants.HEARTBEAT_BATTERY_ASK_SHOWN_KEY), true
+            )
+        }
+    }
+
     private fun markGateShown() {
         viewModelScope.launch {
             savePreference(booleanPreferencesKey(PrefsConstants.PERMISSION_GATE_SHOWN_KEY), true)

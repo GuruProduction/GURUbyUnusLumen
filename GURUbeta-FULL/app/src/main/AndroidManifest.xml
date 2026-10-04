@@ -334,8 +334,21 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.TIME_SET" />
             </intent-filter>
         </receiver>
+        <receiver
+            android:name="com.unuslumen.app.data.heartbeat.HeartbeatAlarmReceiver"
+            android:enabled="true"
+            android:exported="false" />
+        <service
+            android:name="com.unuslumen.app.data.heartbeat.HeartbeatRunService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="GURU self-directed 30-minute heartbeat scheduling pipeline of owner-specified design (special-use, silent and no user interference)" />
+        </service>
         <receiver
             android:name="com.unuslumen.app.notification.AlarmReceiver"
             android:enabled="true" />

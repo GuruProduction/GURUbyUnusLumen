@@ -75,4 +75,14 @@ object PrefsConstants {
 
     // Permission gate first-launch tracking
     const val PERMISSION_GATE_SHOWN_KEY = "permission_gate_shown"
+
+    /* Heartbeat grid: exact AlarmManager booking chain 2026-10-03 */
+    const val HEARTBEAT_NEXT_BOOKED_AT_KEY = "heartbeat_next_booked_at"
+
+    /* One-shot system battery dialog the owner allows: ONE tap total. */
+    const val HEARTBEAT_BATTERY_ASK_SHOWN_KEY = "heartbeat_battery_ask_shown"
+
+    /* Time-shift relay action for the heartbeat rebooking receiver. Plain named
+       string in one place so both modules route off a single real value. */
+    const val HEARTBEAT_TIME_SET_ACTION = "com.unuslumen.app.heartbeat.TIME_SET"
 }
