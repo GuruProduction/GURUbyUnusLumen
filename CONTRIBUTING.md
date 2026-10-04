@@ -100,3 +100,5 @@ GURU exists because one person was sick of being data farmed, lied to, and told 
 Don't gatekeep. Don't elitist. Don't be a dick. If someone's PR isn't great, help them improve it. If someone's question seems basic, answer it. The community this builds is the community this becomes.
 
 Category defining tech should be community driven. Open source is the only road now. Let's build something that belongs to everyone.
+
+**GURU: founded and built by Steven Newman, Unus Lumen, Bristol UK.**

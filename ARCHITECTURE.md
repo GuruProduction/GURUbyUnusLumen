@@ -148,6 +148,6 @@ Two registries: bundled skills shipped with the app, and dynamic skills that GUR
 
 ---
 
-**Unus Lumen** — Bristol, UK
+**GURU: designed and engineered by Steven Newman — Founder, Unus Lumen, Bristol UK**
 
 steven@unuslumen.com

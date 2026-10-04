@@ -1,4 +1,6 @@
-# A Note From Steven Newman, Founder and Developer
+# A Note From Steven Newman, Founder and Developer of GURU
+
+**Copyright (C) 2026 Steven Newman / Unus Lumen Ltd**
 
 **GURU is ready to download today! For FREE! Complete source — build it yourself in minutes (see BUILD.md); a prebuilt signed APK is on the GitHub Releases page right now.**
 
