@@ -149,6 +149,49 @@ class MainActivity : AppCompatActivity() {
             PermissionGateway.broadcastResult(this, permission, granted)
             pendingSpecialPermission = null
         }
+        maybeRequestBatteryExemption()
+    }
+
+    /**
+     * Heartbeat chain, battery exemption (plan corner 1, pinned, with gap-6 armour).
+     *
+     * OneUI floors exact alarms of an app that sits in the normal battery
+     * optimization bucket, so once — and only ever once, tracked with the same
+     * one-shot DataStore gate pattern as the permission gate — this opens the system's
+     * ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS dialog for GURU. When the direct
+     * prompt target is missing on a stripped OEM build it falls to the real
+     * ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS list screen. The gate key is
+     * written before either intent fires so no branch can ever prompt twice.
+     */
+    private fun maybeRequestBatteryExemption() {
+        val alreadyIgnored = try {
+            val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            pm.isIgnoringBatteryOptimizations(packageName)
+        } catch (_: Exception) {
+            true // PowerManager failed: safe exit, never block resume on it.
+        }
+        if (alreadyIgnored) return
+
+        val shownOnce = viewModel.hasBatteryAskShownOnce()
+        if (shownOnce) return
+        viewModel.markBatteryAskShownOnce() // Record BEFORE firing: one tap forever.
+
+        try {
+            startActivity(
+                android.content.Intent(
+                    android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    android.net.Uri.parse("package:$packageName")
+                )
+            )
+        } catch (_: android.content.ActivityNotFoundException) {
+            runCatching {
+                startActivity(
+                    android.content.Intent(
+                        android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS
+                    )
+                )
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

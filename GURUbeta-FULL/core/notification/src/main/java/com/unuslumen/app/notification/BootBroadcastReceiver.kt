@@ -21,8 +21,30 @@ class BootBroadcastReceiver : BroadcastReceiver(), KoinComponent {
     private val scope = CoroutineScope(ioDispatcher)
 
     override fun onReceive(context: Context?, intent: Intent?) {
+        val appContext = context ?: return
+
+        // Device wall clock changed: the whole heartbeat exact-alarm grid shifts with
+        // RTC_WAKEUP bookings, so a real rebook from NOW gets the chain back on the
+        // founder-plain 30-minute cadence. Delivered through the string-component
+        // relay pattern this file already uses for portal:data (booted service row
+        // below): core:notification does NOT depend on portal:data, so the class
+        // cannot be imported here directly.
+        // ACTION_TIME_CHANGED carries the platform value "android.intent.action.TIME_SET"
+        // (verified in sdk android-37.0 jar: AlarmManager holds no ACTION_TIME_SET constant).
+        if (intent?.action == Intent.ACTION_TIME_CHANGED) {
+            val heartbeatRelay = Intent().apply {
+                component = android.content.ComponentName(
+                    appContext.packageName,
+                    "com.unuslumen.app.data.heartbeat.HeartbeatAlarmReceiver"
+                )
+                action = "com.unuslumen.app.heartbeat.TIME_SET"
+            }
+            appContext.sendBroadcast(heartbeatRelay)
+            android.util.Log.d("BootReceiver", "TIME_SET received: heartbeat rebook relayed")
+            return
+        }
+
         if (intent?.action == Intent.ACTION_BOOT_COMPLETED) {
-            val appContext = context ?: return
 
             // Start Tor persistent foreground service on boot so Tor is available
             // before the app is even opened. Uses the fully qualified class name
