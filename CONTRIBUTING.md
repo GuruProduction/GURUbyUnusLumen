@@ -102,3 +102,5 @@ Don't gatekeep. Don't elitist. Don't be a dick. If someone's PR isn't great, hel
 Category defining tech should be community driven. Open source is the only road now. Let's build something that belongs to everyone.
 
 **GURU: founded and built by Steven Newman, Unus Lumen, Bristol UK.**
+
+Steven Newman | Bristol, UK

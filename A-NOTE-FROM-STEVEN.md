@@ -14,16 +14,6 @@ GURU is NOT finished. It is NOT perfect. However, even in its current state, GUR
 
 It is in good working order and it is very very usable. Actually, it is a very pleasant user experience. YOU DO NOT NEED PERMISSIONS FOR GURU TO WORK. GURU will work fine without permissions, however I designed and engineered this app for it to have these permissions in order to work properly.
 
-One thing you do need to know. The skills, prompts, tools, agent definitions and packs get sent through the Unus Lumen API. We're not yet a model provider, we don't see your conversations and we never will. But in order for the app to work properly, you will need to keep the app connected to our API. This connection is RECEIVE ONLY. Nothing from your device goes up to us. The API only publishes content down to your GURU.
-
-This is very immature, category defining technology, and that is exactly why I'm open sourcing it. Young, category defining tech should be community driven. Open source is the only road now. PRs are VERY welcome. All I've done is show that this level of capability, control and privacy on an ordinary phone is possible. Now I'm asking you lot to help me make it better, safer and more private.
-
-By pulling, installing and using GURU you understand that you're beta testing and contributing to a brand new category of app.
-
-GURU works best with Ollama Cloud models or local models. I personally currently use GLM 5.3 Flash because it's multimodal and relatively cheap to run. Any GLM model actually works beautifully within the framework, which leads me to believe Claude will work well in here too. I DID design the framework for people who own their own inference, so there's no token economy inside at all. So think hard before using GURU with LLMs from big tech. Anthropic, OpenAI, xAI and Google are all wired in as first-class providers and will work, but I have not tested them in-app myself: I haven't paid for their APIs, and honest testing takes money I don't currently have. What I can say is the cost shape: an agentic framework like this is a token furnace, and flagship cloud models billed per token add up fast at agentic volumes. Separately from cost, big-tech chat logging is a trust problem for a companion that knows your whole life — if that doesn't bother you, the wiring is there.
-
-Instead, I highly recommend you find a server online, find a suitable model on Hugging Face or Ollama, and use that. 1m tokens of context is not required but very beneficial. You'll need to set up a Cloudflare tunnel on the server for the instance to reach your app. You can find some really good cheap servers on https://cloud.vast.ai. Failing that, you can use Ollama Cloud, the most cost effective choice. Ollama Cloud is almost a cheat code for the average Joe. They've got brilliant models to choose from, massive 2.8T multimodal LLMs, smaller agentic coders, and so on.
-
 Once you've connected your model of choice, all you need to do is say hi and get to know your GURU.
 
 I'll keep updating this document as I come across things I need to communicate to you all.

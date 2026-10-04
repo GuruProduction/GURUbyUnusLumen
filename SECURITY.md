@@ -36,4 +36,6 @@ Security fixes land on the latest tagged release. Older tags and commits receive
 
 **GURU: built by Steven Newman — Founder, Unus Lumen, Bristol UK**
 
+**Unus Lumen** — Steven Newman | Bristol, UK
+
 steven@unuslumen.com
