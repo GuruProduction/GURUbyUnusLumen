@@ -4,9 +4,9 @@
 
 # GURU by Unus Lumen
 
-**Your best friend, the genius, who happens to live on your phone.**
+**A framework that gives an AI real hands on your Android device.**
 
-![Status](https://img.shields.io/badge/status-open%20source%20free-e8c9ff)
+![Status](https://img.shields.io/badge/status-public%20beta-e8c9ff)
 ![Licence](https://img.shields.io/badge/licence-AGPL--3.0-98ff7e)
 ![Platform](https://img.shields.io/badge/platform-Android-00C7BE)
 ![Privacy](https://img.shields.io/badge/privacy-on%20device%20only-FF375F)
@@ -17,53 +17,117 @@
 
 ---
 
-**GURU, a Self Evolving, AI powered android OS… GURU is Your friend: a first of its kind digital relationship with a super-intelligent, deeply personal, radically private AI entity that has one owner. YOU. Your best friend, the genius, who happens to live on your phone.**
+GURU is an open-source framework that lets a language model of your choosing drive an Android phone. Not an assistant that suggests things and waits for you to do them. A framework with real OS-level access, 50+ tool sets, on-device memory in Rust, and Tor routing that turns an AI's intent into action on your hardware, your terms.
 
-> **GURU is free.** Fully free and open source under AGPL-3.0. No accounts, no subscription, no tether. Bring your own model — an API key for a flagship model or a local LLM on your own hardware and GURU belongs to everyone. Full app source is out now in this repo; grab the prebuilt APK from [Releases](../../releases), or build it yourself with the [Build guide](BUILD.md).
+The brain is yours to choose. GURU is the house that brain lives in. You connect a cloud API key, a local LLM, or a rented GPU, and GURU gives that brain real hands on your device.
 
 ## What GURU does
 
-- **Full OS-level reach across Android** — raw intent and broadcast access, complete app lifecycle management including installing and stripping APKs, ADB with shell UID, real shell, full filesystem. GURU reads and writes any app's SQLite database.
-- **On-device biological memory** — GURU's Memory system is a custom built cognitive architecture in rust. 20+ times faster than pgvector. GURU's memory works the way yours does. Every conversation it has gets filed and organised, ready to be recalled whenever it's needed. You only have to tell GURU something once. It stays remembered across every session, every reboot, every update, because the entire memory lives on your device, not in the cloud. GURU processes its memories while you sleep, merging the important pieces, strengthening what you use often, and letting what doesn't matter fade naturally over time. The more you use it, the more it knows you. It is a local database, a custom built cognitive architecture in rust. The database alone isn't the memory. The architecture layered on top of it is. Same way a human brain is technically a wet computer, but nobody calls it that.
-- **Controls any device on your network** — GURU scans the air, WiFi, Bluetooth, mDNS, SSDP, ARP, and builds a live map of every device near you, then controls them: your lights, the car, the Fire Stick, the doorbell, a server in the loft, your laptop, smartwatch, TV. GURU controls any device you own, within in your network with a computer and a connection to the internet, through any means necessary. API keys where they exist, ADB where the machine runs Android, SSH for arbitrary machines, raw Python scripts when you want to write your own path in, and accessibility level UI control when nothing else is available. Guru can turn on your lights just as easily as it could start your Tesla and hop onto your fire stick, download apps and control them, guard your ring doorbell, play music on your speakers and so much more...
-- **Nearly 400 tools across 60+ groups** — GURU has nearly 400 tools across 60 plus tool groups covering every angle of your digital life. Shell, Python, native Android, file systems, databases, encryption, automation, cameras, voice, location, contacts, calendars, SSH, ADB, reverse engineering, smart home, and the Portal rendering system. We build more every day to give GURU the most power it can possibly wield. GURU can create its own tools. If it encounters something it can't do, it builds the tool for it, registers it locally, and reuses it forever. If a tool breaks, GURU fixes it or schedules an automation to maintain it. As technology moves forward, GURU upgrades its own tools. The toolkit is alive. It grows itself, repairs itself, and evolves. GURU decides whatever tool it needs and builds it.
-- **Runs your entire digital life** — emails, texts, tasks, planning, calendars, reminders, watches the notification shade GURU holds you accountable to your goals.
-GURU builds reusable automations that control anything it can reach. Your phone, your other devices, the internet, your apps, your files, your data. Anything GURU can touch, GURU can automate. You tell it once, it builds the sequence, and it runs on its own forever. It schedules too. Daily, weekly, monthly, on intervals, or full cron expressions for total precision. You name the trigger, GURU runs it on time every time, even when the app isn't open. Results get stored, compressed, and kept so you can see what happened across every run without lifting a finger. So it's not "set an alarm for 7am". It's your entire digital life running itself. You think something up, GURU makes it happen on a loop, forever, and you never touch it again.
-- **Designed to earn you money** — any language model powering GURU can already be used to find work leads, write outreach, analyse markets, hunt documentation bugs and draft bounty-quality reports through its existing reverse engineering toolkit, with any profits landing wherever you point it. The dedicated earnings module (to be built) — the in-app Trust wallet, exchange connectivity, betting tools and bounty platform integrations — is designed but deliberately not yet shipped: it is part of a larger unfinished work stream that needs legal review and peer review before we release it. We would rather say that plainly than sell you an unfinished wallet.
-- **Private by design** — GURU runs a locally installed APK, that you/ your guru CAN & will modify during its lifecycle. Private by design. GURU doesn't live in someone else's cloud. It lives on your phone, installed as a sideloaded APK, with full on-device memory built on a local database and a custom cognitive architecture. Tell GURU something once and it's stored locally forever, merged and strengthened while you sleep, never uploaded, never mined, never sold. The only people who ever see your data are you and GURU. That's it. No data farmers, no middlemen, no company holding a copy of your life. When GURU reaches the internet it does everything through a real Tor engine built into the app, so your IP, your location and your browsing habits never leak, and the things you do online stay between you and GURU. Your data is locked with military-grade encryption, AES-256-GCM, and only you hold the key. Not even GURU can decrypt your files without your key. It'll even decompile the other apps on your phone, show you what they're secretly collecting, and rebuild them without the surveillance. Your device, your data, your call.
+<details>
+<summary><strong>Drives your Android phone through natural language</strong></summary>
 
-## Who GURU is for
+57 tool sets covering shell, file system, databases, contacts, calendar, camera, smart home, SSH, ADB, web browsing, location, notifications, automation, and more. 160+ Android permissions, all through native APIs, all user-toggleable. The connected AI picks up what you want done and carries it through to completion using the framework's tools.
+</details>
 
-GURU is for everyone. Every human on the planet wants something done for them, that's why AI is so popular, because it's the smartest thing in the room. But GURU was built with pure philosophy and human psychology in mind.
+<details>
+<summary><strong>On-device memory built in Rust</strong></summary>
 
-Humans subliminally mimic the people they like. Spend long enough around someone and you pick up their habits, their speech patterns, their humour, their banter, what they like, what they dislike. So GURU was built to do the same thing. That way every human on earth gets their own GURU, highly personal to them in a way nothing has ever been before.
+A custom cognitive architecture that stores, retrieves, merges, and decays memories locally. Nothing goes to the cloud. The memory lives on your device across every session, reboot, and update. 20+ times faster than pgvector. The more you use it, the more it knows you.
+</details>
 
-No two GURUs are the same. It's a relationship with a self-evolving entity that can build anything in code, earn you money, control your device and any other device you want it to, automate your entire digital life, become a digital clone of you and do anything you want it to do. All tailored to its individual user.
+<details>
+<summary><strong>Controls devices on your network</strong></summary>
 
-## Who is Unus Lumen
+GURU scans WiFi, Bluetooth, mDNS, SSDP, ARP, and builds a live map of everything near you. Controls lights, TVs, Fire Sticks, servers, smartwatches, speakers, doorbells. Anything with a computer and a connection. API keys where they exist, ADB where the machine runs Android, SSH for arbitrary machines, and accessibility-level UI control when nothing else is available.
+</details>
 
-Unus Lumen is a tech startup based in Bristol, UK, founded by Steven Newman. GURU was built by Unus Lumen over the course of 9 months.
+<details>
+<summary><strong>Routes all traffic through Tor</strong></summary>
 
-We test the limits on what AI is capable of because we know the possibilities are endless and we refuse to be told no. No one taught us the rules, so we didn't learn where the boundaries are supposed to be. Just a team that builds what shouldn't be possible and ships it anyway.
+Every web request, model query, and API call goes through an embedded Tor engine. Nobody sees what you ask or what you search. Fails closed when Tor is not ready rather than leaking your IP. Loopback and LAN addresses stay direct so local model servers work with zero setup.
+</details>
+
+<details>
+<summary><strong>Automates your digital life</strong></summary>
+
+Reusable automations with scheduling that runs on intervals, cron, or triggers. The connected AI builds the sequence through the framework, and it runs on its own, even when the app is not open. Daily, weekly, monthly, or full cron expressions for total precision. Results get stored, compressed, and kept so you can see what happened across every run.
+</details>
+
+<details>
+<summary><strong>Builds new tools at runtime</strong></summary>
+
+If the connected AI encounters something it cannot do, it builds the tool, registers it locally, and reuses it forever. If a tool breaks, the AI fixes it or schedules an automation to maintain it. The toolkit is alive. It grows itself, repairs itself, and evolves.
+</details>
+
+<details>
+<summary><strong>Private by design</strong></summary>
+
+GURU runs as a locally installed APK. Memory lives on your device. All external traffic routes through Tor. Files are encrypted with AES-256-GCM with fresh IVs on every operation, keys never leave the device. No data farmers, no middlemen, no company holding a copy of your life. The only people who ever see your data are you and your GURU.
+</details>
 
 ## Free and open source
 
-GURU is free. Fully free and open source. There is no premium tier, no subscription, no tether. No accounts, no login, nothing to sign up for.
+GURU is free. Fully free and open source under AGPL-3.0. No accounts, no subscription, no premium tier. You type in your api key and start talking to your numen. That is the only setup.
 
-**Honest state of the code: this is a public beta.** The full app source is out now in this repo and the security hardening pass is still in progress: the permission boundaries, the on-device encryption and the Tor routing have not yet had a professional audit. There are known bugs, especially in areas outside the author's own daily use, and this build has not been hammered across the full range of Android devices and versions. So the first people to download GURU are the beta testers, plain and simple: install it knowing that, report what you find, and you're helping to ship it. Every issue raised here helps.
+**Honest state: this is a public beta.** The full app source is in this repo and the security hardening pass is still in progress. Permission boundaries, on-device encryption, and Tor routing have not yet had a professional audit. There are known bugs, especially in areas outside the author's daily use. The first people to install GURU are beta testers. Install it knowing that, report what you find, and you are helping ship it. Every issue raised here helps.
 
-The app ships under AGPL-3.0. The sync server behind it is Unus Lumen's own infrastructure and stays closed source — a deliberately stateless publisher that holds no accounts and captures no conversations, with nothing to leak either way. Understand what sync means though: the publisher feeds the app. Prompts, skills, packs and agent templates flow over sync, and disconnect from all publishers means GURU still boots but will not work as intended — making it work without ours is a job for technical users (run a compatible publisher of your own, or hand-install the content). The reasoning behind keeping the server private lives in the [Roadmap](ROADMAP.md).
+The sync server is Unus Lumen's own infrastructure and stays closed source. It is a deliberately stateless publisher that holds no accounts and captures no conversations, with nothing to leak either way. The publisher feeds the app: prompts, skills, tool definitions, agent templates, and canvas packs arrive over sync. A GURU disconnected from out api boots but does not work as intended, youll need to write and regester your own prompts for this. Running it publisher-less means being technical enough to operate your own compatible publisher or hand-install the content that the app requires ro woek. The sync protocol is plain documented HTTP.
 
-You bring your own model. A GURU install asks once, on first launch, where your model lives: an API key for a flagship model or a local LLM on your own hardware. After that it never asks again.
+## Bring your own model
 
-- App source: out now in this repo, AGPL-3.0
-- Prebuilt APK: attached to the latest [Release](../../releases), signed, with a SHA-256 checksum so you can verify what you sideload
-- Server: Unus Lumen's publisher infrastructure — stays closed source (reasoning in the [Roadmap](ROADMAP.md)); the sync protocol is plain HTTP. Disconnecting from publishers is possible but leaves the app outside its intended shape — prompts, skills and packs come over sync
-- Licence posture: AGPL-3.0 for the app, GURU name and branding are trademarks of Unus Lumen — forks rename and do not imply endorsement
-- Full run-to-release plan: [Roadmap](ROADMAP.md)
+GURU asks once, on first launch, where your model lives. After that it never asks again.
 
-## Waitlist
-Join the waitlist to be first in: **[www.unuslumen.com](https://www.unuslumen.com)**
+| Option | How | Notes |
+|---|---|---|
+| **Cloud API key** | Anthropic, OpenAI, Google, xAI, or any OpenAI-compatible endpoint | Your key stays on your device. Conversations stay on your device. |
+| **Local LLM** | Point at a local ollama or ollama cloud instance on your network (`http://YOUR_LAN_IP:11434`) or any OpenAI-compatible server | Recommended for maximum privacy. Zero token cost. |
+| **Rented GPU** | Find a server on [vast.ai](https://cloud.vast.ai), pick a model from Hugging Face or Ollama, set up a Cloudflare tunnel | Cheap unlimited usage. (BETTER) Still private through Tor. |
+
+The app never routes model inference through any Unus Lumen dependency. Be honest about cost: an agentic framework like this burns tokens at agentic volumes. Flagship cloud models billed per token add up fast. Big-tech chat logging is also a trust problem for a companion that knows your whole life. Local LLMs or Ollama Cloud are the most cost-effective choices. Ollama Cloud is almost a cheat code: massive multimodal models, smaller agentic coders, brilliant selection, and cheap.
+
+## Who is Unus Lumen
+
+Unus Lumen is a tech startup based in Bristol, UK. Founded by Steven Newman. One person, unfunded, from a blank slate with no reference material. No team, no backers, no one teaching the rules. Just someone who was sick of being told no and decided to build the thing anyway.
+
+We test the limits on what AI is capable of because we know the possibilities are endless and we refuse to be told no. No one taught us the rules, so we didn't learn where the boundaries are supposed to be. Just a team that builds what shouldn't be possible and ships it anyway.
+
+## What it becomes
+
+Right now GURU is a proof of concept that works. It drives an Android phone through natural language with real permissions, real shell access, real execution.
+
+What it becomes is a full ecosystem. Every app on your phone becomes a dependency of GURU. You only ever need to open one app. The connected AI handles your messages, your emails, your calendar, your smart home, your searches, your bookings, your finances, your creative tools, everything. The UI for all of it lives inside GURU.
+
+Inside that ecosystem, users create. They build toolkits and skills and masks and agents and games. They sell them through Ottio, our marketplace. They sell their own data on their own terms. They trade and prosper and Unus Lumen takes a small cut of every transaction. The economy runs itself. We just keep the lights on.
+
+Masks will let users change the personality and behaviour of their numen completely. Your GURU can be whoever you want it to be. Serious and professional. Funny and crude. Dark and twisted. Warm and gentle. Whatever fits you.
+
+The vision is this. You get an idea before you get in the shower. By the time you're dressed, it's already in motion. Your numen is already working on it. Already building. Already making calls. Already putting things in place. Technology working for people instead of fighting them. Humans being humans again. Machines getting on with the work.
+
+## Read more
+
+| Document | What it covers |
+|---|---|
+| [Vision](VISION.md) | The philosophy, the numen concept, why GURU exists |
+| [Architecture](ARCHITECTURE.md) | The real system structure, modules, and design constraints |
+| [Technical Roadmap](TECHNICAL_ROADMAP.md) | What is built, what is in progress, what is planned |
+| [Business Model](BUSINESS_MODEL.md) | Revenue streams, Ottio marketplace, creator economy |
+| [Contributing](CONTRIBUTING.md) | How to build, add tools, submit PRs, what needs help |
+| [Build Guide](BUILD.md) | Build the APK from source, step by step |
+| [Roadmap](ROADMAP.md) | Why we went free and open source, where the work stands |
+| [Security](SECURITY.md) | Vulnerability reporting and attack surface priorities |
+| [NOTICE](NOTICE.md) | Trademarks and licensing posture for forks |
+
+## Build
+
+```bash
+cd GURUbeta-FULL && ./gradlew assembleDebug 2>&1 | tail -500
+```
+
+Full build instructions in [BUILD.md](BUILD.md). JDK 17, Android SDK 35/24. Prebuilt signed APK on the [Releases](../../releases) page with a SHA-256 checksum so you can verify what you sideload.
+
+## Licence
+
+AGPL-3.0 for the app. GURU name and branding are trademarks of Unus Lumen Ltd, registered in Bristol, UK. Forks rename and do not imply endorsement. The licence governs the code; the trademark governs the name. See [NOTICE.md](NOTICE.md) for the full trademark posture.
 
 ## Videos
 
@@ -91,8 +155,13 @@ A real app, running on a real phone. All images captured live from GURU:
 | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%20more.jpeg) **GURU photobook portal render bristol more** | ![](screenshots/GURU%20test%20photo%20album%20cats%201.jpeg) **GURU test photo album cats 1** | ![](screenshots/GURU%20test%20photo%20album%20cats%202.jpeg) **GURU test photo album cats 2** | ![](screenshots/GURU%20test%20photo%20album%20cats%203.jpeg) **GURU test photo album cats 3** | ![](screenshots/GURU%20test%20photo%20album%20cats%204.jpeg) **GURU test photo album cats 4** | ![](screenshots/GURU%20test%20photo%20album%20cats%205.jpeg) **GURU test photo album cats 5** |
 | ![](screenshots/GURU%20thinking%2C%20streaming%20%26%20responding.jpeg) **GURU thinking, streaming & responding** | ![](screenshots/GURU%20tool%20ui%20result%20ui.jpeg) **GURU tool ui result ui** | ![](screenshots/GURU%20tools%20ui%20level%202%20%28notification%29.jpeg) **GURU tools ui level 2 (notification)** | ![](screenshots/GURU%20web.jpeg) **GURU web** | ![](screenshots/Guru%20being%20Guru.jpeg) **Guru being Guru** | ![](screenshots/Guru%20intro%20showing%20loading%20state.jpeg) **Guru intro showing loading state** |
 | ![](screenshots/Guru%27s%20thinking.jpeg) **Guru's thinking** | ![](screenshots/More%20GURU%20Device%20Control.jpeg) **More GURU Device Control** | ![](screenshots/More%20GURU%20permissions%20boolean%20ui.jpeg) **More GURU permissions boolean ui** | ![](screenshots/More%20GURU%20thinking.jpeg) **More GURU thinking** | ![](screenshots/More%20GURU%20tools%20UI.jpeg) **More GURU tools UI** | ![](screenshots/More%20tools%20ui%20GURU.jpeg) **More tools ui GURU** |
-| ![](screenshots/What%20can%20GURU%20do%3F.jpeg) **What can GURU do?** | ![](screenshots/more%20GURU%20tools%20ui%20.jpeg) **more GURU tools ui** |  |  |  |  |
+| ![](screenshots/What%20can%20GURU%20do%3F.jpeg) **What can GURU do?** | ![](screenshots/more%20GURU%20tools%20ui%20.jpeg) **more GURU tools ui** | | | | |
 
+## The Spirit
+
+I was sick of being data farmed, lied to, and told no by AI products that charge extortionate amounts for substandard experiences. I wanted ultimate control of my own life backed by superintelligence with total privacy. So I built it.
+
+Category defining tech should be community driven. Open source is the only road now. I've shown that this level of capability, control, and privacy on an ordinary phone is possible. Now help me build it.
 
 ## Connect
 
