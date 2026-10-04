@@ -83,3 +83,5 @@ Unus Lumen is building infrastructure for a user-owned economy. The revenue mode
 The ad system is ready today. Ottio is designed and partially scaffolded. The skill framework, the mask system, the tool system, and the device protection layer are all pieces of the ecosystem that feed into the marketplace. Each one gives users more to create with and more to sell.
 
 This is a commercial co-founder opportunity. The product is built. The model is clear. What's needed is someone to drive the business side: ad network partnerships, buyer relationships for the data marketplace, creator outreach, and the commercial strategy for launching Ottio. The technical foundation is solid. The commercial layer needs someone to own it.
+
+**GURU and its business model: founded, built and financed into existence by Steven Newman, Unus Lumen, Bristol UK.**

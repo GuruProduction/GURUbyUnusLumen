@@ -103,3 +103,5 @@ publisher server: Unus Lumen infrastructure, closed source (why in ROADMAP.md)
 - **Ollama not reachable from phone:** run `OLLAMA_HOST=0.0.0.0:11434 ollama serve` so it listens on the LAN, not localhost only
 
 Questions and security: steven@unuslumen.com
+
+**GURU: built and maintained by Steven Newman — Founder, Unus Lumen, Bristol UK**

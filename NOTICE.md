@@ -1,5 +1,7 @@
 # NOTICE — Trademarks and Licensing
 
+**Copyright (C) 2026 Steven Newman / Unus Lumen Ltd**
+
 GURU is free software, but the name is not yours to rebrand with.
 
 - The **GURU app** and its framework are licensed under the **GNU Affero General Public License v3.0-or-later** (see LICENSE).

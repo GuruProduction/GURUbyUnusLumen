@@ -271,3 +271,5 @@ Navigation includes an OtioComingSoon screen and an ic_otio_placeholder icon. Th
 - The tool system is extensible. New tool sets follow the pattern: definitions, executor, results, registration. The AI gets new capabilities when new tool sets are registered.
 - The brain is multi-layered. Kotlin engines for Android integration and LLM communication. Rust cerebrum for performance-critical memory operations. On-device embedding for privacy. Vector search for semantic retrieval.
 - The prompt is self-modifying. The AI proposes amendments. The user approves or rejects. Rollback is always available.
+
+**GURU: every line engineered by Steven Newman — Founder, Unus Lumen, Bristol UK.**

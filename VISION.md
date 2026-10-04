@@ -63,3 +63,5 @@ Masks will let users change the personality and behaviour of their numen complet
 The long dream is this. You get an idea before you get in the shower. By the time you're dressed, it's already in motion. Your numen is already working on it. Already building. Already making calls. Already putting things in place. Technology working for people instead of fighting them. Humans being humans again. Machines getting on with the work.
 
 That's the vision. Not an app. Not a product. A numen. Yours. On your phone. On your terms. Forever.
+
+**Steven Newman — Founder, Unus Lumen, Bristol UK.**
