@@ -79,8 +79,8 @@ GURU asks once, on first launch, where your model lives. After that it never ask
 
 | Option | How | Notes |
 |---|---|---|
-| **Cloud API key** | Anthropic, OpenAI, Google, xAI, or any OpenAI-compatible endpoint | Your key stays on your device. Conversations stay on your device. |
-| **Local LLM** | Point at a local ollama or ollama cloud instance on your network (`http://YOUR_LAN_IP:11434`) or any OpenAI-compatible server | Recommended for maximum privacy. Zero token cost. |
+| **Cloud API key** | Anthropic, OpenAI, Google, xAI, or any OpenAI-compatible endpoint | (INSECURE) Your key stays on your device. Conversations DO NOT stay on your device. |
+| **Local LLM** | Point at a local ollama or ollama cloud instance on your network (`http://YOUR_LAN_IP:11434`) or any OpenAI-compatible server | Recommended for maximum privacy. Zero token cost. | Your key stays on your device. Conversations stay on your device. YOU ARE PROTECTED |
 | **Rented GPU** | Find a server on [vast.ai](https://cloud.vast.ai), pick a model from Hugging Face or Ollama, set up a Cloudflare tunnel | Cheap unlimited usage. (BETTER) Still private through Tor. |
 
 The app never routes model inference through any Unus Lumen dependency. Be honest about cost: an agentic framework like this burns tokens at agentic volumes. Flagship cloud models billed per token add up fast. Big-tech chat logging is also a trust problem for a companion that knows your whole life. Local LLMs or Ollama Cloud are the most cost-effective choices. Ollama Cloud is almost a cheat code: massive multimodal models, smaller agentic coders, brilliant selection, and cheap.
