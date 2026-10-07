@@ -4,6 +4,7 @@
 package com.unuslumen.app.data.tools.registry
 
 import com.unuslumen.app.data.tools.UtilToolDefinitions
+import com.unuslumen.app.data.tools.GitHubToolDefinitions
 import com.unuslumen.app.data.tools.PromptToolDefinitions
 import com.unuslumen.app.data.tools.FileProcessingToolDefinitions
 import com.unuslumen.app.data.tools.LuxifyToolDefinitions
@@ -40,6 +41,9 @@ import com.unuslumen.app.data.tools.HttpToolDefinitions
 import com.unuslumen.app.data.tools.DatabaseToolDefinitions
 import com.unuslumen.app.data.tools.HookToolDefinitions
 import com.unuslumen.app.data.tools.AutomationToolDefinitions
+import com.unuslumen.app.data.tools.ModuleToolDefinitions
+import com.unuslumen.app.data.tools.IconToolDefinitions
+import com.unuslumen.app.data.tools.SkillLibraryToolDefinitions
 import com.unuslumen.app.data.tools.WebViewBrowserToolDefinitions
 import com.unuslumen.app.data.tools.ThoughtToolDefinitions
 import com.unuslumen.app.data.tools.EnvironmentToolDefinitions
@@ -151,6 +155,9 @@ object GeneratedToolRegistrations {
         DatabaseToolDefinitions,
         HookToolDefinitions,
         AutomationToolDefinitions,
+        ModuleToolDefinitions,
+        IconToolDefinitions,
+        SkillLibraryToolDefinitions,
         WebViewBrowserToolDefinitions,
         ThoughtToolDefinitions,
         EnvironmentToolDefinitions,
@@ -169,6 +176,7 @@ object GeneratedToolRegistrations {
         MediaToolDefinitions,
         SmartHomeToolDefinitions,
         ProductivityToolDefinitions,
+        GitHubToolDefinitions,
         ThemeToolDefinitions,
         ProjectToolDefinitions,
         NoteToSelfToolDefinitions,

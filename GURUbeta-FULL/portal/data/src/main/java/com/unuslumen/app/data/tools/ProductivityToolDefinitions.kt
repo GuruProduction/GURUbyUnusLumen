@@ -12,13 +12,8 @@ import com.unuslumen.app.data.tools.registry.ToolSetRegistration
 import kotlin.reflect.KClass
 
 object ProductivityToolDefinitions : ToolSetRegistration {
-    const val GITHUB_STATUS = "githubStatus"
-    const val GITHUB_PR_LIST = "githubPrList"
-    const val GITHUB_PR_VIEW = "githubPrView"
-    const val GITHUB_PR_CREATE = "githubPrCreate"
-    const val GITHUB_ISSUE_LIST = "githubIssueList"
-    const val GITHUB_ISSUE_CREATE = "githubIssueCreate"
-    const val GITHUB_REPO_INFO = "githubRepoInfo"
+    const val TRELLO_LOGIN = "trelloLogin"
+    const val NOTION_LOGIN = "notionLogin"
     const val TRELLO_BOARDS = "trelloBoards"
     const val TRELLO_LISTS = "trelloLists"
     const val TRELLO_CARDS = "trelloCards"
@@ -30,14 +25,26 @@ object ProductivityToolDefinitions : ToolSetRegistration {
     const val DIAGRAM_CREATE = "diagramCreate"
 
     override val definitions = listOf(
-        ToolDefinition(name = GITHUB_STATUS, description = "Check GitHub authentication status and current user.", category = "productivity", parameters = emptyList(), permissions = emptyList()),
-        ToolDefinition(name = GITHUB_PR_LIST, description = "List pull requests in a repository. Returns PR numbers, titles, states, and authors.", category = "productivity", parameters = listOf(ToolParameter("repo", ToolParameterType.String, true, "Repository in owner/repo format (e.g., 'facebook/react')"), ToolParameter("state", ToolParameterType.String, false, "State filter: 'open', 'closed', or 'all'. Default 'open'."), ToolParameter("limit", ToolParameterType.Integer, false, "Maximum results. Default 20.")), permissions = emptyList()),
-        ToolDefinition(name = GITHUB_PR_VIEW, description = "View details of a specific pull request including title, body, files, and reviews.", category = "productivity", parameters = listOf(ToolParameter("repo", ToolParameterType.String, true, "Repository in owner/repo format"), ToolParameter("number", ToolParameterType.Integer, true, "PR number")), permissions = emptyList()),
-        ToolDefinition(name = GITHUB_PR_CREATE, description = "Create a new pull request.", category = "productivity", parameters = listOf(ToolParameter("repo", ToolParameterType.String, true, "Repository in owner/repo format"), ToolParameter("title", ToolParameterType.String, true, "PR title"), ToolParameter("body", ToolParameterType.String, true, "PR body/description"), ToolParameter("base", ToolParameterType.String, false, "Base branch (target). Default 'main'."), ToolParameter("head", ToolParameterType.String, false, "Head branch (source). Default 'HEAD'.")), permissions = emptyList()),
-        ToolDefinition(name = GITHUB_ISSUE_LIST, description = "List issues in a repository. Returns issue numbers, titles, labels, and states.", category = "productivity", parameters = listOf(ToolParameter("repo", ToolParameterType.String, true, "Repository in owner/repo format"), ToolParameter("state", ToolParameterType.String, false, "State filter: 'open', 'closed', or 'all'. Default 'open'."), ToolParameter("label", ToolParameterType.String, false, "Label filter (optional)"), ToolParameter("limit", ToolParameterType.Integer, false, "Maximum results. Default 20.")), permissions = emptyList()),
-        ToolDefinition(name = GITHUB_ISSUE_CREATE, description = "Create a new issue in a repository.", category = "productivity", parameters = listOf(ToolParameter("repo", ToolParameterType.String, true, "Repository in owner/repo format"), ToolParameter("title", ToolParameterType.String, true, "Issue title"), ToolParameter("body", ToolParameterType.String, true, "Issue body/description"), ToolParameter("labels", ToolParameterType.String, false, "Labels to apply (comma-separated, optional)")), permissions = emptyList()),
-        ToolDefinition(name = GITHUB_REPO_INFO, description = "Get repository information including stars, forks, description, and README.", category = "productivity", parameters = listOf(ToolParameter("repo", ToolParameterType.String, true, "Repository in owner/repo format")), permissions = emptyList()),
-        ToolDefinition(name = TRELLO_BOARDS, description = "List all Trello boards for the authenticated user. All traffic routed through Tor.", category = "productivity", parameters = emptyList(), permissions = emptyList()),
+        ToolDefinition(
+            name = TRELLO_LOGIN,
+            description = "Connect this install to the user's own Trello account. Takes the API key and token from trello.com/power-ups/admin, verifies them against the real Trello API, and seals them in device hardware storage so every future session stays connected.",
+            category = "productivity",
+            parameters = listOf(
+                ToolParameter("apiKey", ToolParameterType.String, true, "Trello Power-Up API key from trello.com/power-ups/admin"),
+                ToolParameter("token", ToolParameterType.String, true, "Trello member token generated beside the API key")
+            ),
+            permissions = emptyList()
+        ),
+        ToolDefinition(
+            name = NOTION_LOGIN,
+            description = "Connect this install to the user's own Notion workspace. Takes an internal integration token from notion.so/my-integrations, verifies it against the real Notion API, and seals it in device hardware so every future session stays connected. Wiki pages must still be shared to the integration via Notion's 'Add connections'.",
+            category = "productivity",
+            parameters = listOf(
+                ToolParameter("token", ToolParameterType.String, true, "Internal integration secret from notion.so/my-integrations")
+            ),
+            permissions = emptyList()
+        ),
+        ToolDefinition(name = TRELLO_BOARDS, description = "List all Trello boards for the authenticated user. All traffic routed through Tor. Requires trelloLogin connection.", category = "productivity", parameters = emptyList(), permissions = emptyList()),
         ToolDefinition(name = TRELLO_LISTS, description = "List all lists (columns) in a Trello board through Tor.", category = "productivity", parameters = listOf(ToolParameter("boardId", ToolParameterType.String, true, "Board ID")), permissions = emptyList()),
         ToolDefinition(name = TRELLO_CARDS, description = "List all cards in a Trello list through Tor.", category = "productivity", parameters = listOf(ToolParameter("listId", ToolParameterType.String, true, "List ID")), permissions = emptyList()),
         ToolDefinition(name = TRELLO_CREATE_CARD, description = "Create a new Trello card in a list through Tor.", category = "productivity", parameters = listOf(ToolParameter("listId", ToolParameterType.String, true, "List ID to add the card to"), ToolParameter("name", ToolParameterType.String, true, "Card title"), ToolParameter("description", ToolParameterType.String, false, "Card description (optional)")), permissions = emptyList()),

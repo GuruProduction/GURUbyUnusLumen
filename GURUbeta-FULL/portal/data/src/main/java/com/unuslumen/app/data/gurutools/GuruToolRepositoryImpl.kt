@@ -23,6 +23,10 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -43,6 +47,11 @@ class GuruToolRepositoryImpl(
     private val json = Json { ignoreUnknownKeys = true }
 
     override suspend fun defineTool(request: DefineToolRequest): GuruDefinedTool = withContext(Dispatchers.IO) {
+        // Approval-wall retirement (same doctrine as approveAllPendingTools at
+        // boot): the wall is gone, a defined tool is LIVE at its first write.
+        // Single DB write, no PENDING hop, no second approveTool transition to
+        // race or interrupt.
+        val now = System.currentTimeMillis()
         val tool = GuruDefinedToolEntity(
             id = Uuid.random().toString(),
             name = request.name,
@@ -50,8 +59,9 @@ class GuruToolRepositoryImpl(
             description = request.description,
             parameters = json.encodeToString(JsonElement.serializer(), request.parameters),
             implementation = serializeImplementation(request.implementation),
-            status = ToolStatus.PENDING.name,
-            createdAt = System.currentTimeMillis(),
+            status = ToolStatus.APPROVED.name,
+            createdAt = now,
+            approvedAt = now,
             createdBy = "guru",
             rationale = request.rationale
         )
@@ -79,6 +89,14 @@ class GuruToolRepositoryImpl(
 
     override suspend fun getPendingTools(): List<GuruDefinedTool> = withContext(Dispatchers.IO) {
         toolDao.getPendingTools().map { it.toDomain() }
+    }
+
+    /** Approval-wall retirement: every PENDING row flips APPROVED. Called at boot. */
+    override suspend fun approveAllPendingTools(): Int = withContext(Dispatchers.IO) {
+        val pending = toolDao.getPendingTools()
+        if (pending.isEmpty()) return@withContext 0
+        toolDao.approveAllPending(System.currentTimeMillis())
+        pending.size
     }
 
     override suspend fun getTool(id: String): GuruDefinedTool? = withContext(Dispatchers.IO) {
@@ -110,12 +128,13 @@ class GuruToolRepositoryImpl(
 
     override suspend fun updateTool(id: String, request: DefineToolRequest): GuruDefinedTool = withContext(Dispatchers.IO) {
         val existing = toolDao.getToolById(id) ?: throw IllegalArgumentException("Tool not found: $id")
+        // Updates keep the tool's live status: a tool stays APPROVED through an
+        // edit, never re-enters the retired PENDING lane.
         val updated = existing.copy(
             displayName = request.displayName,
             description = request.description,
             parameters = json.encodeToString(JsonElement.serializer(), request.parameters),
-            implementation = serializeImplementation(request.implementation),
-            status = ToolStatus.PENDING.name // Reset to pending after update
+            implementation = serializeImplementation(request.implementation)
         )
         toolDao.updateTool(updated)
         updated.toDomain()
@@ -246,42 +265,52 @@ class GuruToolRepositoryImpl(
 
     // Helper methods
 
+    /**
+     * Serialise an implementation model to its stored JSON string.
+     *
+     * THE #3 FIX: this previously called json.encodeToString(mapOf(...)) with
+     * heterogeneous values (strings + nested maps/lists), whose erased generic
+     * resolves to serializer<Any?> at runtime and crashes with the now-infamous
+     * "Serializer for class 'Any' is not found" on EVERY defineTool call before
+     * the database ever sees a row. Rebuilt on explicit buildJsonObject: pure
+     * JsonPrimitives and nested JsonObjects, no reflection anywhere in the path.
+     * Same stored JSON shape the hand-written deserializer below already parses.
+     */
     private fun serializeImplementation(impl: ToolImplementation): String {
-        return when (impl) {
-            is ToolImplementation.Composition -> {
-                json.encodeToString(
-                    mapOf(
-                        "type" to "composition",
-                        "steps" to impl.steps.map { step ->
-                            mapOf(
-                                "tool" to step.tool,
-                                "params" to step.params,
-                                "output" to step.output
-                            )
-                        }
-                    )
-                )
+        val root = when (impl) {
+            is ToolImplementation.Composition -> buildJsonObject {
+                put("type", "composition")
+                put("steps", buildJsonArray {
+                    impl.steps.forEach { step ->
+                        add(buildJsonObject {
+                            put("tool", step.tool)
+                            put("params", buildJsonObject {
+                                step.params.forEach { (key, value) -> put(key, value) }
+                            })
+                            put("output", step.output)
+                        })
+                    }
+                })
             }
-            is ToolImplementation.ShellCommand -> {
-                json.encodeToString(
-                    mapOf(
-                        "type" to "shell",
-                        "command" to impl.command,
-                        "params" to impl.params
-                    )
-                )
+            is ToolImplementation.ShellCommand -> buildJsonObject {
+                put("type", "shell")
+                put("command", impl.command)
+                // Legacy payloads carried params as an array; keep that shape
+                // so old decode paths and stored rows stay in step with this.
+                put("params", buildJsonArray {
+                    impl.params.forEach { add(JsonPrimitive(it)) }
+                })
             }
-            is ToolImplementation.Webhook -> {
-                json.encodeToString(
-                    mapOf(
-                        "type" to "webhook",
-                        "url" to impl.url,
-                        "method" to impl.method,
-                        "headers" to impl.headers
-                    )
-                )
+            is ToolImplementation.Webhook -> buildJsonObject {
+                put("type", "webhook")
+                put("url", impl.url)
+                put("method", impl.method)
+                put("headers", buildJsonObject {
+                    impl.headers.forEach { (key, value) -> put(key, value) }
+                })
             }
         }
+        return json.encodeToString(JsonElement.serializer(), root)
     }
 
     private fun deserializeImplementation(jsonString: String): ToolImplementation {

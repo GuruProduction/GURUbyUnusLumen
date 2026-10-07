@@ -40,6 +40,6 @@ pub mod vocabulary;
 pub use compress::{decode_deltas, encode_deltas, CompressedTokenSequence, TokenCompressor};
 pub use error::{TokenError, TokenResult};
 pub use reconstruct::{detokenize, reconstruct_sequence};
-pub use tokenizer::{simple_tokenize, SimpleTokenizer, Tokenizer};
+pub use tokenizer::{simple_tokenize, HashTokenizer, SimpleTokenizer, Tokenizer};
 pub use varint::{decode_varint, decode_varint_sequence, encode_varint, encode_varint_sequence};
 pub use vocabulary::{TokenVocabulary, VocabularyLoader};

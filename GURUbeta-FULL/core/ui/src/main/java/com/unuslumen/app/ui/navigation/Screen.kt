@@ -110,4 +110,10 @@ sealed class Screen {
     data class MediaDetailScreen(
         val mediaId: String
     ) : Screen()
+
+    // Modules — rooms GURU builds, grows and tends. One route per room.
+    @Serializable
+    data class ModuleScreen(
+        val moduleId: String
+    ) : Screen()
 }

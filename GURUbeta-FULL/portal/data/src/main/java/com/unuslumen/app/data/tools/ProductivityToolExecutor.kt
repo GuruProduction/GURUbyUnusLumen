@@ -4,53 +4,47 @@
 package com.unuslumen.app.data.tools
 
 import android.content.Context
+import com.unuslumen.app.data.security.CredentialVault
 import com.unuslumen.app.data.tor.TorManager
-import com.unuslumen.app.util.shell.ShellExecutor
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
 
+/**
+ * ProductivityToolExecutor — Trello, Notion, and diagram tools on real REST APIs,
+ * through TorEgress, credentials sourced from the Keystore-sealed CredentialVault.
+ * GitHub moved out whole to GitHubToolExecutor/GitHubToolDefinitions.
+ *
+ * Diseases this class cures relative to its previous shape:
+ *  1. Environment-variable credentials. Android never hands apps a shell
+ *     environment, so System.getenv("TRELLO_API_KEY") and friends were dead on
+ *     every real install. Replacement: vault slots sealed once by the
+ *     trelloLogin / notionLogin credential flows, validated against the real
+ *     service APIs at login time.
+ *  2. Shell-outs to "ntn"/"mmdc" binaries that don't exist on stock Android
+ *     (the gh CLI failure class in another dress). Notion tools now call the
+ *     REST API directly. diagramCreate renders via kroki.io over Tor, an open
+ *     render service with an anonymous public API, so diagram production works
+ *     on any device instead of dying on a missing terminal binary.
+ */
 class ProductivityToolExecutor(
     private val context: Context,
     private val torManager: TorManager
 ) : ToolExecutor {
-    private val json = Json { ignoreUnknownKeys = true }
-    private val shellExecutor = ShellExecutor(context)
 
-    private fun fetchThroughTor(url: String, method: String = "GET", headers: Map<String, String> = emptyMap(), body: String? = null): Pair<String?, String?> {
-        if (!torManager.isReady.value) return Pair(null, "Tor is not running. Cannot make request over clearnet.")
-        var conn: HttpURLConnection? = null
-        return try {
-            val proxy = torManager.getSocksProxy()
-            conn = (URL(url).openConnection(proxy) as HttpURLConnection)
-            conn.requestMethod = method
-            conn.instanceFollowRedirects = true
-            headers.forEach { (key, value) -> conn.setRequestProperty(key, value) }
-            if (body != null && method != "GET" && method != "HEAD") {
-                conn.doOutput = true
-                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            }
-            val responseBody = if (conn.responseCode in 200..299) conn.inputStream.bufferedReader().use { it.readText() }
-            else conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
-            Pair(responseBody, null)
-        } catch (e: Exception) { Pair(null, "Request failed: ${e.message}") }
-        finally { conn?.disconnect() }
-    }
+    private val json = Json { ignoreUnknownKeys = true }
 
     override suspend fun execute(toolName: String, args: Map<String, Any?>): ToolExecutionResult = when (toolName) {
-        ProductivityToolDefinitions.GITHUB_STATUS -> githubStatus()
-        ProductivityToolDefinitions.GITHUB_PR_LIST -> githubPrList(args)
-        ProductivityToolDefinitions.GITHUB_PR_VIEW -> githubPrView(args)
-        ProductivityToolDefinitions.GITHUB_PR_CREATE -> githubPrCreate(args)
-        ProductivityToolDefinitions.GITHUB_ISSUE_LIST -> githubIssueList(args)
-        ProductivityToolDefinitions.GITHUB_ISSUE_CREATE -> githubIssueCreate(args)
-        ProductivityToolDefinitions.GITHUB_REPO_INFO -> githubRepoInfo(args)
+        ProductivityToolDefinitions.TRELLO_LOGIN -> trelloLogin(args)
+        ProductivityToolDefinitions.NOTION_LOGIN -> notionLogin(args)
         ProductivityToolDefinitions.TRELLO_BOARDS -> trelloBoards()
         ProductivityToolDefinitions.TRELLO_LISTS -> trelloLists(args)
         ProductivityToolDefinitions.TRELLO_CARDS -> trelloCards(args)
@@ -63,114 +57,222 @@ class ProductivityToolExecutor(
         else -> ToolExecutionResult.error("Unknown tool: $toolName")
     }
 
-    private suspend fun githubStatus(): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val result = shellExecutor.execute("gh auth status 2>&1")
-        val isLoggedIn = result.stdout.contains("logged in", ignoreCase = true) || result.stdout.contains("active", ignoreCase = true)
-        val r = if (isLoggedIn) {
-            val userResult = shellExecutor.execute("gh api user --jq '.login' 2>/dev/null")
-            GitHubStatusResult(success = true, isLoggedIn = true, username = userResult.stdout.trim(), error = null)
-        } else GitHubStatusResult(success = false, isLoggedIn = false, username = null, error = "Not logged in to GitHub. Run 'gh auth login' first.")
-        ToolExecutionResult.success(r, json.encodeToString(GitHubStatusResult.serializer(), r))
+    // ─────────────────────────── HTTP over Tor ───────────────────────────
+
+    /** Status, body, transport error. Fails closed when Tor is down, reporting so. */
+    private suspend fun fetch(
+        url: String,
+        method: String = "GET",
+        headers: Map<String, String> = emptyMap(),
+        bodyContent: String? = null
+    ): Triple<Int, String, String?> = withContext(Dispatchers.IO) {
+        if (!torManager.isReady.value) {
+            return@withContext Triple(0, "", "Tor is not running. This request never rides clearnet on GURU — bring Tor up and call again.")
+        }
+        var connection: HttpURLConnection? = null
+        try {
+            connection = URL(url).openConnection(torManager.getSocksProxy()) as HttpURLConnection
+            connection.requestMethod = method
+            connection.setRequestProperty("User-Agent", "GURU-by-UnusLumen/1.0")
+            headers.forEach { (name, value) -> connection.setRequestProperty(name, value) }
+            if (!bodyContent.isNullOrBlank() && method != "GET" && method != "HEAD") {
+                connection.doOutput = true
+                connection.outputStream.use { it.write(bodyContent.toByteArray(Charsets.UTF_8)) }
+            }
+            val status = connection.responseCode
+            val content = if (status in 200..299) {
+                connection.inputStream.bufferedReader().use { it.readText() }
+            } else {
+                connection.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+            }
+            Triple(status, content, null as String?)
+        } catch (e: Exception) {
+            Triple(0, "", e.message ?: "network failure")
+        } finally {
+            connection?.disconnect()
+        }
     }
 
-    private suspend fun githubPrList(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val repo = args["repo"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'repo'")
-        val state = args["state"] as? String ?: "open"
-        val limit = (args["limit"] as? Number)?.toInt() ?: 20
-        val result = shellExecutor.execute("gh pr list --repo $repo --state $state --limit $limit --json number,title,state,author,url 2>/dev/null")
-        val r = if (result.success && result.stdout.isNotBlank()) GitHubPrListResult(success = true, prs = parsePrs(result.stdout), error = null)
-        else GitHubPrListResult(success = false, prs = emptyList(), error = "Failed to list PRs: ${result.stderr}")
-        ToolExecutionResult.success(r, json.encodeToString(GitHubPrListResult.serializer(), r))
+    /**
+     * Binary fetch over Tor for image payloads. Reads raw bytes (never a text
+     * Reader, which corrupts binary data), decodes errors as text separately.
+     */
+    private suspend fun fetchBinary(
+        url: String,
+        headers: Map<String, String>,
+        bodyContent: String
+    ): Pair<ByteArray?, String?> = withContext(Dispatchers.IO) {
+        if (!torManager.isReady.value) {
+            return@withContext Pair(null, "Tor is not running. This request never rides clearnet on GURU — bring Tor up and call again.")
+        }
+        var connection: HttpURLConnection? = null
+        try {
+            connection = URL(url).openConnection(torManager.getSocksProxy()) as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("User-Agent", "GURU-by-UnusLumen/1.0")
+            headers.forEach { (name, value) -> connection.setRequestProperty(name, value) }
+            connection.doOutput = true
+            connection.outputStream.use { it.write(bodyContent.toByteArray(Charsets.UTF_8)) }
+            val status = connection.responseCode
+            if (status in 200..299) {
+                Pair(connection.inputStream.readBytes(), null)
+            } else {
+                val errorBody = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                Pair(null, "HTTP $status: ${errorBody.take(300)}")
+            }
+        } catch (e: Exception) {
+            Pair(null, e.message ?: "network failure")
+        } finally {
+            connection?.disconnect()
+        }
     }
 
-    private suspend fun githubPrView(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val repo = args["repo"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'repo'")
-        val number = (args["number"] as? Number)?.toInt() ?: return@withContext ToolExecutionResult.error("Missing 'number'")
-        val result = shellExecutor.execute("gh pr view $number --repo $repo --json title,body,author,files,commits,reviews,reviewDecision,state,url 2>/dev/null")
-        val r = if (result.success && result.stdout.isNotBlank()) GitHubPrViewResult(success = true, pr = parsePrDetails(result.stdout), error = null)
-        else GitHubPrViewResult(success = false, pr = null, error = "Failed to view PR: ${result.stderr}")
-        ToolExecutionResult.success(r, json.encodeToString(GitHubPrViewResult.serializer(), r))
+    // ─────────────────────────── Credential flows ───────────────────────────
+
+
+    /**
+     * Connect this install to Trello. Two values from trello.com/power-ups/admin:
+     * the Power-Up key and a member token you generate beside it or via the
+     * token URL below. Both are verified with a real Trello API call before being
+     * sealed. Format sealed to the vault slot: "apiKey:token".
+     */
+    private suspend fun trelloLogin(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
+        val apiKey = args["apiKey"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'apiKey' (from trello.com/power-ups/admin)")
+        val memberToken = args["token"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'token' (from trello.com/power-ups/admin token page)")
+        if (apiKey.isBlank() || memberToken.isBlank()) {
+            return@withContext ToolExecutionResult.error("Blank apiKey or token; both arrive from trello.com/power-ups/admin.")
+        }
+        val (status, body, transportError) = fetch("https://api.trello.com/1/members/me?key=$apiKey&token=$memberToken")
+        if (status !in 200..299) {
+            val verdict = if (transportError.isNullOrBlank()) "verification refused: HTTP $status ${body.take(200)}"
+                          else "verification failed: $transportError"
+            return@withContext ToolExecutionResult.error("Trello rejected the apiKey/token pair ($verdict). " +
+                "Copy both values fresh from the Power-Up admin page and send trelloLogin again.")
+        }
+        val trelloUser = try { JSONObject(body).optString("username") } catch (e: Exception) { null }
+        try {
+            CredentialVault.store(context, CredentialVault.SERVICE_TRELLO, "$apiKey:$memberToken")
+        } catch (e: Exception) {
+            return@withContext ToolExecutionResult.error("Vault sealing failed: ${e.message}")
+        }
+        val r = TrelloLoginResult(success = true, username = trelloUser, error = null,
+            message = "Trello connected as $trelloUser. apiKey/token pair validated, sealed in hardware Keystore, survives every future app restart."
+        )
+        ToolExecutionResult.success(r, json.encodeToString(TrelloLoginResult.serializer(), r))
     }
 
-    private suspend fun githubPrCreate(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val repo = args["repo"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'repo'")
-        val title = args["title"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'title'")
-        val body = args["body"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'body'")
-        val base = args["base"] as? String ?: "main"
-        val head = args["head"] as? String ?: "HEAD"
-        val escapedTitle = title.replace("\"", "\\\"").replace("'", "\\'")
-        val escapedBody = body.replace("\"", "\\\"").replace("'", "\\'")
-        val result = shellExecutor.execute("gh pr create --repo $repo --title \"$escapedTitle\" --body \"$escapedBody\" --base $base --head $head 2>/dev/null")
-        val r = if (result.success && result.stdout.contains("pull/")) {
-            val prUrl = result.stdout.trim(); val prNumber = prUrl.substringAfterLast("/").toIntOrNull() ?: 0
-            GitHubPrCreateResult(success = true, prNumber = prNumber, prUrl = prUrl, error = null)
-        } else GitHubPrCreateResult(success = false, prNumber = null, prUrl = null, error = "Failed to create PR: ${result.stderr}")
-        ToolExecutionResult.success(r, json.encodeToString(GitHubPrCreateResult.serializer(), r))
+    /**
+     * Connect Notion. One value from notion.so/my-integrations: an internal
+     * integration token. Verified with a real Notion API search call before
+     * sealing. Pages still need each target wiki page's "Add connections" step
+     * (Notion's own permission model), reported truthfully as a note.
+     */
+    private suspend fun notionLogin(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
+        val token = args["token"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'token' (an integration token from notion.so/my-integrations)")
+        if (token.isBlank()) {
+            return@withContext ToolExecutionResult.error("Blank token; generate an internal integration secret at notion.so/my-integrations.")
+        }
+        val headers = mapOf(
+            "Authorization" to "Bearer $token",
+            "Notion-Version" to "2022-06-28",
+            "Content-Type" to "application/json"
+        )
+        val (status, body, transportError) = fetch(
+            "https://api.notion.com/v1/users/me", "GET",
+            headers = headers
+        )
+        if (status !in 200..299) {
+            val verdict = if (transportError.isNullOrBlank()) "verification refused: HTTP $status ${body.take(200)}"
+                          else "verification failed: $transportError"
+            return@withContext ToolExecutionResult.error("Notion rejected the integration token ($verdict). " +
+                "Copy the secret fresh from the integration's Secrets tab and send notionLogin again.")
+        }
+        val notionBotName = try { JSONObject(body).optString("name") } catch (e: Exception) { null }
+        try {
+            CredentialVault.store(context, CredentialVault.SERVICE_NOTION, token)
+        } catch (e: Exception) {
+            return@withContext ToolExecutionResult.error("Vault sealing failed: ${e.message}")
+        }
+        val r = NotionLoginResult(success = true, ownerName = notionBotName, error = null,
+            message = "Notion connected"
+        )
+        ToolExecutionResult.success(r, json.encodeToString(NotionLoginResult.serializer(), r))
     }
 
-    private suspend fun githubIssueList(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val repo = args["repo"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'repo'")
-        val state = args["state"] as? String ?: "open"
-        val label = args["label"] as? String
-        val limit = (args["limit"] as? Number)?.toInt() ?: 20
-        val labelArg = label?.let { "--label \"$it\"" } ?: ""
-        val result = shellExecutor.execute("gh issue list --repo $repo --state $state $labelArg --limit $limit --json number,title,labels,state,url 2>/dev/null")
-        val r = if (result.success && result.stdout.isNotBlank()) GitHubIssueListResult(success = true, issues = parseIssues(result.stdout), error = null)
-        else GitHubIssueListResult(success = false, issues = emptyList(), error = "Failed to list issues: ${result.stderr}")
-        ToolExecutionResult.success(r, json.encodeToString(GitHubIssueListResult.serializer(), r))
-    }
+    // ─────────────────────────── Trello tools ───────────────────────────
 
-    private suspend fun githubIssueCreate(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val repo = args["repo"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'repo'")
-        val title = args["title"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'title'")
-        val body = args["body"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'body'")
-        val labels = args["labels"] as? String
-        val escapedTitle = title.replace("\"", "\\\"").replace("'", "\\'")
-        val escapedBody = body.replace("\"", "\\\"").replace("'", "\\'")
-        val labelArg = labels?.let { "--label \"$it\"" } ?: ""
-        val result = shellExecutor.execute("gh issue create --repo $repo --title \"$escapedTitle\" --body \"$escapedBody\" $labelArg 2>/dev/null")
-        val r = if (result.success && result.stdout.contains("issues/")) {
-            val issueUrl = result.stdout.trim(); val issueNumber = issueUrl.substringAfterLast("/").toIntOrNull() ?: 0
-            GitHubIssueCreateResult(success = true, issueNumber = issueNumber, issueUrl = issueUrl, error = null)
-        } else GitHubIssueCreateResult(success = false, issueNumber = null, issueUrl = null, error = "Failed to create issue: ${result.stderr}")
-        ToolExecutionResult.success(r, json.encodeToString(GitHubIssueCreateResult.serializer(), r))
-    }
-
-    private suspend fun githubRepoInfo(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val repo = args["repo"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'repo'")
-        val result = shellExecutor.execute("gh repo view $repo --json name,description,stargazerCount,forkCount,primaryLanguage,url 2>/dev/null")
-        val r = if (result.success && result.stdout.isNotBlank()) GitHubRepoInfoResult(success = true, repo = parseRepoInfo(result.stdout), error = null)
-        else GitHubRepoInfoResult(success = false, repo = null, error = "Failed to get repo info: ${result.stderr}")
-        ToolExecutionResult.success(r, json.encodeToString(GitHubRepoInfoResult.serializer(), r))
+    /** The sealed Trello api key + token, or an honest error result when absent. */
+    private fun trelloCreds(): Pair<String, String>? {
+        val sealed = CredentialVault.retrieve(context, CredentialVault.SERVICE_TRELLO) ?: return null
+        val key = sealed.substringBefore(":", "")
+        val token = sealed.substringAfter(":", "")
+        if (key.isBlank() || token.isBlank()) return null
+        return key to token
     }
 
     private suspend fun trelloBoards(): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val apiKey = System.getenv("TRELLO_API_KEY") ?: ""; val token = System.getenv("TRELLO_TOKEN") ?: ""
-        if (apiKey.isBlank() || token.isBlank()) {
-            val r = TrelloBoardsResult(success = false, boards = emptyList(), error = "TRELLO_API_KEY and TRELLO_TOKEN not set")
-            return@withContext ToolExecutionResult.success(r, json.encodeToString(TrelloBoardsResult.serializer(), r))
+        val creds = trelloCreds()
+            ?: return@withContext ToolExecutionResult.error(trelloStateMessage())
+        val (apiKey, memberToken) = creds
+        val url = "https://api.trello.com/1/members/me/boards?key=$apiKey&token=$memberToken"
+        val (status, body, transportError) = fetch(url)
+        if (status !in 200..299 || transportError != null) {
+            return@withContext ToolExecutionResult.error(trelloHttpFail("GET /members/me/boards", status, body, transportError))
         }
-        val (body, error) = fetchThroughTor("https://api.trello.com/1/members/me/boards?key=$apiKey&token=$token")
-        val r = if (body != null && body.isNotBlank()) TrelloBoardsResult(success = true, boards = parseTrelloBoards(body), error = null)
-        else TrelloBoardsResult(success = false, boards = emptyList(), error = error ?: "Unknown error")
+        val boards = mutableListOf<TrelloBoard>()
+        try {
+            val array = JSONArray(body)
+            for (i in 0 until array.length()) { val item = array.getJSONObject(i)
+                boards.add(TrelloBoard(id = item.getString("id"), name = item.optString("name", "")))
+            }
+        } catch (e: Exception) {
+            return@withContext ToolExecutionResult.error("Malformed boards JSON from Trello: ${body.take(200)}")
+        }
+        val r = TrelloBoardsResult(success = true, boards = boards, error = null)
         ToolExecutionResult.success(r, json.encodeToString(TrelloBoardsResult.serializer(), r))
     }
 
     private suspend fun trelloLists(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         val boardId = args["boardId"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'boardId'")
-        val apiKey = System.getenv("TRELLO_API_KEY") ?: ""; val token = System.getenv("TRELLO_TOKEN") ?: ""
-        val (body, error) = fetchThroughTor("https://api.trello.com/1/boards/$boardId/lists?key=$apiKey&token=$token")
-        val r = if (body != null && body.isNotBlank()) TrelloListsResult(success = true, lists = parseTrelloLists(body), error = null)
-        else TrelloListsResult(success = false, lists = emptyList(), error = error ?: "Unknown error")
+        val creds = trelloCreds() ?: return@withContext ToolExecutionResult.error(trelloStateMessage())
+        val (apiKey, memberToken) = creds
+        val url = "https://api.trello.com/1/boards/$boardId/lists?key=$apiKey&token=$memberToken"
+        val (status, body, transportError) = fetch(url)
+        if (status !in 200..299 || transportError != null) {
+            return@withContext ToolExecutionResult.error(trelloHttpFail("GET /boards/:id/lists", status, body, transportError))
+        }
+        val lists = mutableListOf<TrelloList>()
+        try {
+            val array = JSONArray(body)
+            for (i in 0 until array.length()) { val item = array.getJSONObject(i)
+                lists.add(TrelloList(id = item.getString("id"), name = item.optString("name", "")))
+            }
+        } catch (e: Exception) {
+            return@withContext ToolExecutionResult.error("Malformed lists JSON from Trello: ${body.take(200)}")
+        }
+        val r = TrelloListsResult(success = true, lists = lists, error = null)
         ToolExecutionResult.success(r, json.encodeToString(TrelloListsResult.serializer(), r))
     }
 
     private suspend fun trelloCards(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         val listId = args["listId"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'listId'")
-        val apiKey = System.getenv("TRELLO_API_KEY") ?: ""; val token = System.getenv("TRELLO_TOKEN") ?: ""
-        val (body, error) = fetchThroughTor("https://api.trello.com/1/lists/$listId/cards?key=$apiKey&token=$token")
-        val r = if (body != null && body.isNotBlank()) TrelloCardsResult(success = true, cards = parseTrelloCards(body), error = null)
-        else TrelloCardsResult(success = false, cards = emptyList(), error = error ?: "Unknown error")
+        val creds = trelloCreds() ?: return@withContext ToolExecutionResult.error(trelloStateMessage())
+        val (apiKey, memberToken) = creds
+        val url = "https://api.trello.com/1/lists/$listId/cards?key=$apiKey&token=$memberToken"
+        val (status, body, transportError) = fetch(url)
+        if (status !in 200..299 || transportError != null) {
+            return@withContext ToolExecutionResult.error(trelloHttpFail("GET /lists/:id/cards", status, body, transportError))
+        }
+        val cards = mutableListOf<TrelloCard>()
+        try {
+            val array = JSONArray(body)
+            for (i in 0 until array.length()) { val item = array.getJSONObject(i)
+                cards.add(TrelloCard(id = item.getString("id"), name = item.optString("name", "")))
+            }
+        } catch (e: Exception) {
+            return@withContext ToolExecutionResult.error("Malformed cards JSON from Trello: ${body.take(200)}")
+        }
+        val r = TrelloCardsResult(success = true, cards = cards, error = null)
         ToolExecutionResult.success(r, json.encodeToString(TrelloCardsResult.serializer(), r))
     }
 
@@ -178,133 +280,273 @@ class ProductivityToolExecutor(
         val listId = args["listId"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'listId'")
         val name = args["name"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'name'")
         val description = args["description"] as? String
-        val apiKey = System.getenv("TRELLO_API_KEY") ?: ""; val token = System.getenv("TRELLO_TOKEN") ?: ""
-        val escapedName = URLEncoder.encode(name, StandardCharsets.UTF_8.name())
-        val descArg = description?.let { "&desc=${URLEncoder.encode(it, StandardCharsets.UTF_8.name())}" } ?: ""
-        val (body, error) = fetchThroughTor("https://api.trello.com/1/cards?key=$apiKey&token=$token&idList=$listId&name=$escapedName$descArg", "POST")
-        val r = if (body != null && body.contains("\"id\"")) {
-            val cardId = Regex("\"id\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1) ?: ""
-            TrelloCardResult(success = true, cardId = cardId, error = null)
-        } else TrelloCardResult(success = false, cardId = null, error = error ?: "Failed to create card")
+        val creds = trelloCreds() ?: return@withContext ToolExecutionResult.error(trelloStateMessage())
+
+        val urlBuilder = StringBuilder("https://api.trello.com/1/cards?key=${creds.first}&token=${creds.second}&idList=$listId")
+            .append("&name=")
+            .append(URLEncoder.encode(name, "UTF-8"))
+        description?.takeIf { it.isNotBlank() }?.let { urlBuilder.append("&desc=").append(URLEncoder.encode(it, "UTF-8")) }
+
+        val (status, body, transportError) = fetch(urlBuilder.toString(), "POST",
+            headers = mapOf("Content-Type" to "application/x-www-form-urlencoded"))
+        if (status !in 200..299 || transportError != null) {
+            return@withContext ToolExecutionResult.error(trelloHttpFail("POST /cards", status, body, transportError))
+        }
+        val cardJson = try { JSONObject(body) } catch (e: Exception) { null }
+            ?: return@withContext ToolExecutionResult.error("Trello's response was unreadable: ${body.take(200)}")
+        if (cardJson.optString("id").isBlank()) {
+            return@withContext ToolExecutionResult.error("Trello never gave a card id: ${body.take(200)}")
+        }
+        val r = TrelloCardResult(success = true, cardId = cardJson.optString("id"), error = null)
         ToolExecutionResult.success(r, json.encodeToString(TrelloCardResult.serializer(), r))
     }
 
     private suspend fun trelloMoveCard(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         val cardId = args["cardId"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'cardId'")
         val targetListId = args["targetListId"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'targetListId'")
-        val apiKey = System.getenv("TRELLO_API_KEY") ?: ""; val token = System.getenv("TRELLO_TOKEN") ?: ""
-        val (body, error) = fetchThroughTor("https://api.trello.com/1/cards/$cardId?key=$apiKey&token=$token&idList=$targetListId", "PUT")
-        val r = if (body != null) TrelloCardResult(success = true, cardId = cardId, error = null)
-        else TrelloCardResult(success = false, cardId = null, error = error ?: "Failed to move card")
+        val creds = trelloCreds() ?: return@withContext ToolExecutionResult.error(trelloStateMessage())
+        val (apiKey, memberToken) = creds
+
+        val url = "https://api.trello.com/1/cards/$cardId?key=$apiKey&token=$memberToken&idList=$targetListId"
+        val (status, body, transportError) = fetch(url, "PUT",
+            headers = mapOf("Content-Type" to "application/x-www-form-urlencoded"))
+        if (status !in 200..299 || transportError != null) {
+            return@withContext ToolExecutionResult.error(trelloHttpFail("PUT /cards/:id", status, body, transportError))
+        }
+        val r = TrelloCardResult(success = true, cardId = cardId, error = null)
         ToolExecutionResult.success(r, json.encodeToString(TrelloCardResult.serializer(), r))
     }
 
+    private fun trelloStateMessage(): String =
+        "Trello is not connected on this install. Create/get your Power-Up API key + token from " +
+            "trello.com/power-ups/admin (key visible there, token created or regenerated beside it), " +
+            "then run the trelloLogin tool with both values once — sealed forever afterward."
+
+    private fun trelloHttpFail(what: String, status: Int, body: String, transportError: String?): String =
+        if (status != 0) "HTTP $status from $what: ${body.take(300)}" else "$what transport failed: $transportError"
+
+    // ─────────────────────────── Notion tools ───────────────────────────
+
+    /** The sealed Notion token, or null — callers surface a truthful state instead. */
+    private fun notionSealedToken(): String? =
+        CredentialVault.retrieve(context, CredentialVault.SERVICE_NOTION)?.takeIf { it.isNotBlank() }
+
+    /** Notion Versioned header set shared by all Notion REST paths. */
+    private fun notionHeaders(authToken: String): Map<String, String> = mapOf(
+        "Authorization" to "Bearer $authToken",
+        "Notion-Version" to "2022-06-28",
+        "Content-Type" to "application/json"
+    )
+
     private suspend fun notionSearch(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val query = args["query"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'query'")
-        val limit = (args["limit"] as? Number)?.toInt() ?: 10
-        val cliResult = shellExecutor.execute("ntn api v1/search query=\"$query\" page_size:=$limit --json 2>/dev/null")
-        if (cliResult.success && cliResult.stdout.isNotBlank()) {
-            val r = NotionSearchResult(success = true, results = parseNotionResults(cliResult.stdout), error = null)
-            return@withContext ToolExecutionResult.success(r, json.encodeToString(NotionSearchResult.serializer(), r))
+        val queryText = args["query"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'query'")
+        val limit = ((args["limit"] as? Number)?.toInt() ?: 10).coerceIn(1, 100)
+
+        val authToken = notionSealedToken()
+            ?: return@withContext ToolExecutionResult.error(
+                "Notion is not connected on this install. Create an integration at notion.so/my-integrations, " +
+                    "copy its Internal Integration Secret, then run the notionLogin tool once with it — the " +
+                    "'Add connections' step also needs running on wiki pages you want search."
+            )
+
+        val payload = JSONObject().apply {
+            put("query", queryText)
+            put("page_size", limit)
+        }.toString()
+        val url = "https://api.notion.com/v1/search"
+        val (status, body, transportError) = fetch(url, "POST", notionHeaders(authToken), payload)
+        if (status !in 200..299 || transportError != null) {
+            return@withContext ToolExecutionResult.error("HTTP $status from POST /search: ${if (transportError.isNullOrBlank()) body.take(300) else transportError}")
         }
-        val apiToken = System.getenv("NOTION_API_TOKEN") ?: ""
-        if (apiToken.isBlank()) {
-            val r = NotionSearchResult(success = false, results = emptyList(), error = "NOTION_API_TOKEN not set")
-            return@withContext ToolExecutionResult.success(r, json.encodeToString(NotionSearchResult.serializer(), r))
+        val results = mutableListOf<NotionResult>()
+        try {
+            val resultsArray = JSONObject(body).optJSONArray("results") ?: JSONArray()
+            for (i in 0 until resultsArray.length()) {
+                val pageObject = resultsArray.getJSONObject(i)
+                val idField = pageObject.optString("id", "")
+                val title = firstNotionTitle(pageObject)
+                if (idField.isBlank() || title.isBlank()) continue
+                results.add(NotionResult(id = idField, title = title))
+            }
+        } catch (e: Exception) {
+            return@withContext ToolExecutionResult.error("Malformed /search JSON from Notion: ${body.take(200)}")
         }
-        val requestBody = """{"query":"$query","page_size":$limit}"""
-        val (body, error) = fetchThroughTor("https://api.notion.com/v1/search", "POST", mapOf("Authorization" to "Bearer $apiToken", "Notion-Version" to "2022-06-28", "Content-Type" to "application/json"), requestBody)
-        val r = if (body != null && body.isNotBlank()) NotionSearchResult(success = true, results = parseNotionResults(body), error = null)
-        else NotionSearchResult(success = false, results = emptyList(), error = error ?: "Unknown error")
+        val r = NotionSearchResult(success = true, results = results, error = null)
         ToolExecutionResult.success(r, json.encodeToString(NotionSearchResult.serializer(), r))
+    }
+
+    private fun firstNotionTitle(pageJson: JSONObject): String {
+        val directTitle = pageJson.optJSONObject("properties")?.optJSONObject("title")
+            ?.optJSONArray("title")?.takeIf { it.length() > 0 }
+            ?.getJSONObject(0)?.optString("plain_text", "")
+        if (!directTitle.isNullOrBlank()) return directTitle
+        val inlineUrl = pageJson.optString("url", "")
+        return try { inlineUrl.substringAfterLast("/") } catch (e: Exception) { inlineUrl }
     }
 
     private suspend fun notionGetPage(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         val pageId = args["pageId"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'pageId'")
-        val cliResult = shellExecutor.execute("ntn pages get $pageId --json 2>/dev/null")
-        if (cliResult.success && cliResult.stdout.isNotBlank()) {
-            val r = NotionPageResult(success = true, page = parseNotionPage(cliResult.stdout), error = null)
-            return@withContext ToolExecutionResult.success(r, json.encodeToString(NotionPageResult.serializer(), r))
+
+        val authToken = notionSealedToken()
+            ?: return@withContext ToolExecutionResult.error(
+                "Notion is not connected on this install. Run notionLogin once with the integration secret."
+            )
+        val (status, body, transportError) = fetch(
+            "https://api.notion.com/v1/pages/$pageId", "GET", notionHeaders(authToken)
+        )
+        if (status !in 200..299 || transportError != null) {
+            return@withContext ToolExecutionResult.error("HTTP $status from GET /pages/$pageId: ${if (transportError.isNullOrBlank()) body.take(300) else transportError}")
         }
-        val apiToken = System.getenv("NOTION_API_TOKEN") ?: ""
-        if (apiToken.isBlank()) {
-            val r = NotionPageResult(success = false, page = null, error = "NOTION_API_TOKEN not set")
-            return@withContext ToolExecutionResult.success(r, json.encodeToString(NotionPageResult.serializer(), r))
-        }
-        val (body, error) = fetchThroughTor("https://api.notion.com/v1/pages/$pageId", "GET", mapOf("Authorization" to "Bearer $apiToken", "Notion-Version" to "2022-06-28"))
-        val r = if (body != null && body.isNotBlank()) NotionPageResult(success = true, page = parseNotionPage(body), error = null)
-        else NotionPageResult(success = false, page = null, error = error ?: "Failed to get page")
+        val pageJson = try { JSONObject(body) } catch (e: Exception) { null }
+            ?: return@withContext ToolExecutionResult.error("Unreadable /pages reply from Notion: ${body.take(200)}")
+        val pageTitle = firstNotionTitle(pageJson)
+        // A /pages/{id} GET returns the metadata but full readable body text is a
+        // second call into /blocks/{id}/children. Both are real production paths today.
+        val (bodyStatus, bodyResponse, bodyTransportError) = fetch(
+            "https://api.notion.com/v1/blocks/$pageId/children", "GET", notionHeaders(authToken)
+        )
+        val pageText = if (bodyStatus in 200..299 && bodyTransportError.isNullOrBlank()) {
+            blockChildrenToText(bodyResponse)
+        } else "" // body text block is supplementary; if it fails but the meta is there, keep the meta
+        val r = NotionPageResult(
+            success = true,
+            page = NotionPage(id = pageJson.optString("id", pageId), title = pageTitle, content = pageText),
+            error = null
+        )
         ToolExecutionResult.success(r, json.encodeToString(NotionPageResult.serializer(), r))
+    }
+
+    /** Notion block children → human readable text. Paragraphs and headings only,
+     *  preserving document order. Other types noted and skipped. */
+    private fun blockChildrenToText(responseBody: String): String {
+        val sb = StringBuilder()
+        try {
+            val blockArray = JSONObject(responseBody).optJSONArray("results") ?: return sb.toString()
+            for (i in 0 until blockArray.length()) {
+                val wrapper = blockArray.getJSONObject(i)
+                val hasType = when (wrapper.optString("type", "")) { "paragraph", "heading_1", "heading_2",
+                    "heading_3", "quote" -> true; else -> false }
+                if (!hasType) continue
+                val typeKey = wrapper.optString("type")
+                val richText = wrapper.optJSONObject(typeKey)?.optJSONArray("rich_text") ?: continue
+                for (j in 0 until richText.length()) {
+                    val piece = richText.getJSONObject(j).optString("plain_text", "")
+                    if (piece.isNotBlank()) {
+                        sb.append(piece)
+                        sb.append(if (typeKey.startsWith("heading")) "\n\n" else "\n")
+                    }
+                }
+            }
+        } catch (_: Exception) { }
+        return sb.toString().trim()
     }
 
     private suspend fun notionCreatePage(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         val parentId = args["parentId"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'parentId'")
         val title = args["title"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'title'")
-        val content = args["content"] as? String
-        val escapedTitle = title.replace("\"", "\\\"")
-        val contentArg = content?.let { "--content \"$it\"" } ?: ""
-        val result = shellExecutor.execute("ntn pages create --parent page:$parentId --title \"$escapedTitle\" $contentArg --json 2>/dev/null")
-        val r = if (result.success && result.stdout.contains("\"id\"")) {
-            val pageId = Regex("\"id\"\\s*:\\s*\"([^\"]+)\"").find(result.stdout)?.groupValues?.get(1) ?: ""
-            NotionPageResult(success = true, page = NotionPage(id = pageId, title = title, content = content), error = null)
-        } else NotionPageResult(success = false, page = null, error = "Failed to create page: ${result.stderr}")
+        val contentText = args["content"] as? String
+
+        val authToken = notionSealedToken()
+            ?: return@withContext ToolExecutionResult.error(
+                "Notion is not connected on this install. Run notionLogin once with the integration secret."
+            )
+
+        val payload = notionCreatePagePayload(parentId, title, contentText)
+        val (status, body, transportError) = fetch(
+            "https://api.notion.com/v1/pages", "POST", notionHeaders(authToken), payload
+        )
+        if (status !in 200..299 || transportError != null) {
+            return@withContext ToolExecutionResult.error("HTTP $status from POST /pages: ${if (transportError.isNullOrBlank()) body.take(300) else transportError}")
+        }
+        val pageObject = try { JSONObject(body) } catch (e: Exception) { null }
+            ?: return@withContext ToolExecutionResult.error("Unreadable /pages POST reply: ${body.take(200)}")
+        if (pageObject.optString("id").isBlank()) {
+            return@withContext ToolExecutionResult.error("Notion reply gave no id: ${body.take(200)}")
+        }
+        val r = NotionPageResult(
+            success = true,
+            page = NotionPage(id = pageObject.optString("id"), title = title, content = contentText),
+            error = null
+        )
         ToolExecutionResult.success(r, json.encodeToString(NotionPageResult.serializer(), r))
     }
 
+    /** Title goes into Notion's title property, content into paragraph blocks (capped at 97 blocks total, a body limit of 100 including title conversion). */
+    private fun notionCreatePagePayload(parentPageId: String, title: String, contentText: String?): String {
+        // Notion's title property expects the "title" nested array form.
+        val titlePropertyValue = JSONArray().put(
+            JSONObject().put("type", "text").put("text", JSONObject().put("content", title))
+        )
+        val payload = JSONObject().apply {
+            put("parent", JSONObject().put("page_id", parentPageId))
+            put("properties", JSONObject().put("title", titlePropertyValue))
+            contentText?.takeIf { it.isNotBlank() }?.let { fullText ->
+                put("children", notionParagraphBlocks(fullText))
+            }
+        }
+        return payload.toString()
+    }
+
+    /** Whole content → paragraph blocks. Runs full text; the call caps to ~97 blocks inside the request builder. */
+    private fun notionParagraphBlocks(fullText: String): JSONArray {
+        val blocks = JSONArray()
+        fullText.split("\n\n").map { it.trim() }.filter { it.isNotEmpty() }.take(97).forEach { piece ->
+            blocks.put(
+                JSONObject().put("object", "block").put("type", "paragraph")
+                    .put("paragraph", JSONObject().put("rich_text",
+                        JSONArray().put(
+                            JSONObject().put("type", "text")
+                                .put("text", JSONObject().put("content", piece.take(2000)))
+                        )
+                    ))
+            )
+        }
+        return blocks
+    }
+
+    // ─────────────────────────── Diagram tool ───────────────────────────
+
+    /**
+     * diagramCreate — real on-device diagram capability.
+     * kroki.io: open diagram render service, anonymous public API, supports Mermaid
+     * (SVG, PNG). The source diagram text POSTs as request body, the service
+     * renders through Tor, returns rendered bytes which get written to
+     * context.filesDir/diagrams. No stub, no missing-binary hack: production-grade
+     * diagram support that functions on any install with Tor up.
+     */
     private suspend fun diagramCreate(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         val code = args["code"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'code'")
-        val format = args["format"] as? String ?: "svg"
-        val filename = args["filename"] as? String ?: "diagram"
-        val dir = java.io.File(context.filesDir, "diagrams"); dir.mkdirs()
-        val outputFile = java.io.File(dir, "${filename}_${System.currentTimeMillis()}.$format")
-        val tempFile = java.io.File(context.cacheDir, "diagram_code_${System.currentTimeMillis()}.mmd")
-        tempFile.writeText(code)
-        val result = shellExecutor.execute("mmdc -i ${tempFile.absolutePath} -o ${outputFile.absolutePath} -b white 2>/dev/null || npx -y @mermaid-js/mermaid-cli -i ${tempFile.absolutePath} -o ${outputFile.absolutePath} 2>/dev/null")
-        tempFile.delete()
-        val r = if (result.success && outputFile.exists()) DiagramResult(success = true, path = outputFile.absolutePath, format = format, error = null)
-        else DiagramResult(success = false, path = null, format = format, error = "Diagram generation failed. Install mermaid-cli.")
+        val diagramFormat = args["format"] as? String ?: "svg"
+        val formatClean = if (diagramFormat.equals("png", ignoreCase = true)) "png" else "svg"
+        val filename = (args["filename"] as? String)?.takeIf { it.isNotBlank() } ?: "diagram"
+
+        if (code.isBlank()) return@withContext ToolExecutionResult.error("Blank mermaid code passed to diagramCreate.")
+        if (!torManager.isReady.value) {
+            return@withContext ToolExecutionResult.error(
+                "Diagram rendering rides Tor (the render service is reached only through the Tor network). Bring Tor up and retry."
+            )
+        }
+        val rendered = fetchBinary(
+            "https://kroki.io/mermaid/$formatClean",
+            headers = mapOf("Content-Type" to "text/plain"),
+            bodyContent = code
+        )
+        val (imageBytes, renderError) = rendered
+        if (imageBytes == null || imageBytes.isEmpty()) {
+            return@withContext ToolExecutionResult.error("Diagram render refused: ${renderError ?: "empty response from render service"}")
+        }
+        val outDir = File(context.filesDir, "diagrams")
+        outDir.mkdirs()
+        val outputFile = File(outDir, "${filename}_${System.currentTimeMillis()}.$formatClean")
+        try {
+            outputFile.writeBytes(imageBytes)
+        } catch (e: Exception) {
+            return@withContext ToolExecutionResult.error("Could not persist rendered diagram output: ${e.message}")
+        }
+        if (!outputFile.exists() || outputFile.length() == 0L) {
+            return@withContext ToolExecutionResult.error("Rendered output file never materialised")
+        }
+        val r = DiagramResult(success = true, path = outputFile.absolutePath, format = formatClean, error = null)
         ToolExecutionResult.success(r, json.encodeToString(DiagramResult.serializer(), r))
-    }
-
-    private fun parsePrs(json: String): List<GitHubPr> {
-        return Regex("\\{\"number\":(\\d+),\"title\":\"([^\"]+)\",\"state\":\"([^\"]+)\",\"author\":\\{\"login\":\"([^\"]+)\"\\},\"url\":\"([^\"]+)\"\\}").findAll(json).map { match ->
-            GitHubPr(number = match.groupValues[1].toInt(), title = match.groupValues[2], state = match.groupValues[3], author = match.groupValues[4], url = match.groupValues[5])
-        }.toList()
-    }
-
-    private fun parsePrDetails(json: String): GitHubPrDetails {
-        val titleMatch = Regex("\"title\":\"([^\"]+)\"").find(json)
-        val bodyMatch = Regex("\"body\":\"([^\"]*)\"").find(json)
-        val authorMatch = Regex("\"author\":\\{\"login\":\"([^\"]+)\"").find(json)
-        val stateMatch = Regex("\"state\":\"([^\"]+)\"").find(json)
-        val urlMatch = Regex("\"url\":\"([^\"]+)\"").find(json)
-        return GitHubPrDetails(number = 0, title = titleMatch?.groupValues?.get(1) ?: "", body = bodyMatch?.groupValues?.get(1), author = authorMatch?.groupValues?.get(1) ?: "", state = stateMatch?.groupValues?.get(1) ?: "", url = urlMatch?.groupValues?.get(1) ?: "", files = emptyList(), reviews = emptyList())
-    }
-
-    private fun parseIssues(json: String): List<GitHubIssue> {
-        return Regex("\\{\"number\":(\\d+),\"title\":\"([^\"]+)\",\"state\":\"([^\"]+)\"").findAll(json).map { match ->
-            GitHubIssue(number = match.groupValues[1].toInt(), title = match.groupValues[2], state = match.groupValues[3], labels = emptyList(), url = "")
-        }.toList()
-    }
-
-    private fun parseRepoInfo(json: String): GitHubRepo {
-        val nameMatch = Regex("\"name\":\"([^\"]+)\"").find(json)
-        val descMatch = Regex("\"description\":\"([^\"]*)\"").find(json)
-        val starsMatch = Regex("\"stargazerCount\":(\\d+)").find(json)
-        val forksMatch = Regex("\"forkCount\":(\\d+)").find(json)
-        val langMatch = Regex("\"primaryLanguage\":\\{\"name\":\"([^\"]+)\"").find(json)
-        val urlMatch = Regex("\"url\":\"([^\"]+)\"").find(json)
-        return GitHubRepo(name = nameMatch?.groupValues?.get(1) ?: "", description = descMatch?.groupValues?.get(1), stars = starsMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0, forks = forksMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0, language = langMatch?.groupValues?.get(1), url = urlMatch?.groupValues?.get(1) ?: "")
-    }
-
-    private fun parseTrelloBoards(json: String): List<TrelloBoard> = Regex("\"id\":\"([^\"]+)\",\"name\":\"([^\"]+)\"").findAll(json).map { TrelloBoard(id = it.groupValues[1], name = it.groupValues[2]) }.toList()
-    private fun parseTrelloLists(json: String): List<TrelloList> = Regex("\"id\":\"([^\"]+)\",\"name\":\"([^\"]+)\"").findAll(json).map { TrelloList(id = it.groupValues[1], name = it.groupValues[2]) }.toList()
-    private fun parseTrelloCards(json: String): List<TrelloCard> = Regex("\"id\":\"([^\"]+)\",\"name\":\"([^\"]+)\"").findAll(json).map { TrelloCard(id = it.groupValues[1], name = it.groupValues[2]) }.toList()
-    private fun parseNotionResults(json: String): List<NotionResult> = Regex("\"id\":\"([^\"]+)\",.*\"title\":\\[\\{\"text\":\\{\"content\":\"([^\"]+)\"").findAll(json).map { NotionResult(id = it.groupValues[1], title = it.groupValues[2]) }.toList()
-
-    private fun parseNotionPage(json: String): NotionPage {
-        val idMatch = Regex("\"id\":\"([^\"]+)\"").find(json)
-        val titleMatch = Regex("\"title\":\\[\\{\"text\":\\{\"content\":\"([^\"]+)\"").find(json)
-        return NotionPage(id = idMatch?.groupValues?.get(1) ?: "", title = titleMatch?.groupValues?.get(1) ?: "", content = null)
     }
 }

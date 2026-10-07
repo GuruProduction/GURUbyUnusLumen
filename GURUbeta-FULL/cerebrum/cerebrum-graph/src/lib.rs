@@ -17,7 +17,10 @@ use chrono::{DateTime, Utc};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
+pub mod entities;
+
 pub use cerebrum_core::{EdgeType, GraphEdge, MemoryId, QueryType, TokenBudget};
+pub use entities::{canonicalize_label, decode_hex_to_memory, reconcile_entities, EntityReconciliationDetail};
 
 // Re-export the core query type under a clearer name for graph consumers.
 pub use cerebrum_core::Query as GraphQuery;
@@ -322,6 +325,7 @@ pub enum EntityRelation {
 }
 
 impl Relation {
+    /// The display name for this relation's arrow ("related to", "before", ...).
     pub fn relation_name(&self) -> &'static str {
         match self {
             Relation::SemanticEdge(r) => r.relation_name(),
@@ -329,6 +333,48 @@ impl Relation {
             Relation::CausalEdge(r) => r.relation_name(),
             Relation::EntityEdge(r) => r.relation_name(),
         }
+    }
+
+    /// Stable numeric ordinal per variant for persistence + wire identity.
+    /// Keep in lockstep with from_relation_ordinal.
+    pub fn relation_ordinal(&self) -> u32 {
+        match self {
+            Relation::SemanticEdge(SemanticRelation::RelatedTo) => 0,
+            Relation::SemanticEdge(SemanticRelation::PartOf) => 1,
+            Relation::SemanticEdge(SemanticRelation::InstanceOf) => 2,
+            Relation::TemporalEdge(TemporalRelation::Before) => 10,
+            Relation::TemporalEdge(TemporalRelation::After) => 11,
+            Relation::TemporalEdge(TemporalRelation::During) => 12,
+            Relation::TemporalEdge(TemporalRelation::ConcurrentWith) => 13,
+            Relation::CausalEdge(CausalRelation::Caused) => 20,
+            Relation::CausalEdge(CausalRelation::Enabled) => 21,
+            Relation::CausalEdge(CausalRelation::Prevented) => 22,
+            Relation::EntityEdge(EntityRelation::InvolvedIn) => 30,
+            Relation::EntityEdge(EntityRelation::Owns) => 31,
+            Relation::EntityEdge(EntityRelation::WorksAt) => 32,
+            Relation::EntityEdge(EntityRelation::LocatedIn) => 33,
+        }
+    }
+
+    /// Inverse of [`relation_ordinal`] (persistence restore path).
+    pub fn from_relation_ordinal(ordinal: u32) -> Option<Relation> {
+        Some(match ordinal {
+            0 => Relation::SemanticEdge(SemanticRelation::RelatedTo),
+            1 => Relation::SemanticEdge(SemanticRelation::PartOf),
+            2 => Relation::SemanticEdge(SemanticRelation::InstanceOf),
+            10 => Relation::TemporalEdge(TemporalRelation::Before),
+            11 => Relation::TemporalEdge(TemporalRelation::After),
+            12 => Relation::TemporalEdge(TemporalRelation::During),
+            13 => Relation::TemporalEdge(TemporalRelation::ConcurrentWith),
+            20 => Relation::CausalEdge(CausalRelation::Caused),
+            21 => Relation::CausalEdge(CausalRelation::Enabled),
+            22 => Relation::CausalEdge(CausalRelation::Prevented),
+            30 => Relation::EntityEdge(EntityRelation::InvolvedIn),
+            31 => Relation::EntityEdge(EntityRelation::Owns),
+            32 => Relation::EntityEdge(EntityRelation::WorksAt),
+            33 => Relation::EntityEdge(EntityRelation::LocatedIn),
+            _ => return None,
+        })
     }
 }
 
@@ -455,6 +501,73 @@ impl Graph {
         self.nodes.insert(edge.target);
         self.edges_out.entry(edge.source).or_default().push(edge.clone());
         self.edges_in.entry(edge.target).or_default().push(edge);
+    }
+
+    /// Remove ONE edge row (target, relation) from both tables. The mutate
+    /// closure returns a plain row count, ending the map borrow before the
+    /// bucket cleanup pass — the shape the borrow checker wants.
+    pub fn remove_edge(&mut self, target_row: &Edge) -> bool {
+        let mut removed_any = false;
+
+        {
+            let before_len = self.edges_out.get(&target_row.source).map_or(0, |rows| rows.len());
+            let retained_len = self
+                .edges_out
+                .get_mut(&target_row.source)
+                .map(|rows| {
+                    rows.retain(|row| {
+                        (row.target != target_row.target) || (row.relation != target_row.relation)
+                    });
+                    rows.len()
+                })
+                .unwrap_or(0);
+            if retained_len != before_len {
+                removed_any = true;
+            }
+            if retained_len == 0 {
+                self.edges_out.remove(&target_row.source);
+            }
+        }
+
+        {
+            let before_len = self.edges_in.get(&target_row.target).map_or(0, |rows| rows.len());
+            let retained_len = self
+                .edges_in
+                .get_mut(&target_row.target)
+                .map(|rows| {
+                    rows.retain(|row| {
+                        (row.source != target_row.source) || (row.relation != target_row.relation)
+                    });
+                    rows.len()
+                })
+                .unwrap_or(0);
+            if retained_len != before_len {
+                removed_any = true;
+            }
+            if retained_len == 0 {
+                self.edges_in.remove(&target_row.target);
+            }
+        }
+        removed_any
+    }
+
+    /// Retire a node entirely (its edges were removed first by the caller).
+    /// Real entity-reconciliation cleanup for nodes isolated by sweeps.
+    pub fn retire_node(&mut self, id: MemoryId) {
+        self.edges_out.remove(&id);
+        self.edges_in.remove(&id);
+        self.nodes.remove(&id);
+    }
+
+    /// Iterate every directed edge in this view (outgoing tables are the
+    /// authoritative copy; incoming tables hold clones).
+    pub fn all_edges(&self) -> impl Iterator<Item = &Edge> {
+        self.edges_out.values().flatten()
+    }
+
+    /// Register a node without an edge (label-only memories).
+    pub fn ensure_node(&mut self, id: MemoryId) {
+        self.nodes.insert(id);
     }
 
     /// Get outgoing edges from a node.
@@ -737,6 +850,8 @@ pub struct GraphStore {
     /// Optional textual labels attached to memory IDs. Used by the query planner
     /// to choose a sensible start node from a natural-language query.
     labels: FxHashMap<MemoryId, String>,
+    /// Alias spellings per canonical node (entity-reconciliation products).
+    aliases: FxHashMap<MemoryId, Vec<String>>,
 }
 
 impl GraphStore {
@@ -747,8 +862,12 @@ impl GraphStore {
     /// Attach a textual label to a memory node.
     ///
     /// Labels are stored lowercased so start-node lookup is a fast substring scan.
+    /// The id is registered as a node inside the SEMANTIC view so labeled,
+    /// not-yet-linked memories participate in traversal and node counts
+    /// (isolated nodes exist before their first edge, like real memories do).
     pub fn add_label(&mut self, id: MemoryId, label: impl Into<String>) {
         self.labels.insert(id, label.into().to_lowercase());
+        self.semantic.nodes.insert(id);
     }
 
     pub fn total_nodes(&self) -> usize {
@@ -758,6 +877,65 @@ impl GraphStore {
         nodes.extend(self.causal.nodes.iter().copied());
         nodes.extend(self.entity.nodes.iter().copied());
         nodes.len()
+    }
+
+    /// Every label as (id, stored-lowercase-label) pairs.
+    pub fn labels_entries(
+        &self,
+    ) -> impl Iterator<Item = (MemoryId, &str)> {
+        self.labels
+            .iter()
+            .map(|(id, label)| (*id, label.as_str()))
+    }
+
+    /// Restore labels from a (id, label) pair sequence (persistence path;
+    /// node registration rides add_label's semantic-node registration side
+    /// effect so restored graphs behave exactly like freshly curated ones).
+    pub fn restore_labels(&mut self, entries: Vec<(MemoryId, String)>) {
+        for (id, label) in entries {
+            self.add_label(id, label);
+        }
+    }
+
+    /// Persist-restore aliases from prior sessions (id → alias list).
+    pub fn restore_aliases(&mut self, entries: Vec<(MemoryId, Vec<String>)>) {
+        for (id, alias_rows) in entries {
+            self.aliases.insert(id, alias_rows);
+        }
+    }
+
+    /// Alias list access: an id to all its recorded alternate spellings.
+    pub fn alias_rows_for(&self, id: MemoryId) -> Vec<String> {
+        self.aliases.get(&id).cloned().unwrap_or_default()
+    }
+
+    /// Add one alias row to an id's alternate-spellings list. (Entity
+    /// reconciliation writes these as it merges duplicate spellings.)
+    pub fn add_alias_row(&mut self, id: MemoryId, alias_text: String) {
+        let row = self.aliases.entry(id).or_default();
+        if row.contains(&alias_text) == false {
+            row.push(alias_text);
+        }
+    }
+
+    /// Every alias row as (id, aliases) pairs (persistence enumerate path).
+    pub fn aliases_all(&self) -> Vec<(MemoryId, Vec<String>)> {
+        self.aliases
+            .iter()
+            .map(|(id, rows)| (*id, rows.clone()))
+            .collect()
+    }
+
+    /// The stored (lowercase) label for an id, if any.
+    pub fn label_of(&self, id: MemoryId) -> Option<&str> {
+        self.labels.get(&id).map(|label| label.as_str())
+    }
+
+    /// Drop one label row entirely. Used by entity reconciliation so a
+    /// retired spelling's label row stops regrouping on future sweeps
+    /// (the spelling itself lives on as an alias on the canonical id).
+    pub fn remove_label(&mut self, id: MemoryId) {
+        self.labels.remove(&id);
     }
 
     pub fn total_edges(&self) -> usize {

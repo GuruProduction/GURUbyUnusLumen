@@ -1,0 +1,15 @@
+[package]
+name = "cerebrum-crypto"
+version = "0.1.0"
+edition = "2021"
+description = "Encrypted-at-rest vault for Cerebrum: Argon2id + XChaCha20-Poly1305, RAM-only keys, private by design."
+
+[dependencies]
+chacha20poly1305 = "0.11.0"
+argon2 = "0.6.0"
+zeroize = "1.9.1"
+getrandom = "0.4"
+thiserror = "2"
+
+[dev-dependencies]
+hex = "0.4"

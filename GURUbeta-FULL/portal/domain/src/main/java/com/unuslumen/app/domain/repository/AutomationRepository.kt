@@ -93,6 +93,29 @@ interface AutomationRepository {
     suspend fun executeAutomationByName(name: String, params: Map<String, Any?>): AutomationExecutionResult
 
     /**
+     * Execute an automation triggered by a scheduled job — same path, traced
+     * with its honest origin so the Observatory shows where the run came from.
+     */
+    suspend fun executeAutomationAsJob(id: String, params: Map<String, Any?>): AutomationExecutionResult
+
+    /**
+     * Execute an automation fired by a hook — same path, honest origin.
+     */
+    suspend fun executeAutomationAsHook(id: String, params: Map<String, Any?>): AutomationExecutionResult
+
+    /**
+     * Name-resolved job entry: finds the automation by name and runs it
+     * traced as a job-sourced run. Used by the job scheduler.
+     */
+    suspend fun executeAutomationByNameAsJob(name: String, params: Map<String, Any?>): AutomationExecutionResult
+
+    /**
+     * Name-resolved hook entry: finds the automation by name and runs it
+     * traced as a hook-sourced run. Used by the hook executor.
+     */
+    suspend fun executeAutomationByNameAsHook(name: String, params: Map<String, Any?>): AutomationExecutionResult
+
+    /**
      * Record automation execution.
      */
     suspend fun recordExecution(id: String)

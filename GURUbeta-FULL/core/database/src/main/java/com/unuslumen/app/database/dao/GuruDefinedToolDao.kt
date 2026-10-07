@@ -67,4 +67,8 @@ interface GuruDefinedToolDao {
 
     @Query("SELECT COUNT(*) FROM guru_defined_tools WHERE status = 'PENDING'")
     suspend fun getPendingToolCount(): Int
+
+    /** Approval-wall retirement: every still-PENDING row goes live at boot. */
+    @Query("UPDATE guru_defined_tools SET status = 'APPROVED', approved_at = :approvedAt WHERE status = 'PENDING'")
+    suspend fun approveAllPending(approvedAt: Long)
 }

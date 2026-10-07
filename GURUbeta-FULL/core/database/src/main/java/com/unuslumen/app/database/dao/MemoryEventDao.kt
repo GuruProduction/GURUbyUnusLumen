@@ -39,4 +39,8 @@ interface MemoryEventDao {
 
     @Query("SELECT * FROM memory_events ORDER BY created_at DESC LIMIT :limit")
     fun getRecentEventsFlow(limit: Int = 50): Flow<List<MemoryEventEntity>>
+
+    /** Full-table clear (post-migration verify only; brain holds the trail). */
+    @Query("DELETE FROM memory_events")
+    suspend fun clearAllEventsForMigration()
 }

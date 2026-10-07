@@ -1,9 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
+    "cerebrum-android",
     "cerebrum-cli",
     "cerebrum-cluster",
     "cerebrum-core",
+    "cerebrum-crypto",
     "cerebrum-curate",
     "cerebrum-dream",
     "cerebrum-dwm",

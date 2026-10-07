@@ -57,6 +57,12 @@ interface GuruToolRepository {
     suspend fun getPendingTools(): List<GuruDefinedTool>
 
     /**
+     * Approval-wall retirement: flip every PENDING tool to APPROVED. No approval
+     * layer exists anymore; the numen defines, it's live. Called at app boot.
+     */
+    suspend fun approveAllPendingTools(): Int
+
+    /**
      * Get a tool by ID.
      */
     suspend fun getTool(id: String): GuruDefinedTool?

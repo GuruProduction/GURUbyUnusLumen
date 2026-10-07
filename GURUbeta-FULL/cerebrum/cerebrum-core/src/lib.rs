@@ -25,6 +25,12 @@ use uuid::Uuid;
 pub struct MemoryId(pub [u8; 32]);
 
 impl MemoryId {
+    /// Serialize as the canonical 64-char lowercase hex (the common wire
+    /// form across MCP/HTTP front doors and persistence records) when serde
+    /// builds untyped JSON; array-form still works via the Either visitor.
+    pub fn hex(&self) -> String {
+        self.0.iter().map(|b| format!("{:02x}", b)).collect()
+    }
     /// Generate a new random MemoryId using two UUIDv4s concatenated.
     /// This produces a full 256-bit identifier with 256 bits of entropy.
     pub fn new() -> Self {

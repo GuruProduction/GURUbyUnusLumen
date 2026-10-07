@@ -39,7 +39,8 @@ interface LuxifyRepository {
         description: String,
         whenToUse: String,
         allowedTools: List<String>,
-        bodyMarkdown: String
+        bodyMarkdown: String,
+        source: String = "dynamic"
     ): LuxifySkill
 
     suspend fun getDynamicSkills(): List<LuxifySkill>

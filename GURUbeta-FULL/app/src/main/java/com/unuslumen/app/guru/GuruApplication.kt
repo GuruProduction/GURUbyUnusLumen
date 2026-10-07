@@ -139,6 +139,12 @@ class GuruApplication : Application() {
             val hookRepository: com.unuslumen.app.domain.repository.HookRepository by inject()
             com.unuslumen.app.data.hooks.HookEventBus.init(hookRepository, applicationScope)
             android.util.Log.d("guru", "HookEventBus initialised for automatic hook dispatch")
+            // Approval-wall retirement: any numen-created tool still PENDING from
+            // earlier builds goes live now. The create-to-live chain has no gate.
+            val guruToolRepository: com.unuslumen.app.domain.repository.GuruToolRepository by inject()
+            runCatching { guruToolRepository.approveAllPendingTools() }
+                .onSuccess { count -> if (count > 0) android.util.Log.d("guru", "Approval wall retired: $count pending GURU tool(s) went live") }
+                .onFailure { android.util.Log.w("guru", "Pending-tool boot flip failed: ${it.message}") }
             // One-time media library backfill: attachment cache files that never
             // met the media module get ingested now. Idempotent through sha256,
             // so every future boot is a no-op for the files already saved.
@@ -164,6 +170,24 @@ class GuruApplication : Application() {
         com.unuslumen.app.data.heartbeat.HeartbeatScheduler.schedule(this)
         com.unuslumen.app.thoughts.data.thoughts.ThoughtCycleScheduler.schedule(this)
         brainService.initialise()
+
+        // Cerebrum brain (Phase F): boot the real encrypted brain in-process
+        // inside the appScope; one-shot first-boot migration from Room's
+        // memory tables runs once the brain is up (deterministic ids
+        // dedupe every re-run on the brain side, so repeat boots are safe).
+        applicationScope.launch {
+            val cerebrumFactDao: com.unuslumen.app.database.dao.MemoryFactDao by inject()
+            val cerebrumEdgeDao: com.unuslumen.app.database.dao.MemoryEdgeDao by inject()
+            val cerebrumEventDao: com.unuslumen.app.database.dao.MemoryEventDao by inject()
+            val cerebrumCrossRefDao: com.unuslumen.app.database.dao.MemoryCrossReferenceDao by inject()
+            com.unuslumen.app.data.brain.cerebrum.CerebrumBoot.bootAndMigrate(
+                this@GuruApplication,
+                cerebrumFactDao,
+                cerebrumEdgeDao,
+                cerebrumEventDao,
+                cerebrumCrossRefDao
+            )
+        }
 
         // Reschedule all enabled jobs on app startup (belt and braces for reboots)
         applicationScope.launch {
@@ -214,6 +238,13 @@ class GuruApplication : Application() {
                 if (!torStarted) {
                     torStarted = true
                     torManager.start(this@GuruApplication)
+                    // Cerebrum brain host service joins on the same legal
+                    // foreground moment: the persistent encrypted brain
+                    // front notification lands here, service keeps Android
+                    // from reaping the in-process brain's RAM state.
+                    if (com.unuslumen.app.guru.service.CerebrumService.isRunning.value == false) {
+                        com.unuslumen.app.guru.service.CerebrumService.start(this@GuruApplication)
+                    }
                 }
             }
 

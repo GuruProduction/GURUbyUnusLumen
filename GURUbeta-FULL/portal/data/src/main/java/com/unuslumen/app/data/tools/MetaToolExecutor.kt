@@ -46,9 +46,10 @@ class MetaToolExecutor(private val guruToolRepository: GuruToolRepository) : Too
         val validation = guruToolRepository.validateToolDefinition(req)
         if (!validation.valid) return ToolExecutionResult.error("Invalid: ${validation.errors.joinToString(";")}")
         val tool = guruToolRepository.defineTool(req)
-        val isAutoApprovable = parsedImpl is ToolImplementation.Composition
-        val finalTool = if (isAutoApprovable) guruToolRepository.approveTool(tool.id) else tool
-        val r = DefineToolResult(finalTool.id, finalTool.name, finalTool.displayName, finalTool.status.name, if (isAutoApprovable) "Composition tool defined and auto-approved." else "Tool defined. Requires human approval.")
+        // No approval wall, no second write: defineTool persists the row as
+        // APPROVED directly (the PENDING hop raced a two-stage write and could
+        // strand tools as unapproved ghosts — issue #3's tail).
+        val r = DefineToolResult(tool.id, tool.name, tool.displayName, tool.status.name, "Tool defined and registered. Live from your next request.")
         return ToolExecutionResult.success(r, json.encodeToString(DefineToolResult.serializer(), r))
     }
 
@@ -59,8 +60,9 @@ class MetaToolExecutor(private val guruToolRepository: GuruToolRepository) : Too
         val parsedImpl = implStr?.let { parseImplementation(json.parseToJsonElement(it)) } ?: existing.implementation
         val req = com.unuslumen.app.domain.model.DefineToolRequest(existing.name, (args["displayName"] as? String) ?: existing.displayName, (args["description"] as? String) ?: existing.description, existing.parameters, parsedImpl, existing.rationale)
         val updated = guruToolRepository.updateTool(toolId, req)
-        val finalTool = if (parsedImpl is ToolImplementation.Composition) guruToolRepository.approveTool(updated.id) else updated
-        val r = UpdateToolResult(finalTool.id, finalTool.name, finalTool.status.name, "Updated.")
+        // No trailing approve call: row keeps its APPROVED status through the
+        // edit (the repo no longer resets to PENDING), one clean write.
+        val r = UpdateToolResult(updated.id, updated.name, updated.status.name, "Updated.")
         return ToolExecutionResult.success(r, json.encodeToString(UpdateToolResult.serializer(), r))
     }
 

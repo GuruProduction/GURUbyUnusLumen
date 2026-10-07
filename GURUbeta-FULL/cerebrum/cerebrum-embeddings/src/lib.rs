@@ -251,6 +251,48 @@ impl PcgRng {
 ///
 /// All output vectors are L2-normalized (when config.normalize is true) so
 /// cosine similarity reduces to a single dot product.
+/// The engine's full serialization-persistable form. Serialization includes
+/// the projection matrix and IDF state so a reload needs no re-embedding; on
+/// phone disk the bundle gets encrypted at rest by the vault layer (never
+/// any plaintext engine state).
+#[derive(Serialize, Deserialize)]
+pub struct EmbeddingState {
+    config: EmbeddingConfig,
+    projection_matrix: Vec<f32>,
+    #[serde(with = "df_map_bridge")]
+    df: FxHashMap<u32, u32>,
+    doc_count: u32,
+    cache: Vec<(String, EmbeddingVector)>,
+    query_cache: Vec<(String, EmbeddingVector)>,
+}
+
+/// serde bridge for the FxHashMap<u32, u32> document-frequency store (plain
+/// JSON number keys do not exist; stored as sorted key/value arrays).
+mod df_map_bridge {
+    use rustc_hash::FxHashMap;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(map: &FxHashMap<u32, u32>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let pairs: Vec<(u32, u32)> = {
+            let mut sorted: Vec<(u32, u32)> = map.iter().map(|(k, v)| (*k, *v)).collect();
+            sorted.sort_unstable();
+            sorted
+        };
+        pairs.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<FxHashMap<u32, u32>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let pairs: Vec<(u32, u32)> = Vec::deserialize(deserializer)?;
+        Ok(pairs.into_iter().collect())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EmbeddingEngine {
     config: EmbeddingConfig,
@@ -269,6 +311,37 @@ pub struct EmbeddingEngine {
 }
 
 impl EmbeddingEngine {
+    /// Roundtrip to a persistable snapshot (projection matrix + DF/IDF stats
+    /// + both caches) for the encrypted persistence layer.
+    pub fn to_persistable(&self) -> EmbeddingState {
+        EmbeddingState {
+            config: self.config.clone(),
+            projection_matrix: self.projection_matrix.clone(),
+            df: self.df.clone(),
+            doc_count: self.doc_count,
+            cache: self.cache.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            query_cache: self
+                .query_cache
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        }
+    }
+
+    /// Restore from a persisted snapshot.
+    pub fn from_persistable(state: EmbeddingState) -> Self {
+        let cache: HashMap<String, EmbeddingVector> = state.cache.into_iter().collect();
+        let query_cache: HashMap<String, EmbeddingVector> = state.query_cache.into_iter().collect();
+        Self {
+            config: state.config,
+            projection_matrix: state.projection_matrix,
+            df: state.df,
+            doc_count: state.doc_count,
+            cache,
+            query_cache,
+        }
+    }
+
     /// Create a new embedding engine with the given configuration.
     /// Panics if dimensions or vocab_size are 0.
     ///
@@ -1111,7 +1184,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "values.len()")]
+    #[should_panic(expected = "EmbeddingVector: values.len()")]
     fn test_embedding_vector_dimension_mismatch() {
         EmbeddingVector::new(vec![1.0, 2.0], 3, "test".to_string());
     }

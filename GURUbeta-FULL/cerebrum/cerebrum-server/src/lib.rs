@@ -10,6 +10,8 @@
 //! the full subsystem routing layer via `state` and `handler`.
 
 pub mod handler;
+pub mod hardening;
+pub mod persistence;
 pub mod state;
 
 use std::net::SocketAddr;

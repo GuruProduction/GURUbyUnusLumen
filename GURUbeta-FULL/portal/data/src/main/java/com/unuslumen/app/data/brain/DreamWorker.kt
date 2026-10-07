@@ -29,7 +29,7 @@ class DreamWorker(
         return try {
             Log.d("guru_brain", "DreamWorker starting")
             val report = brainService.dream()
-            Log.d("guru_brain", "DreamWorker complete: pruned=${report.prunedCount} merged=${report.mergedCount} promoted=${report.promotedCount} edges=${report.edgesBuilt} sigs=${report.signaturesGenerated}")
+            Log.d("guru_brain", "DreamWorker complete: brain CONSOLIDATE dispatched=${report.dispatchedFrame} (real dream counts land in the brain's own logs)")
             Result.success()
         } catch (e: Exception) {
             Log.e("guru_brain", "DreamWorker failed: ${e.message}")
