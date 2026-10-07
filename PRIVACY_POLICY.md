@@ -5,23 +5,23 @@ Effective date: 7 October 2026. Applies to every build of GURU by Unus Lumen fro
 Unus Lumen Ltd. Bristol, United Kingdom.
 Contact: steven@unuslumen.com
 
-This is the plain-language privacy statement for the app called GURU, an open-source Android framework that runs an AI with real control of your phone. It tells you what data lives where, what crosses a network and who can see it, and what never happens. It is written to be read by the people using the app, not by lawyers.
+This is the plain-language privacy statement for the app called GURU by Unus Lumen, an open-source Android framework that runs an AI with real control of your phone. It tells you what data lives where, what crosses a network and who can see it, and what never happens. It is written to be read by the people using the app, not by lawyers.
 
-One line first, because it is the truth of the whole product that this policy explains: GURU takes in almost everything, stores almost everything on your device and sends almost nothing anywhere. On an install you fully control, the company behind GURU never receives or holds your personal data at all.
+One line first, because it is the truth of the whole product that this policy explains: GURU takes in almost everything, stores almost everything on your device and sends almost nothing anywhere. On an install you fully control, the company behind GURU never receives or holds your personal data at all. EVER.
 
 ---
 
 ## 1. The privacy model
 
-GURU is not an online service. It is an APK you install onto your own device from our public GitHub releases. No account is created. No signup exists. No profile is built. Nothing about you is recorded server-side, permanently.
+GURU is NOT an online service. It is an APK you install onto your own device from our public GitHub releases. No account is created. No signup exists. No profile is built. Nothing about you is recorded server-side, permanently.
 
-Your conversations with GURU, its memory of you, your notes, tasks, journal, bookmarked URLs, alarms, calendar events, projects and tool histories stay in a local on-device database. Your tool-result cache is trimmed automatically every 24 hours. All of these are in GURU's own private sandbox on your storage, which your device's own operating system limits other apps from reading. They die if you uninstall, which is deliberate.
+Your conversations with GURU, its memory of you, your notes, tasks, journal, bookmarked URLs, alarms, calendar events, projects tool histories and anyting else the llm see's and does for you stay in a local on-device database. Your tool-result cache is trimmed automatically every 24 hours. All of these are in GURU's own private sandbox on your storage, which your device's own operating system limits other apps from reading. They die if you uninstall, which is deliberate.
 
 Your memory (Cerebrum, the brain) is stored encrypted with Argon2id-derived keys and XChaCha20-Poly1305 as its vault cipher. The unlock passphrase never leaves the phone: it is sealed inside your device's Android hardware Keystore inside a separate AES-256-GCM envelope, and otherwise lives only briefly in the brain's own protected memory while running. If a memory-vault decryption ever fails integrity checks (signing that it is tampered-with), the app refuses to boot the brain rather than quietly proceeding — it deletes the vault's own app-space envelopes and recreates a new one fresh while leaving every other part of your phone and this app untouched. Any app you are not yourself controlling, we can never see your memory in this install and no other install of GURU on the planet can reach it.
 
-Your connected third-party credentials (your GitHub token, Trello key/token, Notion token, API and model-server key) go through the app's CredentialVault — one AES-256-GCM hardware-sealed envelope per service, written individually, encrypted again with the strong Android hardware keys generated on-device, never leaving it, and only ever decrypted transiently in memory to perform the single task they were stored for, on your request. No credential you place into the CredentialVault is ever displayed back on screen unmasked, and none is exported to us or anywhere else.
+Your connected third-party credentials (your GitHub token, Trello key/token, Notion token, any sort of API keys, email address, passwords, model-server key & any other secrets) go through the app's CredentialVault — one AES-256-GCM hardware-sealed envelope per service, written individually, encrypted again with the strong Android hardware keys generated on-device, never leaving it, and only ever decrypted transiently in memory to perform the single task they were stored for, on your request. No credential you place into the CredentialVault is ever displayed back on screen unmasked, and none is exported to us or anywhere else.
 
-No analytics, no telemetry, no crash-reporting service exists in the app's source. When the app crashes, the resulting stack trace is copied to your own clipboard so you can inspect it; it is not delivered anywhere by GURU itself.
+No analytics, no telemetry, no crash-reporting service exists in the app's source. When the app crashes, the resulting stack trace is copied to your own clipboard so you can inspect it & report it on github; it is not delivered anywhere by GURU itself.
 
 The app never requests or records any unique device fingerprint, IMEI, phone number, or advertising identifier, in its code path or anywhere in its storage. There is nothing to correlate you with.
 
@@ -34,6 +34,7 @@ The app connects unauthenticated out of the box to the Unus Lumen publisher serv
 - the settings controlling which on-device sensory details (like date/time, battery, weather and location names, screen state, nearby motion and similar "here's what's true of me now" context GURU works from) get offered as context
 - the global skills library contents (optional skills your numen can choose install)
 - the artwork ("ad pack") content shown inside GURU's animation spinner, which by design runs every few seconds during idle streaming and is served anonymously
+- other pullable & installable features for your GURU through the api.
 
 For each of these, the connection is GET-shaped and anonymous fetch by design. The device sends back no data we keep as anything like a user record: no name, no unique device or install identifier, no location, no profile of use, and no cookies are ever persisted by you or read back after this app's fetches.
 
@@ -65,6 +66,9 @@ Your numen can, when invoked as tools by GURU, connect to external websites. Whe
 - GitHub via real API + your own GitHub login (OAuth "device flow", one of your own accounts you sign into manually): we operate only a public, non-secret client registration ID (that is a standard OAuth "device flow" credential that carries no account access by itself). Your own private GitHub connection token stays in your device's CredentialVault, never uploaded to or seen by Unus Lumen in any way.
 - Trello (via your own per-user key/token pair, entered manually once in GURU by you, saved encrypted via CredentialVault in Trello's own API with no copy ever shipped, visible, or synced by us; all calls travel over real Trello API endpoints.)
 - Notion (exactly the same shape as above with Notion's own official API and your personal API token stored encrypted on your device).
+- Utility web services, each reachable only when the matching tool runs, each receiving only the single piece of content that action exists to send and nothing else about you: wttr.in (a weather-text lookup for a place name, your raw GPS coordinates are never sent to it), kroki.io (diagram text rendering), is.gd and TinyURL (link shortening on your request), and api.qrserver.com (QR code image generation). If the text you asked GURU to process contains personal information, that single piece of text is what the utility service sees; this is inherent to the action you requested, it travels through Tor, and no identity is attached to it.
+
+Everything else stays internal: contacts, SMS, call information, storage access, notifications and every other on-device capability touch nothing outside the phone.
 
 ## 5. Some capabilities and how privacy works on each
 
@@ -99,13 +103,13 @@ There is no retention or archiving by Unus Lumen, none at all, as we receive non
 
 ## 9. Age restriction
 
-Given the breadth of your numen's device powers and its ability to automate your day, GURU is not meant for users aged 13 and below.
+Given the breadth of your numen's device powers and its ability to automate your day, GURU is not meant for users aged 18 and below.
 
 ## 10. Changes to this policy
 
 A new effective date will be set at any future change, alongside the release that first carries it. Since there are no accounts, users will simply read the updated text (its first page notes only changes; nothing more) or continue to use GURU on their own version they've installed.
 
----
+---s
 
 **GURU: built by Steven Newman** — Unus Lumen, Bristol, United Kingdom
 steven@unuslumen.com
