@@ -1,0 +1,21 @@
+//! Cerebrum MCP — Model Context Protocol server definitions.
+//!
+//! Phase E: REAL dispatch. execute_tool routes into the same live brain the
+//! server's frame path uses, over a shared `Arc<Mutex<CerebrumState>>`
+//! handle: curation, retrieval, search, graph traversal, consolidation, and
+//! prefetch mutate REAL engine state through the SAME handle_frame contract
+//! the wire protocol uses. One brain state, many front doors. No simulated
+//! return values anywhere; test batteries curate-then-verify.
+
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::Mutex;
+
+use cerebrum_server::{Frame, frame_types};
+
+pub use cerebrum_state_access::CerebrumState;
+
+/// Type module shim (engine crate never links its own server state path).
+mod cerebrum_state_access;

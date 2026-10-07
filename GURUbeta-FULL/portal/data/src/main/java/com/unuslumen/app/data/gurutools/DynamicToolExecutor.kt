@@ -48,6 +48,38 @@ class DynamicToolExecutor : KoinComponent {
     private val variablePattern = Pattern.compile("\\$\\{([^}]+)\\}")
 
     /**
+     * Shell-style parameter substitution: bare `$name` references in a defined
+     * tool's command substitute when (and ONLY when) `name` matches a real
+     * parameter key. Real shell environment references ($HOME, $PATH, $1..)
+     * never pass through params, so they are left untouched — a numen's command
+     * may still use them intentionally inside the executed shell.
+     */
+    private val bareShellPattern = Pattern.compile("\\$([a-zA-Z_][a-zA-Z0-9_]*)")
+
+    private fun substituteShellParams(template: String, params: Map<String, Any?>): String {
+        val matcher = bareShellPattern.matcher(template)
+        val out = StringBuffer()
+        while (matcher.find()) {
+            val key = matcher.group(1)
+            val value = when (key) {
+                null -> null
+                else -> params[key]
+            }
+            if (value != null) {
+                // Shell literal escaping: wrap in single quotes, double any
+                // embedded single quote, so a param value can never break out
+                // into shell syntax (no command/variable injection).
+                val shellSafe = "'" + value.toString().replace("'", "'\\''") + "'"
+                matcher.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(shellSafe))
+            } else {
+                matcher.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(matcher.group(0)))
+            }
+        }
+        matcher.appendTail(out)
+        return out.toString()
+    }
+
+    /**
      * Webhook egress rides the same sovereign policy as every other HTTP path
      * in the app: the user's local/LAN targets go direct, everything else goes
      * through Tor, and when Tor is down the call fails closed instead of
@@ -177,15 +209,19 @@ class DynamicToolExecutor : KoinComponent {
         command: ToolImplementation.ShellCommand,
         params: Map<String, Any?>
     ): JsonElement = withContext(Dispatchers.IO) {
-        // Resolve variables in command
-        val resolvedCommand = resolveVariables(command.command, mapOf("params" to params)) as? String
+        // 1. Braced ${params.x} references (legacy path)
+        val bracedResolved = resolveVariables(command.command, mapOf("params" to params)) as? String
             ?: command.command
-        
-        // Resolve variables in params
-        val resolvedParams = command.params.map { 
-            resolveVariables(it, mapOf("params" to params))?.toString() ?: it
+        // 2. Bare $param substitution for shell-style commands (issue-fresh):
+        // replaces only real param keys, shell-quoted, env refs untouched.
+        val resolvedCommand = substituteShellParams(bracedResolved, params)
+
+        // Legacy params list appended positionally after braced/bare substitution
+        val resolvedParams = command.params.map {
+            val braced = resolveVariables(it, mapOf("params" to params))
+            substituteShellParams(braced?.toString() ?: it, params)
         }
-        
+
         // Build full command
         val fullCommand = if (resolvedParams.isNotEmpty()) {
             "$resolvedCommand ${resolvedParams.joinToString(" ")}"

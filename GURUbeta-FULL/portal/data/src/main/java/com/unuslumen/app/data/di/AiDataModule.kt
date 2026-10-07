@@ -36,6 +36,9 @@ import com.unuslumen.app.data.tools.HttpToolExecutor
 import com.unuslumen.app.data.tools.DatabaseToolExecutor
 import com.unuslumen.app.data.tools.HookToolExecutor
 import com.unuslumen.app.data.tools.AutomationToolExecutor
+import com.unuslumen.app.data.tools.ModuleToolExecutor
+import com.unuslumen.app.data.tools.IconToolExecutor
+import com.unuslumen.app.data.tools.SkillLibraryToolExecutor
 import com.unuslumen.app.data.tools.WebViewBrowserToolExecutor
 import com.unuslumen.app.data.tools.VoiceToolExecutor
 import com.unuslumen.app.data.tools.WebServicesToolExecutor
@@ -87,6 +90,9 @@ import com.unuslumen.app.data.gurutools.GuruToolRepositoryImpl
 import com.unuslumen.app.data.automation.AutomationRepositoryImpl
 import com.unuslumen.app.domain.repository.GuruToolRepository
 import com.unuslumen.app.domain.repository.AutomationRepository
+import com.unuslumen.app.domain.repository.AutomationRunRepository
+import com.unuslumen.app.domain.repository.ModuleRepository
+import com.unuslumen.app.data.modules.ModuleRepositoryImpl
 import com.unuslumen.app.data.brain.BrainService
 import com.unuslumen.app.data.memory.ContextBuilder
 import com.unuslumen.app.data.memory.LocalEmbeddingService
@@ -171,6 +177,8 @@ val aiDataModule = module {
     factory { DynamicToolExecutor() }
     single<GuruToolRepository> { GuruToolRepositoryImpl(get(), get()) }
     single<AutomationRepository> { AutomationRepositoryImpl(get(), get()) }
+    single<AutomationRunRepository> { com.unuslumen.app.data.automation.AutomationRunRepositoryImpl(get()) }
+    single<ModuleRepository> { ModuleRepositoryImpl(get(), get(), get()) }
     factory { GuruToolRegistryManager(get(), get()) }
     // EnvironmentToolSet migrated to registry — see EnvironmentToolExecutor
     // WebViewBrowserToolSet migrated to registry — see WebViewBrowserToolExecutor
@@ -196,14 +204,16 @@ val aiDataModule = module {
     factory { LocalEmbeddingService(get<Context>()) }
     factory { VectorSearchEngine(get(), get()) }
 
-    // BrainService must be registered before MemoryRepositoryImpl and ContextBuilder
-    // because both depend on it. Koin resolves lazily but explicit ordering is clearer.
-    single { BrainService(get(), get(), get(), get(), get(), get<Context>()) }
+    // BrainService (one store = the encrypted Cerebrum brain): the DI shape
+    // shrank with the Kotlin memory stack's retirement; it needs the
+    // embedding service and the app context. Registered before
+    // MemoryRepositoryImpl/ContextBuilder which depend on it.
+    single { BrainService(get(), get<Context>()) }
 
-    single<MemoryRepository> { MemoryRepositoryImpl(get(), get(), get(), get(), get(), get(), get(), get()) }
+    single<MemoryRepository> { MemoryRepositoryImpl(get(), get()) }
     single<PromptRepository> { PromptRepositoryImpl(get(), get()) }
     // ThoughtCycleRepository binding lives in thoughtsDataModule (thoughts module) — see ThoughtsDataModule.kt
-    factory { ContextBuilder(get(), get(), get(), get()) }
+    factory { ContextBuilder(get(), get()) }
 
     factory { com.unuslumen.app.domain.use_case.CreateProjectUseCase(get()) }
     factory { com.unuslumen.app.domain.use_case.UpdateProjectUseCase(get()) }
@@ -270,6 +280,9 @@ val aiDataModule = module {
     factory { DatabaseToolExecutor(get<Context>()) }
     factory { HookToolExecutor(get()) }
     factory { AutomationToolExecutor(get()) }
+    factory { ModuleToolExecutor(get()) }
+    factory { IconToolExecutor(get<Context>()) }
+    factory { SkillLibraryToolExecutor(get<Context>(), get()) }
     factory { WebViewBrowserToolExecutor(get(), get<Context>()) }
     // Batch 7 executor bindings
     factory { ThoughtToolExecutor(get()) }
@@ -294,5 +307,6 @@ val aiDataModule = module {
     factory { ThemeToolExecutor(get(), get<Context>()) }
     factory { ProjectToolExecutor(get(), get(), get(), get(), get(), get(), get()) }
     factory { com.unuslumen.app.data.tools.NoteToSelfToolExecutor(get()) }
+    factory { com.unuslumen.app.data.tools.GitHubToolExecutor(get<Context>(), get()) }
     single { com.unuslumen.app.data.notestoself.NotesToSelfEngine(get()) }
 }

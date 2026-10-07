@@ -549,7 +549,9 @@ class JobRepositoryImpl(
                 val params = action.params.mapValues { (_, value) ->
                     input?.get(value.substringAfter("\${'$'}"))?.toString() ?: value
                 }
-                val result = automationRepository.executeAutomationByName(action.target, params)
+                // Job-sourced runs trace with their honest origin through
+                // the same single execution path the Observatory watches.
+                val result = automationRepository.executeAutomationByNameAsJob(action.target, params)
                 if (result.success) "Skill executed successfully" else "Skill execution failed: ${result.error}"
             }
             "tool" -> {

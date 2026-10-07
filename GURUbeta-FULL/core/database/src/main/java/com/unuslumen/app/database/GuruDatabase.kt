@@ -23,6 +23,10 @@ import com.unuslumen.app.database.dao.PromptAmendmentDao
 import com.unuslumen.app.database.dao.PromptSectionDao
 import com.unuslumen.app.database.dao.GuruDefinedToolDao
 import com.unuslumen.app.database.dao.GuruAutomationDao
+import com.unuslumen.app.database.dao.GuruModuleDao
+import com.unuslumen.app.database.dao.GuruModuleRevisionDao
+import com.unuslumen.app.database.dao.GuruAutomationRunDao
+import com.unuslumen.app.database.dao.GuruTileOrderDao
 import com.unuslumen.app.database.dao.LuxifyDao
 import com.unuslumen.app.database.dao.GuruHookDao
 import com.unuslumen.app.database.dao.GuruJobDao
@@ -56,6 +60,10 @@ import com.unuslumen.app.database.entity.PromptAmendmentEntity
 import com.unuslumen.app.database.entity.PromptSectionEntity
 import com.unuslumen.app.database.entity.GuruDefinedToolEntity
 import com.unuslumen.app.database.entity.GuruAutomationEntity
+import com.unuslumen.app.database.entity.GuruModuleEntity
+import com.unuslumen.app.database.entity.GuruModuleRevisionEntity
+import com.unuslumen.app.database.entity.GuruAutomationRunEntity
+import com.unuslumen.app.database.entity.GuruTileOrderEntity
 import com.unuslumen.app.database.entity.LuxifyEntity
 import com.unuslumen.app.database.entity.GuruHookEntity
 import com.unuslumen.app.database.entity.GuruJobEntity
@@ -93,6 +101,10 @@ import com.unuslumen.app.database.entity.MediaZoomLogEntity
         PromptAmendmentEntity::class,
         GuruDefinedToolEntity::class,
         GuruAutomationEntity::class,
+        GuruModuleEntity::class,
+        GuruModuleRevisionEntity::class,
+        GuruAutomationRunEntity::class,
+        GuruTileOrderEntity::class,
         LuxifyEntity::class,
         GuruHookEntity::class,
         GuruJobEntity::class,
@@ -109,7 +121,7 @@ import com.unuslumen.app.database.entity.MediaZoomLogEntity
         MediaItemEntity::class,
         MediaZoomLogEntity::class
     ],
-    version = 24
+    version = 26
 )
 @TypeConverters(DBConverters::class)
 abstract class guruDatabase: RoomDatabase() {
@@ -133,6 +145,10 @@ abstract class guruDatabase: RoomDatabase() {
     abstract fun promptAmendmentDao(): PromptAmendmentDao
     abstract fun guruDefinedToolDao(): GuruDefinedToolDao
     abstract fun guruAutomationDao(): GuruAutomationDao
+    abstract fun guruModuleDao(): GuruModuleDao
+    abstract fun guruModuleRevisionDao(): GuruModuleRevisionDao
+    abstract fun guruAutomationRunDao(): GuruAutomationRunDao
+    abstract fun guruTileOrderDao(): GuruTileOrderDao
     abstract fun luxifyDao(): LuxifyDao
     abstract fun guruHookDao(): GuruHookDao
     abstract fun guruJobDao(): GuruJobDao

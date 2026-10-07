@@ -42,7 +42,7 @@ impl EnrichmentResult {
 
 /// In-memory event-sourced store. Events are append-only and immutable.
 /// The enrichment queue tracks event ids that still need async processing.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EventStore {
     pub events: Vec<Event>,
     pub enrichment_queue: Vec<Uuid>,

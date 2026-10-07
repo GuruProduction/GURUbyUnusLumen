@@ -30,6 +30,8 @@ import com.unuslumen.app.database.migrations.MIGRATION_20_21
 import com.unuslumen.app.database.migrations.MIGRATION_21_22
 import com.unuslumen.app.database.migrations.MIGRATION_22_23
 import com.unuslumen.app.database.migrations.MIGRATION_23_24
+import com.unuslumen.app.database.migrations.MIGRATION_24_25
+import com.unuslumen.app.database.migrations.MIGRATION_25_26
 import org.koin.android.ext.koin.androidContext
 import org.koin.dsl.module
 
@@ -51,13 +53,20 @@ val databaseModule = module {
             androidContext(),
             guruDatabase::class.java,
             guruDatabase.DATABASE_NAME
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24)
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26)
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onCreate(db: SupportSQLiteDatabase) {
                     super.onCreate(db)
                     // On fresh install, Room creates tool_results table from the @Entity annotation
                     // but does NOT create the FTS5 virtual table. Create it here.
                     createToolResultsFts(db)
+                }
+                override fun onOpen(db: SupportSQLiteDatabase) {
+                    super.onOpen(db)
+                    // Casing hygiene for guru_modules status, doctrine: writes
+                    // are explicit, this sweep covers raw-SQL stragglers and
+                    // any fresh install where the CREATE TABLE default runs.
+                    db.execSQL("UPDATE guru_modules SET status = UPPER(status) WHERE status != UPPER(status)")
                 }
             })
             .build()
@@ -82,6 +91,10 @@ val databaseModule = module {
     single { get<guruDatabase>().promptAmendmentDao() }
     single { get<guruDatabase>().guruDefinedToolDao() }
     single { get<guruDatabase>().guruAutomationDao() }
+    single { get<guruDatabase>().guruModuleDao() }
+    single { get<guruDatabase>().guruModuleRevisionDao() }
+    single { get<guruDatabase>().guruAutomationRunDao() }
+    single { get<guruDatabase>().guruTileOrderDao() }
     single { get<guruDatabase>().luxifyDao() }
     single { get<guruDatabase>().guruHookDao() }
     single { get<guruDatabase>().guruJobDao() }

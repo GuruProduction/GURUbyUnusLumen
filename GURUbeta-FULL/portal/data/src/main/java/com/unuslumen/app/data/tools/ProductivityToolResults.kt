@@ -8,6 +8,11 @@ import kotlinx.serialization.Serializable
 
 @Serializable data class GitHubStatusResult(val success: Boolean, val isLoggedIn: Boolean, val username: String? = null, val error: String? = null) : ToolResultData
 @Serializable data class GitHubPr(val number: Int, val title: String, val state: String, val author: String, val url: String) : ToolResultData
+@Serializable data class TrelloLoginResult(val success: Boolean, val username: String? = null, val error: String? = null, val message: String? = null) : ToolResultData
+@Serializable data class NotionLoginResult(val success: Boolean, val ownerName: String? = null, val error: String? = null, val message: String? = null) : ToolResultData
+@Serializable data class GitHubLoginResult(val success: Boolean, val stage: String, val userCode: String? = null, val verificationUri: String? = null, val authenticatedAs: String? = null, val pollToken: String? = null, val message: String? = null) : ToolResultData
+@Serializable data class GitHubAuthCheckResult(val state: String, val authenticatedAs: String? = null, val message: String? = null) : ToolResultData
+@Serializable data class GitHubLogoutResult(val success: Boolean, val wasLoggedIn: Boolean, val message: String? = null) : ToolResultData
 @Serializable data class GitHubPrListResult(val success: Boolean, val prs: List<GitHubPr>, val error: String? = null) : ToolResultData
 @Serializable data class GitHubPrDetails(val number: Int, val title: String, val body: String? = null, val author: String, val state: String, val url: String, val files: List<String>, val reviews: List<String>) : ToolResultData
 @Serializable data class GitHubPrViewResult(val success: Boolean, val pr: GitHubPrDetails? = null, val error: String? = null) : ToolResultData

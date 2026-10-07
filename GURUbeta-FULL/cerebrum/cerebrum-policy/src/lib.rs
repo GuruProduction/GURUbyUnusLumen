@@ -55,7 +55,7 @@ impl IndexEntry {
 
 /// The store of indexed experiences. Maps stable indices to summaries
 /// and full-fidelity artifacts.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IndexedExperienceStore {
     entries: HashMap<MemoryId, IndexEntry>,
 }

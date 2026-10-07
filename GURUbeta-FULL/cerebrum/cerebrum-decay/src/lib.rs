@@ -104,7 +104,7 @@ impl DecayEntry {
 // ============================================================================
 
 /// Owns all decay entries and runs decay/consolidation cycles.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DecayEngine {
     pub entries: HashMap<MemoryId, DecayEntry>,
     pub config: DecayConfig,

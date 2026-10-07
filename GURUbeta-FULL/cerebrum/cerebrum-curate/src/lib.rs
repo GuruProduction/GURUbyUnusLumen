@@ -286,6 +286,11 @@ impl ContextTree {
     pub fn entries(&self) -> impl Iterator<Item = &ContextEntry> {
         self.entries.values()
     }
+
+    /// All entries, owned (persistence + observation paths).
+    pub fn clone_entries(&self) -> Vec<ContextEntry> {
+        self.entries.values().cloned().collect()
+    }
 }
 
 // ============================================================================
@@ -838,6 +843,22 @@ impl CrossReferenceEngine {
     /// Total number of stored forward references.
     pub fn reference_count(&self) -> usize {
         self.references.values().map(|v| v.len()).sum()
+    }
+
+    /// All forward pairs with their provenance summary, string-shaped, for
+    /// persistence and observability consumption.
+    pub fn all_forward_pairs(&self) -> Vec<(String, String, f32, String, DateTime<Utc>)> {
+        let mut out = Vec::with_capacity(self.provenance.len());
+        for (pair, provenance) in &self.provenance {
+            out.push((
+                hex_id(&pair.0),
+                hex_id(&pair.1),
+                provenance.confidence,
+                provenance.source.clone(),
+                provenance.timestamp,
+            ));
+        }
+        out
     }
 }
 

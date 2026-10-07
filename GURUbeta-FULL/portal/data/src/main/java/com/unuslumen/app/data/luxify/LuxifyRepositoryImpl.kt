@@ -135,7 +135,8 @@ class LuxifyRepositoryImpl(
         description: String,
         whenToUse: String,
         allowedTools: List<String>,
-        bodyMarkdown: String
+        bodyMarkdown: String,
+        source: String
     ): LuxifySkill = withContext(Dispatchers.IO) {
         val skill = LuxifyEntity(
             id = Uuid.random().toString(),
@@ -144,7 +145,7 @@ class LuxifyRepositoryImpl(
             whenToUse = whenToUse,
             allowedTools = allowedTools.joinToString(", "),
             bodyMarkdown = bodyMarkdown,
-            source = "dynamic",
+            source = source,
             enabled = true,
             createdAt = System.currentTimeMillis(),
             updatedAt = System.currentTimeMillis()

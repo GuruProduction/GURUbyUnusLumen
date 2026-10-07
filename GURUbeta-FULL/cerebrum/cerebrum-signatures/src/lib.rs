@@ -11,7 +11,7 @@
 //! That's 96x size reduction before DWM compression. Search becomes popcount — one CPU instruction.
 
 use cerebrum_core::{BinarySignature, CerebrumError, MemoryId, SignatureGenerator};
-use cerebrum_token::{SimpleTokenizer, TokenVocabulary, Tokenizer};
+use cerebrum_token::{HashTokenizer, Tokenizer};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
@@ -635,20 +635,20 @@ pub struct SignatureEngine {
 }
 
 impl SignatureEngine {
-    /// Create a new SignatureEngine with default configuration and SimpleTokenizer.
-    /// Uses a default vocabulary that hashes words to token IDs.
-    /// For production, use `with_tokenizer()` with a real BPE/SentencePiece vocabulary.
+    /// Create a new SignatureEngine with default configuration and the
+    /// production-default HashTokenizer (deterministic word hashing). For a
+    /// registry-backed vocabulary use `with_tokenizer()`.
     pub fn new() -> Result<Self, CerebrumError> {
         Self::with_config(SignatureConfig::default())
     }
 
-    /// Create a new SignatureEngine with custom configuration and SimpleTokenizer.
+    /// Create a new SignatureEngine with custom configuration and the
+    /// production-default HashTokenizer.
     pub fn with_config(config: SignatureConfig) -> Result<Self, CerebrumError> {
-        let vocab = Self::default_vocabulary();
         Ok(Self {
             indexing: RandomIndexing::new(config)?,
             searcher: HammingSearcher::new(),
-            tokenizer: Box::new(SimpleTokenizer::with_vocab(vocab)),
+            tokenizer: Box::new(HashTokenizer::new()),
         })
     }
 
@@ -663,13 +663,6 @@ impl SignatureEngine {
             searcher: HammingSearcher::new(),
             tokenizer,
         })
-    }
-
-    /// Create a default vocabulary for the SimpleTokenizer.
-    /// This provides a basic word-level tokenization for testing.
-    /// Production use should load a proper BPE/SentencePiece vocabulary.
-    fn default_vocabulary() -> TokenVocabulary {
-        TokenVocabulary::new("default", 0, 50000)
     }
 
     /// Generate a signature from a text string.
@@ -744,6 +737,17 @@ impl SignatureEngine {
 impl Default for SignatureEngine {
     fn default() -> Self {
         Self::new().expect("Default SignatureConfig should always be valid")
+    }
+}
+
+/// Manual Debug (the boxed tokenizer trait object blocks a derive): prints
+/// shape data only, no matrix bytes.
+impl std::fmt::Debug for SignatureEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SignatureEngine")
+            .field("config", &self.indexing.config)
+            .field("indexed_entries", &self.searcher.len())
+            .finish()
     }
 }
 

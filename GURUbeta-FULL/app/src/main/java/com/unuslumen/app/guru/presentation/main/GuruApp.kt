@@ -421,6 +421,16 @@ fun guruApp(
                         navController = navController
                     )
                 }
+                composable<Screen.ModuleScreen>(
+                    enterTransition = { slideInTransition() },
+                    exitTransition = { slideOutTransition() },
+                ) {
+                    val args = it.toRoute<Screen.ModuleScreen>()
+                    com.unuslumen.app.presentation.modules.ModuleScreen(
+                        navController = navController,
+                        moduleId = args.moduleId
+                    )
+                }
             }
             if (!appUnlocked) {
                 AuthScreen {

@@ -535,6 +535,19 @@
                 android:value="Tor SOCKS proxy for private network access, required for the entire device uptime" />
         </service>
 
+        <!-- Cerebrum brain host — persistent foreground service required for
+             the entire app lifetime per plan Phase F. specialUse type (the
+             encrypted memory brain needs unlimited uptime like the Tor/Termux
+             precedents; dataSync's 6h limit would kill it mid-dream). -->
+        <service
+            android:name="com.unuslumen.app.guru.service.CerebrumService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Guru encrypted on-device memory brain (Cerebrum), resident for the app lifetime" />
+        </service>
+
     </application>
 
 </manifest>

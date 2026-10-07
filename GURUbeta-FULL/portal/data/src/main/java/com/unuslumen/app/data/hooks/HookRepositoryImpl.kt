@@ -273,7 +273,9 @@ class HookRepositoryImpl(
                 val params = action.params.mapValues { (_, value) ->
                     resolveVariables(value, eventData)
                 }
-                val result = automationRepository.executeAutomationByName(action.target, params)
+                // Hook-sourced runs trace with their honest origin through
+                // the same single execution path the Observatory watches.
+                val result = automationRepository.executeAutomationByNameAsHook(action.target, params)
                 if (result.success) "Skill executed successfully" else "Skill execution failed"
             }
             "tool" -> {

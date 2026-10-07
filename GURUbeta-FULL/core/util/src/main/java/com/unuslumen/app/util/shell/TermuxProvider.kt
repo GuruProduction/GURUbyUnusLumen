@@ -17,20 +17,21 @@ import java.util.zip.ZipFile
  * Manages a bundled Termux Linux environment extracted from a bootstrap rootfs
  * archive embedded in the APK assets.
  *
- * DIRECTORY LAYOUT (after extraction):
- *   files/termux/          <- PREFIX (root of the Linux environment)
- *   files/termux/bin/      <- all 250+ binaries (bash, apt, git, curl, etc.)
- *   files/termux/lib/      <- all shared libraries (.so files)
- *   files/termux/etc/      <- config files, apt sources
- *   files/termux/usr/      <- sub-structure (etc, tmp, var)
- *   files/termux/home/     <- created by us, user home directory
+ * DIRECTORY LAYOUT (final, after extract + canonicalise):
+ *   The zip arrives with bin/, lib/, etc/ at termux ROOT; canonicalise moves
+ *   every package dir inside usr/ so the final tree is Termux-standard:
+ *   files/termux/home/     <- user home (stays at termux ROOT, never moves)
+ *   files/termux/usr/      <- THE PREFIX. TERMUX_PREFIX resolves here
+ *   files/termux/usr/bin/  <- all 250+ binaries (bash, apt, git, curl, etc.)
+ *   files/termux/usr/lib/  <- all shared libraries (.so files)
+ *   files/termux/usr/etc/  <- config files, apt sources, keyrings
  *
  * EXECUTION MODEL:
  *   We do NOT pipe commands through /system/bin/sh because Android's sandbox
  *   blocks the system shell from executing app-internal ELF binaries. Instead:
  *   - For simple commands: ProcessBuilder with env vars set
- *   - First word is the binary name, looked up in termux/bin/
- *   - LD_LIBRARY_PATH includes termux/lib/ so all .so deps resolve
+ *   - First word is the binary name, looked up in termux/usr/bin/
+ *   - LD_LIBRARY_PATH includes termux/usr/lib/ so all .so deps resolve
  */
 class TermuxProvider(private val context: Context) {
 
@@ -43,24 +44,28 @@ class TermuxProvider(private val context: Context) {
     private val termuxRoot: File
         get() = File(context.filesDir, "termux")
 
-    private val binDir: File
-        get() = File(termuxRoot, "bin")
-    private val libDir: File
-        get() = File(termuxRoot, "lib")
-    private val etcDir: File
-        get() = File(termuxRoot, "etc")
-    private val usrDir: File
+    private val usrPrefix: File
         get() = File(termuxRoot, "usr")
+
+    private val binDir: File
+        get() = File(usrPrefix, "bin")
+    private val libDir: File
+        get() = File(usrPrefix, "lib")
+    private val etcDir: File
+        get() = File(usrPrefix, "etc")
+    private val usrDir: File
+        get() = usrPrefix
     private val homeDir: File
         get() = File(termuxRoot, HOME_DIR)
     private val tmpDir: File
-        get() = File(usrDir, "tmp")
-    private val varDir: File
-        get() = File(usrDir, "var")
+        get() = File(usrPrefix, "tmp")
 
     private var initialized = false
     private var available = false
     private var symlinksCreated = false
+
+    /** True only during a recovery re-extract pass this process runs deliberately. */
+    @Volatile private var recoveryRebootstrap = false
 
     suspend fun initialize(): Boolean = withContext(Dispatchers.IO) {
         if (initialized) return@withContext available
@@ -68,10 +73,26 @@ class TermuxProvider(private val context: Context) {
         try {
             termuxRoot.mkdirs()
 
+            // Corruption detection (the audit's stage-3 wiped tree): canonicalised tree
+            // whose usr/bin holds zero executable files and whose SYMLINKS.txt is gone.
+            // Old canonicaliser destroyed the payload (self-merge-then-delete through a
+            // usr/bin -> ../bin symlink). Recovery: clean re-extract from the bundled
+            // asset zip, which is the only copy of the dead binaries on the device.
+            val binHasExecutables = binDir.exists() &&
+                binDir.walkTopDown().any { it.isFile && it.canExecute() && it.length() > 0 }
+            val treeWiped = binDir.exists() &&
+                java.io.File(termuxRoot, "SYMLINKS.txt").exists().not() &&
+                !binHasExecutables
+
+            if (treeWiped) {
+                Log.w(TAG, "TermuxProvider: wiped tree detected (no executable in usr/bin, SYMLINKS.txt consumed) — clean re-extract")
+                fullCleanAndExtract()
+            }
+
             val binHasFiles = binDir.exists() && binDir.listFiles()?.isNotEmpty() == true
             if (!binHasFiles) {
                 Log.d(TAG, "TermuxProvider: extracting bootstrap from assets")
-                if (!extractBootstrap()) {
+                if (!fullCleanAndExtract()) {
                     Log.w(TAG, "TermuxProvider: bootstrap not bundled or extraction failed")
                     initialized = true
                     return@withContext false
@@ -79,6 +100,19 @@ class TermuxProvider(private val context: Context) {
             } else {
                 Log.d(TAG, "TermuxProvider: found existing bootstrap, bin has ${binDir.listFiles()?.size ?: 0} files")
             }
+
+            // Canonicalise the extracted tree into the Termux-standard layout.
+            // The bootstrap zip delivers bin/, lib/, etc/ at termux ROOT; Termux ELFs
+            // (bash, apt, dpkg) are compiled against a prefix ending in /usr and some
+            // carry $ORIGIN-relative dependencies that want them under usr/. Every
+            // top-level package dir (bin, lib, etc, share, var, libexec, ...) moves
+            // under usr/ once. Runs on fresh extracts AND on legacy device trees
+            // (devices that extracted before this fix) — no rebuild required.
+            canonicaliseTreeLayout()
+
+            // Bootstrap-wide symlinks apply AFTER canonicalisation: link names and
+            // com.termux-absolute targets both resolve against the final usr/ tree.
+            applyBootstrapSymlinks()
 
             // Ensure essential directories exist
             homeDir.mkdirs()
@@ -101,33 +135,38 @@ class TermuxProvider(private val context: Context) {
                 }
             }
 
-            // Copy bundled libs and tools (libexpat, libpng, zlib, patchelf, libc++_shared)
+            // Copy bundled libs and tools (libexpat, libpng, zlib, patchelf, libc++_shared).
+            // Every post-extract step is idempotent and NO step latches success unless its
+            // outcome is real: copyBundledLibs skips existing non-empty files; library
+            // symlinks skip existing links; RPATH patch runs only when patchelf verifies
+            // as executable — and the latch below flips true only when the tree then
+            // holds a REAL readable executable bash binary. A partially-run pass
+            // re-runs in full on the next init (the audit's stage-5 latch defect).
             if (!symlinksCreated) {
                 copyBundledLibs()
-                // Symlinks AFTER all .so files land
                 createLibrarySymlinks()
-                // Copy termux libs into re-tools/lib/ so linker finds them next to RE binaries
                 copyLibsToReToolsDir()
-                // Patch RPATH on native ELF binaries so --library-path flag isn't needed
                 patchElfBinaries()
-                symlinksCreated = true
+                val bashBinary = File(binDir, "bash")
+                symlinksCreated = bashBinary.exists() && bashBinary.length() > 0 && bashBinary.canRead()
+                if (!symlinksCreated) {
+                    Log.w(TAG, "TermuxProvider: post-install chain incomplete (bash missing) — will re-run next init")
+                }
             }
 
-            // Symlink usr/bin -> ../bin for tools that expect this path
-            val usrBin = File(termuxRoot, "usr/bin")
-            if (!usrBin.exists()) {
-                usrBin.parentFile?.mkdirs()
-                try {
-                    android.system.Os.symlink("../bin", usrBin.absolutePath)
-                } catch (_: Exception) {}
-            }
+            // Dpkg database path bake (audit fix 6): dpkg's status and .list files record
+            // absolute /data/data/com.termux/... paths baked into the upstream bootstrap.
+            // On this package those files do not exist, so every dpkg/apt query would
+            // describe phantom files. One pass: rewrite the marker to OUR files root.
+            bakeDpkgPaths()
+
+            // The bootstrap's layout IS the real bin path (usr/bin) — no redirect
+            // shims wanted. Substructure (tmp, var, apt dirs) above; done.
 
             // apt config — write at init so any termuxExec "apt ..." works
             initAptConfig()
 
-            // Copy apt methods from lib/apt/methods/ to usr/lib/apt/methods/
-            // The bootstrap zip puts methods in lib/apt/methods/ but apt expects usr/lib/apt/methods/
-            // Also check if https method needs to be symlinked/copied from http
+            // Ensure apt transport methods + https variant exist under the prefix
             fixAptMethods()
 
             // Remove any old wrapper scripts that were created by previous versions
@@ -142,6 +181,54 @@ class TermuxProvider(private val context: Context) {
             initialized = true
         }
         available
+    }
+
+    /** Canonicalise root-level package dirs into the Termux-standard usr/ prefix layout. */
+    private suspend fun canonicaliseTreeLayout() = withContext(Dispatchers.IO) {
+        try { TermuxCanonicaliser.canonicalise(termuxRoot) } catch (e: Exception) {
+            Log.w(TAG, "TermuxProvider: canonicalise failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Clean recovery: wipe the termux root except home/, then re-extract the
+     * bundled bootstrap. home/ is the human's own directory (their scripts,
+     * notes); everything else rebuilds from assets which hold the full payload.
+     */
+    private fun fullCleanAndExtract(): Boolean {
+        try {
+            // Preserve home/
+            val home = File(termuxRoot, HOME_DIR)
+            val homeContents = home.listFiles()?.let { items ->
+                items.filter { it.name != "termux" }.mapNotNull { file ->
+                    try { file.absolutePath to file.isDirectory } catch (e: Exception) { null }
+                }
+            } ?: emptyList()
+            // Wipe everything except the termux/home dir itself
+            termuxRoot.listFiles()?.forEach { child ->
+                if (child.name != HOME_DIR) {
+                    when {
+                        child.isDirectory && child.name != HOME_DIR -> {
+                            if (child.absolutePath != home.absolutePath) {
+                                child.deleteRecursively()
+                            }
+                        }
+                        else -> child.delete()
+                    }
+                }
+            }
+            Log.d(TAG, "TermuxProvider: clean wipe done (home preserved); re-extracting")
+            val extracted = extractBootstrap()
+            if (extracted) {
+                // Reset latches so this process re-runs every post-install chain step
+                symlinksCreated = false
+                Log.d(TAG, "TermuxProvider: clean re-extract completed")
+            }
+            return extracted
+        } catch (e: Exception) {
+            Log.e(TAG, "TermuxProvider: clean re-extract failed", e)
+            return false
+        }
     }
 
     // Lazy — detect linker64/32 once
@@ -164,7 +251,7 @@ class TermuxProvider(private val context: Context) {
     private val reToolsDir: File
         get() = File(context.filesDir, "re-tools")
 
-    // PATH search order: termux/bin, re-tools, system
+    // PATH search order: termux usr/bin, re-tools, system
     private val searchPath: List<File>
         get() = listOf(binDir, reToolsDir, File("/system/bin"), File("/system/xbin"))
 
@@ -172,37 +259,45 @@ class TermuxProvider(private val context: Context) {
     private val shellMetaChars = Regex("""[;|&<>]""")
 
     // Shared env map reused across all ProcessBuilder calls
-    private fun buildEnv(): MutableMap<String, String> = mutableMapOf(
-        "PREFIX" to termuxRoot.absolutePath,
-        "HOME" to homeDir.absolutePath,
-        "TMPDIR" to tmpDir.absolutePath,
-        "PATH" to "${binDir.absolutePath}:${reToolsDir.absolutePath}:${usrDir.absolutePath}/bin:/system/bin:/system/xbin",
-        "LD_LIBRARY_PATH" to "${libDir.absolutePath}:${reToolsDir.absolutePath}/lib",
-        // libtermux-exec reads these env vars to override its compiled-in defaults.
-        // Without these, it falls back to /data/data/com.termux/files/usr which doesn't exist.
-        // With these set, it uses our actual prefix for all path resolution.
-        "TERMUX__ROOTFS" to termuxRoot.absolutePath,
-        "TERMUX__PREFIX" to File(termuxRoot, "usr").absolutePath,
-        "TERMUX_PREFIX" to File(termuxRoot, "usr").absolutePath,
-        "TERMUX_HOME" to homeDir.absolutePath,
-        "TERMUX_APP__DATA_DIR" to context.filesDir.absolutePath,
-        "TERMUX_APP__LEGACY_DATA_DIR" to "/data/data/${context.packageName}",
-        "TERMUX_APP_PACKAGE" to context.packageName,
-        "TERMUX_ANDROID_HOME" to homeDir.absolutePath,
-        // LD_PRELOAD: load libtermux-exec so it intercepts execve() and rewrites
-        // hardcoded /data/data/com.termux paths to our actual prefix using the env vars above
-        "LD_PRELOAD" to File(libDir, "libtermux-exec-ld-preload.so").absolutePath,
+    private fun buildEnv(): MutableMap<String, String> {
+        val env = mutableMapOf(
+            "PREFIX" to usrPrefix.absolutePath,
+            "HOME" to homeDir.absolutePath,
+            "TMPDIR" to tmpDir.absolutePath,
+            "PATH" to "${binDir.absolutePath}:${reToolsDir.absolutePath}:/system/bin:/system/xbin",
+            "LD_LIBRARY_PATH" to "${libDir.absolutePath}:${reToolsDir.absolutePath}/lib",
+            // libtermux-exec reads these env vars to override its compiled-in defaults.
+            "TERMUX__ROOTFS" to termuxRoot.absolutePath,
+            "TERMUX__PREFIX" to usrPrefix.absolutePath,
+            "TERMUX_PREFIX" to usrPrefix.absolutePath,
+            "TERMUX_HOME" to homeDir.absolutePath,
+            "TERMUX_APP__DATA_DIR" to context.filesDir.absolutePath,
+            "TERMUX_APP__LEGACY_DATA_DIR" to "/data/data/${context.packageName}",
+            "TERMUX_APP_PACKAGE" to context.packageName,
+            "TERMUX_ANDROID_HOME" to homeDir.absolutePath
+        )
+        // LD_PRELOAD: load libtermux-exec ONLY when its file actually exists in the
+        // canonicalised tree. Pointing LD_PRELOAD at an absent path makes Android's
+        // dynamic linker refuse every linked launch with CANNOT LINK EXECUTABLE.
+        val preload = File(libDir, "libtermux-exec-ld-preload.so")
+        if (preload.exists()) {
+            env["LD_PRELOAD"] = preload.absolutePath
+        }
         // SSL/TLS: apt and curl need to find CA certificates
-        "SSL_CERT_FILE" to File(etcDir, "tls/cert.pem").absolutePath,
-        "CA_CERT_FILE" to File(etcDir, "tls/cert.pem").absolutePath,
-        "REQUESTS_CA_BUNDLE" to File(etcDir, "tls/cert.pem").absolutePath,
-        "GIT_SSL_CAINFO" to File(etcDir, "tls/cert.pem").absolutePath
-    )
+        val certPem = File(etcDir, "tls/cert.pem")
+        if (certPem.exists()) {
+            env["SSL_CERT_FILE"] = certPem.absolutePath
+            env["CA_CERT_FILE"] = certPem.absolutePath
+            env["REQUESTS_CA_BUNDLE"] = certPem.absolutePath
+            env["GIT_SSL_CAINFO"] = certPem.absolutePath
+        }
+        return env
+    }
 
     /**
      * Execute a command inside the Termux environment.
      *
-     * Binary lookup searches PATH in order: termux/bin, re-tools, system/bin, system/xbin.
+     * Binary lookup searches PATH in order: termux/usr/bin, re-tools, system/bin, system/xbin.
      * Shell metacharacters (; | && || > <) trigger automatic bash -c wrapping.
      * Uses /system/bin/linker64 for binaries on noexec filesystems (/data),
      * direct execution for binaries on /system.
@@ -225,7 +320,7 @@ class TermuxProvider(private val context: Context) {
         if (resolved == null) {
             return ShellResult(
                 exitCode = -1, stdout = "",
-                stderr = "command not found: $binaryName (searched termux/bin, re-tools, /system/bin)",
+                stderr = "command not found: $binaryName (searched termux/usr/bin, re-tools, /system/bin)",
                 success = false
             )
         }
@@ -249,7 +344,7 @@ class TermuxProvider(private val context: Context) {
     fun execBash(script: String): ShellResult {
         val bash = File(binDir, "bash")
         if (!bash.exists() || !bash.canRead()) {
-            return ShellResult(exitCode = -1, stdout = "", stderr = "bash not found in termux/bin/", success = false)
+            return ShellResult(exitCode = -1, stdout = "", stderr = "bash not found in termux/usr/bin/", success = false)
         }
         return execWithEnv(listOf(linker, bash.absolutePath, "-c", script))
     }
@@ -264,12 +359,12 @@ class TermuxProvider(private val context: Context) {
         if (!bash.exists() || !bash.canRead()) {
             return ShellResult(exitCode = -1, stdout = "", stderr = "bash not found", success = false)
         }
-        val prefix = File(termuxRoot, "usr").absolutePath
-        val script = "apt update 2>&1 && apt install -y $packages 2>&1"
-        // Pass -o overrides via APT_CONFIG env var pointing to our apt.conf.d
-        // AND also set them inline in the script as a belt-and-suspenders approach
+        // Apt is compiled against the real Termux prefix (/data/data/com.termux/files/usr), so the
+        // -o overrides stay mandatory. They now all resolve against the TRUE prefix (termux/usr):
+        // methods sit at prefix/lib/apt/methods (fixAptMethods + bootstrap both put them there)
+        // and dpkg sits at prefix/bin/dpkg. Only the prefix string changed with the layout fix.
+        val prefix = usrPrefix.absolutePath
         val fullScript = """
-            export APT_PREFIX="$prefix"
             apt -o Dir="$prefix" \
                 -o Dir::State="${'$'}prefix/var/lib/apt" \
                 -o Dir::State::lists="${'$'}prefix/var/lib/apt/lists" \
@@ -402,6 +497,33 @@ class TermuxProvider(private val context: Context) {
         libDir.listFiles()?.forEach { file ->
             if (!file.isFile) return@forEach
             val name = file.name
+
+            // Three-segment versions (libbz2.so.1.0.8) deserve TWO more forms:
+            // the two-segment name Termux ELF binaries link against
+            // (libbz2.so.1.0), AND the plain major (libbz2.so.1).
+            val fullVersionPattern = Regex("""^(.+\.so)\.(\d+)\.(\d+)\.(\d+.*)$""")
+            fullVersionPattern.find(name)?.let { match3 ->
+                val baseName3 = match3.groupValues[1]
+                val majorOnly = "$baseName3.${match3.groupValues[2]}"
+                val majorMinor = "$baseName3.${match3.groupValues[2]}.${match3.groupValues[3]}"
+                for (variant in listOf(majorOnly, majorMinor)) {
+                    val linkFile = File(libDir, variant)
+                    if (!linkFile.exists()) {
+                        try {
+                            android.system.Os.symlink(name, linkFile.absolutePath)
+                            linkCount++
+                        } catch (_: Exception) {}
+                    }
+                }
+                if (!File(libDir, baseName3).exists()) {
+                    try {
+                        android.system.Os.symlink(name, File(libDir, baseName3).absolutePath)
+                        linkCount++
+                    } catch (_: Exception) {}
+                }
+                return@forEach
+            }
+
             // Match: libfoo.so.MAJOR.MINOR or libfoo.so.MAJOR.MINOR.PATCH
             val versionedPattern = Regex("""^(.+\.so)\.(\d+)\.(\d+.*)$""")
             val match = versionedPattern.find(name) ?: return@forEach
@@ -608,11 +730,11 @@ class TermuxProvider(private val context: Context) {
             val rootConf = File(aptConfDir, "01-root.conf")
             if (!rootConf.exists()) {
                 rootConf.writeText("""
-                    |Dir "${termuxRoot.absolutePath}"
-                    |Dir::State "${usrDir.absolutePath}/var/lib/apt"
-                    |Dir::State::lists "${usrDir.absolutePath}/var/lib/apt/lists"
-                    |Dir::Cache "${usrDir.absolutePath}/var/cache/apt"
-                    |Dir::Log "${usrDir.absolutePath}/var/log/apt"
+                    |Dir "${usrPrefix.absolutePath}"
+                    |Dir::State "${usrPrefix.absolutePath}/var/lib/apt"
+                    |Dir::State::lists "${usrPrefix.absolutePath}/var/lib/apt/lists"
+                    |Dir::Cache "${usrPrefix.absolutePath}/var/cache/apt"
+                    |Dir::Log "${usrPrefix.absolutePath}/var/log/apt"
                     |Dir::Etc "${etcDir.absolutePath}/apt"
                     |Dir::Etc::sourcelist "${etcDir.absolutePath}/apt/sources.list"
                     |Dir::Etc::sourceparts "${etcDir.absolutePath}/apt/sources.list.d"
@@ -621,9 +743,9 @@ class TermuxProvider(private val context: Context) {
             }
 
             // Ensure state directories exist
-            File(usrDir, "var/lib/apt/lists").mkdirs()
-            File(usrDir, "var/cache/apt/archives/partial").mkdirs()
-            File(usrDir, "var/log/apt").mkdirs()
+            File(usrPrefix, "var/lib/apt/lists").mkdirs()
+            File(usrPrefix, "var/cache/apt/archives/partial").mkdirs()
+            File(usrPrefix, "var/log/apt").mkdirs()
 
             // Also ensure the GPG keyring directory exists
             File(etcDir, "apt/trusted.gpg.d").mkdirs()
@@ -635,47 +757,18 @@ class TermuxProvider(private val context: Context) {
     }
 
     /**
-     * Copy apt transport method drivers from lib/apt/methods/ to usr/lib/apt/methods/.
-     * The bootstrap zip places them at lib/apt/methods/ (relative to termux root) but
-     * apt expects them at usr/lib/apt/methods/. Also ensures the https method exists
-     * (some bootstraps only include http, not https).
+     * Ensure the apt transport method drivers exist at prefix/lib/apt/methods/
+     * and that the https variant is present (some bootstraps only ship http).
+     * Under the unified layout source and target are the same tree, so the
+     * old copy pass reduced to a no-op and only this check remains.
      */
     private fun fixAptMethods() {
-        val sourceMethodsDir = File(libDir, "apt/methods")
-        val targetMethodsDir = File(usrDir, "lib/apt/methods")
+        val methodsDir = File(usrDir, "lib/apt/methods")
+        methodsDir.mkdirs()
 
-        if (!sourceMethodsDir.exists() && targetMethodsDir.exists()) {
-            Log.d(TAG, "TermuxProvider: apt methods already at ${targetMethodsDir.absolutePath}")
-            return
-        }
-
-        targetMethodsDir.mkdirs()
-
-        if (sourceMethodsDir.exists()) {
-            var count = 0
-            sourceMethodsDir.listFiles()?.forEach { method ->
-                val dest = File(targetMethodsDir, method.name)
-                if (!dest.exists()) {
-                    try {
-                        method.copyTo(dest)
-                        dest.setExecutable(true, false)
-                        dest.setReadable(true, false)
-                        count++
-                    } catch (e: Exception) {
-                        Log.w(TAG, "TermuxProvider: failed to copy apt method ${method.name}: ${e.message}")
-                    }
-                }
-            }
-            if (count > 0) {
-                Log.d(TAG, "TermuxProvider: copied $count apt methods to ${targetMethodsDir.absolutePath}")
-            }
-        }
-
-        // Check if https method exists. If not, copy from http (they share the same binary
-        // in Termux builds, https is just a symlink to http or a copy)
-        val httpsMethod = File(targetMethodsDir, "https")
+        val httpsMethod = File(methodsDir, "https")
         if (!httpsMethod.exists()) {
-            val httpMethod = File(targetMethodsDir, "http")
+            val httpMethod = File(methodsDir, "http")
             if (httpMethod.exists()) {
                 try {
                     httpMethod.copyTo(httpsMethod)
@@ -716,6 +809,40 @@ class TermuxProvider(private val context: Context) {
     }
 
     // --- Extraction ---
+
+    /**
+     * Bake the real package root into dpkg's database. Every .list and the status
+     * file in var/lib/dpkg carry absolute /data/data/com.termux paths shipped with
+     * the bootstrap. Replace the upstream root marker with our real files dir so
+     * dpkg/libapt describe files that actually exist on this install.
+     * One-shot, marker-gated: writes a done-file in var/lib/dpkg so repeated inits
+     * never rescan hundreds of files every boot.
+     */
+    private fun bakeDpkgPaths() {
+        try {
+            val dpkgDir = File(File(usrPrefix, "var/lib"), "dpkg")
+            if (!dpkgDir.exists()) return
+            val doneMarker = File(dpkgDir, ".paths_baked")
+            if (doneMarker.exists()) return
+
+            val upstreamRoot = "/data/data/com.termux/files"
+            var filesRewritten = 0
+            dpkgDir.listFiles()?.forEach { entry ->
+                if (entry.isFile && (entry.name == "status" || entry.name.endsWith(".list"))) {
+                    val text = runCatching { entry.readText() }.getOrNull() ?: return@forEach
+                    if (text.contains(upstreamRoot)) {
+                        val updated = text.replace(upstreamRoot, context.filesDir.absolutePath)
+                        entry.writeText(updated)
+                        filesRewritten++
+                    }
+                }
+            }
+            doneMarker.writeText("baked=${filesRewritten};root=${context.filesDir.absolutePath}\n")
+            Log.d(TAG, "TermuxProvider: dpkg paths baked ($filesRewritten files) to ${context.filesDir.absolutePath}")
+        } catch (e: Exception) {
+            Log.w(TAG, "TermuxProvider: dpkg path bake failed (non-fatal): ${e.message}")
+        }
+    }
 
     private fun extractBootstrap(): Boolean {
         val tempZip = File(termuxRoot, "bootstrap_temp.zip")
@@ -760,33 +887,11 @@ class TermuxProvider(private val context: Context) {
                 Log.d(TAG, "TermuxProvider: extracted $count files")
             }
 
-            // Apply SYMLINKS.txt
-            val symlinksFile = File(termuxRoot, "SYMLINKS.txt")
-            if (symlinksFile.exists()) {
-                var linkCount = 0
-                symlinksFile.forEachLine { line ->
-                    val parts = line.split(" ← ")
-                    if (parts.size == 2) {
-                        val target = parts[0].trim()
-                        val linkName = parts[1].trim()
-                        val linkFile = File(termuxRoot, linkName)
-                        if (!linkFile.exists()) {
-                            try {
-                                linkFile.parentFile?.mkdirs()
-                                android.system.Os.symlink(target, linkFile.absolutePath)
-                                linkCount++
-                            } catch (_: Exception) {}
-                        }
-                    }
-                }
-                Log.d(TAG, "TermuxProvider: created $linkCount symlinks from SYMLINKS.txt")
-            }
-
-            // Set executable on all binaries
-            binDir.walkTopDown().filter { it.isFile }.forEach { file ->
-                try { file.setExecutable(true, false) } catch (_: Exception) {}
-                try { file.setReadable(true, false) } catch (_: Exception) {}
-            }
+            // Symlink application now lives in applyBootstrapSymlinks(), which runs
+            // AFTER canonicalisation (called from initialize()), because the com.termux
+            // translate-to-prefix branch can only succeed with the final usr/ tree on
+            // disk. Extraction stops here.
+            Log.d(TAG, "TermuxProvider: extracted all files; symlinks defer to post-canonicalise pass")
 
             return true
         } catch (e: Exception) {
@@ -794,6 +899,70 @@ class TermuxProvider(private val context: Context) {
             return false
         } finally {
             tempZip.delete()
+        }
+    }
+
+    /**
+     * Apply SYMLINKS.txt from the extracted bootstrap, once, with the final
+     * usr/ tree on disk.
+     *
+     *  a) Format is `target ← link_name`, legacy lines carry reverse arrow and
+     *     "./" relative names.
+     *  b) Absolute targets against /data/data/com.termux/files/usr get translated
+     *     to OUR prefix — a raw dead absolute symlink would break apt keyrings.
+     *  c) Every link path lands inside the usr/ tree when a root-level legacy name
+     *     refers to a package dir (bin/… → usr/bin/…): those dirs physically live
+     *     under usr/ post-canonicalise.
+     */
+    private fun applyBootstrapSymlinks() {
+        val symlinksFile = File(termuxRoot, "SYMLINKS.txt")
+        if (!symlinksFile.exists()) return
+        val packageDirs = setOf(
+            "bin", "lib", "etc", "share", "var", "libexec", "tmp", "opt", "root", "sbin"
+        )
+        var linkCount = 0
+        symlinksFile.forEachLine { line ->
+            val parts = line.split(" ← ")
+            if (parts.size != 2) return@forEachLine
+            val rawTarget = parts[0].trim()
+            val rawLink = parts[1].trim().removePrefix("./")
+
+            val linkSegments = rawLink.split("/".toRegex())
+            val linkPathInsidePrefix = if (linkSegments.firstOrNull() in packageDirs) {
+                File(usrPrefix, rawLink).path
+            } else {
+                File(termuxRoot, rawLink).path
+            }
+
+            val comTermuxMarker = "/data/data/com.termux/files/usr/"
+            val resolvedTarget = when {
+                rawTarget.startsWith(comTermuxMarker) -> {
+                    val ours = File(usrPrefix, rawTarget.removePrefix(comTermuxMarker))
+                    if (ours.exists()) ours.absolutePath else null
+                }
+                rawTarget.startsWith("/") -> if (File(rawTarget).exists()) rawTarget else null
+                else -> rawTarget
+            }
+            if (resolvedTarget != null) {
+                val linkFile = File(linkPathInsidePrefix)
+                if (!linkFile.exists()) {
+                    try {
+                        linkFile.parentFile?.mkdirs()
+                        android.system.Os.symlink(resolvedTarget, linkFile.absolutePath)
+                        linkCount++
+                    } catch (_: Exception) {}
+                }
+            }
+        }
+        // THE AUDIT'S STAGE-1 FIX: never consume SYMLINKS.txt when this pass linked
+        // nothing. A zero-apply pass means the tree was not final yet (pre-canonicalise
+        // call order) or targets were absent; a later canonical pass can link them, and
+        // deletion locks that impossibility in forever. Deletion only at full success.
+        if (linkCount == 0) {
+            Log.w(TAG, "TermuxProvider: SYMLINKS.txt kept for a later pass (0 applied this pass)")
+        } else {
+            symlinksFile.delete()
+            Log.d(TAG, "TermuxProvider: applied $linkCount bootstrap symlinks (post-canonicalise); SYMLINKS.txt consumed")
         }
     }
 }

@@ -40,7 +40,7 @@ pub struct PrefetchResult {
 // ============================================================================
 
 /// Predictive memory prefetch engine.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PrefetchEngine {
     pub cache: HashMap<MemoryId, String>,
     pub hit_count: u64,

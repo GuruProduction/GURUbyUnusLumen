@@ -65,6 +65,23 @@ class BootBroadcastReceiver : BroadcastReceiver(), KoinComponent {
             }
             android.util.Log.d("BootReceiver", "Started TorPersistentService on boot")
 
+            // Cerebrum brain host service comes back on boot the same way:
+            // the encrypted brain's resident process restores the vault on its
+            // onCreate boot chain (app code path drives boot on next open; the
+            // service keeps the foreground residency + swipe-away STICKY rebirth).
+            val cerebrumServiceIntent = Intent().apply {
+                component = android.content.ComponentName(
+                    appContext.packageName,
+                    "com.unuslumen.app.guru.service.CerebrumService"
+                )
+            }
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                appContext.startForegroundService(cerebrumServiceIntent)
+            } else {
+                appContext.startService(cerebrumServiceIntent)
+            }
+            android.util.Log.d("BootReceiver", "Started CerebrumService on boot (brain host)")
+
             val pendingResult = goAsync()
             scope.launch {
                 try {

@@ -67,7 +67,7 @@ pub struct RichEpisode {
 // ============================================================================
 
 /// Store of reconstructed episodic memories.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EpisodicStore {
     pub episodes: HashMap<MemoryId, RichEpisode>,
     pub config: EpisodicConfig,

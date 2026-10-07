@@ -24,7 +24,7 @@ class ToolRegistryHolder(registry: ToolRegistry) {
     }
 
     class ToolRef(
-        private val definition: ToolDefinition,
+        val definition: ToolDefinition,
         private val executor: ToolExecutor
     ) {
         val descriptor = Descriptor(definition.name, definition.description)

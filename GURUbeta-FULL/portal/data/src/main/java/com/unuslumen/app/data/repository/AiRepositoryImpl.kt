@@ -24,6 +24,7 @@ import com.unuslumen.app.data.EmptyAiClient
 import com.unuslumen.app.data.ContextManager
 import com.unuslumen.app.data.buildChatPrompt
 import com.unuslumen.app.data.PromptFetcher
+import com.unuslumen.app.data.skills.SkillLibrarySyncWorker
 import com.unuslumen.app.data.LlmConfig
 import com.unuslumen.app.data.LlmConfigFetcher
 import com.unuslumen.app.data.getRootCause
@@ -209,9 +210,17 @@ class AiRepositoryImpl(
 
     companion object {
         // AGI doesn't have timeouts
+
+        /** Exactly-one-eternal-loop guard, shared by every AiRepositoryImpl instance:
+         *  @Factory means fresh graph resolutions can mint multiple instances and
+         *  each would otherwise launch its own 6h sync loop. */
+        private val syncLoopStarted = java.util.concurrent.atomic.AtomicBoolean(false)
     }
 
     private val json = Json { ignoreUnknownKeys = true }
+
+    /** Per-instance marker for the sync loop, mirrored into the shared
+     *  companion atomic; the loop is process-wide, one and only one. */
 
     /**
      * Multimodal plumbing: turns tool-result file paths into real image blocks the
@@ -423,8 +432,42 @@ class AiRepositoryImpl(
                 android.util.Log.w("guru", "Failed to fetch system prompt: ${e.message}")
             }
 
+            // Skills library sync — unconditional, every provider. Boot pass +
+            // 6h cadence; force-push and retraction both ride it. Non-cancellable
+            // on the way out so an interruption never strands a half-installed
+            // set; the worker itself treats errors as offline-skip.
+            startLibrarySyncLoop()
+
             // Load fallback models from server config
             fallbackModels = loadFallbackModels(aiProvider, toolsEnabledPreferenceValue, llmConfig)
+        }
+    }
+
+    /**
+     * Skills-library sync loop: one pass at boot, then every 6 hours while the
+     * process lives. Idempotent — the sync worker's own debounce floor plus the
+     * manifest ETag make multiple concurrent invocations harmless, so cadence
+     * callers lose nothing by firing regardless of state.
+     */
+    private fun startLibrarySyncLoop() {
+        if (!syncLoopStarted.compareAndSet(false, true)) return
+        applicationScope.launch {
+            val worker = SkillLibrarySyncWorker(context, luxifyRepository)
+            val syncIntervalMs = 6L * 60 * 60 * 1000
+            // Runs until the application scope dies; process teardown cancels
+            // it cleanly, so no explicit activity check is wanted here.
+            while (true) {
+                val outcome = worker.syncNow(force = false)
+                if (outcome.offline) {
+                    android.util.Log.i("guru", "Skill library: offline or unreachable, installed set unchanged")
+                } else {
+                    android.util.Log.i(
+                        "guru",
+                        "Skill library: ${outcome.message}"
+                    )
+                }
+                kotlinx.coroutines.delay(syncIntervalMs)
+            }
         }
     }
 
@@ -842,14 +885,21 @@ class AiRepositoryImpl(
 
                 android.util.Log.d("guru", "Executing LLM request (attempt ${consecutiveToolCalls + 1})...")
 
-                // Refresh tool descriptors to include any newly approved Guru-defined tools.
-                // Fix 1: keep the REAL ToolDefinitions — the model sees full parameter
-                // schemas (names, types, required, enums) built from these downstream.
-                // The old path collapsed each definition to ToolDescriptor(name, description),
+                // Refresh tool descriptors to include ANY newly-defined GURU tools.
+                // Every entry carries its REAL parameter schema: built-ins map through
+                // the schema mapper (no more bare name+description), and GURU-created
+                // tools ride their own parsed schema straight off the stored tool row.
+                // The old path collapsed every entry to ToolDescriptor(name, description),
                 // which threw away the entire parameter list and left the LLM guessing.
                 val currentToolDescriptors: List<ai.koog.agents.core.tools.ToolDescriptor> = if (toolsEnabled) {
                     try {
-                        toolRegistry.getAllDefinitions().map { ai.koog.agents.core.tools.ToolDescriptor(it.name, it.description) }
+                        val builtinDefs = toolRegistry.getAllDefinitions()
+                        val builtinDescriptors = builtinDefs.map {
+                            com.unuslumen.app.data.gurutools.GuruToolSchemaMapper.definitionToDescriptor(it)
+                        }
+                        guruToolRegistryManager.getGuruToolDescriptors().let { guruDescriptors ->
+                            builtinDescriptors + guruDescriptors
+                        }
                     } catch (e: Exception) {
                         android.util.Log.w("guru", "Failed to build tool descriptors: ${e.message}")
                         emptyList()
@@ -858,12 +908,14 @@ class AiRepositoryImpl(
                     emptyList()
                 }
 
-                // Fix 1: parallel list of REAL definitions, aligned 1:1 with the descriptors
-                // above (same source, same order, same exception fallback). The streaming
-                // client uses these to emit full Ollama function parameter schemas.
+                // The parallel REAL definitions list for the Ollama wire: built-ins
+                // straight from the registry + GURU-created tools from the repo.
+                // The streaming client matches by tool name and emits full parameter
+                // schemas for whatever is here, GURU creations included.
                 val currentToolDefinitions: List<com.unuslumen.app.data.tools.registry.ToolDefinition> = if (toolsEnabled) {
                     try {
-                        toolRegistry.getAllDefinitions()
+                        val builtin = toolRegistry.getAllDefinitions()
+                        guruToolRegistryManager.refreshToolDefinitions(builtin)
                     } catch (e: Exception) {
                         android.util.Log.w("guru", "Failed to load tool definitions: ${e.message}")
                         emptyList()
@@ -1924,6 +1976,19 @@ class AiRepositoryImpl(
             if (result.success && result.places.isNotEmpty()) ToolCallResultObject.Places(result.places.map {
                 PlaceInfoData(it.id, it.name, it.address, it.rating)
             }) else null
+        }.getOrNull()
+
+        // GitHub login UI (device flow state)
+        "githubLogin" -> runCatching {
+            val result = json.decodeFromString<com.unuslumen.app.data.tools.GitHubLoginResult>(resultJson)
+            ToolCallResultObject.GitHub(GitHubInfoData(
+                type = "login",
+                title = when (result.stage) {
+                    "authenticated", "already_authenticated" -> "GitHub connected${result.authenticatedAs?.let { " as $it" } ?: ""}"
+                    else -> "Awaiting GitHub authorisation"
+                },
+                error = if (result.success) null else result.message
+            ))
         }.getOrNull()
 
         // GitHub tools

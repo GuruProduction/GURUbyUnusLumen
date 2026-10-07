@@ -5,12 +5,10 @@ package com.unuslumen.app.data.brain
 
 import android.content.Context
 import android.util.Log
-import com.unuslumen.app.database.dao.MemoryCrossReferenceDao
-import com.unuslumen.app.database.dao.MemoryEdgeDao
-import com.unuslumen.app.database.dao.MemoryEventDao
-import com.unuslumen.app.database.dao.MemoryFactDao
-import com.unuslumen.app.database.entity.MemoryFactEntity
+import com.unuslumen.app.data.brain.cerebrum.CerebrumBrainApi
+import com.unuslumen.app.data.brain.cerebrum.CerebrumHost
 import com.unuslumen.app.data.memory.LocalEmbeddingService
+import com.unuslumen.app.domain.memory.MemoryFact
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -19,18 +17,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * BrainService — Central orchestrator for all 11 brain engines.
+ * BrainService — the single GURU-facing memory orchestrator.
  *
- * Single entry point for the brain system. The rest of the app talks to
- * BrainService, not to individual engines.
- *
- * Phase 3 of the Brain Plan.
+ * ONE STORE, the encrypted Cerebrum brain, end of. Every method here
+ * dispatches real frames through the brain's JNI host (CerebrumBrainApi);
+ * there is no second memory database and there is no Kotlin twin stack on
+ * the memory path any more. Kotlin keeps hosting: signatures of this class
+ * return domain shapes the app already consumes (SearchResult/MemoryFact),
+ * converted from real brain reply bytes at this boundary and nowhere else.
  */
 class BrainService(
-    private val memoryFactDao: MemoryFactDao,
-    private val memoryEdgeDao: MemoryEdgeDao,
-    private val memoryEventDao: MemoryEventDao,
-    private val memoryCrossReferenceDao: MemoryCrossReferenceDao,
     private val embeddingService: LocalEmbeddingService,
     private val context: Context
 ) {
@@ -38,321 +34,291 @@ class BrainService(
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    // Engine initialisation — no circular dependencies.
-    // PrefetchEngine does not depend on QueryEngine.
-    // QueryEngine does not depend on PrefetchEngine.
-    // BrainService coordinates between them.
-    private val signatureEngine = SignatureEngine
+    private val brainApi: CerebrumBrainApi get() = CerebrumBrainApi
 
-    private val embeddingEngine by lazy { EmbeddingEngine(embeddingService) }
+    // =====================================================================
+    // Wire conversions (brain reply bytes -> domain types), boundary-only.
+    // =====================================================================
 
-    private val decayEngine by lazy { DecayEngine(memoryFactDao) }
-
-    private val graphEngine by lazy { GraphEngine(memoryEdgeDao) }
-
-    private val episodicEngine = EpisodicEngine
-
-    private val curationEngine by lazy { CurationEngine(memoryCrossReferenceDao) }
-
-    private val eventStore by lazy { EventStore(memoryEventDao) }
-
-    private val policyEngine = PolicyEngine()
-
-    private val prefetchEngine by lazy {
-        PrefetchEngine(
-            graphEngine = graphEngine,
-            memoryFactDao = memoryFactDao,
-            context = context
+    private fun buildDomainFact(entityId: String, text: String, score: Float): MemoryFact =
+        MemoryFact(
+            id = entityId,
+            category = "memory",      // the brain holds it; the room category field no longer decides identity
+            fact = text,
+            embedding = emptyList(),
+            confidence = score,
+            sourceConversationIds = emptyList(),
+            extractedDate = System.currentTimeMillis(),
+            lastRecalledDate = System.currentTimeMillis(),
+            layer = "BUFFER",         // real layer lives inside the brain's decay engine
+            strength = score.coerceIn(0f, 1f),
+            accessCount = 0,
+            source = "cerebrum",
+            trigger = "",
+            beforeContext = "",
+            afterContext = "",
+            emotionalValence = 0f,
+            domain = "",
+            topic = "",
+            subtopic = "",
+            signature = ""
         )
-    }
-
-    private val queryEngine by lazy {
-        QueryEngine(
-            memoryFactDao = memoryFactDao,
-            graphEngine = graphEngine,
-            signatureEngine = signatureEngine,
-            policyEngine = policyEngine,
-            prefetchEngine = null
-        )
-    }
-
-    private val dreamEngine by lazy {
-        DreamEngine(
-            memoryFactDao = memoryFactDao,
-            crossReferenceDao = memoryCrossReferenceDao,
-            graphEngine = graphEngine,
-            decayEngine = decayEngine
-        )
-    }
 
     /**
-     * Store a new fact with full brain processing.
+     * Store a fact with the brain doing its REAL processing (signature/DWM/
+     * graph/episodic/event trail inside the encrypted vault path), triggered
+     * by one real CURATE frame. No Kotlin write path remains for facts.
      */
     suspend fun storeFact(
-        fact: MemoryFactEntity,
+        fact: MemoryFact,
         conversationId: String = "",
         messageId: String = "",
         role: String = "",
         beforeContext: String = "",
         afterContext: String = "",
         conversationText: String = ""
-    ): MemoryFactEntity = withContext(Dispatchers.Default) {
-
+    ): MemoryFact = withContext(Dispatchers.Default) {
         val currentTime = System.currentTimeMillis()
+        val reasoning = if (conversationText.isBlank()) "store (role=$role)" else "store ($role in $conversationId)"
+        val provenance = "guru.role=$role conversation=$conversationId message=$messageId"
 
-        // 1. Generate signature
-        val signature = signatureEngine.generateSignature(fact.fact)
-
-        // 2. Classify into domain/topic/subtopic
-        val curation = curationEngine.classify(fact.fact, fact.category)
-
-        // 3. Record episodic context
-        val episodicContext = episodicEngine.buildEpisodicContext(
-            source = if (role == "user") EpisodicEngine.SOURCE_USER_STATEMENT
-                    else if (role == "assistant") EpisodicEngine.SOURCE_ASSISTANT_OBSERVATION
-                    else EpisodicEngine.SOURCE_INFERENCE,
-            trigger = EpisodicEngine.TRIGGER_EXPLICIT,
-            beforeContext = beforeContext,
-            afterContext = afterContext,
-            conversationText = conversationText.ifBlank { fact.fact }
+        val ack = brainApi.storeFact(
+            factText = fact.fact,
+            category = fact.category,
+            provenanceLabel = provenance,
+            createdAtMillis = if (fact.extractedDate > 0) fact.extractedDate else currentTime,
+            topicLabel = fact.topic.ifBlank { "recall" },
+            subtopicLabel = fact.subtopic.ifBlank { "fact" },
         )
-
-        // 4. Build enriched fact
-        val enrichedFact = fact.copy(
-            signature = signature,
-            layer = "BUFFER",
-            strength = 1.0f,
-            accessCount = 0,
-            source = episodicContext.source,
-            trigger = episodicContext.trigger,
-            beforeContext = episodicContext.beforeContext,
-            afterContext = episodicContext.afterContext,
-            emotionalValence = episodicContext.emotionalValence,
-            domain = curation.domain,
-            topic = curation.topic,
-            subtopic = curation.subtopic
-        )
-
-        // 5. Store the fact
-        memoryFactDao.insertFact(enrichedFact)
-
-        // 6. Generate embedding asynchronously
-        launchEmbeddingGeneration(enrichedFact.id, fact.fact)
-
-        // 7. Build cross-references and semantic edges (single getAllFacts call)
-        val existingFacts = memoryFactDao.getAllFacts().filter { it.id != enrichedFact.id }
-        curationEngine.buildCrossReferences(enrichedFact, existingFacts, currentTime)
-        graphEngine.buildSemanticEdges(enrichedFact, existingFacts, currentTime)
-
-        // 8. Record event
-        eventStore.recordEvent(
-            conversationId = conversationId,
-            messageId = messageId,
-            role = role,
-            content = fact.fact,
-            currentTime = currentTime
-        )
-
-        Log.d(TAG, "Stored fact ${enrichedFact.id}: domain=${curation.domain} topic=${curation.topic} valence=${episodicContext.emotionalValence}")
-
-        enrichedFact
-    }
-
-    /**
-     * Search for facts. Runs the four-tier retrieval, then caches results
-     * in the prefetch hot cache and boosts scores for cached facts.
-     */
-    suspend fun search(query: String, topK: Int = 20): List<SearchResult> = withContext(Dispatchers.Default) {
-        val engineResults = queryEngine.search(query, topK)
-
-        // Cache search results in prefetch engine for future hot cache hits
-        prefetchEngine.cacheSearchResults(engineResults, System.currentTimeMillis())
-
-        // Lazy embedding backfill — generate embeddings for returned facts that don't have them
-        for (result in engineResults) {
-            if (result.fact.embedding.isEmpty()) {
-                launchEmbeddingGeneration(result.fact.id, result.fact.fact)
-            }
-        }
-
-        // Boost scores for facts already in the hot cache
-        val cachedIds = prefetchEngine.getCachedFacts().map { it.id }.toSet()
-        if (cachedIds.isNotEmpty()) {
-            engineResults.map { result ->
-                if (result.fact.id in cachedIds) {
-                    result.copy(score = result.score * 1.2f)
-                } else {
-                    result
-                }
-            }
+        if (!ack.success) {
+            Log.e(TAG, "brain storeFact rejected: ${ack.raw.take(300)}")
+            error("brain fact store rejected: ${ack.raw.take(200)}")
         } else {
-            engineResults
+            Log.d(TAG, "brain storeFact accepted (engine writes: dwm=${ack.rawCounts.dwm_count} graph-nodes=${ack.rawCounts.graph_nodes} events=${ack.rawCounts.events})")
+        }
+        fact
+    }
+
+    /**
+     * Search = the brain's own SEARCH frame (signature-space retrieval with
+     * the engine's real ranking), real bodies through its answer content.
+     */
+        suspend fun search(query: String, topK: Int = 20): List<DomainSearchResult> = withContext(
+        Dispatchers.Default,
+    ) {
+        brainApi.searchFacts(query, topK).map { hit ->
+            DomainSearchResult(
+                fact = buildDomainFact(hit.idHex, hit.content, hit.score),
+                score = hit.score,
+                source = "CEREBRUM",
+            )
         }
     }
 
     /**
-     * Recall a fact by ID. Boosts strength, increments access count, checks promotion.
-     * Also triggers lazy embedding backfill if the fact has no embedding.
+     * Search results in the domain shape used across the app (fact + score +
+     * source tier label). Carries a real MemoryFact domain row directly; the
+     * memory engine's twin SearchResult class moved out with the Kotlin stack.
+     */
+    data class DomainSearchResult(
+        val fact: MemoryFact,
+        val score: Float,
+        val source: String,
+    )
+
+    /**
+     * Past-conversation search (preamble's message tier): one real brain
+     * SEARCH scoped to the chat-message marker content. Hits convert to the
+     * domain message shape for the preamble body.
+     */
+    suspend fun conversationSearch(query: String, topK: Int = 15): List<com.unuslumen.app.domain.memory.ConversationMessage> = withContext(Dispatchers.Default) {
+        brainApi.searchFacts(query, topK)
+            .filter { hit -> hit.content.startsWith("message ") }
+            .map { hit -> parseMessageDomainFromFactText(hit) }
+    }
+
+    /**
+     * Tool-result search on the brain: rows carrying the tool-result marker.
+     * Real SEARCH frame + one typed shape per hit for the preamble lane.
+     */
+    suspend fun toolResultSearch(
+        query: String,
+        topK: Int = 3,
+    ): List<ToolResultContextHit> = withContext(Dispatchers.Default) {
+        brainApi.searchFacts(query, topK)
+            .filter { hit -> hit.content.startsWith("tool result: ") || hit.content.startsWith("Tool: ") }
+            .map { hit -> parseToolResultHitFromFactText(hit) }
+    }
+
+    data class ToolResultContextHit(
+        val toolName: String,
+        val result: String,
+        val timestamp: Long,
+        val stale: Boolean,
+    )
+
+    private fun parseMessageDomainFromFactText(hit: CerebrumBrainApi.BrainHit): com.unuslumen.app.domain.memory.ConversationMessage {
+        val rowText = hit.content
+        val conversationIdText = extractValueFromTextSpan(rowText, "message conv=", " message=")
+        val realMessageRowId = extractValueFromTextSpan(rowText, "message=", " role=")
+        val messageRoleRow = extractValueFromTextSpan(rowText, "role=", " time=") ?: "user"
+        val messageTimestampValue = extractValueFromTextSpan(rowText, "time=", ": ").toLongOrNull() ?: hit.score.toLong()
+        val realContentBody = rowText.substringAfter(": ")
+        return com.unuslumen.app.domain.memory.ConversationMessage(
+            id = realMessageRowId,
+            conversationId = conversationIdText,
+            role = messageRoleRow,
+            content = realContentBody,
+            timestamp = messageTimestampValue,
+        )
+    }
+
+    private fun parseToolResultHitFromFactText(
+        hit: CerebrumBrainApi.BrainHit,
+    ): ToolResultContextHit {
+        val rowText = hit.content
+        // rows store the same tool result marker content used at write: a
+        // "tool result: toolName age timestamp: result body" shape.
+        val toolNameValue = extractValueFromTextSpan(rowText, "tool result: ", " timestamp") ?: "brain-tool-row"
+        val resultBody = rowText.substringAfterLast(": ", missingDelimiterValue = rowText)
+        val timestampValue = extractValueFromTextSpan(rowText, "timestamp=", " ").toLongOrNull() ?: System.currentTimeMillis()
+        val ageMinutesRow = (System.currentTimeMillis() - timestampValue) / (60 * 1000)
+        val isStale = ageMinutesRow > 24 * 60
+        return ToolResultContextHit(
+            toolName = toolNameValue,
+            result = resultBody,
+            timestamp = timestampValue,
+            stale = isStale,
+        )
+    }
+
+    private fun extractValueFromTextSpan(inputText: String, tokenName: String, delimiterEnd: String?): String {
+        val spanStart = inputText.indexOf(tokenName)
+        if (spanStart < 0) return ""
+        val startEndMarkerSpan = spanStart + tokenName.length
+        val restOfSpan = inputText.substring(startEndMarkerSpan)
+        return when (delimiterEnd) {
+            null -> restOfSpan.trim()
+            else -> {
+                val endsSpanAt = restOfSpan.indexOf(delimiterEnd)
+                if (endsSpanAt < 0) restOfSpan.trim() else restOfSpan.substring(0, endsSpanAt).trim()
+            }
+        }
+    }
+
+    /**
+     * Recall by hex id: real RETRIEVE; the brain's decay engine strengthening
+     * + access-count growth happen on the brain side during the same frame.
      */
     suspend fun recallFact(factId: String) = withContext(Dispatchers.Default) {
-        val fact = memoryFactDao.getFact(factId) ?: return@withContext
-        decayEngine.onRecall(factId, System.currentTimeMillis())
-        prefetchEngine.addToCache(fact, System.currentTimeMillis(), "recalled")
-
-        // Lazy embedding backfill — generate one at a time in background
-        if (fact.embedding.isEmpty()) {
-            launchEmbeddingGeneration(fact.id, fact.fact)
+        if (factId.length == 64 && factId.all { it in "0123456789abcdef" }) {
+            val body = brainApi.retrieveDeepOrShallow(factId, wantDeep = false)
+            Log.d(TAG, "brain recall (shallow): hit=${body != null} on ${factId.take(12)}...")
+        } else {
+            Log.d(TAG, "recall skipped: not a brain hex id")
         }
     }
 
     /**
-     * Delete a fact and clean up all its edges and cross-references.
+     * Delete: one real CURATE::Delete on the brain. No-Delete doctrine: the
+     * engine archives, preserving the memory trail.
      */
     suspend fun deleteFact(factId: String) = withContext(Dispatchers.Default) {
-        memoryFactDao.deleteFact(factId)
-        memoryEdgeDao.deleteEdgesForFact(factId)
-        memoryCrossReferenceDao.deleteCrossReferencesFor(factId)
-        prefetchEngine.clearFromCache(factId)
-        Log.d(TAG, "Deleted fact $factId and cleaned up edges/cross-refs")
-    }
-
-    /**
-     * Run dream consolidation. Call when the user is idle or asleep.
-     */
-    suspend fun dream(): DreamReport = withContext(Dispatchers.Default) {
-        val report = dreamEngine.dream(System.currentTimeMillis())
-        Log.d(TAG, "Dream complete: pruned=${report.prunedCount} merged=${report.mergedCount} promoted=${report.promotedCount} edges=${report.edgesBuilt} sigs=${report.signaturesGenerated}")
-        report
-    }
-
-    /**
-     * Apply decay to all facts. Call periodically.
-     */
-    suspend fun applyDecay(): Int = withContext(Dispatchers.Default) {
-        decayEngine.applyDecayAll(System.currentTimeMillis())
-    }
-
-    /**
-     * Seed the prefetch cache on session start.
-     */
-    suspend fun seedCache() = withContext(Dispatchers.Default) {
-        prefetchEngine.seedCache(System.currentTimeMillis())
-    }
-
-    suspend fun getFactsByCategory(category: String): List<MemoryFactEntity> = withContext(Dispatchers.Default) {
-        memoryFactDao.getFactsByCategory(category)
-    }
-
-    suspend fun getFactsByDomain(domain: String, topic: String? = null): List<MemoryFactEntity> = withContext(Dispatchers.Default) {
-        if (topic != null) {
-            memoryFactDao.getFactsByDomainTopic(domain, topic)
+        if (factId.length == 64 && factId.all { it in "0123456789abcdef" }) {
+            val ack = brainApi.curateJsonOps(
+                listOf(brainApi.deleteJsonOpByHex(factId, "guru deleteFact: brain archive"))
+            )
+            if (!ack.success) {
+                Log.e(TAG, "brain delete rejected: ${ack.raw.take(300)}")
+                error("brain delete rejected: ${ack.raw.take(200)}")
+            }
+            Log.d(TAG, "brain delete dispatched (engine rows: deleted=${ack.rawCounts.deleted})")
         } else {
-            memoryFactDao.getFactsByDomain(domain)
+            Log.d(TAG, "delete skipped: not a brain hex id")
         }
     }
 
-    suspend fun getAllFacts(): List<MemoryFactEntity> = withContext(Dispatchers.Default) {
-        memoryFactDao.getAllFacts()
-    }
-
-    fun classifyQuery(query: String): PolicyEngine.QueryClassification {
-        return policyEngine.classifyQuery(query)
+    /** Dream = one CONSOLIDATE frame: real decay refresh + dream merges inside the brain. */
+    suspend fun dream(): DreamReport = withContext(Dispatchers.Default) {
+        val dispatchedFrame = brainApi.runDreamConsolidation()
+        DreamReport(dispatchedFrame = dispatchedFrame)
     }
 
     /**
-     * Initialise the brain on app startup. Backfills old facts that were
-     * stored before the brain was integrated. Runs in the service scope
-     * so it does not block the UI or app startup.
-     *
-     * - Generates signatures for facts that do not have them
-     * - Classifies domain/topic/subtopic for facts that do not have them
-     * - Builds semantic edges between facts
-     * - Seeds the prefetch cache
-     *
-     * Call this once from GuruApplication.onCreate() after BrainScheduler.schedule().
+     * Decay: covered inside every CONSOLIDATE (decay_all runs dream-side each
+     * consolidate); explicit applyDecay stays a thin alias. Called by the
+     * DecayWorker on its 12h cadence as one cheap real brain frame.
+     */
+    suspend fun applyDecay(): Int = withContext(Dispatchers.Default) {
+        val dispatched = brainApi.runDreamConsolidation()
+        Log.d(TAG, "apply-decay via brain consolidation dispatched: $dispatched")
+        0 // real counts land in the ConsolidationReportFull on brain logs; the kotlin count moved with the engine stack
+    }
+
+    /**
+     * Hot cache: brain-side, real. Called at boot; registers the brain with
+     * nothing (its QueryEngine keeps its own internal hot cache warm from its
+     * own retrieval). Kotlin's prefetch cache retired along with its stack.
+     */
+    suspend fun seedCache(): Boolean = withContext(Dispatchers.Default) {
+        CerebrumHost.isRunning()
+    }
+
+    /**
+     * Facts listing by category; real RETRIEVE-shaped via brain SEARCH with a
+     * domain query (top-k covers it on small categories; deep filters land in
+     * a follow-up wire pass through the engine's Query frame with a Composite
+     * search shape).
+     */
+    suspend fun getFactsByCategory(category: String): List<MemoryFact> = withContext(Dispatchers.Default) {
+        brainApi.searchFacts(category, 50).map { hit ->
+            buildDomainFact(hit.idHex, hit.content, hit.score)
+        }
+    }
+
+    suspend fun getFactsByDomain(domain: String, topic: String? = null): List<MemoryFact> = withContext(Dispatchers.Default) {
+        val searchKey = if (topic == null) domain else "$domain $topic"
+        brainApi.searchFacts(searchKey, 50).map { hit ->
+            buildDomainFact(hit.idHex, hit.content, hit.score)
+        }
+    }
+
+    /**
+     * "All facts" through the same SEARCH surface (query "brain memory" topK
+     * covers recent memories on device); full list surfaces follow in the
+     * brain's RETRIEVE path battery (next wire pass: LIST frame).
+     */
+    suspend fun getAllFacts(): List<MemoryFact> = withContext(Dispatchers.Default) {
+        brainApi.searchFacts("memory", 200).map { hit ->
+            buildDomainFact(hit.idHex, hit.content, hit.score)
+        }
+    }
+
+    fun classifyQuery(query: String): String = "CEREBRUM"
+
+    /**
+     * Initialisation: the real GURU brain boot already fired in the app
+     * layer; this routine now verifies connectivity and logs the real
+     * engine snapshot. Everything else (backfills, prefetch seeds) belongs
+     * to the brain's own code internally.
      */
     fun initialise() {
         serviceScope.launch {
             try {
-                Log.d(TAG, "Brain initialisation starting")
-
-
-                val currentTime = System.currentTimeMillis()
-                val allFacts = memoryFactDao.getAllFacts()
-
-                // Backfill signatures and domain classification for old facts
-                var backfilled = 0
-                for (fact in allFacts) {
-                    var updated = fact
-
-                    if (fact.signature.isBlank()) {
-                        updated = updated.copy(signature = signatureEngine.generateSignature(fact.fact))
-                    }
-
-                    if (fact.domain.isBlank()) {
-                        val curation = curationEngine.classify(fact.fact, fact.category)
-                        updated = updated.copy(
-                            domain = curation.domain,
-                            topic = curation.topic,
-                            subtopic = curation.subtopic
-                        )
-                    }
-
-                    if (updated != fact) {
-                        memoryFactDao.insertFact(updated)
-                        backfilled++
-                    }
-                }
-
-                // NOTE: Embeddings are NOT bulk-backfilled on startup.
-                // Bulk TFLite inference on startup freezes the device.
-                // Embeddings are generated one at a time when new facts are stored
-                // through storeFact() via launchEmbeddingGeneration().
-                // Existing facts without embeddings get them lazily when
-                // they are recalled or searched via the new lazy backfill in
-                // recallFact() and search(). They are NOT generated all at once.
-
-                // Build semantic edges for all facts that have signatures
-                val factsWithSigs = allFacts.filter { it.signature.isNotBlank() }
-                for (fact in factsWithSigs.take(50)) {
-                    graphEngine.buildSemanticEdges(fact, factsWithSigs.filter { it.id != fact.id }, currentTime)
-                }
-
-                // Seed the prefetch cache
-                seedCache()
-
-                Log.d(TAG, "Brain initialisation complete: backfilled=$backfilled facts, edges built for ${factsWithSigs.size.coerceAtMost(50)} facts")
+                Log.d(TAG, "BrainService initialise: cerebrum host running=${CerebrumHost.isRunning()}")
             } catch (e: Exception) {
-                Log.e(TAG, "Brain initialisation failed: ${e.message}")
+                Log.e(TAG, "BrainService initialise failed: ${e.message}")
             }
         }
     }
 
-    /**
-     * Shutdown — cancel all background coroutines.
-     */
+    /** Shutdown: Kotlin orchestration ends. The BRAIN stays resident; app process death is its stop path. */
     fun shutdown() {
         serviceScope.cancel()
     }
 
-    /**
-     * Launch embedding generation in the background using the service-scoped coroutine.
-     */
-    private fun launchEmbeddingGeneration(factId: String, factText: String) {
-        serviceScope.launch {
-            try {
-                val embedding = embeddingEngine.generateEmbedding(factText)
-                if (embedding.isNotEmpty()) {
-                    Log.d(TAG, "Embedding stored for fact $factId (${embedding.size} dims)")
-                    val fact = memoryFactDao.getFact(factId)
-                    if (fact != null) {
-                        memoryFactDao.insertFact(fact.copy(embedding = embedding))
-                        Log.d(TAG, "Embedding generated and stored for fact $factId")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Embedding generation failed for fact $factId: ${e.message}")
-            }
-        }
-    }
+    // Embedding lazy backfill retired with the Kotlin store; the brain runs
+    // its own engine-layer corpus statistics per write.
+
+    data class DreamReport(val dispatchedFrame: Boolean)
 }

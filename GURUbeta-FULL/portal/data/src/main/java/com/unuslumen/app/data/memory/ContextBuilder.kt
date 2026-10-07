@@ -4,8 +4,7 @@
 package com.unuslumen.app.data.memory
 
 import com.unuslumen.app.data.brain.BrainService
-import com.unuslumen.app.database.dao.ToolResultDao
-import com.unuslumen.app.database.entity.ToolResultEntity
+import com.unuslumen.app.data.brain.cerebrum.CerebrumBrainApi
 import com.unuslumen.app.domain.memory.RetrievedContext
 import com.unuslumen.app.domain.model.AiMessage
 import kotlinx.coroutines.Dispatchers
@@ -13,69 +12,44 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import org.koin.core.annotation.Factory
 
+/**
+ * ContextBuilder — the context preamble builder. ONE STORE: every tier here
+ * (facts and messages) dispatches real brain frames through CerebrumBrainApi
+ * and BrainService. There is no Kotlin second store and no legacy Room tier
+ * anywhere in the memory preamble: tool-results rows also ride the brain as
+ * their upsert content rows (search hits carry both the tool name and text).
+ */
 @Factory
 class ContextBuilder(
-    private val embeddingService: LocalEmbeddingService,
-    private val vectorSearchEngine: VectorSearchEngine,
     private val brainService: BrainService,
-    private val toolResultDao: ToolResultDao
+    private val toolResultDao: com.unuslumen.app.database.dao.ToolResultDao
 ) {
 
     suspend fun buildPreamble(query: String, humanName: String = "", currentMessages: List<AiMessage> = emptyList()): RetrievedContext = withContext(Dispatchers.Default) {
-        // Use the existing embedding for message search (VectorSearchEngine still handles messages)
-        // Wrapped in try-catch so embedding model failure doesn't break the whole preamble
-        val embeddingResult = try {
-            embeddingService.generateEmbedding(query)
-        } catch (e: Exception) {
-            android.util.Log.w("guru", "Embedding generation failed in ContextBuilder: ${e.message}")
-            Result.failure(e)
-        }
-
-        // Message search uses the old VectorSearchEngine (it indexes message embeddings)
+        // ONE STORE: every lane searches brain frames, no embedding pre-pass,
+        // no VectorSearchEngine, no room dao reads.
         val messagesDeferred = async {
-            if (embeddingResult.isFailure) {
-                emptyList()
-            } else {
-                val embedding = embeddingResult.getOrNull() ?: emptyList()
-                runCatching {
-                    vectorSearchEngine.searchMessages(query = query, queryEmbedding = embedding)
-                        .map { it.message.toDomain() }
-                }.getOrNull() ?: emptyList()
-            }
+            runCatching {
+                brainService.conversationSearch(query, topK = 15)
+            }.getOrNull() ?: emptyList()
         }
 
-        // Fact search uses BrainService's four-tier retrieval (FTS5, signature, DVM, graph)
-        // with recency boost. Pulls 20 facts so GURU has enough context to work with.
+        // Fact search: the real SEARCH frame, already-domain hits.
         val factsDeferred = async {
             runCatching {
                 brainService.search(query, topK = 20)
-            }.getOrNull()?.map { it.fact.toDomain() } ?: emptyList()
+            }.getOrNull()?.map { it.fact } ?: emptyList()
         }
 
-        // Tool results RAG injection — only if query is long enough to be meaningful
+        // Tool results lane: real brain rows ('tool result:' marker content);
+        // microcompact dedup on tool name + timestamp against the context.
         val toolResultsDeferred = async {
             if (query.length < 4) {
                 emptyList()
             } else {
                 runCatching {
-                    val ftsQuery = "\"$query\" OR ${query.trim()}"
-                    toolResultDao.searchToolResultsFtsWithScore(ftsQuery, 3, -1.0)
-                }.getOrNull()?.filter { result ->
-                    // Filter out expired TTL entries
-                    val ttl = result.ttlMinutes
-                    if (ttl != null) {
-                        val ageMinutes = (System.currentTimeMillis() - result.timestamp) / (60 * 1000)
-                        ageMinutes <= ttl + 1440 // Keep stale entries within 24h grace period for preamble
-                    } else {
-                        true
-                    }
-                }?.filter { result ->
-                    // Duplicate detection: skip results already in the microcompact window
-                    // Compare by tool name and timestamp (exact match)
-                    val alreadyInContext = currentMessages.filterIsInstance<AiMessage.ToolCall>()
-                        .any { msg -> msg.name == result.toolName && msg.time == result.timestamp }
-                    !alreadyInContext
-                } ?: emptyList()
+                    brainService.toolResultSearch(query, topK = 3)
+                }.getOrNull() ?: emptyList()
             }
         }
 
@@ -112,12 +86,16 @@ class ContextBuilder(
                 append("Past tool results that may be relevant:\n")
                 toolResults.forEach { result ->
                     val ageMinutes = (System.currentTimeMillis() - result.timestamp) / (60 * 1000)
-                    val ttl = result.ttlMinutes
-                    val staleNote = if (ttl != null && ageMinutes > ttl) {
-                        " [stale data, consider re-calling ${result.toolName}]"
-                    } else ""
-                    append("Tool: ${result.toolName} (age: ${ageMinutes}min${staleNote})\n")
-                    append("Result: ${result.result.take(1000)}\n")
+                    // Brain tool-result rows carry their staleness on the hit
+                    // itself (computed row-side at the timestamp parse); the
+                    // Room TTL column went out with the one-store cut.
+                    if (result.stale) {
+                        append("Tool: ${result.toolName} stale, consider re-calling; age: ${ageMinutes}min\n")
+                        append("Result: ${result.result.take(1000)}\n")
+                    } else {
+                        append("Tool: ${result.toolName} (age: ${ageMinutes}min)\n")
+                        append("Result: ${result.result.take(1000)}\n")
+                    }
                 }
                 append("\n")
             }
