@@ -17,7 +17,7 @@
 
 ---
 
-GURU is a privacy focused open-source framework that lets a language model of your choosing drive an Android phone. Not an assistant that suggests things and waits for you to do them. A framework with real OS-level access, 50+ tool sets, on-device memory in Rust, and Tor routing that turns an AI's intent into action on your hardware, your terms.
+GURU is a privacy focused open-source framework that lets a language model of your choosing drive an Android phone. A framework with real OS-level access, 50+ tool sets, on-device memory in Rust, and Tor routing that turns an AI's intent into action on your hardware, your terms.
 
 The brain is yours to choose. GURU is the house that brain lives in. You connect a cloud API key, a local LLM, or a rented GPU, and GURU gives that brain real hands on your device.
 
