@@ -18,3 +18,20 @@ gradlew 2
 GURUbeta-FULL/.codanna/
 GURUbeta-FULL/.fastembed_cache
 GURUbeta-FULL/.codannaignore
+
+# Working documents, not product. These are plans, drafts, audits and brain
+# dumps written while building. They belong on this machine and must never
+# reach the public repo, which is where customers and contributors look.
+/BUG_WORKFLOW.md
+/HEARTBEAT_ALARM_PLAN.md
+/MEDIA_MODULE_PLAN.md
+/MODULE_SYSTEM_PLAN.md
+/KNOWLEDGE_GRAPH.md
+/ONBOARDING_COPY_WORKSHEET.md
+/ONBOARDING_FLOW.md
+/ONBOARDING_QUESTIONS_MASTER.md
+/ONBOARDING_TEXT_AUDIT.md
+GURUbeta-FULL/BUG_WORKFLOW.md
+GURUbeta-FULL/HEARTBEAT_ALARM_PLAN.md
+GURUbeta-FULL/MEDIA_MODULE_PLAN.md
+GURUbeta-FULL/MODULE_SYSTEM_PLAN.md
