@@ -1,0 +1,16 @@
+{
+  "name": "@unuslumen/guru-factory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Autonomous bug-hunting and build-out factory for the GURU app",
+  "scripts": {
+    "factory": "bun run src/cli/main.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

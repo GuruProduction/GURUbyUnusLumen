@@ -1,0 +1,26 @@
+{
+  "module": "calendar:domain",
+  "testTask": ":calendar:domain:test",
+  "mutantsPlanned": 1,
+  "mutantsRun": 1,
+  "killed": 1,
+  "survived": 0,
+  "compileErrors": 0,
+  "timeouts": 0,
+  "score": 100,
+  "results": [
+    {
+      "id": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/calendar/domain/src/main/java/com/unuslumen/app/domain/use_case/GetMonthEventsUseCase.kt:54:EQUALITY_FLIP",
+      "file": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/calendar/domain/src/main/java/com/unuslumen/app/domain/use_case/GetMonthEventsUseCase.kt",
+      "line": 54,
+      "rule": "EQUALITY_FLIP",
+      "original": "                    isCurrentMonth = dayDate.month == month.month && dayDate.year == month.year,",
+      "mutated": "                    isCurrentMonth = dayDate.month != month.month && dayDate.year == month.year,",
+      "description": "flip == to !=",
+      "outcome": "killed",
+      "durationMs": 2170,
+      "detail": "test suite failed"
+    }
+  ],
+  "survivors": []
+}

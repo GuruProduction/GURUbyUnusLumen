@@ -261,6 +261,107 @@ class GitHubClient(
         stream?.bufferedReader()?.use { it.readText() } ?: ""
     } catch (_: Exception) { "" }
 
+    // ─────────────────────────── BINARY LAYER ───────────────────────────
+
+    /**
+     * Stream a GET straight to a file: zipball archives, release assets,
+     * raw.githubusercontent content. Returns bytes written and null error on
+     * success; on failure the partial file is deleted and the error returned
+     * verbatim. Redirects are followed by HttpURLConnection automatically and
+     * the whole chain stays on the Tor proxy. Fail closed when Tor is down.
+     */
+    suspend fun downloadToFile(
+        path: String,
+        destFile: java.io.File
+    ): Pair<Long, String?> = withContext(Dispatchers.IO) {
+        if (!torManager.isReady.value) {
+            return@withContext 0L to "Tor is not running. Downloads never leave GURU over clearnet. Bring Tor up and retry."
+        }
+        var conn: HttpURLConnection? = null
+        try {
+            val proxy = torManager.getSocksProxy()
+            conn = (URL("$API_ROOT$path").openConnection(proxy) as HttpURLConnection)
+            conn.requestMethod = "GET"
+            conn.setRequestProperty("User-Agent", USER_AGENT)
+            conn.setRequestProperty("Accept", GITHUB_JSON)
+            conn.setRequestProperty("X-GitHub-Api-Version", API_VERSION)
+            tokenOrNull()?.let { token -> conn.setRequestProperty("Authorization", "Bearer $token") }
+
+            val status = conn.responseCode
+            if (status !in 200..299) {
+                val body = read(conn.errorStream)
+                val message = try { JSONObject(body).optString("message", body) } catch (_: Exception) { body }
+                return@withContext 0L to (message.ifBlank { "HTTP $status downloading $path" })
+            }
+            destFile.parentFile?.mkdirs()
+            val written = conn.inputStream.use { input ->
+                java.io.FileOutputStream(destFile).use { output -> input.copyTo(output) }
+            }
+            written to null
+        } catch (e: Exception) {
+            Log.w(TAG, "GitHubClient: download failed $path: ${e.message}")
+            runCatching { if (destFile.exists()) destFile.delete() }
+            0L to (e.message ?: "download failure")
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
+    /**
+     * Upload one file as a release asset: POST to uploads.github.com with the
+     * raw bytes as the body. Uploads are host-scoped by GitHub's API (the
+     * upload_url GitHub returns), and every byte rides Tor. Fail closed.
+     */
+    suspend fun uploadReleaseAsset(
+        uploadBaseUrl: String,
+        fileName: String,
+        contentType: String,
+        file: java.io.File
+    ): Pair<Int, String> = withContext(Dispatchers.IO) {
+        val token = tokenOrNull()
+            ?: return@withContext 0 to "Uploading assets needs a GitHub login; run githubLogin first."
+        if (!torManager.isReady.value) {
+            return@withContext 0 to "Tor is not running. Uploads never leave GURU over clearnet. Bring Tor up and retry."
+        }
+        var conn: HttpURLConnection? = null
+        try {
+            val proxy = torManager.getSocksProxy()
+            val url = URL("$uploadBaseUrl?name=${URLEncoder.encode(fileName, "UTF-8")}")
+            conn = (url.openConnection(proxy) as HttpURLConnection)
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("User-Agent", USER_AGENT)
+            conn.setRequestProperty("Accept", GITHUB_JSON)
+            conn.setRequestProperty("X-GitHub-Api-Version", API_VERSION)
+            conn.setRequestProperty("Content-Length", file.length().toString())
+            // GitHub's asset uploads take Content-Type only; no JSON accept.
+            conn.setRequestProperty("Content-Type", contentType.ifBlank { "application/octet-stream" })
+            conn.setRequestProperty("Authorization", "Bearer $token")
+            // Fixed-length streaming: the OS uploads the file incrementally through
+            // Tor instead of buffering it whole in memory. A release APK is tens of
+            // megabytes; buffering it would hurt.
+            conn.setFixedLengthStreamingMode(file.length())
+            conn.doOutput = true
+
+            conn.outputStream.use { output ->
+                file.inputStream().use { input -> input.copyTo(output) }
+            }
+            val status = conn.responseCode
+            if (status in 200..299) return@withContext status to read(conn.inputStream)
+            val body = read(conn.errorStream)
+            val message = try { JSONObject(body).optString("message", body) } catch (_: Exception) { body }
+            // GitHub answers 422 when an asset with this name already sits on the
+            // release. It is surfaced with GitHub's own message so the caller can
+            // say plainly that the name is taken.
+            status to message
+        } catch (e: Exception) {
+            Log.w(TAG, "GitHubClient: asset upload failed: ${e.message}")
+            0 to (e.message ?: "upload failure")
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
+
     /** Auth-post used by device flow/refresh, form-encoded, Tor-enforced. */
     private suspend fun formPost(url: String, formBody: String): String? = withContext(Dispatchers.IO) {
         if (!torManager.isReady.value) return@withContext null

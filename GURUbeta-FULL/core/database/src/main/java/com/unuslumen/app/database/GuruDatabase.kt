@@ -31,6 +31,7 @@ import com.unuslumen.app.database.dao.LuxifyDao
 import com.unuslumen.app.database.dao.GuruHookDao
 import com.unuslumen.app.database.dao.GuruJobDao
 import com.unuslumen.app.database.dao.GuruNoteToSelfDao
+import com.unuslumen.app.database.dao.UserProfileDao
 import com.unuslumen.app.database.dao.JobExecutionHistoryDao
 import com.unuslumen.app.database.dao.GuruThoughtCycleDao
 import com.unuslumen.app.database.dao.GuruInsightDao
@@ -68,6 +69,7 @@ import com.unuslumen.app.database.entity.LuxifyEntity
 import com.unuslumen.app.database.entity.GuruHookEntity
 import com.unuslumen.app.database.entity.GuruJobEntity
 import com.unuslumen.app.database.entity.GuruNoteToSelfEntity
+import com.unuslumen.app.database.entity.UserProfileEntity
 import com.unuslumen.app.database.entity.JobExecutionHistoryEntity
 import com.unuslumen.app.database.entity.GuruThoughtCycleEntity
 import com.unuslumen.app.database.entity.GuruInsightEntity
@@ -118,10 +120,11 @@ import com.unuslumen.app.database.entity.MediaZoomLogEntity
         JobExecutionHistoryEntity::class,
         SeenImageEntity::class,
         GuruNoteToSelfEntity::class,
+        UserProfileEntity::class,
         MediaItemEntity::class,
         MediaZoomLogEntity::class
     ],
-    version = 26
+    version = 27
 )
 @TypeConverters(DBConverters::class)
 abstract class guruDatabase: RoomDatabase() {
@@ -153,6 +156,7 @@ abstract class guruDatabase: RoomDatabase() {
     abstract fun guruHookDao(): GuruHookDao
     abstract fun guruJobDao(): GuruJobDao
     abstract fun guruNoteToSelfDao(): GuruNoteToSelfDao
+    abstract fun userProfileDao(): UserProfileDao
     abstract fun guruThoughtCycleDao(): GuruThoughtCycleDao
     abstract fun guruInsightDao(): GuruInsightDao
     abstract fun projectDao(): ProjectDao

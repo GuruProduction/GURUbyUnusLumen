@@ -1,0 +1,171 @@
+{
+  "module": "portal:domain",
+  "testTask": ":portal:domain:test",
+  "mutantsPlanned": 9,
+  "mutantsRun": 9,
+  "killed": 0,
+  "survived": 4,
+  "compileErrors": 5,
+  "timeouts": 0,
+  "score": 0,
+  "results": [
+    {
+      "id": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/repository/HookRepository.kt:86:BOUNDARY_SHIFT",
+      "file": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/repository/HookRepository.kt",
+      "line": 86,
+      "rule": "BOUNDARY_SHIFT",
+      "original": "        eventData: Map<String, Any?>",
+      "mutated": "        eventData: Map<String, Any?>=",
+      "description": "shift a comparison boundary",
+      "outcome": "compile_error",
+      "durationMs": 3781,
+      "detail": "mutation did not compile"
+    },
+    {
+      "id": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/use_case/ExecuteHooksUseCase.kt:19:BOUNDARY_SHIFT",
+      "file": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/use_case/ExecuteHooksUseCase.kt",
+      "line": 19,
+      "rule": "BOUNDARY_SHIFT",
+      "original": "        eventData: Map<String, Any?>",
+      "mutated": "        eventData: Map<String, Any?>=",
+      "description": "shift a comparison boundary",
+      "outcome": "compile_error",
+      "durationMs": 2477,
+      "detail": "mutation did not compile"
+    },
+    {
+      "id": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/use_case/ExecuteAutomationUseCase.kt:19:BOUNDARY_SHIFT",
+      "file": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/use_case/ExecuteAutomationUseCase.kt",
+      "line": 19,
+      "rule": "BOUNDARY_SHIFT",
+      "original": "        params: Map<String, Any?>",
+      "mutated": "        params: Map<String, Any?>=",
+      "description": "shift a comparison boundary",
+      "outcome": "compile_error",
+      "durationMs": 2341,
+      "detail": "mutation did not compile"
+    },
+    {
+      "id": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/use_case/ExecuteGuruToolUseCase.kt:19:BOUNDARY_SHIFT",
+      "file": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/use_case/ExecuteGuruToolUseCase.kt",
+      "line": 19,
+      "rule": "BOUNDARY_SHIFT",
+      "original": "        params: Map<String, Any?>",
+      "mutated": "        params: Map<String, Any?>=",
+      "description": "shift a comparison boundary",
+      "outcome": "compile_error",
+      "durationMs": 2219,
+      "detail": "mutation did not compile"
+    },
+    {
+      "id": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/slashcommands/commands/UsageCommand.kt:51:BOUNDARY_SHIFT",
+      "file": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/slashcommands/commands/UsageCommand.kt",
+      "line": 51,
+      "rule": "BOUNDARY_SHIFT",
+      "original": "        val pct = if (CONTEXT_WINDOW_TOKENS <= 0) 0 else (used * 100L / CONTEXT_WINDOW_TOKENS).toInt()",
+      "mutated": "        val pct = if (CONTEXT_WINDOW_TOKENS < 0) 0 else (used * 100L / CONTEXT_WINDOW_TOKENS).toInt()",
+      "description": "shift a comparison boundary",
+      "outcome": "survived",
+      "durationMs": 2868,
+      "detail": "tests passed with the mutation in place"
+    },
+    {
+      "id": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/slashcommands/commands/ThinkCommand.kt:30:EQUALITY_FLIP",
+      "file": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/slashcommands/commands/ThinkCommand.kt",
+      "line": 30,
+      "rule": "EQUALITY_FLIP",
+      "original": "        if (requested == null || requested !in VALID_LEVELS) {",
+      "mutated": "        if (requested != null || requested !in VALID_LEVELS) {",
+      "description": "flip == to !=",
+      "outcome": "compile_error",
+      "durationMs": 2321,
+      "detail": "mutation did not compile"
+    },
+    {
+      "id": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/slashcommands/commands/ToolsCommand.kt:21:EQUALITY_FLIP",
+      "file": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/slashcommands/commands/ToolsCommand.kt",
+      "line": 21,
+      "rule": "EQUALITY_FLIP",
+      "original": "        val verbose = mode == \"verbose\"",
+      "mutated": "        val verbose = mode != \"verbose\"",
+      "description": "flip == to !=",
+      "outcome": "survived",
+      "durationMs": 4311,
+      "detail": "tests passed with the mutation in place"
+    },
+    {
+      "id": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/slashcommands/commands/ToolsCommand.kt:34:LOGICAL_OP_FLIP",
+      "file": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/slashcommands/commands/ToolsCommand.kt",
+      "line": 34,
+      "rule": "LOGICAL_OP_FLIP",
+      "original": "            val failNote = if (verbose && name in failedNames) \" (with failures)\" else \"\"",
+      "mutated": "            val failNote = if (verbose || name in failedNames) \" (with failures)\" else \"\"",
+      "description": "flip && to ||",
+      "outcome": "survived",
+      "durationMs": 4097,
+      "detail": "tests passed with the mutation in place"
+    },
+    {
+      "id": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/slashcommands/commands/ToolsCommand.kt:35:EQUALITY_FLIP",
+      "file": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/slashcommands/commands/ToolsCommand.kt",
+      "line": 35,
+      "rule": "EQUALITY_FLIP",
+      "original": "            \"$name${if (counts[name] == 1) \"\" else \" x${counts[name]}\"}$failNote\"",
+      "mutated": "            \"$name${if (counts[name] != 1) \"\" else \" x${counts[name]}\"}$failNote\"",
+      "description": "flip == to !=",
+      "outcome": "survived",
+      "durationMs": 6093,
+      "detail": "tests passed with the mutation in place"
+    }
+  ],
+  "survivors": [
+    {
+      "id": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/slashcommands/commands/UsageCommand.kt:51:BOUNDARY_SHIFT",
+      "file": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/slashcommands/commands/UsageCommand.kt",
+      "line": 51,
+      "rule": "BOUNDARY_SHIFT",
+      "original": "        val pct = if (CONTEXT_WINDOW_TOKENS <= 0) 0 else (used * 100L / CONTEXT_WINDOW_TOKENS).toInt()",
+      "mutated": "        val pct = if (CONTEXT_WINDOW_TOKENS < 0) 0 else (used * 100L / CONTEXT_WINDOW_TOKENS).toInt()",
+      "description": "shift a comparison boundary",
+      "outcome": "survived",
+      "durationMs": 2868,
+      "detail": "tests passed with the mutation in place"
+    },
+    {
+      "id": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/slashcommands/commands/ToolsCommand.kt:21:EQUALITY_FLIP",
+      "file": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/slashcommands/commands/ToolsCommand.kt",
+      "line": 21,
+      "rule": "EQUALITY_FLIP",
+      "original": "        val verbose = mode == \"verbose\"",
+      "mutated": "        val verbose = mode != \"verbose\"",
+      "description": "flip == to !=",
+      "outcome": "survived",
+      "durationMs": 4311,
+      "detail": "tests passed with the mutation in place"
+    },
+    {
+      "id": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/slashcommands/commands/ToolsCommand.kt:34:LOGICAL_OP_FLIP",
+      "file": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/slashcommands/commands/ToolsCommand.kt",
+      "line": 34,
+      "rule": "LOGICAL_OP_FLIP",
+      "original": "            val failNote = if (verbose && name in failedNames) \" (with failures)\" else \"\"",
+      "mutated": "            val failNote = if (verbose || name in failedNames) \" (with failures)\" else \"\"",
+      "description": "flip && to ||",
+      "outcome": "survived",
+      "durationMs": 4097,
+      "detail": "tests passed with the mutation in place"
+    },
+    {
+      "id": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/slashcommands/commands/ToolsCommand.kt:35:EQUALITY_FLIP",
+      "file": "/Users/unuslumen/GURUbyUnusLumen/GURUbeta-FULL/portal/domain/src/main/java/com/unuslumen/app/domain/slashcommands/commands/ToolsCommand.kt",
+      "line": 35,
+      "rule": "EQUALITY_FLIP",
+      "original": "            \"$name${if (counts[name] == 1) \"\" else \" x${counts[name]}\"}$failNote\"",
+      "mutated": "            \"$name${if (counts[name] != 1) \"\" else \" x${counts[name]}\"}$failNote\"",
+      "description": "flip == to !=",
+      "outcome": "survived",
+      "durationMs": 6093,
+      "detail": "tests passed with the mutation in place"
+    }
+  ]
+}

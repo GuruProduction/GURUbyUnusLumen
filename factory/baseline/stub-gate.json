@@ -1,0 +1,1502 @@
+[
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "settings/data/src/main/java/com/unuslumen/app/data/repository/FileUtilsRepositoryImpl.kt",
+    "line": 30
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "settings/presentation/src/main/java/com/unuslumen/app/presentation/integrations/IntegrationsViewModel.kt",
+    "line": 53
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/repository/AiRepositoryImpl.kt",
+    "line": 249
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/repository/AiRepositoryImpl.kt",
+    "line": 325
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/repository/AiRepositoryImpl.kt",
+    "line": 747
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/repository/AiRepositoryImpl.kt",
+    "line": 1026
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/repository/AiRepositoryImpl.kt",
+    "line": 1271
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/repository/UnusLumenStreamingClient.kt",
+    "line": 224
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/repository/UnusLumenStreamingClient.kt",
+    "line": 236
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/repository/UnusLumenStreamingClient.kt",
+    "line": 269
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/repository/UnusLumenStreamingClient.kt",
+    "line": 369
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/WebViewBrowserToolExecutor.kt",
+    "line": 79
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/WebViewBrowserToolExecutor.kt",
+    "line": 100
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/VoiceToolExecutor.kt",
+    "line": 269
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/VoiceToolExecutor.kt",
+    "line": 270
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ThemeToolExecutor.kt",
+    "line": 81
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ThemeToolExecutor.kt",
+    "line": 84
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ThemeToolExecutor.kt",
+    "line": 99
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ThemeToolExecutor.kt",
+    "line": 307
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/HookToolExecutor.kt",
+    "line": 39
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/HookToolExecutor.kt",
+    "line": 40
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/HookToolExecutor.kt",
+    "line": 42
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/NoteToolExecutor.kt",
+    "line": 68
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/NoteToolExecutor.kt",
+    "line": 78
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/NoteToolExecutor.kt",
+    "line": 81
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/NoteToolExecutor.kt",
+    "line": 156
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/NoteToolExecutor.kt",
+    "line": 169
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/SmartHomeToolExecutor.kt",
+    "line": 159
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/SmartHomeToolExecutor.kt",
+    "line": 160
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/SmartHomeToolExecutor.kt",
+    "line": 214
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/AppManagementToolExecutor.kt",
+    "line": 37
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/AppManagementToolExecutor.kt",
+    "line": 42
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/AppManagementToolExecutor.kt",
+    "line": 47
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/AppManagementToolExecutor.kt",
+    "line": 52
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/AppManagementToolExecutor.kt",
+    "line": 57
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/EnvironmentToolExecutor.kt",
+    "line": 39
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/JobToolExecutor.kt",
+    "line": 41
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/JobToolExecutor.kt",
+    "line": 42
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/SoundToolExecutor.kt",
+    "line": 59
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/SoundToolExecutor.kt",
+    "line": 72
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/SoundToolExecutor.kt",
+    "line": 99
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 233
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 294
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 303
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 327
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 368
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 396
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 437
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 475
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 511
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 576
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 606
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 625
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 669
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 753
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 810
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 854
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 878
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 906
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 1011
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 1087
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 1129
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 1159
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 1216
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 1251
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 1398
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 1422
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 1518
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 1546
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 1633
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 1668
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 1700
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/GitHubToolExecutor.kt",
+    "line": 1736
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ContactsToolExecutor.kt",
+    "line": 57
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/TaskToolExecutor.kt",
+    "line": 69
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ProductivityToolExecutor.kt",
+    "line": 152
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ProductivityToolExecutor.kt",
+    "line": 190
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ProductivityToolExecutor.kt",
+    "line": 228
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ProductivityToolExecutor.kt",
+    "line": 250
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ProductivityToolExecutor.kt",
+    "line": 272
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ProductivityToolExecutor.kt",
+    "line": 295
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ProductivityToolExecutor.kt",
+    "line": 371
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ProductivityToolExecutor.kt",
+    "line": 384
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ProductivityToolExecutor.kt",
+    "line": 400
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ProductivityToolExecutor.kt",
+    "line": 440
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ProductivityToolExecutor.kt",
+    "line": 461
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/LocationToolExecutor.kt",
+    "line": 61
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/LocationToolExecutor.kt",
+    "line": 94
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/MediaToolExecutor.kt",
+    "line": 212
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/MediaToolExecutor.kt",
+    "line": 248
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/MediaToolExecutor.kt",
+    "line": 253
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/MediaToolExecutor.kt",
+    "line": 344
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/MicRecorder.kt",
+    "line": 42
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/MicRecorder.kt",
+    "line": 45
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/MicRecorder.kt",
+    "line": 48
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ThoughtToolExecutor.kt",
+    "line": 53
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ThoughtToolExecutor.kt",
+    "line": 58
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/github/GitHubClient.kt",
+    "line": 119
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/github/GitHubClient.kt",
+    "line": 158
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/github/GitHubClient.kt",
+    "line": 192
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/github/GitHubClient.kt",
+    "line": 215
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/JournalToolExecutor.kt",
+    "line": 47
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/AutomationToolExecutor.kt",
+    "line": 39
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/AutomationToolExecutor.kt",
+    "line": 40
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/DeviceControlToolExecutor.kt",
+    "line": 362
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/DeviceControlToolExecutor.kt",
+    "line": 366
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/DeviceControlToolExecutor.kt",
+    "line": 370
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/DeviceControlToolExecutor.kt",
+    "line": 377
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/HttpToolExecutor.kt",
+    "line": 74
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/AudioNative.kt",
+    "line": 101
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/AudioNative.kt",
+    "line": 102
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/AudioNative.kt",
+    "line": 103
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/AudioNative.kt",
+    "line": 214
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/AudioNative.kt",
+    "line": 217
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/AudioNative.kt",
+    "line": 452
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/AudioNative.kt",
+    "line": 453
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/AudioNative.kt",
+    "line": 454
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/AudioNative.kt",
+    "line": 455
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ShellToolExecutor.kt",
+    "line": 81
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ShellToolExecutor.kt",
+    "line": 87
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ShellToolExecutor.kt",
+    "line": 92
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ShellToolExecutor.kt",
+    "line": 101
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ShellToolExecutor.kt",
+    "line": 161
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ShellToolExecutor.kt",
+    "line": 177
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ShellToolExecutor.kt",
+    "line": 194
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ModuleToolExecutor.kt",
+    "line": 132
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/IntentToolExecutor.kt",
+    "line": 37
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/IntentToolExecutor.kt",
+    "line": 48
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/PlanningToolExecutor.kt",
+    "line": 50
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/PlanningToolExecutor.kt",
+    "line": 78
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/WebServicesToolExecutor.kt",
+    "line": 290
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/WebServicesToolExecutor.kt",
+    "line": 321
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tools/ToolResultToolExecutor.kt",
+    "line": 53
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/di/ToolRegistryHolder.kt",
+    "line": 58
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/memory/HiveMindWorker.kt",
+    "line": 253
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/memory/VectorSearchEngine.kt",
+    "line": 50
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/memory/VectorSearchEngine.kt",
+    "line": 87
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/memory/MemoryRepositoryImpl.kt",
+    "line": 110
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/memory/MemoryRepositoryImpl.kt",
+    "line": 391
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/security/CredentialVault.kt",
+    "line": 70
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/notestoself/NotesToSelfEngine.kt",
+    "line": 25
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/notestoself/NotesToSelfEngine.kt",
+    "line": 45
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/notestoself/NotesToSelfEngine.kt",
+    "line": 66
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/web/WebFetchService.kt",
+    "line": 69
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/web/WebSearchService.kt",
+    "line": 223
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/web/WebSearchService.kt",
+    "line": 253
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/web/WebSearchService.kt",
+    "line": 274
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/web/WebSearchService.kt",
+    "line": 295
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/discovery/ArpDiscoveryManager.kt",
+    "line": 97
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/discovery/TcpSocketManager.kt",
+    "line": 142
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/discovery/SsdpDiscoveryManager.kt",
+    "line": 180
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/discovery/SsdpDiscoveryManager.kt",
+    "line": 216
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/discovery/SsdpDiscoveryManager.kt",
+    "line": 312
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/discovery/BluetoothScanManager.kt",
+    "line": 137
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/discovery/BluetoothScanManager.kt",
+    "line": 155
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/discovery/WifiScanManager.kt",
+    "line": 65
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/ContextManager.kt",
+    "line": 283
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/ProjectAgentRepositoryImpl.kt",
+    "line": 309
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/multimodal/ImageTurnAssembler.kt",
+    "line": 214
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/multimodal/ScreenSightController.kt",
+    "line": 96
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/multimodal/ScreenSightController.kt",
+    "line": 97
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/multimodal/ScreenSightController.kt",
+    "line": 235
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/multimodal/ScreenSightController.kt",
+    "line": 237
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/tor/TorPersistentService.kt",
+    "line": 103
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/hooks/HookRepositoryImpl.kt",
+    "line": 328
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/hooks/HookRepositoryImpl.kt",
+    "line": 335
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/luxify/LuxifyScanner.kt",
+    "line": 30
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/luxify/LuxifyScanner.kt",
+    "line": 40
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/brain/QueryEngine.kt",
+    "line": 75
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/brain/QueryEngine.kt",
+    "line": 81
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/brain/cerebrum/CerebrumHost.kt",
+    "line": 88
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/brain/cerebrum/CerebrumBrainApi.kt",
+    "line": 353
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/brain/cerebrum/CerebrumBrainApi.kt",
+    "line": 356
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/brain/cerebrum/CerebrumBrainApi.kt",
+    "line": 381
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/brain/cerebrum/CerebrumBrainApi.kt",
+    "line": 387
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/brain/cerebrum/CerebrumBrainApi.kt",
+    "line": 408
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/brain/cerebrum/CerebrumBrainApi.kt",
+    "line": 460
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/brain/cerebrum/CerebrumBrainApi.kt",
+    "line": 496
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/brain/EmbeddingEngine.kt",
+    "line": 137
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/skills/SkillForge.kt",
+    "line": 197
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/skills/SkillForge.kt",
+    "line": 203
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/automation/AutomationRepositoryImpl.kt",
+    "line": 181
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/automation/AutomationRepositoryImpl.kt",
+    "line": 211
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/automation/AutomationRepositoryImpl.kt",
+    "line": 231
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/automation/AutomationRepositoryImpl.kt",
+    "line": 251
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/automation/AutomationRepositoryImpl.kt",
+    "line": 459
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/automation/AutomationRunRepositoryImpl.kt",
+    "line": 43
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/jobs/JobRepositoryImpl.kt",
+    "line": 579
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/jobs/JobRepositoryImpl.kt",
+    "line": 587
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/metadata/MetadataConfigFetcher.kt",
+    "line": 202
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/metadata/MetadataConfigFetcher.kt",
+    "line": 226
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/metadata/MetadataConfigFetcher.kt",
+    "line": 234
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/metadata/MetadataConfigFetcher.kt",
+    "line": 273
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/metadata/MetadataAssembler.kt",
+    "line": 232
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/metadata/MetadataAssembler.kt",
+    "line": 242
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/metadata/MetadataAssembler.kt",
+    "line": 263
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/metadata/MetadataAssembler.kt",
+    "line": 285
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/metadata/MetadataAssembler.kt",
+    "line": 309
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/metadata/MetadataAssembler.kt",
+    "line": 322
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/metadata/MetadataAssembler.kt",
+    "line": 354
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/metadata/MetadataAssembler.kt",
+    "line": 363
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/metadata/MetadataAssembler.kt",
+    "line": 414
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/data/src/main/java/com/unuslumen/app/data/metadata/MetadataAssembler.kt",
+    "line": 458
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/presentation/src/main/java/com/unuslumen/app/presentation/PortalScreen.kt",
+    "line": 924
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/presentation/src/main/java/com/unuslumen/app/presentation/PortalViewModel.kt",
+    "line": 375
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/presentation/src/main/java/com/unuslumen/app/presentation/components/MessageCard.kt",
+    "line": 1564
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/presentation/src/main/java/com/unuslumen/app/presentation/components/FlatMessage.kt",
+    "line": 537
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/presentation/src/main/java/com/unuslumen/app/presentation/components/ToolCallFormatter.kt",
+    "line": 430
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/presentation/src/main/java/com/unuslumen/app/presentation/components/ToolCallFormatter.kt",
+    "line": 502
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/presentation/src/main/java/com/unuslumen/app/presentation/components/ToolCallFormatter.kt",
+    "line": 517
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/presentation/src/main/java/com/unuslumen/app/presentation/components/ToolCallFormatter.kt",
+    "line": 1900
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/presentation/src/main/java/com/unuslumen/app/presentation/components/PortalWebView.kt",
+    "line": 227
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/presentation/src/main/java/com/unuslumen/app/presentation/components/PortalCanvas.kt",
+    "line": 192
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/presentation/src/main/java/com/unuslumen/app/presentation/components/ToolCallExpandedView.kt",
+    "line": 158
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/presentation/src/main/java/com/unuslumen/app/presentation/components/ToolCallExpandedView.kt",
+    "line": 182
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/presentation/src/main/java/com/unuslumen/app/presentation/components/ToolCallExpandedView.kt",
+    "line": 1660
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/presentation/src/main/java/com/unuslumen/app/presentation/luxify/LuxifyInterviewViewModel.kt",
+    "line": 114
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/presentation/src/main/java/com/unuslumen/app/presentation/luxify/LuxifyInterviewViewModel.kt",
+    "line": 143
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "portal/presentation/src/main/java/com/unuslumen/app/presentation/luxify/LuxifyInterviewViewModel.kt",
+    "line": 186
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "portal/presentation/src/main/java/com/unuslumen/app/presentation/luxify/LuxifyInterviewViewModel.kt",
+    "line": 186
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "calendar/presentation/src/main/java/com/unuslumen/app/presentation/CalendarUiUtils.kt",
+    "line": 109
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/ui/src/main/java/com/unuslumen/app/ui/theme/FontRegistry.kt",
+    "line": 170
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/ui/src/main/java/com/unuslumen/app/ui/theme/FontRegistry.kt",
+    "line": 197
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/database/src/main/java/com/unuslumen/app/database/migrations/Migration21To22.kt",
+    "line": 64
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/database/src/main/java/com/unuslumen/app/database/migrations/Migration17To18.kt",
+    "line": 69
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/database/src/main/java/com/unuslumen/app/database/migrations/Migration17To18.kt",
+    "line": 131
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/database/src/main/java/com/unuslumen/app/database/migrations/Migration17To18.kt",
+    "line": 131
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/database/src/main/java/com/unuslumen/app/database/migrations/Migration17To18.kt",
+    "line": 154
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/database/src/main/java/com/unuslumen/app/database/migrations/Migration16To17.kt",
+    "line": 97
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/database/src/main/java/com/unuslumen/app/database/entity/ToolResultEntity.kt",
+    "line": 68
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/AdbMdnsDiscovery.kt",
+    "line": 105
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/AdbMdnsDiscovery.kt",
+    "line": 143
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/GitProvider.kt",
+    "line": 269
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/RootShell.kt",
+    "line": 83
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/RootShell.kt",
+    "line": 173
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/RootShell.kt",
+    "line": 226
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/RootShell.kt",
+    "line": 231
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/TermuxProvider.kt",
+    "line": 188
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/TermuxProvider.kt",
+    "line": 204
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/TermuxProvider.kt",
+    "line": 515
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/TermuxProvider.kt",
+    "line": 522
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/TermuxProvider.kt",
+    "line": 539
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/TermuxProvider.kt",
+    "line": 548
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/TermuxProvider.kt",
+    "line": 671
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/TermuxProvider.kt",
+    "line": 698
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/TermuxProvider.kt",
+    "line": 832
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/TermuxProvider.kt",
+    "line": 953
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/AdbPairingClient.kt",
+    "line": 235
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/AdbPairingClient.kt",
+    "line": 236
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/AdbPairingClient.kt",
+    "line": 237
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/AdbPairingClient.kt",
+    "line": 238
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/AdbPairingClient.kt",
+    "line": 242
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/FfmpegProvider.kt",
+    "line": 50
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/PythonProvider.kt",
+    "line": 63
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/ToyboxProvider.kt",
+    "line": 165
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/ToyboxProvider.kt",
+    "line": 222
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/ToyboxProvider.kt",
+    "line": 222
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/ToyboxProvider.kt",
+    "line": 389
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/AdbClient.kt",
+    "line": 198
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/shell/AdbClient.kt",
+    "line": 303
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/permissions/PermissionsUtil.kt",
+    "line": 146
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/permissions/PermissionsUtil.kt",
+    "line": 154
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/permissions/PermissionsUtil.kt",
+    "line": 162
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/permissions/PermissionsUtil.kt",
+    "line": 168
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/permissions/PermissionState.kt",
+    "line": 46
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/permissions/PermissionGateway.kt",
+    "line": 145
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/orb/GuruOrbService.kt",
+    "line": 179
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/orb/GuruOrbService.kt",
+    "line": 210
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "core/util/src/main/java/com/unuslumen/app/util/orb/GuruOrbService.kt",
+    "line": 235
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "app/src/main/java/com/unuslumen/app/guru/GuruApplication.kt",
+    "line": 333
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "app/src/main/java/com/unuslumen/app/guru/GuruApplication.kt",
+    "line": 394
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "app/src/main/java/com/unuslumen/app/guru/presentation/main/MainViewModel.kt",
+    "line": 249
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "app/src/main/java/com/unuslumen/app/guru/presentation/main/MainViewModel.kt",
+    "line": 265
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "app/src/main/java/com/unuslumen/app/guru/presentation/main/MainActivity.kt",
+    "line": 76
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "app/src/main/java/com/unuslumen/app/guru/presentation/main/MainActivity.kt",
+    "line": 95
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "app/src/main/java/com/unuslumen/app/guru/presentation/main/MainActivity.kt",
+    "line": 275
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "app/src/main/java/com/unuslumen/app/guru/presentation/main/MainActivity.kt",
+    "line": 276
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "app/src/main/java/com/unuslumen/app/guru/presentation/main/MainActivity.kt",
+    "line": 277
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "app/src/main/java/com/unuslumen/app/guru/media/KeyframeExtractor.kt",
+    "line": 77
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "app/src/main/java/com/unuslumen/app/guru/media/MediaProbe.kt",
+    "line": 49
+  },
+  {
+    "rule": "EMPTY_CATCH",
+    "file": "app/src/main/java/com/unuslumen/app/guru/media/MediaProbe.kt",
+    "line": 70
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "app/src/main/java/com/unuslumen/app/guru/media/MediaSerialization.kt",
+    "line": 109
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "adspace/src/main/java/com/unuslumen/app/adspace/StickmanAdSpace.kt",
+    "line": 113
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "adspace/src/main/java/com/unuslumen/app/adspace/StickmanAdSpace.kt",
+    "line": 278
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "adspace/src/main/java/com/unuslumen/app/adspace/StickmanAdSpace.kt",
+    "line": 292
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "adspace/src/main/java/com/unuslumen/app/adspace/StickmanAdSpace.kt",
+    "line": 637
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "adspace/src/main/java/com/unuslumen/app/adspace/StickmanAdSpace.kt",
+    "line": 677
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "adspace/src/main/java/com/unuslumen/app/adspace/StickmanAdSpace.kt",
+    "line": 1092
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "adspace/src/main/java/com/unuslumen/app/adspace/StickmanAdSpace.kt",
+    "line": 1171
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "adspace/src/main/java/com/unuslumen/app/adspace/StickmanAdSpace.kt",
+    "line": 1182
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "Projects/presentation/src/main/java/com/unuslumen/app/presentation/ProjectDetailScreen.kt",
+    "line": 127
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "Projects/presentation/src/main/java/com/unuslumen/app/presentation/ProjectsScreen.kt",
+    "line": 247
+  },
+  {
+    "rule": "STUB_MARKER",
+    "file": "Projects/presentation/src/main/java/com/unuslumen/app/presentation/ProjectsScreen.kt",
+    "line": 302
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "thoughts/data/src/main/java/com/unuslumen/app/thoughts/data/thoughts/ThoughtCycleRepositoryImpl.kt",
+    "line": 382
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "thoughts/data/src/main/java/com/unuslumen/app/thoughts/data/thoughts/ThoughtCycleRepositoryImpl.kt",
+    "line": 427
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "thoughts/data/src/main/java/com/unuslumen/app/thoughts/data/thoughts/ThoughtCycleRepositoryImpl.kt",
+    "line": 431
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "thoughts/data/src/main/java/com/unuslumen/app/thoughts/data/thoughts/ThoughtCycleRepositoryImpl.kt",
+    "line": 442
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "thoughts/data/src/main/java/com/unuslumen/app/thoughts/data/thoughts/ThoughtCycleRepositoryImpl.kt",
+    "line": 598
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "thoughts/data/src/main/java/com/unuslumen/app/thoughts/data/thoughts/DeviceMetrics.kt",
+    "line": 95
+  },
+  {
+    "rule": "SWALLOWED_RESULT",
+    "file": "thoughts/data/src/main/java/com/unuslumen/app/thoughts/data/thoughts/DeviceMetrics.kt",
+    "line": 111
+  }
+]

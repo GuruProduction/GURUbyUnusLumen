@@ -26,8 +26,10 @@ class ContextBuilder(
 ) {
 
     suspend fun buildPreamble(query: String, humanName: String = "", currentMessages: List<AiMessage> = emptyList()): RetrievedContext = withContext(Dispatchers.Default) {
-        // ONE STORE: every lane searches brain frames, no embedding pre-pass,
-        // no VectorSearchEngine, no room dao reads.
+        // ONE STORE for REMEMBERED content: fact tier rides the brain; message
+        // tier reads REHYDRATED chat drawer rows through BrainService's marker
+        // search (historical rows persist in the vault as rehydration source)
+        // and stays correct even while drawer rows age out of recent search.
         val messagesDeferred = async {
             runCatching {
                 brainService.conversationSearch(query, topK = 15)

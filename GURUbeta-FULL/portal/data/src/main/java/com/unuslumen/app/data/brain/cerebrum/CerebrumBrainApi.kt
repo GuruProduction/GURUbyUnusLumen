@@ -245,8 +245,19 @@ object CerebrumBrainApi {
             createdAtMillis,
             now(),
         )
-        return curateJsonOps(listOf(upsertJson))
+        val ack = curateJsonOps(listOf(upsertJson))
+        // Honest identity: carry the REAL deterministic hex id on the ack's
+        // sole detail row so callers (tool lane) learn the true storage id,
+        // not a random uuid nothing in the brain can resolve.
+        return if (ack.success && ack.perItem.isEmpty()) {
+            ack.copy(perItem = listOf(ExecutedDetail(memory_id = idHex, status = "upserted", detail = "guru storeFact")))
+        } else ack
     }
+
+    /** The real deterministic content id FOR one storeFact call (same hash
+     * the wire carries) — callers use it to know what the brain holds BEFORE
+     * dispatch, enabling tool-side honest round trips. */
+    fun realIdFor(factText: String): String = deterministicBrainId(factText)
 
     fun upsertJsonShape(
         idHexLower: String,

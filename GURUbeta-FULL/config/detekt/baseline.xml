@@ -1,0 +1,15 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <!--
+    Detekt baseline for GURU.
+
+    An empty baseline is deliberate. Nothing is excused. Every finding detekt
+    raises must be fixed in the code, not recorded here.
+
+    If a legacy module ever needs a temporary exemption, an entry may be added
+    only with a comment naming why it exists and what removes it. A baseline
+    entry without that is hiding a defect.
+  -->
+  <ManuallySuppressedIssues></ManuallySuppressedIssues>
+  <CurrentIssues></CurrentIssues>
+</SmellBaseline>

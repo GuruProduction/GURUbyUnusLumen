@@ -73,6 +73,10 @@ object PrefsConstants {
     // Thinking level for AI responses
     const val THINKING_LEVEL_KEY = "thinking_level"
 
+    // The language GURU answers in. Set during onboarding's power-up stage;
+    // blank means "follow the device locale", which is the honest default.
+    const val APP_LANGUAGE_KEY = "app_language"
+
     // Vision: Guru sees the user's current screen with every message
     const val VISION_ENABLED_KEY = "vision_enabled"
 

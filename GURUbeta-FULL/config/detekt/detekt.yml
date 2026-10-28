@@ -1,0 +1,250 @@
+# GURU detekt configuration.
+#
+# The point of this file is not style. It is to make lying mechanically
+# expensive. Every rule below either detects a stub, detects an error being
+# hidden, or detects a function that cannot possibly have done its job.
+#
+# Rules that are style-only are left at detekt's defaults under
+# buildUponDefaultConfig, so this file only states the deliberate overrides.
+
+build:
+  maxIssues: 0
+
+config:
+  validation: true
+  warningsAsErrors: false
+
+processors:
+  active: true
+  exclude:
+    - 'DetektProgressListener'
+  # Coroutines are everywhere in this codebase; the default coroutine
+  # processor understands suspend functions and avoids false positives.
+  'com.pinterest.detekt.rules.coroutines.*':
+    active: true
+
+console-reports:
+  active: true
+  exclude:
+    - 'ProjectStatisticsReport'
+    - 'ComplexityReport'
+    - 'NotificationReport'
+    - 'FindingsReport'
+    - 'FileBasedFindingsReport'
+
+complexity:
+  active: true
+  LongParameterList:
+    active: false
+  TooManyFunctions:
+    active: false
+  ComplexCondition:
+    threshold: 6
+  CyclomaticComplexMethod:
+    threshold: 30
+  LargeClass:
+    threshold: 1200
+  LongMethod:
+    threshold: 250
+  NestedBlockDepth:
+    threshold: 8
+
+coroutines:
+  active: true
+  GlobalCoroutineUsage:
+    active: true
+  InjectDispatcher:
+    active: false
+  RedundantSuspendModifier:
+    active: true
+  SleepInsteadOfDelay:
+    active: true
+  SuspendFunSwallowedCancellation:
+    active: true
+  SuspendFunWithCoroutineScopeReceiver:
+    active: false
+
+empty-blocks:
+  active: true
+  EmptyCatchBlock:
+    active: true
+    allowedExceptionNameRegex: '_|(ignore|expected).*'
+  EmptyClassBlock:
+    active: true
+  EmptyFunctionBlock:
+    active: true
+    ignoreOverridden: false
+  EmptyIfBlock:
+    active: true
+  EmptyInitBlock:
+    active: true
+  EmptyKtFile:
+    active: true
+  EmptySecondaryConstructor:
+    active: true
+  EmptyTryBlock:
+    active: true
+  EmptyWhenBlock:
+    active: true
+  EmptyWhileBlock:
+    active: true
+
+exceptions:
+  active: true
+  # Swallowing an exception must never pass. This is the single most
+  # important rule in the file: it is how a failure gets silently hidden.
+  SwallowedException:
+    active: true
+    ignoredExceptionTypes:
+      - 'InterruptedException'
+      - 'MalformedURLException'
+      - 'NumberFormatException'
+      - 'ParseException'
+    allowedExceptionNameRegex: '_|(ignore|expected).*'
+  TooGenericExceptionCaught:
+    active: true
+    excludes: ['**/test/**', '**/androidTest/**']
+    exceptionNames:
+      - 'ArrayIndexOutOfBoundsException'
+      - 'Error'
+      - 'Exception'
+      - 'IllegalMonitorStateException'
+      - 'IndexOutOfBoundsException'
+      - 'NullPointerException'
+      - 'RuntimeException'
+      - 'Throwable'
+  TooGenericExceptionThrown:
+    active: true
+    exceptionNames:
+      - 'Error'
+      - 'Exception'
+      - 'RuntimeException'
+      - 'Throwable'
+  ExceptionRaisedInUnexpectedLocation:
+    active: true
+  InstanceOfCheckForException:
+    active: true
+  ThrowingExceptionsWithoutMessageOrCause:
+    active: true
+  ThrowingNewInstanceOfSameException:
+    active: true
+
+naming:
+  active: true
+  FunctionNaming:
+    active: true
+    excludes: ['**/test/**', '**/androidTest/**', '**/*.Test.kt']
+    ignoreAnnotated: ['Composable']
+  MatchingDeclarationName:
+    active: false
+  MemberNameEqualsClassName:
+    active: false
+  VariableNaming:
+    active: true
+    variablePattern: '[a-z][A-Za-z0-9]*'
+  TopLevelPropertyNaming:
+    active: true
+    constantPattern: '[A-Z][A-Za-z0-9_]*'
+
+potential-bugs:
+  active: true
+  CastNullableToNonNullableType:
+    active: true
+  EqualsAlwaysReturnsTrueOrFalse:
+    active: true
+  EqualsWithHashCodeExist:
+    active: true
+  ImplicitUnitReturnType:
+    active: false
+  LateinitUsage:
+    active: false
+  MissingWhenCase:
+    active: true
+    allowElseExpression: false
+  NullableBooleanCheck:
+    active: true
+  RedundantElseInWhen:
+    active: true
+  UnreachableCode:
+    active: true
+  UnsafeCallOnNullableType:
+    active: true
+  UnsafeCast:
+    active: true
+  UselessPostfixExpression:
+    active: true
+  WrongEqualsTypeParameter:
+    active: true
+
+style:
+  active: true
+  # The stub markers. Any of these in shipped code is a lie about completeness.
+  ForbiddenComment:
+    active: true
+    comments:
+      - reason: 'Stub marker: the work was not finished. Implement it or report BLOCKED.'
+        value: 'TODO:'
+      - reason: 'Stub marker: the work was not finished. Implement it or report BLOCKED.'
+        value: 'FIXME:'
+      - reason: 'Stub marker: the work was not finished. Implement it or report BLOCKED.'
+        value: 'STOPSHIP'
+      - reason: 'Stub marker: the work was not finished. Implement it or report BLOCKED.'
+        value: 'XXX:'
+      - reason: 'Placeholder: remove it or implement it.'
+        value: 'placeholder'
+    allowedPatterns: ''
+    excludes: ['**/build/**', '**/test/**', '**/androidTest/**']
+
+  ReturnCount:
+    active: true
+    max: 8
+    excludedFunctions:
+      - 'equals'
+    excludeLabeled: false
+    excludeReturnFromLambda: true
+    excludeGuardClauses: true
+
+  # A function that only throws NotImplementedError is a stub by definition.
+  ThrowsCount:
+    active: true
+    max: 4
+    excludeGuardClauses: true
+
+  UnusedPrivateMember:
+    active: true
+    excludes: ['**/test/**', '**/androidTest/**']
+  UnusedParameter:
+    active: false
+  UnusedPrivateProperty:
+    active: true
+
+  MagicNumber:
+    active: false
+  MaxLineLength:
+    active: false
+  WildcardImport:
+    active: false
+  ForbiddenImport:
+    active: true
+    imports:
+      - value: 'kotlinx.android.synthetic.*'
+      - value: 'androidx.compose.ui.tooling.preview.Preview'
+        reason: 'Preview only belongs in debug tooling, never in shipped code paths.'
+    excludes: ['**/build/**', '**/test/**', '**/androidTest/**']
+
+  # Catch-all for the shape of a stubbed function.
+  UnnecessaryAbstractClass:
+    active: true
+  UnnecessaryInheritance:
+    active: true
+  UseCheckOrError:
+    active: true
+  UseRequire:
+    active: true
+  UselessCallOnNotNull:
+    active: true
+  UtilityClassWithPublicConstructor:
+    active: true
+
+formatting:
+  active: false

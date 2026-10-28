@@ -1,0 +1,52 @@
+{
+  "id": "guru-modules",
+  "name": "GURU module walk: every SHIPPED hub surface, opened and returned",
+  "persona": "new-user",
+  "packageName": "com.unuslumen.app.gurubeta.debug",
+  "description": "Cold start GURU, then open every module the hub actually ships - Notes, Media, Calendar, Settings, Thoughts, Skills. Journal and Projects are deliberately COMING SOON and are NOT tapped: Projects is not built out and is buggy, and Journal needs its UI changing. Tapping a coming-soon tile is a no-op by design, so including it produced a false failure. The lobby text assertion after each return is only a weak check; the real assertion is that the module screen rendered before BACK.",
+  "steps": [
+    { "kind": "forceStop", "label": "force-stop any previous process" },
+    { "kind": "waitMs", "label": "settle", "durationMs": 800 },
+    { "kind": "launch", "label": "cold start GURU" },
+    { "kind": "waitMs", "label": "wait for boot work", "durationMs": 6000 },
+    { "kind": "waitForText", "label": "lobby rendered", "text": "Ask Guru", "timeoutMs": 20000 },
+
+    { "kind": "tapText", "label": "open Notes", "text": "Notes", "timeoutMs": 15000 },
+    { "kind": "waitMs", "label": "Notes settle", "durationMs": 2500 },
+    { "kind": "screenshot", "label": "Notes screen" },
+    { "kind": "back", "label": "leave Notes" },
+    { "kind": "waitForText", "label": "lobby after Notes", "text": "Ask Guru", "timeoutMs": 15000 },
+
+    { "kind": "tapText", "label": "open Media", "text": "Media", "timeoutMs": 15000 },
+    { "kind": "waitMs", "label": "Media settle", "durationMs": 2500 },
+    { "kind": "screenshot", "label": "Media screen" },
+    { "kind": "back", "label": "leave Media" },
+    { "kind": "waitForText", "label": "lobby after Media", "text": "Ask Guru", "timeoutMs": 15000 },
+
+    { "kind": "tapText", "label": "open Calendar", "text": "Calendar", "timeoutMs": 15000 },
+    { "kind": "waitMs", "label": "Calendar settle", "durationMs": 2500 },
+    { "kind": "screenshot", "label": "Calendar screen" },
+    { "kind": "back", "label": "leave Calendar" },
+    { "kind": "waitForText", "label": "lobby after Calendar", "text": "Ask Guru", "timeoutMs": 15000 },
+
+    { "kind": "tapText", "label": "open Settings", "text": "Settings", "timeoutMs": 15000 },
+    { "kind": "waitMs", "label": "Settings settle", "durationMs": 2500 },
+    { "kind": "screenshot", "label": "Settings screen" },
+    { "kind": "back", "label": "leave Settings" },
+    { "kind": "waitForText", "label": "lobby after Settings", "text": "Ask Guru", "timeoutMs": 15000 },
+
+    { "kind": "tapText", "label": "open Thoughts", "text": "Thoughts", "timeoutMs": 15000 },
+    { "kind": "waitMs", "label": "Thoughts settle", "durationMs": 2500 },
+    { "kind": "screenshot", "label": "Thoughts screen" },
+    { "kind": "back", "label": "leave Thoughts" },
+    { "kind": "waitForText", "label": "lobby after Thoughts", "text": "Ask Guru", "timeoutMs": 15000 },
+
+    { "kind": "tapText", "label": "open Skills", "text": "Skills", "timeoutMs": 15000 },
+    { "kind": "waitMs", "label": "Skills settle", "durationMs": 2500 },
+    { "kind": "screenshot", "label": "Skills screen" },
+    { "kind": "back", "label": "leave Skills" },
+    { "kind": "waitForText", "label": "lobby after Skills", "text": "Ask Guru", "timeoutMs": 15000 },
+
+    { "kind": "screenshot", "label": "final lobby" }
+  ]
+}

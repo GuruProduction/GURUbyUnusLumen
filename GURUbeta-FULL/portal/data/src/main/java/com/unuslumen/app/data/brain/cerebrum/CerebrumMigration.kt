@@ -56,10 +56,14 @@ class CerebrumMigration(
         val edgesMigrated: Int,
         val eventsMigrated: Int,
         val crossRefsMigrated: Int,
+        val conversationsMigrated: Int,
+        val messagesMigrated: Int,
         val roomFactsCleared: Int,
         val roomEdgesCleared: Int,
         val roomEventsCleared: Int,
         val roomCrossRefsCleared: Int,
+        val roomConversationsCleared: Int,
+        val roomMessagesCleared: Int,
         val error: String?,
     )
 
@@ -202,6 +206,124 @@ class CerebrumMigration(
     }
 
     /**
+     * Chat-lane row text (markers in a fixed contract identical to the read
+     * side so MemoryRepositoryImpl/BrainService parsers consume migrated rows
+     * with zero change):
+     *  - "conversation <id> title=<t> created=<c> updated=<u> messageCount=<m>"
+     *  - "message conv=<cid> message=<mid> role=<r> time=<ts>: <content>"
+     *
+     * Escape semantics equal to MemoryRepositoryImpl.titleEscape: real
+     * backslash-quote doubling plus newline collapse, so deterministic ids at
+     * replay time equal the write-side rows exactly.
+     */
+    private fun titleEscapeLite(bodyText: String): String =
+        bodyText.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ")
+
+    private fun conversationRowText(
+        conversationId: String,
+        title: String,
+        createdDate: Long,
+        updatedDate: Long,
+        messageCount: Int,
+    ): String =
+        "conversation $conversationId title=${titleEscapeLite(title)}" +
+            " created=$createdDate updated=$updatedDate messageCount=$messageCount"
+
+    private fun messageRowText(
+        conversationId: String,
+        messageId: String,
+        role: String,
+        timestamp: Long,
+        content: String,
+    ): String =
+        "message conv=$conversationId message=$messageId role=$role time=$timestamp: " +
+            titleEscapeLite(content)
+
+    /** Chat-lane curate op for one row (topic = chat, subtopic = row kind). */
+    private fun migratedChatOp(rowText: String, rowKind: String, stampMs: Long): String =
+        upsertJsonOp(
+            deterministicId(rowText),
+            "chat",
+            rowKind,
+            "conversation",
+            rowText,
+            "guru.room.legacy_${rowKind}_row",
+            if (stampMs > 0) stampMs else System.currentTimeMillis(),
+            System.currentTimeMillis(),
+        )
+
+    /**
+     * The real chat lane: one sweep of conversations + every message.
+     * Rows land as REAL chat-topic rows with the exact markers the read side
+     * (MemoryRepositoryImpl and BrainService) parse; deterministic ids dedupe
+     * re-runs. Sends are verified before ANY room clears fire, one sweep,
+     * ordered by id so replays are identical.
+     */
+    private data class ChatLaneData(
+        val ops: List<String>,
+        val conversationRowIds: List<String>,
+        val messageRowCount: Int,
+    )
+
+    private suspend fun buildChatLaneData(): ChatLaneData? {
+        val convDao = this.conversationDao
+        val msgDao = this.messageDao
+        if (convDao == null || msgDao == null) {
+            return null
+        }
+        val rowsSnapshot = convDao.getAllConversations().first()
+        val convOps = mutableListOf<String>()
+        val convRowIds = mutableListOf<String>()
+        for (row in rowsSnapshot.sortedBy { it.id }) {
+            val text = conversationRowText(
+                conversationId = row.id,
+                title = row.title,
+                createdDate = row.createdDate,
+                updatedDate = row.updatedDate,
+                messageCount = row.messageCount,
+            )
+            convOps.add(migratedChatOp(text, "conversation", row.createdDate))
+            convRowIds.add(row.id)
+        }
+        var msgsDone = 0
+        for (oneMessage in msgDao.getAllMessages().sortedBy { it.id }) {
+            convOps.add(
+                migratedChatOp(
+                    messageRowText(
+                        conversationId = oneMessage.conversationId,
+                        messageId = oneMessage.id,
+                        role = oneMessage.role,
+                        timestamp = oneMessage.timestamp,
+                        content = oneMessage.content,
+                    ),
+                    "message",
+                    oneMessage.timestamp,
+                )
+            )
+            msgsDone++
+        }
+        return ChatLaneData(convOps, convRowIds, msgsDone)
+    }
+
+    /** Chat row clears through REAL DAO deletes, only called after the
+     * verified brain send: messages first (per real clear query), then
+     * conversation rows by id. */
+    private suspend fun clearChatLaneRows(chatLaneData: ChatLaneData): Pair<Int, Int> {
+        val msgDao = this.messageDao
+        val convDao = this.conversationDao
+        if (msgDao == null || convDao == null) return Pair(0, 0)
+        for (oneId in chatLaneData.conversationRowIds) {
+            msgDao.deleteMessagesByConversation(oneId)
+        }
+        var convsCleared = 0
+        for (oneId in chatLaneData.conversationRowIds) {
+            convDao.deleteConversationById(oneId)
+            convsCleared++
+        }
+        return Pair(convsCleared, chatLaneData.messageRowCount)
+    }
+
+    /**
      * Send a batch as curate and confirm its batch-response. Responses come
      * hex-encoded and decode via the same charset; the `executed` field of
      * each returned `CurationResult` confirms the count.
@@ -303,6 +425,19 @@ class CerebrumMigration(
             check(crossRefOps.isEmpty() || sendBatchToBrain(crossRefOps)) { "xrefs batch rejected" }
             Log.i(TAG, "migrated ${crossRefOps.size} cross refs")
 
+            // 4b. the real CHAT lane: conversations + every message. Sends
+            // verified per-batch exactly like the memory lanes; room clears
+            // hold until the consolidated success point below.
+            val chatLane = buildChatLaneData()
+            val didSendChatLane: Boolean = chatLane?.ops?.let { ops ->
+                if (ops.isEmpty()) true else sendBatchToBrain(ops)
+            } ?: true
+            check(didSendChatLane) { "chat curation batch rejected" }
+            Log.i(
+                TAG,
+                "migrated ${chatLane?.ops?.size ?: 0} chat rows: conversations=${chatLane?.conversationRowIds?.size ?: 0} messages=${chatLane?.messageRowCount ?: 0}",
+            )
+
             // 5. post-migration consolidation + one durable vault pass.
             val consolidation_reply = CerebrumHost.executeFrame(FRAME_CONSOLIDATE, "")
             Log.d(TAG, "consolidation dispatched brain-side response length=${consolidation_reply?.toCharArray()?.size ?: 0}")
@@ -349,16 +484,34 @@ class CerebrumMigration(
                 "cleared: facts=$roomFactsClearedCount edges=$roomEdgesClearedCount events=$roomEventsClearedCount xref-keys=$roomCrossRefsClearedCount (room memory fully retired for migrated tables)",
             )
 
+            // 7. Chat-lane clears, same verified-only point: every brain-side
+            // send above landed, so the legacy conversation/message rows go.
+            var roomConversationsClearedCount = 0
+            var roomMessagesClearedCount = 0
+            if (chatLane != null && chatLane.ops.isNotEmpty()) {
+                val clearedCounts = clearChatLaneRows(chatLane)
+                roomConversationsClearedCount = clearedCounts.first
+                roomMessagesClearedCount = clearedCounts.second
+            }
+            Log.i(
+                TAG,
+                "cleared: conversations=$roomConversationsClearedCount messages=$roomMessagesClearedCount (legacy chat tables retired into the brain)",
+            )
+
             MigrationOutput(
                 ok = true,
                 factsMigrated = factOps.size,
                 edgesMigrated = edgeOps.size,
                 eventsMigrated = eventOps.size,
                 crossRefsMigrated = crossRefOps.size,
+                conversationsMigrated = chatLane?.conversationRowIds?.size ?: 0,
+                messagesMigrated = chatLane?.messageRowCount ?: 0,
                 roomFactsCleared = roomFactsClearedCount,
                 roomEdgesCleared = roomEdgesClearedCount,
                 roomEventsCleared = roomEventsClearedCount,
                 roomCrossRefsCleared = roomCrossRefsClearedCount,
+                roomConversationsCleared = roomConversationsClearedCount,
+                roomMessagesCleared = roomMessagesClearedCount,
                 error = null,
             )
         } catch (migrationThrow: Throwable) {
@@ -371,7 +524,9 @@ class CerebrumMigration(
 
     private fun realFailOutput(reason: String): MigrationOutput = MigrationOutput(
         ok = false, factsMigrated = 0, edgesMigrated = 0, eventsMigrated = 0, crossRefsMigrated = 0,
+        conversationsMigrated = 0, messagesMigrated = 0,
         roomFactsCleared = 0, roomEdgesCleared = 0, roomEventsCleared = 0, roomCrossRefsCleared = 0,
+        roomConversationsCleared = 0, roomMessagesCleared = 0,
         error = reason,
     )
 }

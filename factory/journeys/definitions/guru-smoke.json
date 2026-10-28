@@ -1,0 +1,44 @@
+{
+  "id": "guru-smoke",
+  "name": "GURU cold-start smoke journey",
+  "persona": "new-user",
+  "packageName": "com.unuslumen.app.gurubeta",
+  "description": "Cold start the app, wait for the main surface, open the drawer, and return. Any fatal exception, ANR, or missing expected surface produces a repro bundle.",
+  "steps": [
+    {
+      "kind": "forceStop",
+      "label": "force-stop any previous process"
+    },
+    {
+      "kind": "waitMs",
+      "label": "settle before cold start",
+      "durationMs": 800
+    },
+    {
+      "kind": "launch",
+      "label": "cold start GURU"
+    },
+    {
+      "kind": "waitMs",
+      "label": "wait for first frame and boot work",
+      "durationMs": 4000
+    },
+    {
+      "kind": "screenshot",
+      "label": "capture the first screen"
+    },
+    {
+      "kind": "back",
+      "label": "press back once from the main surface"
+    },
+    {
+      "kind": "waitMs",
+      "label": "settle after back",
+      "durationMs": 1200
+    },
+    {
+      "kind": "screenshot",
+      "label": "capture the post-back screen"
+    }
+  ]
+}

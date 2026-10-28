@@ -180,6 +180,22 @@ class MainViewModel(
         }
     }
 
+    /**
+     * Called once the onboarding flow finishes. The AI repository was built
+     * during boot, before the human existed, so its cached system message has
+     * no profile in it. This rebuilds the wiring so the name, the ${human}
+     * token and the profile block all land on the very first real send.
+     */
+    fun reinitialiseAfterOnboarding() = viewModelScope.launch {
+        runCatching {
+            org.koin.core.context.GlobalContext.get()
+                .get<com.unuslumen.app.domain.repository.AiRepository>()
+                .reinitialise()
+        }.onFailure { error ->
+            android.util.Log.w("guru", "Post-onboarding AI reinit failed: ${error.message}")
+        }
+    }
+
     // ===== Permission Gate =====
 
     data class PermissionGateState(

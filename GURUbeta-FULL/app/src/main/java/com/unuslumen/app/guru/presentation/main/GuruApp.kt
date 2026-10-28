@@ -8,6 +8,8 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -23,8 +25,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -38,7 +40,9 @@ import androidx.navigation.toRoute
 import com.unuslumen.app.adspace.AdSpaceManager
 import com.unuslumen.app.guru.presentation.app_lock.AppLockManager
 import com.unuslumen.app.guru.presentation.app_lock.AuthScreen
+import com.unuslumen.app.onboarding.domain.UserProfileProvider
 import com.unuslumen.app.presentation.PortalScreen
+import com.unuslumen.app.presentation.onboarding.OnboardingScreen
 import com.unuslumen.app.presentation.ComingSoonScreen
 import com.unuslumen.app.presentation.BookmarkDetailsScreen
 import com.unuslumen.app.presentation.BookmarkSearchScreen
@@ -99,7 +103,46 @@ fun guruApp(
     val fontSize = viewModel.fontSize.collectAsStateWithLifecycle(1)
     val guruTheme by viewModel.guruTheme.collectAsStateWithLifecycle(GuruTheme.DEFAULT)
     val layoutConfig by viewModel.layoutConfig.collectAsStateWithLifecycle(LayoutConfig.DEFAULT)
-    var startDestination: Screen by remember { mutableStateOf(Screen.LobbyScreen) }
+
+    // First-boot gate. Checked before the NavHost exists, so a human who has
+    // never finished onboarding lands in the onboarding flow rather than a
+    // lobby whose model connection and profile are not set up yet.
+    //
+    // Null means "still asking". It renders one frame of paper rather than
+    // flashing the lobby and yanking it away, and it defaults to TRUE on a
+    // storage failure: a broken read must never trap an existing user in a
+    // flow they have already completed.
+    val userProfileProvider = koinInject<UserProfileProvider>()
+    val onboardingComplete = remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(Unit) {
+        onboardingComplete.value = runCatching {
+            userProfileProvider.isComplete()
+        }.getOrDefault(true)
+    }
+
+    when (onboardingComplete.value) {
+        null -> {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFFF0E8DA))
+            )
+            return
+        }
+        false -> {
+            guruTheme {
+                OnboardingScreen(
+                    onComplete = {
+                        onboardingComplete.value = true
+                        viewModel.reinitialiseAfterOnboarding()
+                    }
+                )
+            }
+            return
+        }
+        true -> Unit
+    }
+
     LaunchedEffect(Unit) {
         lifecycleOwner.lifecycleScope.launch {
             lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
@@ -157,7 +200,7 @@ fun guruApp(
             }
         }
 
-        androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize()) {
+        Box(modifier = Modifier.fillMaxSize()) {
         val navController = rememberNavController()
 
         // Startup screen preference, resolved before the NavHost is built so its

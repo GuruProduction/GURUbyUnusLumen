@@ -96,7 +96,10 @@ class BrainService(
         } else {
             Log.d(TAG, "brain storeFact accepted (engine writes: dwm=${ack.rawCounts.dwm_count} graph-nodes=${ack.rawCounts.graph_nodes} events=${ack.rawCounts.events})")
         }
-        fact
+        // Honest identity: the returned row carries the REAL deterministic
+        // 64-hex brain id (never the caller's synthetic uid), so tool-side
+        // delete/update act on rows the brain actually holds.
+        fact.copy(id = brainApi.realIdFor(fact.fact))
     }
 
     /**

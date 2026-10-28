@@ -146,6 +146,17 @@ class ShellToolExecutor(
     private suspend fun busyboxExec(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         val command = args["command"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'command'")
         if (fileAccessGuard.checkSedBlocked(command)) { val r = ShellCommandResult(-1, "", "BLOCKED: sed is not allowed.", false); return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r)) }
+        // git NETWORK operations belong to the git tool family: those ride Tor with
+        // the sealed GitHub credential and fail closed. Refuse the bare shell path
+        // here so git can never clone, fetch or push clearnet or unauthenticated.
+        val tokens = command.trim().split(Regex("\\s+"))
+        if (tokens.firstOrNull() == "git") {
+            val networkVerbs = setOf("clone", "fetch", "pull", "push", "ls-remote", "submodule")
+            if (tokens.drop(1).any { it in networkVerbs }) {
+                val r = ShellCommandResult(-1, "", "BLOCKED: git network operations must use the git tools (gitClone, gitPull, gitFetch, gitPush) so they ride Tor with the sealed credential and fail closed. The raw shell path would go clearnet.", false)
+                return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r))
+            }
+        }
         val needsTorProxy = command.contains("curl") || command.contains("wget")
         if (needsTorProxy) { if (!torManager.isReady.value) { val r = ShellCommandResult(-1, "", "Tor is not running.", false); return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r)) }; val socksPort = (torManager.getSocksProxy().address() as? InetSocketAddress)?.port ?: 9050; if (!shellExecutor.toybox.isToyboxAvailable()) shellExecutor.toybox.initialize(); val caCertPath = File(context.filesDir, "cacert.pem"); if (!caCertPath.exists()) { try { context.assets.open("cacert.pem").use { input -> FileOutputStream(caCertPath).use { output -> input.copyTo(output) } } } catch (_: Exception) {} }; val symlinkPath = shellExecutor.toybox.getSymlinkDir(); val nativeLibPath = context.applicationInfo.nativeLibraryDir; val httpPort = (torManager.getProxy().address() as? InetSocketAddress)?.port ?: 8118; val isWget = command.contains("wget"); val caCert = "CURL_CA_BUNDLE=${caCertPath.absolutePath} SSL_CERT_FILE=${caCertPath.absolutePath}"; val proxyEnv = if (isWget) "http_proxy=http://127.0.0.1:$httpPort https_proxy=http://127.0.0.1:$httpPort $caCert" else "ALL_PROXY=socks5h://127.0.0.1:$socksPort HTTP_PROXY=socks5h://127.0.0.1:$socksPort HTTPS_PROXY=socks5h://127.0.0.1:$socksPort $caCert"; val fullCommand = "export $proxyEnv; PATH=$symlinkPath:$nativeLibPath:\$PATH; $command"; val result = shellExecutor.execute(fullCommand); val r = ShellCommandResult(result.exitCode, result.stdout, result.stderr, result.success); return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r)) }
         if (!shellExecutor.busybox.isAvailable()) shellExecutor.busybox.initialize()

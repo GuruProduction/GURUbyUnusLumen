@@ -11,6 +11,18 @@ interface AiRepository {
 
     suspend fun sendPrompt(prompt: String): PortalResult<String>
 
+    /**
+     * System+user send for framework lanes (hive extraction / threads): the
+     * chat line never routes instructions through the master prompt, and the
+     * gateway splices nothing without real user words, so a structured lane
+     * needing model-shaped answers sends its own system content explicitly.
+     * Default-args keep the single-arg call shape compiling everywhere.
+     */
+    suspend fun sendSystemPrompt(
+        systemPrompt: String,
+        userPrompt: String
+    ): PortalResult<String> = sendPrompt("$systemPrompt\n\n$userPrompt")
+
     fun sendMessage(messages: List<AiMessage>, conversationId: String? = null): Flow<AiMessage>
 
     /**

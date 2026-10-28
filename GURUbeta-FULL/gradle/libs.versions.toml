@@ -18,7 +18,7 @@ navigationCompose = "2.9.7"
 room = "2.8.4"
 sqlite = "2.5.0"
 workManager = "2.11.1"
-androidGradlePlugin = "9.2.1"
+androidGradlePlugin = "9.3.3"
 kotlin = "2.3.10"
 ksp = "2.3.4"
 koinBOM = "4.1.1"
@@ -41,6 +41,7 @@ lottie = "6.6.0"
 media3 = "1.8.0"
 coil = "2.7.0"
 mockk = "1.13.16"
+detekt = "1.23.8"
 
 [libraries]
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
@@ -120,6 +121,7 @@ kotlinx-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", vers
 android-library = { id = "com.android.library", version.ref = "androidGradlePlugin" }
 jetbrains-kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+detekt = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }
 
 [bundles]
 koin = ["koin-core", "koin-annotations"]

@@ -1,0 +1,13 @@
+{
+  "module": "journal:domain",
+  "testTask": ":journal:domain:test",
+  "mutantsPlanned": 0,
+  "mutantsRun": 0,
+  "killed": 0,
+  "survived": 0,
+  "compileErrors": 0,
+  "timeouts": 0,
+  "score": null,
+  "results": [],
+  "survivors": []
+}
