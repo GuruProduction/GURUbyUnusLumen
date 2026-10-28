@@ -43,3 +43,7 @@ toybox-build/
 *.bak
 *.broken
 *.tflite
+
+# Scratch captures taken while debugging on a device: logcats, package dumps,
+# pulled preference stores. Never part of the product, never committed.
+.tmp_*

@@ -1,0 +1,83 @@
+{
+  "id": "guru-lobby",
+  "name": "GURU lobby assertion journey",
+  "persona": "new-user",
+  "packageName": "com.unuslumen.app.gurubeta.debug",
+  "description": "Cold start GURU, dismiss the OS compatibility dialog, assert the lobby surfaces exist, open Notes and return. A missing surface or crash produces a repro bundle.",
+  "steps": [
+    {
+      "kind": "forceStop",
+      "label": "force-stop any previous process"
+    },
+    {
+      "kind": "waitMs",
+      "label": "settle",
+      "durationMs": 800
+    },
+    {
+      "kind": "launch",
+      "label": "cold start GURU"
+    },
+    {
+      "kind": "waitMs",
+      "label": "wait for first frame and boot work",
+      "durationMs": 6000
+    },
+    {
+      "kind": "waitForText",
+      "label": "assert the lobby input is present",
+      "text": "Ask Guru anything",
+      "timeoutMs": 20000
+    },
+    {
+      "kind": "waitForText",
+      "label": "assert Notes is present",
+      "text": "Notes",
+      "timeoutMs": 15000
+    },
+    {
+      "kind": "waitForText",
+      "label": "assert Calendar is present",
+      "text": "Calendar",
+      "timeoutMs": 15000
+    },
+    {
+      "kind": "waitForText",
+      "label": "assert Settings is present",
+      "text": "Settings",
+      "timeoutMs": 15000
+    },
+    {
+      "kind": "screenshot",
+      "label": "capture the lobby"
+    },
+    {
+      "kind": "tapText",
+      "label": "open Notes",
+      "text": "Notes",
+      "timeoutMs": 15000
+    },
+    {
+      "kind": "waitMs",
+      "label": "settle in Notes",
+      "durationMs": 2500
+    },
+    {
+      "kind": "screenshot",
+      "label": "capture Notes"
+    },
+    {
+      "kind": "back",
+      "label": "return to the lobby"
+    },
+    {
+      "kind": "waitMs",
+      "label": "settle after back",
+      "durationMs": 1500
+    },
+    {
+      "kind": "screenshot",
+      "label": "capture the lobby after return"
+    }
+  ]
+}

@@ -94,6 +94,8 @@ import com.unuslumen.app.domain.repository.AutomationRunRepository
 import com.unuslumen.app.domain.repository.ModuleRepository
 import com.unuslumen.app.data.modules.ModuleRepositoryImpl
 import com.unuslumen.app.data.brain.BrainService
+import com.unuslumen.app.data.onboarding.ProfileFactWriterImpl
+import com.unuslumen.app.onboarding.domain.ProfileFactWriter
 import com.unuslumen.app.data.memory.ContextBuilder
 import com.unuslumen.app.data.memory.LocalEmbeddingService
 import com.unuslumen.app.data.memory.MemoryRepositoryImpl
@@ -210,8 +212,22 @@ val aiDataModule = module {
     // MemoryRepositoryImpl/ContextBuilder which depend on it.
     single { BrainService(get(), get<Context>()) }
 
-    single<MemoryRepository> { MemoryRepositoryImpl(get(), get()) }
+    // Onboarding profile facts ride the same BrainService every other memory
+    // writer uses. The binding lives here because the implementation wraps the
+    // brain; the onboarding data module binds only against the interface.
+    single<ProfileFactWriter> { ProfileFactWriterImpl(get()) }
+
+    single<MemoryRepository> { MemoryRepositoryImpl(get(), get(), get(), get()) }
     single<PromptRepository> { PromptRepositoryImpl(get(), get()) }
+
+    // Onboarding answers reach the brain through this one writer. It lives
+    // here because it wraps BrainService and must obey the same write gate and
+    // deterministic-id rule as every other memory lane. The onboarding data
+    // module binds it by the ProfileFactWriter interface; this is the only
+    // implementation and it never depends back on that module.
+    single<com.unuslumen.app.onboarding.domain.ProfileFactWriter> {
+        com.unuslumen.app.data.onboarding.BrainProfileFactWriter(get())
+    }
     // ThoughtCycleRepository binding lives in thoughtsDataModule (thoughts module) — see ThoughtsDataModule.kt
     factory { ContextBuilder(get(), get()) }
 
@@ -308,5 +324,6 @@ val aiDataModule = module {
     factory { ProjectToolExecutor(get(), get(), get(), get(), get(), get(), get()) }
     factory { com.unuslumen.app.data.tools.NoteToSelfToolExecutor(get()) }
     factory { com.unuslumen.app.data.tools.GitHubToolExecutor(get<Context>(), get()) }
+    factory { com.unuslumen.app.data.tools.GitToolExecutor(get<Context>(), get()) }
     single { com.unuslumen.app.data.notestoself.NotesToSelfEngine(get()) }
 }

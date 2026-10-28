@@ -5,6 +5,7 @@ package com.unuslumen.app.data.tools.registry
 
 import com.unuslumen.app.data.tools.UtilToolDefinitions
 import com.unuslumen.app.data.tools.GitHubToolDefinitions
+import com.unuslumen.app.data.tools.GitToolDefinitions
 import com.unuslumen.app.data.tools.PromptToolDefinitions
 import com.unuslumen.app.data.tools.FileProcessingToolDefinitions
 import com.unuslumen.app.data.tools.LuxifyToolDefinitions
@@ -177,6 +178,7 @@ object GeneratedToolRegistrations {
         SmartHomeToolDefinitions,
         ProductivityToolDefinitions,
         GitHubToolDefinitions,
+        GitToolDefinitions,
         ThemeToolDefinitions,
         ProjectToolDefinitions,
         NoteToSelfToolDefinitions,

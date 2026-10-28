@@ -39,6 +39,23 @@ class TermuxProvider(private val context: Context) {
         private const val TAG = "guru"
         private const val ASSET_BOOTSTRAP = "termux/termux-bootstrap.zip"
         private const val HOME_DIR = "home"
+
+        /**
+         * Termux git 2.56.0 runtime, packaged by fetch_git_termux.sh: bin/git,
+         * the real libexec/git-core/git-remote-http helper, its
+         * git-remote-https symlink, and share/git-core/templates. Every
+         * library it needs (libcurl, libssl, libcrypto, libpcre2-8, libz,
+         * libiconv, libnghttp2/3, libngtcp2, libssh2) already lives in this
+         * prefix's lib/ from the bootstrap — the zip carries no libraries.
+         */
+        private const val ASSET_GIT_RUNTIME = "git-termux/git-termux.zip"
+
+        /**
+         * Done-marker for the git runtime install. Written ONLY after
+         * bin/git really executes and prints a version, so a partial tree
+         * retries on the next init.
+         */
+        private const val GIT_RUNTIME_MARKER = ".git-runtime-ok"
     }
 
     private val termuxRoot: File
@@ -153,6 +170,12 @@ class TermuxProvider(private val context: Context) {
                     Log.w(TAG, "TermuxProvider: post-install chain incomplete (bash missing) — will re-run next init")
                 }
             }
+
+            // Git runtime goes in AFTER copyBundledLibs/patchElfBinaries: the
+            // patchelf it needs is copied by copyBundledLibs, and the RPATH it
+            // points at is this prefix's lib/. Marker-gated on bin/git actually
+            // running, so a tree half-extracted by a killed process retries.
+            installGitRuntime()
 
             // Dpkg database path bake (audit fix 6): dpkg's status and .list files record
             // absolute /data/data/com.termux/... paths baked into the upstream bootstrap.
@@ -673,6 +696,194 @@ class TermuxProvider(private val context: Context) {
 
         if (patched > 0) {
             Log.d(TAG, "TermuxProvider: patched RPATH on $patched ELF binaries")
+        }
+    }
+
+    /**
+     * Install the bundled Termux git runtime into this prefix.
+     *
+     * Why the runtime lands here: the git tool family needs a git built with an
+     * HTTP transport. Termux's git 2.56.0 links libcurl and ships the real
+     * git-remote-http helper, and every library both binaries name as NEEDED
+     * (libcurl, libssl, libcrypto, libpcre2-8, libz, libiconv, libnghttp2/3,
+     * libngtcp2, libssh2) already exists in this prefix's lib/ from the
+     * bootstrap. So the zip carries only bin/git, that one helper, and the
+     * clone templates.
+     *
+     * Idempotent and honest about failure:
+     *  - extraction skips any file already present with content, so an
+     *    interrupted pass resumes rather than restarting;
+     *  - the marker is written only after bin/git has actually executed and
+     *    printed a version, so a half-installed tree retries on the next init;
+     *  - a missing asset, missing patchelf or a git that will not run leaves
+     *    the marker absent and logs what is missing; GitProvider then reports
+     *    the absence to the caller instead of pretending a binary exists.
+     */
+    private fun installGitRuntime() {
+        val marker = File(usrPrefix, GIT_RUNTIME_MARKER)
+        val gitBinary = File(binDir, "git")
+
+        if (marker.exists() && gitBinary.isFile && gitBinary.length() > 0) return
+
+        val assetPresent = try {
+            context.assets.list("git-termux")?.contains("git-termux.zip") == true
+        } catch (e: Exception) {
+            Log.w(TAG, "TermuxProvider: git-termux asset listing failed: ${e.message}")
+            false
+        }
+        if (!assetPresent) {
+            Log.w(TAG, "TermuxProvider: $ASSET_GIT_RUNTIME not bundled; git tools will report it missing")
+            return
+        }
+
+        // Extract into usr/ so bin/, libexec/ and share/ land at their Termux
+        // paths, next to the lib/ this runtime resolves against.
+        val tempZip = File(usrPrefix, "git-termux-temp.zip")
+        try {
+            Log.d(TAG, "TermuxProvider: installing git runtime from $ASSET_GIT_RUNTIME")
+            context.assets.open(ASSET_GIT_RUNTIME).use { input ->
+                FileOutputStream(tempZip).use { output -> input.copyTo(output) }
+            }
+
+            var extracted = 0
+            ZipFile(tempZip).use { zip ->
+                val entries = zip.entries()
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    val cleanName = entry.name.removePrefix("./")
+                    if (cleanName.isEmpty()) continue
+
+                    val entryFile = File(usrPrefix, cleanName)
+
+                    // Defend the prefix boundary: a crafted entry name must
+                    // never escape usr/.
+                    val canonicalTarget = entryFile.canonicalFile
+                    val canonicalPrefix = usrPrefix.canonicalFile
+                    if (!canonicalTarget.path.startsWith(canonicalPrefix.path + File.separator) &&
+                        canonicalTarget.path != canonicalPrefix.path
+                    ) {
+                        Log.w(TAG, "TermuxProvider: refusing git runtime entry outside prefix: $cleanName")
+                        continue
+                    }
+
+                    if (entry.isDirectory) {
+                        entryFile.mkdirs()
+                        continue
+                    }
+
+                    // git-remote-https is a symlink in the package and is stored
+                    // as one in the zip. Recreate it as a symlink pointing at its
+                    // sibling helper; copying the link bytes as a file would
+                    // produce a 15-byte "binary" git cannot exec.
+                    if (entryFile.name == "git-remote-https") {
+                        if (!entryFile.exists()) {
+                            entryFile.parentFile?.mkdirs()
+                            try {
+                                android.system.Os.symlink("git-remote-http", entryFile.absolutePath)
+                            } catch (e: Exception) {
+                                Log.w(TAG, "TermuxProvider: failed to create git-remote-https symlink: ${e.message}")
+                            }
+                        }
+                        continue
+                    }
+
+                    if (entryFile.isFile && entryFile.length() > 0) continue
+
+                    entryFile.parentFile?.mkdirs()
+                    zip.getInputStream(entry).use { entryInput ->
+                        FileOutputStream(entryFile).use { entryOutput ->
+                            entryInput.copyTo(entryOutput)
+                        }
+                    }
+                    extracted++
+                }
+            }
+
+            // Execute bits: bin/git itself and every file under libexec/git-core.
+            gitBinary.setExecutable(true, false)
+            gitBinary.setReadable(true, false)
+            File(usrPrefix, "libexec/git-core").walkTopDown().forEach { file ->
+                if (file.isFile) {
+                    file.setExecutable(true, false)
+                    file.setReadable(true, false)
+                }
+            }
+
+            // The package's RUNPATH is /data/data/com.termux/files/usr/lib, which
+            // does not exist here. Repoint both ELFs at this prefix's lib/, using
+            // the bundled patchelf through the system linker exactly like
+            // patchElfBinaries() does.
+            val patchelfBin = File(binDir, "patchelf")
+            val remoteHttp = File(usrPrefix, "libexec/git-core/git-remote-http")
+            if (!patchelfBin.exists() || !patchelfBin.canExecute()) {
+                Log.w(TAG, "TermuxProvider: patchelf unavailable; git runtime RPATH left unpatched")
+            } else {
+                for (binary in listOf(gitBinary, remoteHttp)) {
+                    if (!binary.exists() || !binary.canRead()) continue
+                    try {
+                        val pb = ProcessBuilder(
+                            linker, patchelfBin.absolutePath,
+                            "--set-rpath", libDir.absolutePath,
+                            binary.absolutePath
+                        )
+                        pb.environment().apply {
+                            put("LD_LIBRARY_PATH", libDir.absolutePath)
+                        }
+                        val proc = pb.start()
+                        val stderr = BufferedReader(InputStreamReader(proc.errorStream)).use { it.readText() }
+                        val exitCode = proc.waitFor()
+                        if (exitCode == 0) {
+                            Log.d(TAG, "TermuxProvider: patched git RPATH ${binary.name} -> ${libDir.absolutePath}")
+                        } else {
+                            Log.w(TAG, "TermuxProvider: patchelf failed on ${binary.name}: $stderr")
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "TermuxProvider: patchelf error on ${binary.name}: ${e.message}")
+                    }
+                }
+            }
+
+            // Verify by running it. This is the whole gate: a version string on
+            // stdout is the only thing that may write the marker.
+            val versionOutput = runGitVersionProbe(remoteHttp)
+            if (versionOutput != null) {
+                marker.writeText(
+                    "tree=$ASSET_GIT_RUNTIME;extracted=$extracted;version=$versionOutput\n"
+                )
+                Log.d(TAG, "TermuxProvider: git runtime installed and verified ($versionOutput, $extracted files)")
+            } else {
+                Log.w(TAG, "TermuxProvider: git runtime present but bin/git did not run; marker withheld")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "TermuxProvider: git runtime install failed: ${e.message}")
+        } finally {
+            tempZip.delete()
+        }
+    }
+
+    /**
+     * Run the freshly installed git with --version through the system linker,
+     * with the same environment GitProvider uses, and return its version line
+     * when it genuinely executed. Null means it did not run.
+     */
+    private fun runGitVersionProbe(remoteHttp: File): String? {
+        val gitBinary = File(binDir, "git")
+        if (!gitBinary.exists() || !gitBinary.canRead()) return null
+        if (!remoteHttp.exists()) return null
+
+        return try {
+            val pb = ProcessBuilder(linker, gitBinary.absolutePath, "--version")
+            pb.environment().putAll(buildEnv())
+            pb.directory(homeDir)
+            pb.redirectErrorStream(true)
+            val proc = pb.start()
+            val output = BufferedReader(InputStreamReader(proc.inputStream)).use { it.readText() }
+            val exitCode = proc.waitFor()
+            val versionLine = output.lineSequence().firstOrNull { it.contains("git version") }?.trim()
+            if (exitCode == 0 && versionLine != null) versionLine else null
+        } catch (e: Exception) {
+            Log.w(TAG, "TermuxProvider: git version probe failed: ${e.message}")
+            null
         }
     }
 

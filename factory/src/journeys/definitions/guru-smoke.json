@@ -1,0 +1,81 @@
+{
+  "id": "guru-smoke",
+  "name": "GURU cold-start smoke journey",
+  "persona": "new-user",
+  "packageName": "com.unuslumen.app.gurubeta.debug",
+  "activity": "com.unuslumen.app.guru.presentation.main.MainActivity",
+  "description": "Cold start the app, assert the main hub surfaces exist, open each core module and return, then focus the chat input. Any fatal exception, ANR, missing surface, or hung transition produces a repro bundle.",
+  "steps": [
+    {
+      "kind": "forceStop",
+      "label": "force-stop any previous process"
+    },
+    {
+      "kind": "waitMs",
+      "label": "settle before cold start",
+      "durationMs": 800
+    },
+    {
+      "kind": "launch",
+      "label": "cold start GURU"
+    },
+    {
+      "kind": "waitForText",
+      "label": "the main hub renders",
+      "text": "Notes",
+      "timeoutMs": 25000
+    },
+    {
+      "kind": "waitForText",
+      "label": "the chat input exists",
+      "text": "Ask Guru",
+      "timeoutMs": 15000
+    },
+    {
+      "kind": "tapText",
+      "label": "open Notes",
+      "text": "Notes",
+      "timeoutMs": 10000
+    },
+    {
+      "kind": "waitMs",
+      "label": "let the Notes screen settle",
+      "durationMs": 1500
+    },
+    {
+      "kind": "back",
+      "label": "return from Notes"
+    },
+    {
+      "kind": "waitForText",
+      "label": "the hub is back",
+      "text": "Notes",
+      "timeoutMs": 10000
+    },
+    {
+      "kind": "tapText",
+      "label": "open Settings",
+      "text": "Settings",
+      "timeoutMs": 10000
+    },
+    {
+      "kind": "waitMs",
+      "label": "let the Settings screen settle",
+      "durationMs": 1500
+    },
+    {
+      "kind": "back",
+      "label": "return from Settings"
+    },
+    {
+      "kind": "waitForText",
+      "label": "the hub is back again",
+      "text": "Notes",
+      "timeoutMs": 10000
+    },
+    {
+      "kind": "screenshot",
+      "label": "capture the settled hub"
+    }
+  ]
+}

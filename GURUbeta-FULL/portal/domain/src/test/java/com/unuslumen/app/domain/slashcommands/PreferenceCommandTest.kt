@@ -9,10 +9,9 @@ import com.unuslumen.app.preferences.domain.model.PrefsKey
 import com.unuslumen.app.preferences.domain.model.stringPreferencesKey
 import com.unuslumen.app.preferences.domain.use_case.GetPreferenceUseCase
 import com.unuslumen.app.preferences.domain.use_case.SavePreferenceUseCase
-import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
-import io.mockk.verify
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -50,7 +49,7 @@ class PreferenceCommandTest {
     fun `whoami handles anonymous users`() = runTest {
         every { getPreference(nameKey, any()) } returns flowOf("")
         val result = WhoamiCommand(getPreference).execute(invoke("whoami"), session)
-        assertTrue((result as SlashCommandResult.Handled).reply.contains("anonymous"))
+        assertTrue((result as SlashCommandResult.Handled).reply?.contains("anonymous") == true)
     }
 
     @Test
@@ -66,7 +65,7 @@ class PreferenceCommandTest {
     fun `think with no arg reports current level`() = runTest {
         every { getPreference(levelKey, any()) } returns flowOf("low")
         val result = ThinkCommand(getPreference, savePreference).execute(invoke("think"), session)
-        assertTrue((result as SlashCommandResult.Handled).reply.contains("LOW"))
+        assertTrue((result as SlashCommandResult.Handled).reply?.contains("LOW") == true)
         verifySavedNothing()
     }
 
@@ -75,16 +74,16 @@ class PreferenceCommandTest {
         every { getPreference(levelKey, any()) } returns flowOf("low")
         val result = ThinkCommand(getPreference, savePreference)
             .execute(invoke("think", values = mapOf("level" to "banana")), session)
-        assertTrue((result as SlashCommandResult.Handled).reply.contains("LOW"))
+        assertTrue((result as SlashCommandResult.Handled).reply?.contains("LOW") == true)
         verifySavedNothing()
     }
 
-    private fun coVerifySaved(expected: String) {
-        verify { savePreference(any<PrefsKey<String>>(), expected) }
+    private suspend fun coVerifySaved(expected: String) {
+        coVerify { savePreference(any<PrefsKey<String>>(), expected) }
     }
 
-    private fun verifySavedNothing() {
-        verify(exactly = 0) { savePreference(any<PrefsKey<String>>(), any<String>()) }
+    private suspend fun verifySavedNothing() {
+        coVerify(exactly = 0) { savePreference(any<PrefsKey<String>>(), any<String>()) }
     }
 
     class FakeSession : SlashCommandSession {

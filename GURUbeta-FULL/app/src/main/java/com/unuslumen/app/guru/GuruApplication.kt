@@ -28,7 +28,10 @@ import com.unuslumen.app.data.journalDataModule
 import com.unuslumen.app.data.noteDataModule
 import com.unuslumen.app.data.noteMarkdownModule
 import com.unuslumen.app.data.noteRoomModule
+import com.unuslumen.app.data.onboarding.di.onboardingDataModule
+import com.unuslumen.app.presentation.onboarding.di.OnboardingPresentationModule
 import com.unuslumen.app.data.tasksDataModule
+import com.unuslumen.app.onboarding.domain.UserProfileProvider
 import com.unuslumen.app.database.di.databaseModule
 import com.unuslumen.app.di.coroutinesModule
 import com.unuslumen.app.guru.di.mediaApplicationModule
@@ -118,6 +121,8 @@ class GuruApplication : Application() {
                 BookmarksPresentationModule().module,
                 bookmarksDataModule,
                 com.unuslumen.app.presentation.thoughts.di.ThoughtsPresentationModule().module,
+                OnboardingPresentationModule().module,
+                onboardingDataModule,
                 WidgetModule().module,
                 aiDataModule,
                 AiPresentationModule().module,
@@ -165,6 +170,19 @@ class GuruApplication : Application() {
             exitProcess(1)
         }
 
+        // One boot-time rehydrate pass: the chat drawer returns to Room before
+        // any conversation surface reads it (idempotent, SharedPreferences
+        // guarded). Cerebrum keeps only memory-lane rows after this.
+        applicationScope.launch {
+            try {
+                val memoryRepository: com.unuslumen.app.domain.memory.MemoryRepository by inject()
+                (memoryRepository as com.unuslumen.app.data.memory.MemoryRepositoryImpl)
+                    .rehydrateChatDrawerFromBrain()
+            } catch (e: Exception) {
+                android.util.Log.w("guru", "Chat drawer rehydrate failed (retry next boot): ${e.message}")
+            }
+        }
+
         HiveMindWorker.schedulePeriodic(this)
         BrainScheduler.schedule(this)
         com.unuslumen.app.data.heartbeat.HeartbeatScheduler.schedule(this)
@@ -187,6 +205,20 @@ class GuruApplication : Application() {
                 cerebrumEventDao,
                 cerebrumCrossRefDao
             )
+
+            // Onboarding profile facts: answers given before the vault opened
+            // are recorded as pending on the profile row. Now that the brain
+            // is up, flush them. Idempotent: a profile with nothing pending
+            // does no work, and a deterministic-id re-write is a no-op.
+            runCatching {
+                val profileBrainSync: com.unuslumen.app.data.onboarding.ProfileBrainSync by inject()
+                val flushed = profileBrainSync.flushPending()
+                if (flushed > 0) {
+                    android.util.Log.i("guru_onboarding", "Profile brain flush wrote $flushed fact(s)")
+                }
+            }.onFailure { error ->
+                android.util.Log.w("guru_onboarding", "Profile brain flush skipped: ${error.message}")
+            }
         }
 
         // Reschedule all enabled jobs on app startup (belt and braces for reboots)

@@ -24,6 +24,18 @@ enum class AiProvider(val id: Int) {
 fun Int.toAiProvider() = AiProvider.entries.firstOrNull { entry -> entry.id == this } ?: AiProvider.None
 
 /**
+ * The provider whose name matches a stored string, or [AiProvider.None].
+ *
+ * Exists so a screen can store a provider by name (a readable value in a picker
+ * list) and still resolve it back to the enum without either side hardcoding a
+ * second lookup table. Matching is case-insensitive because the stored value
+ * comes from copy that a human reads.
+ */
+fun String.toAiProviderOrNone(): AiProvider =
+    AiProvider.entries.firstOrNull { it.name.equals(this.trim(), ignoreCase = true) }
+        ?: AiProvider.None
+
+/**
  * The fixed canonical endpoint for cloud brands. null means the provider
  * asks the user for a base URL (Ollama, OpenAI-compat) or has none (None).
  * Shared by the AI repository (executor wiring) and the Integrations UI

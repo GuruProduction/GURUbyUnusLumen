@@ -1,0 +1,54 @@
+{
+  "id": "guru-chat",
+  "name": "GURU chat round trip",
+  "persona": "new-user",
+  "packageName": "com.unuslumen.app.gurubeta.debug",
+  "description": "Cold start GURU, type a real message into the lobby chat, send it, and wait for any assistant response. This exercises the engine path that the lobby journey never touches. A crash, an ANR, a missing response surface, or a hang produces a repro bundle.",
+  "steps": [
+    { "kind": "forceStop", "label": "force-stop any previous process" },
+    { "kind": "waitMs", "label": "settle before launch", "durationMs": 800 },
+    { "kind": "launch", "label": "cold start GURU" },
+    { "kind": "waitMs", "label": "wait for first frame and boot work", "durationMs": 6000 },
+    {
+      "kind": "waitForText",
+      "label": "assert the chat input is present",
+      "text": "Ask Guru anything",
+      "timeoutMs": 20000
+    },
+    {
+      "kind": "tapText",
+      "label": "focus the chat input",
+      "text": "Ask Guru anything",
+      "timeoutMs": 15000
+    },
+    { "kind": "waitMs", "label": "let the keyboard settle", "durationMs": 1500 },
+    {
+      "kind": "typeText",
+      "label": "type a real message",
+      "text": "hello guru, are you there"
+    },
+    { "kind": "waitMs", "label": "let the text land", "durationMs": 1200 },
+    {
+      "kind": "tapText",
+      "label": "press send",
+      "text": "SEND",
+      "timeoutMs": 10000
+    },
+    { "kind": "waitMs", "label": "let the engine start", "durationMs": 3000 },
+    {
+      "kind": "screenshot",
+      "label": "capture the first assistant state"
+    },
+    { "kind": "waitMs", "label": "give the engine time to answer", "durationMs": 20000 },
+    {
+      "kind": "screenshot",
+      "label": "capture the settled answer state"
+    },
+    {
+      "kind": "waitForText",
+      "label": "assert a reply or error surfaced",
+      "text": "GURU",
+      "timeoutMs": 5000
+    }
+  ]
+}

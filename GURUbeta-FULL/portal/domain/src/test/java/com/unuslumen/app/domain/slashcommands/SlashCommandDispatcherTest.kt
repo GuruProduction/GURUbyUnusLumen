@@ -140,7 +140,28 @@ class SlashCommandDispatcherTest {
         runThrough(dispatcher, invocation("usage"))
         val reply = recordingHost.replies.single()
         assertTrue(reply.contains("1234 tokens"))
-        assertTrue(reply.contains("[#"))
+        assertTrue(reply.contains("[·"))
+    }
+
+    @Test
+    fun `usage command fills the bar proportionally to the window`() = runTest {
+        // 250,000 of a 1,000,000 token window is 25%, which must light two of
+        // the ten cells. This catches a bar that always renders empty and a bar
+        // that always renders full.
+        val quarterFullSession = object : SlashCommandSession {
+            override val conversationId: String? = null
+            override val messageCount: Int = 0
+            override val isBusy: Boolean = false
+            override val providerId: String? = null
+            override val tokenEstimate: Int = 250_000
+            override val recentToolCalls: List<ToolCallFact> = emptyList()
+            override val conversationTasks: List<ConversationTaskSummary> = emptyList()
+        }
+        val dispatcher = dispatcherWith(UsageCommand())
+        runThrough(dispatcher, invocation("usage"), quarterFullSession)
+        val reply = recordingHost.replies.single()
+        assertTrue(reply.contains("[##"))
+        assertTrue(reply.contains("25%"))
     }
 
     @Test

@@ -157,6 +157,9 @@ import com.unuslumen.app.preferences.domain.use_case.GetPreferenceUseCase
 import com.unuslumen.app.preferences.domain.use_case.SavePreferenceUseCase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
@@ -168,8 +171,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.contentOrNull
-import org.koin.core.annotation.Factory
 import org.koin.core.annotation.Named
+import org.koin.core.annotation.Single
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 import com.unuslumen.app.database.dao.ToolResultDao
@@ -188,8 +191,23 @@ data class FallbackModel(
     val executor: PromptExecutor
 )
 
+/**
+ * THE ONE MODEL WIRING IN THE PROCESS.
+ *
+ * SINGLE, NOT FACTORY, AND THAT IS LOAD-BEARING. This held [Factory] until
+ * 2026-10-28. A factory means every injection point builds its own instance, so
+ * the Settings screen and the screen that actually sends a message each held a
+ * private copy of llModel, llmExecutor and streamingClient. Saving a new key in
+ * Settings called reinitialise() on the SETTINGS copy, which rebuilt nothing the
+ * sender could see, and the app only started using the new provider after a full
+ * process restart. That is exactly the symptom reported: the change never takes
+ * until the app is hard closed and reopened.
+ *
+ * As a single, every caller shares the same wiring, so one rebuild is visible to
+ * all of them, and [watchSettings] below keeps it current by itself.
+ */
 @OptIn(ExperimentalUuidApi::class)
-@Factory(binds = [AiRepository::class])
+@Single(binds = [AiRepository::class])
 class AiRepositoryImpl(
     private val engine: io.ktor.client.engine.HttpClientEngine,
     private val getPreferenceUseCase: GetPreferenceUseCase,
@@ -201,6 +219,7 @@ class AiRepositoryImpl(
     private val guruToolRegistryManager: GuruToolRegistryManager,
     private val memoryRepository: MemoryRepository,
     private val promptRepository: PromptRepository,
+    private val userProfileProvider: com.unuslumen.app.onboarding.domain.UserProfileProvider,
     private val luxifyRepository: LuxifyRepository,
     private val getNote: GetNoteUseCase,
     private val getTaskById: GetTaskByIdUseCase,
@@ -295,13 +314,57 @@ class AiRepositoryImpl(
     private var humanName: String = ""
 
     init {
+        rebuildNow()
+        watchSettings()
+    }
+
+    /**
+     * Rebuild whenever the connection settings actually change.
+     *
+     * WHY THIS EXISTS ON TOP OF reinitialise(). Settings and onboarding both
+     * write the provider, key, model and URL preferences and then ask for a
+     * rebuild, but a rebuild is only ever as reliable as every writer remembering
+     * to ask. This watches the four preferences that define the wiring and
+     * rebuilds whenever any of them moves, so a save from ANY screen lands without
+     * anyone having to remember to notify, and a hard restart is never needed to
+     * make a key take effect.
+     *
+     * It watches the values rather than the save calls on purpose: the send path
+     * reads these same four keys, so the moment they differ from what is built is
+     * exactly the moment the wiring is stale.
+     */
+    private fun watchSettings() {
         applicationScope.launch {
-            rebuildModelWiringOnce()
+            combine(
+                getPreferenceUseCase(intPreferencesKey(AI_PROVIDER_KEY), AiProvider.None.id),
+                getPreferenceUseCase(stringPreferencesKey(PrefsConstants.BYO_API_KEY_KEY), ""),
+                getPreferenceUseCase(stringPreferencesKey(PrefsConstants.BYO_MODEL_NAME_KEY), ""),
+                getPreferenceUseCase(stringPreferencesKey(PrefsConstants.BYO_BASE_URL_KEY), "")
+            ) { provider, key, model, url ->
+                listOf(provider.toString(), key, model, url)
+            }
+                .distinctUntilChanged()
+                .collect {
+                    // Goes through the serialising rebuild rather than launching a
+                    // bare one: it holds a mutex and queues one extra pass, so a
+                    // burst of saves cannot interleave two builds and the last
+                    // value written is always the one left standing.
+                    rebuildModelWiring(fromSettingsSave = true)
+                }
         }
     }
 
-    private fun rebuildModelWiringOnce() {
-        applicationScope.launch {
+    /**
+     * Build the wiring from current settings.
+     *
+     * SUSPEND, NOT FIRE-AND-FORGET, and that is the fix as much as the callers
+     * are. It used to launch its own coroutine, which meant [rebuildModelWiring]'s
+     * mutex unlocked the instant the launch returned rather than when the rebuild
+     * finished, so two saves could build over the top of each other and the loser
+     * could win. A suspend function makes the mutex mean what it says.
+     */
+    private suspend fun rebuildModelWiringOnce() {
+        run {
             val aiProvider = getPreferenceUseCase(
                 intPreferencesKey(AI_PROVIDER_KEY),
                 AiProvider.UnusLumen.id
@@ -352,7 +415,7 @@ class AiRepositoryImpl(
                 llmExecutor = null
                 llModel = null
                 chatSystemMessage = ""
-                return@launch
+                return
             }
 
             // BYO model connect: the user connected their own model. Read the
@@ -372,7 +435,7 @@ class AiRepositoryImpl(
                 if (initialized) {
                     // BYO carries its own chain; no Unus Lumen fallback models.
                     fallbackModels = emptyList()
-                    return@launch
+                    return
                 }
                 // initialization failed (blank config) — fall through to the
                 // UnusLumen path below so the app keeps a working wire and the
@@ -391,7 +454,7 @@ class AiRepositoryImpl(
                 llmExecutor = null
                 llModel = null
                 chatSystemMessage = ""
-                return@launch
+                return
             }
 
             val model = llmConfig.baseModel
@@ -672,6 +735,11 @@ class AiRepositoryImpl(
         }
     }
 
+    /** One pass for callers that are not already inside a coroutine. */
+    private fun rebuildNow() {
+        applicationScope.launch { rebuildModelWiringOnce() }
+    }
+
     override suspend fun sendPrompt(prompt: String): PortalResult<String> {
         val model = llModel ?: return PortalResult.OtherError()
         val client = streamingClient ?: return PortalResult.OtherError()
@@ -809,24 +877,43 @@ class AiRepositoryImpl(
                 notesToSelfContent.joinToString(separator = "\n\n") { "- $it" }
         } else ""
 
-        val enrichedSystemMessage = when {
-            memoryContext != null && memoryContext.preamble.isNotBlank() && notesToSelfBlock.isNotBlank() -> {
-                android.util.Log.d("guru", "Using memory context (${memoryContext.preamble.length} chars) + notes-to-self (${notesToSelfBlock.length} chars)")
-                "$chatSystemMessage\n\nContext from your memory:\n${memoryContext.preamble}\n\n$notesToSelfBlock"
-            }
-            memoryContext != null && memoryContext.preamble.isNotBlank() -> {
-                android.util.Log.d("guru", "Using memory context (${memoryContext.preamble.length} chars)")
-                "$chatSystemMessage\n\nContext from your memory:\n${memoryContext.preamble}"
-            }
-            notesToSelfBlock.isNotBlank() -> {
-                android.util.Log.d("guru", "No memory context, notes-to-self present")
-                "$chatSystemMessage\n\n$notesToSelfBlock"
-            }
-            else -> {
-                android.util.Log.d("guru", "No memory context, using system message only")
-                chatSystemMessage
-            }
+        // The onboarding profile block. Deterministic, read fresh per send, and
+        // independent of retrieval: on the very first message the brain is empty
+        // and a semantic search for "alright" would never surface the human's
+        // name, health context or adjustments. This does, every time.
+        // Empty when onboarding never ran or the deal was not accepted, so an
+        // un-onboarded install sends exactly the system message it did before.
+        val profileBlock = try {
+            userProfileProvider.profileBlock()
+        } catch (e: Exception) {
+            android.util.Log.w("guru", "Profile block read failed (continuing without it): ${e.message}")
+            ""
         }
+        if (profileBlock.isNotBlank()) {
+            android.util.Log.d("guru", "Profile block present (${profileBlock.length} chars)")
+        }
+
+        // Assemble the system message as ordered parts. ContextBuilder's preamble
+        // already opens with "Context from your memory:", so the chat system
+        // message must not add that header again; the old two-way branches did
+        // exactly that and shipped the phrase twice on every send with memory.
+        val systemParts = buildList {
+            add(chatSystemMessage)
+            if (profileBlock.isNotBlank()) add(profileBlock)
+            if (memoryContext != null && memoryContext.preamble.isNotBlank()) {
+                add(memoryContext.preamble)
+            }
+            if (notesToSelfBlock.isNotBlank()) add(notesToSelfBlock)
+        }
+        val enrichedSystemMessage = systemParts
+            .filter { it.isNotBlank() }
+            .joinToString(separator = "\n\n")
+
+        android.util.Log.d(
+            "guru",
+            "System message assembled: base=${chatSystemMessage.length} profile=${profileBlock.length} " +
+                "memory=${memoryContext?.preamble?.length ?: 0} notes=${notesToSelfBlock.length}"
+        )
 
         try {
             // Only create a new conversation if we don't have an existing one

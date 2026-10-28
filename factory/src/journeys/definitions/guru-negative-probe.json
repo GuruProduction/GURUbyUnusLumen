@@ -1,0 +1,24 @@
+{
+  "id": "guru-negative-probe",
+  "name": "Deliberate missing-surface probe (proves the bundle path)",
+  "persona": "harness-selftest",
+  "packageName": "com.unuslumen.app.gurubeta.debug",
+  "activity": "com.unuslumen.app.guru.presentation.main.MainActivity",
+  "description": "Launches GURU and waits for a surface that does not exist. The assertion failure must produce a repro bundle, and replaying that bundle must reproduce the same assertion failure. This journey exists to prove the failure lane, not to report an app bug.",
+  "steps": [
+    {
+      "kind": "forceStop",
+      "label": "force-stop any previous process"
+    },
+    {
+      "kind": "launch",
+      "label": "launch GURU"
+    },
+    {
+      "kind": "waitForText",
+      "label": "wait for a surface that is not shipped",
+      "text": "This Surface Does Not Exist",
+      "timeoutMs": 6000
+    }
+  ]
+}

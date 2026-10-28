@@ -16,6 +16,29 @@ val Rubik = FontFamily(
     Font(R.font.rubik_bold, FontWeight.Bold)
 )
 
+/**
+ * Fraunces — the display serif.
+ *
+ * Fraunces is already bundled in res/font/ and already offered by the font
+ * picker. This is the typed handle for a screen that wants a written voice
+ * regardless of the human's chosen app font. The onboarding flow uses it for
+ * every headline, because a serif reads as someone asking and a sans reads as
+ * a form requesting.
+ */
+val Fraunces = FontFamily(
+    Font(R.font.fraunces)
+)
+
+/**
+ * Inter — the working sans.
+ *
+ * The companion to [Fraunces]. Body copy, labels, buttons. Also already bundled
+ * and already in the picker; this is the typed handle.
+ */
+val Inter = FontFamily(
+    Font(R.font.inter)
+)
+
 fun getTypography(font: FontFamily, fontSizeScale: Float = 1.0f) = Typography(
     bodyLarge = TextStyle(
         fontWeight = FontWeight.Normal,

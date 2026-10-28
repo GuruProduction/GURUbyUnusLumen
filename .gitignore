@@ -11,3 +11,10 @@
 
 # Duplicate-artefact accidents
 gradlew 2
+
+# Local code-index tooling. The index and its model cache are this machine's
+# working state, not the product, and .fastembed_cache is a symlink out to
+# ~/.codanna/models that would commit as a broken link on anyone else's clone.
+GURUbeta-FULL/.codanna/
+GURUbeta-FULL/.fastembed_cache
+GURUbeta-FULL/.codannaignore

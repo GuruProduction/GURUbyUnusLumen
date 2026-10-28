@@ -16,4 +16,12 @@
     <files-path
         name="media_zoom_frames"
         path="media_library/" />
+
+    <!-- The onboarding reference photo. Written here rather than into the shared
+         gallery so it never appears in another app's camera roll and is removed
+         with the app. The camera app is handed a content:// URI into this
+         directory for exactly one shot, then the grant is gone. -->
+    <files-path
+        name="onboarding_photos"
+        path="onboarding/" />
 </paths>

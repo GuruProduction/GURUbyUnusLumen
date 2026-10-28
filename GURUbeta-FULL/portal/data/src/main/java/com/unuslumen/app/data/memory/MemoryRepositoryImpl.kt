@@ -15,88 +15,81 @@ import com.unuslumen.app.domain.memory.ToolResultSearchHit
 import com.unuslumen.app.domain.model.AiMessage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.koin.core.annotation.Single
 import kotlin.uuid.ExperimentalUuidApi
 
 /**
- * MemoryRepositoryImpl — THE memory repository, one store: the encrypted
- * Cerebrum brain. Facts, conversations, messages, threads and tool-result
- * reads all live as real brain rows; every surface dispatches real brain
- * frames through BrainService or direct brain API reads. No Room read or
- * write remains, and no dual-write exists at any point.
+ * MemoryRepositoryImpl — THE memory repository, hybrid post-boundary-reset
+ * (the architecture fix Steven ruled on):
+ *  - CHAT DRAWER (Rooms conversations + messages + tool_results): raw
+ *    transcripts, tool result texts render/scale exactly with Room shapes,
+ *    they rehydrated on first boot from the one-store migration rows inside
+ *    Cerebrum; ongoing writes land Room-side only.
+ *  - MEMORY BRAIN (Cerebrum via BrainService/CerebrumBrainApi): the hive's
+ *    fact-extraction + thread-discovery memory facts (real brain lane), the
+ *    memory tool family's real facts, and its marker rows. Never raw chat.
  *
- * Row identity: deterministic. Two row kinds carry stable text markers in
- * their fact text so content-derived brain ids dedupe re-writes:
- *  - kinds: conversation, chat-message, thread, hive_marker
- *  - parsing: the fact text prefix is the contract ("message time="..")
+ * The brain keeps the parser contract for its two REAL marker lanes
+ * (thread / hive_marker); any conversation/message-shaped brain rows are
+ * historical rehydration sources for the drawer after first boot.
  */
 @OptIn(ExperimentalUuidApi::class)
 @Single(binds = [MemoryRepository::class])
 class MemoryRepositoryImpl(
     private val contextBuilder: ContextBuilder,
-    private val brainService: BrainService
+    private val brainService: BrainService,
+    private val conversationDao: com.unuslumen.app.database.dao.ConversationDao,
+    private val messageDao: com.unuslumen.app.database.dao.MessageDao
 ) : MemoryRepository {
 
     private val logTag = "guru_memrep"
 
     // =====================================================================
-    // conversation rows (upsert both create and update)
+    // conversation rows — ONE STORE = Room again (chat drawer).
+    // Cerebrum stays the MEMORY brain: extraction writes facts/threads via
+    // the hive, never raw chat. Chat rows stopped landing in the vault.
     // =====================================================================
 
     override suspend fun createConversation(conversation: Conversation) {
-        brainService.storeFact(factForConversation(conversation))
+        conversationDao.upsertConversation(entityForConversation(conversation))
+        // Legacy brain marker row retirement marker: raw chat content stopped
+        // being written here since the one-store boundary reset. No brain write.
     }
 
     override suspend fun updateConversation(conversation: Conversation) {
-        brainService.storeFact(factForConversation(conversation))
+        conversationDao.upsertConversation(entityForConversation(conversation))
     }
 
     override suspend fun deleteConversation(conversationId: String) {
-        android.util.Log.d(logTag, "conversation deleted: brain-side content row for $conversationId gets the archive path (no-delete doctrine)")
-        val rowHexId = hexIdForConversationText(conversationId)
-        brainService.deleteFact(rowHexId)
+        conversationDao.deleteConversationById(conversationId)
+        messageDao.deleteMessagesByConversation(conversationId)
     }
 
     override suspend fun getConversation(conversationId: String): Conversation? = withContext(Dispatchers.IO) {
-        // brain search by the concrete id string (labels indexed under it)
-        val hits = brainService.search(conversationId, topK = 10)
-        hits.firstOrNull()?.fact?.let { row -> parseConversation(domainFact = row) }
+        conversationDao.getConversation(conversationId)?.let { domainOfEntity(it) }
     }
 
     override suspend fun getAllConversations(): List<Conversation> = withContext(Dispatchers.IO) {
-        val hits = brainService.search("conversation created=", topK = 100)
-        hits.asSequence()
-            .map { hitRow -> hitRow.fact }
-            .filter { rowFact -> rowFact.fact.startsWith("conversation ") }
-            .distinctBy { rowFact -> realConversationRowIdOf(rowFact) }
-            .toList()
-            .mapNotNull { row -> parseConversation(domainFact = row) }
-            .distinctBy { itsConvo -> itsConvo.id }
+        conversationDao.getAllConversations().first().map { entity -> domainOfEntity(entity) }
     }
 
     override suspend fun searchConversations(query: String): List<Conversation> = withContext(Dispatchers.IO) {
-        val hits = brainService.search(query, topK = 100)
-        hits.asSequence()
-            .map { hitRow -> hitRow.fact }
-            .filter { rowFact -> rowFact.fact.startsWith("conversation ") }
-            .distinctBy { rowFact -> realConversationRowIdOf(rowFact) }
-            .toList()
-            .mapNotNull { row -> parseConversation(domainFact = row) }
-            .distinctBy { itsConvo -> itsConvo.id }
+        val titleHits = conversationDao.searchConversations(query).first()
+            .map { entity -> domainOfEntity(entity) }
+        val messageHits = conversationDao.searchConversationsWithMessages(query).first()
+            .map { entity -> domainOfEntity(entity) }
+        (messageHits + titleHits).distinctBy { it.id }
     }
 
-    /** real stored id for a conversation row (its text directly after marker). */
-    private fun realConversationRowIdOf(rowFact: MemoryFact): String =
-        rowFact.fact.removePrefix("conversation ").substringBefore(" title=")
-
     // =====================================================================
-    // message rows
+    // message rows — Room store for chat history (same drawer rehydration).
     // =====================================================================
 
     override suspend fun persistMessage(message: ConversationMessage) {
-        brainService.storeFact(factForMessage(message))
+        messageDao.insertMessage(entityForMessage(message))
     }
 
     override suspend fun persistMessages(messages: List<ConversationMessage>) {
@@ -106,26 +99,20 @@ class MemoryRepositoryImpl(
     }
 
     override suspend fun getMessagesByConversation(conversationId: String): List<ConversationMessage> = withContext(Dispatchers.IO) {
-        brainService.search(conversationId, topK = 200)
-            .asSequence()
-            .map { hit -> hit.fact }
-            .filter { row -> row.fact.startsWith("message conv=") }
-            .toList()
-            .mapNotNull { row -> parseMessage(domainFact = row) }
-            .distinctBy { row -> row.id }
-            .sortedBy { row -> row.timestamp }
+        messageDao.getMessagesByConversation(conversationId)
+            .map { entity -> domainOfEntity(entity) }
     }
 
-    /** full search over real message rows for chat search routes. */
+    /** full search over real message rows for chat search routes (Room FTS). */
     override suspend fun searchMessages(query: String): List<ConversationMessage> = withContext(Dispatchers.IO) {
-        brainService.search(query, topK = 100)
-            .asSequence()
-            .map { hitRow -> hitRow.fact }
-            .filter { row -> row.fact.startsWith("message conv=") }
-            .toList()
-            .mapNotNull { domainFact -> parseMessage(domainFact = domainFact) }
-            .distinctBy { realRow -> realRow.id }
-            .sortedBy { realRow -> realRow.timestamp }
+        val hits = try {
+            messageDao.searchMessagesFts(query)
+        } catch (e: Exception) {
+            messageDao.searchMessagesLike(query)
+        }
+        hits.map { entity -> domainOfEntity(entity) }
+            .distinctBy { row -> row.id }
+            .sortedBy { row -> row.timestamp }
     }
 
     override suspend fun updateMessageEmbedding(messageId: String, embedding: List<Float>) {
@@ -267,68 +254,158 @@ class MemoryRepositoryImpl(
 
     override suspend fun getTotalThreads(): Int = getAllThreads().size
 
-    /** tool result brains-search ('tool result:' shaped rows carry their own markers) */
-    override suspend fun searchToolResults(query: String): List<ToolResultSearchHit> = withContext(Dispatchers.IO) {
-        brainService.search("tool result: $query", topK = 20)
-            .map { hitRow -> hitRow.fact }
-            .mapNotNull { domainFact -> parseToolResult(domainFact = domainFact) }
+    /** tool result brains-search ('tool result:' shaped rows carry their own markers).
+     * ONE STORE: tool RESULTS live in Room (their real store); search rides the
+     * FTS index the DAO exposes. The brain stopped holding raw tool-result
+     * dumps with the one-store boundary reset. */
+    override suspend fun searchToolResults(query: String): List<ToolResultSearchHit> =
+        builtInToolResultSearch(toolResultDaoLocal(), query)
+
+    // =====================================================================
+    // entity converters (Room <-> domain). ONE chat drawer, ONE shape each way.
+    // =====================================================================
+
+    private fun entityForConversation(rowConversation: Conversation): com.unuslumen.app.database.entity.ConversationEntity {
+        return com.unuslumen.app.database.entity.ConversationEntity(
+            id = rowConversation.id,
+            title = rowConversation.title,
+            createdDate = rowConversation.createdDate,
+            updatedDate = rowConversation.updatedDate,
+            messageCount = rowConversation.messageCount
+        )
     }
 
-    // =====================================================================
-    // private helpers: pure, typed, real
-    // =====================================================================
+    private fun domainOfEntity(entity: com.unuslumen.app.database.entity.ConversationEntity): Conversation {
+        return Conversation(
+            id = entity.id,
+            title = entity.title,
+            createdDate = entity.createdDate,
+            updatedDate = entity.updatedDate,
+            messageCount = entity.messageCount
+        )
+    }
 
-    private fun persistRowConversation(rowConversation: Conversation) {
-        kotlinx.coroutines.runBlocking {
-            brainService.storeFact(factForConversation(rowConversation))
-        }
+    private fun entityForMessage(rowMessage: ConversationMessage): com.unuslumen.app.database.entity.MessageEntity {
+        return com.unuslumen.app.database.entity.MessageEntity(
+            id = rowMessage.id,
+            conversationId = rowMessage.conversationId,
+            role = rowMessage.role,
+            content = rowMessage.content,
+            timestamp = rowMessage.timestamp,
+            embedding = emptyList(),
+            toolCalls = rowMessage.toolCalls,
+            toolResults = rowMessage.toolResults
+        )
+    }
+
+    private fun domainOfEntity(entity: com.unuslumen.app.database.entity.MessageEntity): ConversationMessage {
+        return ConversationMessage(
+            id = entity.id,
+            conversationId = entity.conversationId,
+            role = entity.role,
+            content = entity.content,
+            timestamp = entity.timestamp,
+            embedding = emptyList(),
+            toolCalls = entity.toolCalls,
+            toolResults = entity.toolResults
+        )
+    }
+
+    private fun toolResultDaoLocal(): com.unuslumen.app.database.dao.ToolResultDao {
+        return org.koin.java.KoinJavaComponent.getKoin()
+            .get<com.unuslumen.app.database.dao.ToolResultDao>()
+    }
+
+    /** Ongoing conversation-meta writes land through here (upsert semantics,
+     * no runBlocking anywhere on the Room drawer path). */
+    private suspend fun persistRowConversation(rowConversation: Conversation) {
+        conversationDao.upsertConversation(entityForConversation(rowConversation))
     }
 
     /**
-     * Row text conventions (parser contract):
-     *  - marker "conversation " (a GURU conversation row)
-     *  - marker "message conv=" (a GURU row holding one chat message)
-     *  - marker "thread " (a GURU thread row)
-     *  - marker "hive processed" (a hive marker row)
+     * Rehydrate (one pass, idempotent, boot-time): pull every conversation +
+     * message row the one-store migration pushed into Cerebrum back into Room.
+     *SharedPreferences-flag guarded so it runs exactly once and never races
+     * the live writer afterwards. Room becomes the drawer's truth on arrival.
      */
-    private fun factForConversation(rowConversation: Conversation): MemoryFact {
-        // The conversation row's body holds markers in a fixed key order.
-        val builderBody = java.lang.StringBuilder("conversation ")
-        builderBody.append(rowConversation.id)
-        builderBody.append(" title=${titleEscape(rowConversation.title)}")
-        builderBody.append(" created=").append(rowConversation.createdDate)
-        builderBody.append(" updated=").append(rowConversation.updatedDate)
-        builderBody.append(" messageCount=").append(rowConversation.messageCount)
-        return MemoryFact(
-            id = "conversation:" + rowConversation.id,
-            category = "conversation",
-            fact = builderBody.toString(),
-            embedding = emptyList(),
-            confidence = 1.0f,
-            sourceConversationIds = emptyList(),
-            extractedDate = (rowConversation.createdDate.takeIf { it > 0 }) ?: System.currentTimeMillis()
+    suspend fun rehydrateChatDrawerFromBrain() = withContext(Dispatchers.IO) {
+        val prefs = contextForHelper().getSharedPreferences(HYDRATION_PREFS, android.content.Context.MODE_PRIVATE)
+        if (prefs.getBoolean(KEY_DRAWER_REHYDRATED, false)) {
+            android.util.Log.d(logTag, "chat drawer rehydrate: already complete, skip")
+            return@withContext
+        }
+
+        val convRows = brainService.search("conversation created=", topK = 400)
+        var convImported = 0
+        for (hit in convRows) {
+            val domainRow = parseConversation(domainFact = hit.fact) ?: continue
+            if (domainRow.id.isBlank()) continue
+            conversationDao.upsertConversation(entityForConversation(domainRow))
+            convImported++
+        }
+
+        val msgRows = brainService.search("message conv=", topK = 1600)
+        var msgImported = 0
+        for (hit in msgRows) {
+            val domainRow = parseMessage(domainFact = hit.fact) ?: continue
+            if (domainRow.id.isBlank() || domainRow.conversationId.isBlank()) continue
+            messageDao.insertMessage(entityForMessage(domainRow))
+            msgImported++
+        }
+
+        // Honest messageCount per rehydrated conversation row.
+        for (oneConversation in conversationDao.getAllConversations().first()) {
+            val actualCount = messageDao.getMessagesByConversation(oneConversation.id).size
+            if (actualCount != oneConversation.messageCount) {
+                conversationDao.updateConversationMeta(
+                    oneConversation.id,
+                    oneConversation.title,
+                    oneConversation.updatedDate,
+                    actualCount
+                )
+            }
+        }
+        prefs.edit().putBoolean(KEY_DRAWER_REHYDRATED, true).apply()
+        android.util.Log.i(
+            logTag,
+            "chat drawer rehydrate: conversations=$convImported messages=$msgImported (brain markers rehydrated into Room)"
         )
+        Unit
     }
 
-    private fun factForMessage(rowMessage: ConversationMessage): MemoryFact {
-        val builderBody = java.lang.StringBuilder("message conv=")
-        builderBody.append(rowMessage.conversationId)
-        builderBody.append(" message=").append(titleEscape(rowMessage.id))
-        builderBody.append(" role=").append(rowMessage.role)
-        builderBody.append(" time=").append(rowMessage.timestamp)
-        builderBody.append(": ").append(titleEscape(rowMessage.content))
-        val msgTimestamp = rowMessage.timestamp
-        val extractedStamp = if (msgTimestamp > 0) msgTimestamp else System.currentTimeMillis()
-        return MemoryFact(
-            id = "message@" + rowMessage.id,
-            category = "chat-message",
-            fact = builderBody.toString(),
-            embedding = emptyList(),
-            confidence = 1.0f,
-            sourceConversationIds = listOf(rowMessage.conversationId),
-            extractedDate = extractedStamp
-        )
+    private fun contextForHelper(): android.content.Context =
+        org.koin.java.KoinJavaComponent.getKoin()
+            .get<android.content.Context>()
+
+    private companion object {
+        const val HYDRATION_PREFS = "guru_mem_rep_hydration"
+        const val KEY_DRAWER_REHYDRATED = "drawer_rehydrated_v1"
     }
+
+    private suspend fun builtInToolResultSearch(
+        toolResultDao: com.unuslumen.app.database.dao.ToolResultDao,
+        query: String,
+    ): List<ToolResultSearchHit> = withContext(Dispatchers.IO) {
+        val rows = try {
+            toolResultDao.searchToolResultsFts(query, 20)
+        } catch (e: Exception) {
+            toolResultDao.searchToolResultsLike(query)
+        }
+        rows.map { entityRow ->
+            ToolResultSearchHit(
+                id = entityRow.id,
+                toolName = entityRow.toolName,
+                resultText = entityRow.resultText,
+                timestamp = entityRow.timestamp,
+                conversationId = entityRow.conversationId
+            )
+        }
+    }
+
+    // =====================================================================
+    // marker-to-domain fact writers (thread + hive marker only; chat lanes
+    // write Room now and their old marker writers retired with the drawer)
+    // =====================================================================
 
     private fun factForThread(theThreadRow: ConversationThread): MemoryFact {
         val threadBuilderBody = java.lang.StringBuilder("thread ")
@@ -348,14 +425,9 @@ class MemoryRepositoryImpl(
         )
     }
 
-    /** Real brain hex for one conversation row: search the exact marker text,
-     * then return the brain's idHex for the matched hit. Empty on no hit,
-     * delete honestly no-ops. */
-    private suspend fun hexIdForConversationText(conversationId: String): String {
-        val hits = brainService.search("conversation $conversationId", topK = 5)
-        return hits.firstOrNull()?.let { hitRow -> hitRow.fact.id } ?: ""
-    }
-
+    /** Chat-lane reverse rehydrators, typed; read the brain rows carrying
+     * the same fixed markers the one-store writes had, convert to Room
+     * entities, and rehydrate the drawer after the migration. */
     private fun titleEscape(bodyText: String): String =
         bodyText.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ")
 
