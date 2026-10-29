@@ -36,6 +36,7 @@ import com.unuslumen.app.database.dao.JobExecutionHistoryDao
 import com.unuslumen.app.database.dao.GuruThoughtCycleDao
 import com.unuslumen.app.database.dao.GuruInsightDao
 import com.unuslumen.app.database.dao.TaskDao
+import com.unuslumen.app.database.dao.ToolObservationDao
 import com.unuslumen.app.database.dao.ToolResultDao
 import com.unuslumen.app.database.dao.SeenImageDao
 import com.unuslumen.app.database.dao.ProjectDao
@@ -74,6 +75,7 @@ import com.unuslumen.app.database.entity.JobExecutionHistoryEntity
 import com.unuslumen.app.database.entity.GuruThoughtCycleEntity
 import com.unuslumen.app.database.entity.GuruInsightEntity
 import com.unuslumen.app.database.entity.TaskEntity
+import com.unuslumen.app.database.entity.ToolObservationEntity
 import com.unuslumen.app.database.entity.ToolResultEntity
 import com.unuslumen.app.database.entity.SeenImageEntity
 import com.unuslumen.app.database.entity.ProjectEntity
@@ -117,6 +119,7 @@ import com.unuslumen.app.database.entity.MediaZoomLogEntity
         ProjectDocumentEntity::class,
         ProjectFactEntity::class,
         ToolResultEntity::class,
+        ToolObservationEntity::class,
         JobExecutionHistoryEntity::class,
         SeenImageEntity::class,
         GuruNoteToSelfEntity::class,
@@ -124,7 +127,7 @@ import com.unuslumen.app.database.entity.MediaZoomLogEntity
         MediaItemEntity::class,
         MediaZoomLogEntity::class
     ],
-    version = 27
+    version = 28
 )
 @TypeConverters(DBConverters::class)
 abstract class guruDatabase: RoomDatabase() {
@@ -164,6 +167,7 @@ abstract class guruDatabase: RoomDatabase() {
     abstract fun projectDocumentDao(): ProjectDocumentDao
     abstract fun projectFactDao(): ProjectFactDao
     abstract fun toolResultDao(): ToolResultDao
+    abstract fun toolObservationDao(): ToolObservationDao
     abstract fun jobExecutionHistoryDao(): JobExecutionHistoryDao
     abstract fun seenImageDao(): SeenImageDao
 

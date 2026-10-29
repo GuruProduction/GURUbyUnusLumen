@@ -36,7 +36,12 @@ data class OnboardingUiState(
     val questionTotal: Int = 0,
     val draft: Map<String, String> = emptyMap(),
     val powerDraft: Map<String, String> = emptyMap(),
-    val powerOn: Set<String> = emptySet(),
+    // Tools start ON. They used to start off, and because the save writes the
+    // switch position verbatim, a human who never touched the row had tools
+    // explicitly disabled on their first boot and the agent could not call a
+    // single one. Tools are the entire point of the app, so the switch arrives
+    // already on and turning it off is a deliberate act.
+    val powerOn: Set<String> = setOf("skills"),
     val dealAccepted: Boolean = false,
     val saving: Boolean = false,
     val error: String? = null

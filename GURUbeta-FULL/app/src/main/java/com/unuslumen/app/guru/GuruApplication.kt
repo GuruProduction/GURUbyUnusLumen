@@ -57,6 +57,7 @@ import com.unuslumen.app.data.brain.BrainService
 import com.unuslumen.app.data.jobs.JobScheduler
 import com.unuslumen.app.data.jobs.JobCompressionWorker
 import com.unuslumen.app.domain.repository.JobRepository
+import com.unuslumen.app.database.dao.ToolObservationDao
 import com.unuslumen.app.database.dao.ToolResultDao
 import com.unuslumen.app.util.Constants
 import com.unuslumen.app.util.orb.GuruOrbService
@@ -91,6 +92,7 @@ class GuruApplication : Application() {
     private val applicationScope: CoroutineScope by inject(named("applicationScope"))
     private val adSpaceManager: AdSpaceManager by inject()
     private val toolResultDao: ToolResultDao by inject()
+    private val toolObservationDao: ToolObservationDao by inject()
     private var torStarted = false
 
     override fun onCreate() {
@@ -244,12 +246,14 @@ class GuruApplication : Application() {
             }
         }
 
-        // Prune tool results on startup and every 24 hours
+        // Prune tool results and the observation log on startup and every 24 hours
         applicationScope.launch {
             runCatching { toolResultDao.pruneToolResults(System.currentTimeMillis()) }
+            runCatching { toolObservationDao.pruneObservations(System.currentTimeMillis()) }
             while (true) {
                 delay(24 * 60 * 60 * 1000L) // 24 hours
                 runCatching { toolResultDao.pruneToolResults(System.currentTimeMillis()) }
+                runCatching { toolObservationDao.pruneObservations(System.currentTimeMillis()) }
             }
         }
 
