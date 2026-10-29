@@ -1318,7 +1318,7 @@ class AiRepositoryImpl(
                             }
 
                             val toolCallMessages = collectedToolCalls.map { toolCallFrame ->
-                                val toolCallMessageResult = executeToolCallFromFrame(toolCallFrame)
+                                val toolCallMessageResult = executeToolCallFromFrame(toolCallFrame, resolvedConversationId)
                                 toolCallMessageResult.getOrNull()?.also {
                                     emit(it)
                                     HookEventBus.fire(
@@ -1482,7 +1482,8 @@ class AiRepositoryImpl(
     }
 
     private suspend fun executeToolCallFromFrame(
-        frame: StreamFrame.ToolCallComplete
+        frame: StreamFrame.ToolCallComplete,
+        conversationId: String? = null
     ): Result<AiMessage.ToolCall> = runCatching {
         if (frame.name.isBlank()) {
             throw IllegalArgumentException("Tool call received with empty tool name. Content: ${frame.content.take(200)}")
@@ -1520,7 +1521,7 @@ class AiRepositoryImpl(
         } else if (toolRegistry.hasTool(frame.name)) {
             // New registry dispatch path
             android.util.Log.d("guru", "Dispatching '${frame.name}' through new ToolDispatcher")
-            val dispatchResult = toolDispatcher.dispatch(frame.name, frame.contentJson)
+            val dispatchResult = toolDispatcher.dispatch(frame.name, frame.contentJson, conversationId)
             if (dispatchResult.success) {
                 val resultObject = extractResultObject(frame.name, dispatchResult.rawJson)
                 AiMessage.ToolCall(
@@ -1546,7 +1547,7 @@ class AiRepositoryImpl(
             }
         } else {
             // Try ToolDispatcher's name resolution and security checks
-            val dispatchResult = toolDispatcher.dispatch(frame.name, frame.contentJson)
+            val dispatchResult = toolDispatcher.dispatch(frame.name, frame.contentJson, conversationId)
             if (dispatchResult.success) {
                 val resultObject = extractResultObject(dispatchResult.resolvedName ?: frame.name, dispatchResult.rawJson)
                 AiMessage.ToolCall(

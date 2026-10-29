@@ -4,6 +4,7 @@
 package com.unuslumen.app.data.di
 
 import android.content.Context
+import kotlinx.coroutines.CoroutineScope
 import com.unuslumen.app.data.tools.CommunicationPlusToolExecutor
 import com.unuslumen.app.data.tools.DeviceControlToolExecutor
 import com.unuslumen.app.data.tools.MediaToolExecutor
@@ -62,6 +63,9 @@ import com.unuslumen.app.data.tools.registry.ToolSecurityPolicy
 import com.unuslumen.app.data.tools.registry.ToolArgumentRepair
 import com.unuslumen.app.data.tools.registry.ToolSchemaSerializer
 import com.unuslumen.app.data.tools.registry.ToolDispatcher
+import com.unuslumen.app.data.tools.registry.ToolObservationRecorder
+import com.unuslumen.app.data.tools.ObservationToolExecutor
+import com.unuslumen.app.data.tools.ObservationToolResultExtractor
 import com.unuslumen.app.data.tools.UtilToolExecutor
 import com.unuslumen.app.data.tools.PromptToolExecutor
 import com.unuslumen.app.data.tools.FileProcessingToolExecutor
@@ -110,6 +114,7 @@ import com.unuslumen.app.domain.di.AiDomainModule
 import org.koin.core.annotation.ComponentScan
 import org.koin.core.annotation.Module
 import org.koin.core.annotation.Single
+import org.koin.core.qualifier.named
 import org.koin.dsl.module
 import org.koin.ksp.generated.module
 
@@ -249,7 +254,21 @@ val aiDataModule = module {
     single { ToolSecurityPolicy() }
     single { ToolArgumentRepair() }
     single { ToolSchemaSerializer() }
-    single { ToolDispatcher(get(), get(), get(), get(), get<Context>()) }
+    // Observation log write path. Bound before the dispatcher because the
+    // dispatcher takes it; the recorder rides the same application scope every
+    // other fire-and-forget writer uses, so a failed tool call's observation is
+    // never awaited and can never slow the call itself.
+    single { ToolObservationRecorder(get(), get<CoroutineScope>(named("applicationScope"))) }
+    single {
+        ToolDispatcher(
+            get(),
+            get(),
+            get(),
+            get(),
+            get<Context>(),
+            get<ToolObservationRecorder>()
+        )
+    }
 
     // Batch 1 executor and extractor bindings
     factory { UtilToolExecutor() }
@@ -257,8 +276,10 @@ val aiDataModule = module {
     factory { FileProcessingToolExecutor(get<Context>()) }
     factory { LuxifyToolExecutor(get()) }
     factory { ToolResultToolExecutor(get()) }
+    factory { ObservationToolExecutor(get()) }
     factory { LuxifyToolResultExtractor() }
     factory { ToolResultToolResultExtractor() }
+    factory { ObservationToolResultExtractor() }
     // Batch 2 executor and extractor bindings
     factory { ContactsToolExecutor(get<Context>()) }
     factory { ScreenToolExecutor(get<Context>()) }

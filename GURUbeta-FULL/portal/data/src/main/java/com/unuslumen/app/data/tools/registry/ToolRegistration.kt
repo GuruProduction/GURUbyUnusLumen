@@ -66,6 +66,7 @@ import com.unuslumen.app.data.tools.SmartHomeToolDefinitions
 import com.unuslumen.app.data.tools.ProductivityToolDefinitions
 import com.unuslumen.app.data.tools.ThemeToolDefinitions
 import com.unuslumen.app.data.tools.ProjectToolDefinitions
+import com.unuslumen.app.data.tools.ObservationToolDefinitions
 import org.koin.core.Koin
 import kotlin.reflect.KClass
 
@@ -182,6 +183,7 @@ object GeneratedToolRegistrations {
         ThemeToolDefinitions,
         ProjectToolDefinitions,
         NoteToSelfToolDefinitions,
+        ObservationToolDefinitions,
         MediaToolDefinitionsPlus
     )
 }
