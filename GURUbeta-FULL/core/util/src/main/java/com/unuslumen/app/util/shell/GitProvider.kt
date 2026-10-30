@@ -328,9 +328,17 @@ class GitProvider(private val context: Context) {
                 env["LD_PRELOAD"] = preload.absolutePath
                 env["TERMUX__PREFIX"] = File(termuxRoot, "usr").absolutePath
                 env["TERMUX__ROOTFS"] = termuxRoot.absolutePath
-                env["TERMUX_APP__LEGACY_DATA_DIR"] = context.filesDir.parentFile?.absolutePath
-                    ?.let { File(it, context.packageName).absolutePath }
+                // filesDir is /data/user/0/<pkg>/files, so its PARENT is the app
+                // data dir. Appending the package name again produced
+                // /data/user/0/<pkg>/<pkg>, which is not a real path — and
+                // because the preload compares exec targets against this value to
+                // decide `is_exe_under_termux_app_data_dir`, a wrong value meant
+                // it never recognised the helper as app data and never routed the
+                // exec through the linker. That single doubled segment was the
+                // whole remaining failure.
+                val appDataDir = context.filesDir.parentFile?.absolutePath
                     ?: context.filesDir.absolutePath
+                env["TERMUX_APP__LEGACY_DATA_DIR"] = "/data/data/${context.packageName}"
                 // An INTEGER, not a word. The binary logs
                 // "Warning: Ignoring invalid system_linker_exec_mode value and
                 // using '1' instead" when it is given a string, so the value has
@@ -340,9 +348,7 @@ class GitProvider(private val context: Context) {
                 // a target path is inside app data at all (its
                 // is_exe_under_termux_app_data_dir flag). Without it the prefix
                 // comparisons have nothing to compare against.
-                env["TERMUX_APP__DATA_DIR"] = context.filesDir.parentFile?.absolutePath
-                    ?.let { File(it, context.packageName).absolutePath }
-                    ?: context.filesDir.absolutePath
+                env["TERMUX_APP__DATA_DIR"] = appDataDir
                 env["ANDROID__BUILD_VERSION_SDK"] = android.os.Build.VERSION.SDK_INT.toString()
                 // The SELinux context, read here rather than letting the preload
                 // read /proc/self/attr/current between fork and exec, which is
