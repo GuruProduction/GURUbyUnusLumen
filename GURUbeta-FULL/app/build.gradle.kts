@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Steven Newman, Founder and Developer, Unus Lumen Ltd, Bristol UK.
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
@@ -9,6 +10,27 @@ plugins {
     alias(libs.plugins.kotlinx.serialization)
     alias(libs.plugins.kotlin.compose.compiler)
 }
+
+// Release signing credentials, read from the gitignored local.properties so the
+// password never enters the repository. Every GURU release before this was built
+// unsigned and signed afterwards by hand with apksigner, which meant the one
+// step that cannot be automated or reproduced lived in a human's memory.
+//
+// Absent keys are not an error: a machine without the keystore (CI, another
+// developer, a fresh clone) still builds debug normally and produces an
+// unsigned release exactly as before, rather than failing to configure at all.
+val signingProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+val guruStoreFile = signingProperties.getProperty("guru.signing.store")
+val guruStorePassword = signingProperties.getProperty("guru.signing.storePassword")
+val guruKeyAlias = signingProperties.getProperty("guru.signing.alias")
+val guruKeyPassword = signingProperties.getProperty("guru.signing.keyPassword")
+val hasReleaseSigning = !guruStoreFile.isNullOrBlank() &&
+    !guruStorePassword.isNullOrBlank() &&
+    !guruKeyAlias.isNullOrBlank() &&
+    File(guruStoreFile).exists()
 
 // Phase 0 packaging fix: Vosk's Java layer talks to Android through JNA, and
 // vosk-android 0.3.47 declares net.java.dev.jna:jna:5.13.0 (aar). A sibling
@@ -54,6 +76,20 @@ android {
         }
     }
 
+    // The keystore that every shipped GURU release was signed with. Installing a
+    // build signed with any other key over an existing GURU is refused by
+    // Android, so this must stay the guru-fresh.jks key, never a regenerated one.
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("guruRelease") {
+                storeFile = File(guruStoreFile!!)
+                storePassword = guruStorePassword
+                keyAlias = guruKeyAlias
+                keyPassword = guruKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -61,6 +97,12 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Only attach signing when the credentials are present, so the
+            // build stays honest: signed when it can be, unsigned when it
+            // cannot, never silently signed with a different key.
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("guruRelease")
+            }
         }
         debug {
             isMinifyEnabled = false
