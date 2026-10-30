@@ -996,6 +996,20 @@ pub fn restore_state(
             .map_err(|e| PersistError::Serialize { reason: e.to_string() })?;
         state.wal = wal_restored;
     }
+
+    // The lexical index is derived state, so it is rebuilt from the tree rather
+    // than restored from its own record. Deriving it guarantees it can never
+    // claim a memory the tree has lost, and it means a change to BM25's
+    // tokenisation or weighting applies to every existing memory on next boot
+    // instead of only to ones written afterwards.
+    state.lexical.rebuild(
+        state
+            .context_tree
+            .clone_entries()
+            .into_iter()
+            .map(|entry| (entry.id, entry.content)),
+    );
+
     state.data_dir = data_dir;
 
     Ok(loaded.report)
