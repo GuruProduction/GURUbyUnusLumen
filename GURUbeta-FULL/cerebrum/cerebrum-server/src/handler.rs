@@ -260,9 +260,10 @@ async fn handle_curate(
 
     // Write-through WAL: each successful curation detail lands as a framed
     // engine WAL record keyed by memory id (delete frames via append_delete,
-    // every other mutation as an append_put carrying the reason). Those WAL
-    // bytes persist through the vault on the next save pass so a crash window
-    // between bundles still carries its curation trail.
+    // every other mutation as an append_put carrying the reason AND the token
+    // body). Carrying the token body is what makes a WAL record replayable on
+    // its own: a later replay can rebuild the DWM row without re-reading the
+    // tree, and a record that only held a reason string could not.
     for (detail, op) in executed_result.details.iter().zip(curate_ops.iter()) {
         if detail.status == cerebrum_core::CurateStatus::Failed {
             continue;
@@ -273,7 +274,11 @@ async fn handle_curate(
                 state.wal.append_delete(id.0.to_vec());
             }
             _ => {
-                let wal_value = serde_json::json!({ "reason": detail.detail.clone() });
+                let token_body = current_tokens_for_tree_id(&state, id);
+                let wal_value = serde_json::json!({
+                    "reason": detail.detail.clone(),
+                    "tokens": token_body,
+                });
                 state.wal.append_put(
                     id.0.to_vec(),
                     serde_json::to_vec(&wal_value).unwrap_or_default(),

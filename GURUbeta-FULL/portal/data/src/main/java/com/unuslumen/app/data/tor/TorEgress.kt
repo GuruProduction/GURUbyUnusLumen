@@ -33,6 +33,13 @@ object TorEgress {
         }
     }
 
+    /**
+     * Whether a host requires a live Tor circuit before it can be reached.
+     * Local and LAN endpoints never do. Exposed so the send path can wait for
+     * Tor instead of firing a request that the policy will refuse.
+     */
+    fun needsTorFor(host: String?): Boolean = !isLoopbackOrPrivate(host)
+
     /** Hosts allowed to bypass Tor: the device itself and private LAN ranges. */
     private fun isLoopbackOrPrivate(host: String?): Boolean {
         if (host == null) return false

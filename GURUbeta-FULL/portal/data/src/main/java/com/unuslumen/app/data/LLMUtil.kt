@@ -36,6 +36,22 @@ fun List<AiMessage>.buildChatPrompt(
             is AiMessage.StreamingAssistant -> assistant(message.partialContent)
             is AiMessage.StreamingToolCall -> { /* streaming tool calls are not sent to LLM */ }
             is AiMessage.ToolCall -> {
+                // A tool call with no function name CANNOT be rendered by a
+                // model's chat template. The host answers the whole request
+                // with HTTP 500 "internal server error", which used to make a
+                // restored conversation permanently unsendable until /clear
+                // wiped the history. Rows that predate the tool-identity
+                // migration read back with no name; they stay on screen as
+                // cards but never enter the prompt, so the rest of the
+                // conversation keeps working.
+                if (message.name.isBlank()) {
+                    android.util.Log.w(
+                        "guru",
+                        "Skipping nameless legacy tool row from the prompt (uuid=${message.uuid}); " +
+                            "the row is preserved on screen and in the database"
+                    )
+                    return@forEach
+                }
                 if (message.thoughtSignature != null) {
                     message(
                         Message.Reasoning(

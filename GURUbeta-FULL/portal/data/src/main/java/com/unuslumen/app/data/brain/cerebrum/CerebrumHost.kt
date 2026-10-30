@@ -154,25 +154,24 @@ object CerebrumHost {
     }
 
     /**
-     * Boot the brain with a real key-vault self-heal.
+     * Boot the brain, healing ONLY a genuinely orphaned key pair.
      *
-     * THE HIDDEN BUG (reported twice, fixed the wrong way once): on an app
-     * reinstall the Keystore alias can survive while the sandbox keys file
-     * rewrites, or the opposite, so a boot starts against a vault whose
-     * encryption key belongs to an older key-era. The JNI never opens a
-     * dead-pair vault (correctly), and previously we surfaced that as a
-     * permanent boot failure that only adb file surgery could cure.
+     * The brain directory and the Keystore alias can fall out of step on an
+     * app reinstall, so a boot can start against a vault whose key belongs to
+     * an older key-era. That is a real condition worth healing automatically,
+     * because no app-side path can recover from it.
      *
-     * The now-permanent heal (in app code, never shell): a boot whose JNI
-     * reports Crypto/AeadOpenFailed treats the install's own brain directory
-     * as key-orphaned: wipe exactly those dirs (the cerebrum brain data +
-     * envelope; ALL OTHER app data including room, termux, cookies untouched),
-     * delete THIS app's own keystore alias, seal a fresh pass, retry the boot
-     * once. Room remains the truth source for re-migration (the app-layer
-     * migration pass in CerebrumBoot re-runs afterwards on the SAME trigger
-     * chain it already has: fresh vaults re-land Room memory tables' data;
-     * fresh-install cases land with empty room tables as an empty brain, which
-     * is correct because there IS nothing to restore, one store only).
+     * The heal deletes the brain, so the condition that triggers it must be
+     * exact. It is: the JNI reports that the vault HEADER itself was rejected,
+     * which means the passphrase genuinely does not open this file. A failure
+     * to read a RECORD is a different fault entirely, and treating it as an
+     * orphan destroyed a live brain. An earlier version matched the substring
+     * "AEAD" or "integrity", which are the words used for a record that failed
+     * to open, so every mid-vault read failure wiped the memory. That match is
+     * gone: `PassphraseRejected` is the only orphan signal.
+     *
+     * Anything else surfaces as a normal boot failure so the underlying fault
+     * can be seen and fixed rather than silently erasing the user's brain.
      */
     @Synchronized
     fun boot(
@@ -181,8 +180,8 @@ object CerebrumHost {
         onStep: ((BootResult) -> Unit)? = null,
     ): BootResult {
         val theFirstAttempt: BootResult = bootOnce(context, freshPassphrase, onStep)
-        if (attemptWasKeyOrphanAEAD(theFirstAttempt.error)) {
-            Log.w(TAG, "key-vault orphan detected: app-side self-heal (own cerebrum dir only) and re-seal")
+        if (attemptWasKeyOrphan(theFirstAttempt.error)) {
+            Log.w(TAG, "vault header rejected: key-vault orphan, app-side re-seal of cerebrum dirs only")
             healOrphanedKeyPair(context)
             val healedAttempt: BootResult = bootOnce(context, freshPassphrase, onStep)
             if (healedAttempt.ok) {
@@ -193,9 +192,15 @@ object CerebrumHost {
         return theFirstAttempt
     }
 
-    private fun attemptWasKeyOrphanAEAD(bootError: String?): Boolean =
-        bootError?.contains("AEAD", ignoreCase = true) == true ||
-            bootError?.contains("integrity", ignoreCase = true) == true
+    /**
+     * True only when the vault's own header refused the passphrase.
+     *
+     * `PassphraseRejected` is raised by the header verifier and by nothing
+     * else. Record-level failures report `AeadOpenFailed`, which is NOT an
+     * orphan signal and must never trigger the wipe.
+     */
+    private fun attemptWasKeyOrphan(bootError: String?): Boolean =
+        bootError?.contains("PassphraseRejected", ignoreCase = true) == true
 
     private fun healOrphanedKeyPair(context: Context) {
         runCatching {

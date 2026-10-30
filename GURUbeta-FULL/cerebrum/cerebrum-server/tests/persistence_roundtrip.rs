@@ -90,7 +90,12 @@ async fn test_ten_curated_save_and_restore() {
     let fresh = CerebrumState::new(dir.join("unused-subdir"));
     drop(fresh);
     let mut restored = CerebrumState::new(std::path::PathBuf::from("."));
-    restore_state(&mut restored, dir.clone(), PASSPHRASE).unwrap();
+    let report = restore_state(&mut restored, dir.clone(), PASSPHRASE).unwrap();
+    assert!(
+        report.clean(),
+        "a save-then-restore cycle must load every record it wrote, skipped: {:?}",
+        report.skipped_records
+    );
 
     assert_eq!(restored.dwm.count(), 10, "DWM restored");
     assert_eq!(restored.context_tree.len(), 10, "context tree restored");
@@ -118,6 +123,82 @@ fn restore_broken_count_witness() {
     assert_eq!(back.doc_count(), 0, "fresh, default count 0 before load");
     let engine2 = cerebrum_embeddings::EmbeddingEngine::from_persistable(snap);
     assert_eq!(engine2.doc_count(), 1, "doc count rides the snapshot");
+}
+
+/// The regression that cost a real brain: save twice, then restore.
+///
+/// The old writer appended a full snapshot on every pass while restarting its
+/// record counter at zero, so the second pass re-used every nonce of the first
+/// and every record after the first pass failed to decrypt. This asserts the
+/// three properties that were broken: the file does not grow past one live set,
+/// the second save's content is the one that comes back, and a restore after
+/// repeated saves is clean.
+#[tokio::test]
+async fn test_repeated_saves_do_not_grow_or_corrupt_the_vault() {
+    let dir = std::env::temp_dir().join(format!(
+        "cerebrum-persist-repeat-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let state = state_in(dir.clone()).await;
+
+    let persist = CerebrumPersistence::new(dir.clone());
+
+    // Save pass one: three memories.
+    curate_through_frame(&state, (0..3).map(|i| add_op(&format!(
+        "first pass memory number {} holding a distinctive first-pass phrase", i
+    ))).collect()).await;
+    {
+        let mut unlocked = state.lock().await;
+        let report = persist.save_all(&mut unlocked, PASSPHRASE).unwrap();
+        assert_eq!(report.subsystem_tags.len(), 14);
+    }
+    let after_first = std::fs::metadata(persist.vault_path()).unwrap().len();
+
+    // Save pass two: three more. Same file, second generation.
+    curate_through_frame(&state, (0..3).map(|i| add_op(&format!(
+        "second pass memory number {} holding a distinctive second-pass phrase", i
+    ))).collect()).await;
+    {
+        let mut unlocked = state.lock().await;
+        persist.save_all(&mut unlocked, PASSPHRASE).unwrap();
+    }
+    let after_second = std::fs::metadata(persist.vault_path()).unwrap().len();
+
+    // A generation is a replacement, never an append. Six memories cost a
+    // little more than three, and must not cost double.
+    assert!(
+        after_second < after_first * 3 / 2,
+        "vault grew from {} to {} bytes across two saves; a generation must replace, not append",
+        after_first,
+        after_second
+    );
+
+    // The second save must be the one that restores, and it must be clean.
+    let mut restored = CerebrumState::new(std::path::PathBuf::from("."));
+    let report = restore_state(&mut restored, dir.clone(), PASSPHRASE).unwrap();
+    assert!(
+        report.clean(),
+        "restore after two saves skipped records: {:?}",
+        report.skipped_records
+    );
+    assert!(!report.legacy_salvage, "a current vault must not need salvage");
+    assert_eq!(restored.dwm.count(), 6, "both passes present in the restored brain");
+    assert_eq!(restored.context_tree.len(), 6, "context tree carries both passes");
+    assert!(restored.query_engine.hot_cache.len() >= 6, "hot cache carries both passes");
+
+    let contents: Vec<String> = restored
+        .context_tree
+        .entries()
+        .map(|entry| entry.content.clone())
+        .collect();
+    assert!(
+        contents.iter().any(|row| row.contains("second-pass phrase")),
+        "the newest generation must be the one restored"
+    );
 }
 
 /// Encryption-at-rest verification through the real persistence path:
@@ -151,7 +232,8 @@ async fn test_vault_file_carries_no_plaintext() {
         !as_str.contains(secret_content),
         "plaintext memory content leaked through persistence into the vault"
     );
-    // Also check the staging file got zero-cleared.
+    // The DWM staging file moved out of the data directory, so the vault must
+    // be the only thing here.
     let stray_files = std::fs::read_dir(&dir).unwrap().count();
     assert_eq!(stray_files, 1, "only the vault file must remain in the data dir");
 }

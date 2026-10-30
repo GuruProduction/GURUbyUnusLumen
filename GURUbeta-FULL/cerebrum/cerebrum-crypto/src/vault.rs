@@ -3,9 +3,24 @@
 //! An EncryptedVault owns one derived key in RAM and a file path. API surface
 //! is intentionally tight: builder.create_from_passphrase (fresh vault),
 //! EncryptedVault::open_existing (verify passphrase, fail closed),
+//! new_generation (rewrite the whole vault body under a fresh file id),
 //! append_record, record_count, read_record_by_index. Records are framed as
-//! u32-LE length + ciphertext and are appended sequentially under one open
-//! session. Plaintext only lives behind `decrypt` calls in RAM.
+//! u32-LE length + ciphertext and are appended sequentially within one
+//! generation. Plaintext only lives behind `decrypt` calls in RAM.
+//!
+//! # Why generations exist
+//!
+//! The record nonce is `PRF(key, file_id)` XOR the record counter, and the
+//! counter restarts at zero for every open session. Appending a second save
+//! pass onto a file written by a first pass therefore re-uses every nonce of
+//! the first pass under the same key, which breaks XChaCha20-Poly1305
+//! outright, and it also makes the reader disagree with the writer because
+//! decryption passes the record's absolute index as its counter. A vault body
+//! is consequently written exactly once, as one generation: `new_generation`
+//! mints a fresh file id (and so a fresh nonce base) for each replacement,
+//! the caller appends every record once, and the finished file is renamed
+//! over its predecessor. Reusing the owner's salt and KDF parameters keeps
+//! the derived key identical, so a rewrite costs no new Argon2id pass.
 
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -160,46 +175,7 @@ impl VaultBuilder {
         };
         let header_bytes = header.encode()?;
 
-        // Atomic create: write to temp file, fsync, rename over the final
-        // name. Nothing partial can ever be observed at the final filename.
-        let parent = self
-            .file_path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."));
-        let tmp_path = parent.join(format!(
-            "{}.cerebrum-tmp-{}",
-            self.file_path
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| "vault".into()),
-            std::process::id()
-        ));
-
-        let mut tmp = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&tmp_path)
-            .map_err(|e| CryptoError::IoWrite {
-                reason: format!("temp header staging: {}", e),
-            })?;
-        tmp.write_all(&header_bytes).map_err(|e| CryptoError::IoWrite {
-            reason: format!("temp header write: {}", e),
-        })?;
-        tmp.sync_all().map_err(|e| CryptoError::IoWrite {
-            reason: format!("temp header fsync: {}", e),
-        })?;
-        drop(tmp);
-        fs::rename(&tmp_path, &self.file_path)
-            .and_then(|_| {
-                // fsync the parent dir as well so the rename itself is durable.
-                fs::File::open(&parent).and_then(|p| p.sync_all())
-            })
-            .map_err(|e| CryptoError::IoWrite {
-                reason: format!("finalize new vault: {}", e),
-            })?;
+        write_header_atomically(&self.file_path, &header_bytes)?;
 
         Ok(EncryptedVault {
             file_path: self.file_path.clone(),
@@ -209,6 +185,52 @@ impl VaultBuilder {
             record_counter: RecordNonceCounter::new(),
         })
     }
+}
+
+/// Write a header as the complete contents of `file_path`, atomically.
+///
+/// Temp file in the same directory, fsync, rename over the target, fsync the
+/// parent. A reader therefore only ever observes a whole header, and the record
+/// stream starts empty because the header write truncated the file.
+fn write_header_atomically(
+    file_path: &Path,
+    header_bytes: &[u8],
+) -> Result<(), CryptoError> {
+    let parent = file_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let tmp_path = parent.join(format!(
+        "{}.cerebrum-tmp-{}",
+        file_path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "vault".into()),
+        std::process::id()
+    ));
+
+    let mut tmp = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&tmp_path)
+        .map_err(|e| CryptoError::IoWrite {
+            reason: format!("temp header staging: {}", e),
+        })?;
+    tmp.write_all(header_bytes).map_err(|e| CryptoError::IoWrite {
+        reason: format!("temp header write: {}", e),
+    })?;
+    tmp.sync_all().map_err(|e| CryptoError::IoWrite {
+        reason: format!("temp header fsync: {}", e),
+    })?;
+    drop(tmp);
+    fs::rename(&tmp_path, file_path)
+        .and_then(|_| fs::File::open(&parent).and_then(|p| p.sync_all()))
+        .map_err(|e| CryptoError::IoWrite {
+            reason: format!("finalize vault header: {}", e),
+        })?;
+    Ok(())
 }
 
 /// In-RAM-only open vault session.
@@ -252,6 +274,106 @@ impl EncryptedVault {
 
     pub fn file_id(&self) -> [u8; FILE_ID_LEN] {
         self.file_id
+    }
+
+    /// Start a NEW GENERATION over `file_path`: verify the passphrase against
+    /// the incumbent header, then truncate the record stream and mint a fresh
+    /// `file_id`, which yields a fresh record-nonce base for the body the
+    /// caller is about to append.
+    ///
+    /// The owner's salt and KDF parameters are carried over unchanged, so the
+    /// derived key is identical and no new Argon2id pass is needed beyond the
+    /// verification this call performs. The header is written to a temporary
+    /// file, fsynced, renamed over the vault, and the parent directory is
+    /// fsynced, so a crash leaves either the whole previous generation or the
+    /// whole new header and never a torn mix.
+    ///
+    /// Nothing is destroyed before the passphrase is proven: a wrong passphrase
+    /// fails closed with the incumbent bytes still on disk.
+    pub fn new_generation(file_path: PathBuf, passphrase: &str) -> Result<Self, CryptoError> {
+        let parsed = read_vault_file_header(&file_path)?;
+        let kdf = parsed.header.kdf;
+        let salt = parsed.header.salt;
+
+        // Prove the passphrase against the vault as it stands before any write.
+        let derived_key_bytes = derive_with_argon2id_and_salt(passphrase, &salt, kdf)?;
+        let key = aead_key_from_raw(derived_key_bytes);
+        open_verifier(&parsed.header, &key).map_err(|_| CryptoError::PassphraseRejected)?;
+
+        Self::begin_generation_with_key(&file_path, key)
+    }
+
+    /// `new_generation` for a caller that already holds a verified key from a
+    /// previous open, so a save pass costs no Argon2id derivation.
+    ///
+    /// The key must have come from this file's own salt and KDF parameters;
+    /// `VaultBuilder::verify_existing_vault_passphrase` is what produces such a
+    /// key. The fresh verifier is sealed under it, so a wrong key would be
+    /// caught by every later open rather than silently accepted.
+    pub fn begin_generation_with_key(
+        file_path: &Path,
+        key: RamKey,
+    ) -> Result<Self, CryptoError> {
+        let parsed = read_vault_file_header(file_path)?;
+        let kdf = parsed.header.kdf;
+        let salt = parsed.header.salt;
+
+        // Fresh file id -> fresh nonce base. This is what makes the next body
+        // safe to seal from counter zero.
+        let mut file_id = [0u8; FILE_ID_LEN];
+        fill_random(&mut file_id)?;
+        let record_base_nonce = derive_record_base_nonce(&key, &file_id);
+
+        // New verifier over the new file id, bound to the same salt and kdf.
+        let mut verifier_nonce = [0u8; VERIFIER_NONCE_LEN];
+        fill_random(verifier_nonce.as_mut_slice())?;
+        let verifier_aad = verifier_aad_bytes(&MAGIC_PREFIX, LAYOUT_VERSION_V1, &salt, kdf);
+        let mut seal_nonce = [0u8; 24];
+        seal_nonce[..VERIFIER_NONCE_LEN].copy_from_slice(&verifier_nonce);
+        let aead = XChaCha20Poly1305::new(key.raw().into());
+        let verifier_ct_vec = aead
+            .encrypt(
+                (&seal_nonce).into(),
+                Payload {
+                    msg: VERIFIER_PLAINTEXT,
+                    aad: &verifier_aad,
+                },
+            )
+            .map_err(|e| CryptoError::AeadSealFailed {
+                reason: aead_reason(&e),
+            })?;
+        if verifier_ct_vec.len() != VERIFIER_CIPHERTEXT_LEN_V1 {
+            return Err(CryptoError::AeadSealFailed {
+                reason: format!(
+                    "verifier ciphertext length {} != expected {}",
+                    verifier_ct_vec.len(),
+                    VERIFIER_CIPHERTEXT_LEN_V1
+                ),
+            });
+        }
+
+        let header = VaultHeaderRaw {
+            version: LAYOUT_VERSION_V1,
+            header_len: HEADER_LEN_BYTES_V1,
+            kdf,
+            salt,
+            verifier_nonce,
+            verifier_ciphertext: verifier_ct_vec
+                .as_slice()
+                .try_into()
+                .map_err(|_| CryptoError::MalformedRecord)?,
+            file_id,
+        };
+        let header_bytes = header.encode()?;
+        write_header_atomically(file_path, &header_bytes)?;
+
+        Ok(EncryptedVault {
+            file_path: file_path.to_path_buf(),
+            key,
+            file_id,
+            record_base_nonce,
+            record_counter: RecordNonceCounter::new(),
+        })
     }
 
     /// Number of complete framed records in this file. Each iteration reads a
@@ -317,21 +439,124 @@ impl EncryptedVault {
     /// preceding frame is walked by reading its u32 length and then seeking
     /// past its body, keeping absolute offsets authoritative throughout.
     pub fn read_record_by_index(&self, index: usize) -> Result<Vec<u8>, CryptoError> {
-        if index >= self.record_count()? {
-            return Err(CryptoError::UnknownRecordFrame {
-                reason: format!("index {} beyond record count", index),
-            });
+        let frame = self.read_frame_cipher_at(index)?;
+        record_decrypt_with_key(
+            &self.key,
+            &frame,
+            index as u64,
+            &self.file_id,
+        )
+    }
+
+    /// Decrypt EVERY frame in one pass, binding record `i` to counter `i`.
+    ///
+    /// This is the whole-file reader. It walks the frame stream exactly once,
+    /// so a load costs one pass over the file rather than one pass per record.
+    /// A frame that fails to open is reported with its index so the caller can
+    /// decide to skip it rather than discard the entire vault.
+    pub fn read_all_records(&self) -> Result<Vec<Result<Vec<u8>, (usize, CryptoError)>>, CryptoError> {
+        let frames = self.frame_cipher_stream()?;
+        let mut out = Vec::with_capacity(frames.len());
+        for (index, frame) in frames.iter().enumerate() {
+            let opened = record_decrypt_with_key(
+                &self.key,
+                frame,
+                index as u64,
+                &self.file_id,
+            )
+            .map_err(|e| (index, e));
+            out.push(opened);
         }
+        Ok(out)
+    }
+
+    /// SALVAGE ONLY — decrypt a vault written by the pre-fix writer, whose
+    /// record counter restarted at zero on every save pass while the frames
+    /// kept appending.
+    ///
+    /// Each frame is tried against every counter in `0..counter_modulus` until
+    /// one opens, which recovers a pass that was interrupted part-way through
+    /// as well as whole passes. Returns the frames that opened, in stream
+    /// order, with the counter that opened each one.
+    ///
+    /// This exists to rescue an already-damaged file. Nothing may write with
+    /// it; a vault written by this build always uses one generation and reads
+    /// back through `read_all_records`.
+    pub fn read_all_records_legacy_counter_layout(
+        &self,
+        counter_modulus: u64,
+    ) -> Result<Vec<(usize, u64, Vec<u8>)>, CryptoError> {
+        if counter_modulus == 0 {
+            return Err(CryptoError::MalformedRecord);
+        }
+        let frames = self.frame_cipher_stream()?;
+        let mut out = Vec::new();
+        for (index, frame) in frames.iter().enumerate() {
+            for candidate in 0..counter_modulus {
+                if let Ok(plaintext) =
+                    record_decrypt_with_key(&self.key, frame, candidate, &self.file_id)
+                {
+                    out.push((index, candidate, plaintext));
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Every frame's ciphertext body in stream order, read in one pass.
+    fn frame_cipher_stream(&self) -> Result<Vec<Vec<u8>>, CryptoError> {
         let stream_len = {
             let f = fs::File::open(&self.file_path)
                 .map_err(|e| CryptoError::IoRead(e.to_string()))?;
             f.metadata().map_err(|e| CryptoError::IoRead(e.to_string()))?.len()
         };
+        if stream_len < HEADER_LEN_BYTES_V1 as u64 {
+            return Err(CryptoError::EmptyEnvelope);
+        }
+        let record_zone_len = stream_len - Self::record_stream_offset();
+        let mut f = fs::File::open(&self.file_path)
+            .map_err(|e| CryptoError::IoRead(e.to_string()))?;
+        let mut frames: Vec<Vec<u8>> = Vec::new();
+        let mut cursor = 0u64;
+        while cursor < record_zone_len {
+            f.seek(SeekFrom::Start(Self::record_stream_offset() + cursor))
+                .map_err(|e| CryptoError::IoRead(e.to_string()))?;
+            let mut lenbuf = [0u8; 4];
+            f.read_exact(&mut lenbuf).map_err(|e| CryptoError::IoRead(e.to_string()))?;
+            let reclen = u32::from_le_bytes(lenbuf) as usize;
+            if reclen < RECORD_NONCE_LEN + 16 {
+                return Err(CryptoError::MalformedRecord);
+            }
+            if cursor + 4 + reclen as u64 > record_zone_len {
+                // A torn trailing frame from a kill mid-write: everything
+                // before it is complete and usable, so stop rather than fail.
+                break;
+            }
+            let mut body = vec![0u8; reclen];
+            f.read_exact(&mut body).map_err(|e| CryptoError::IoRead(e.to_string()))?;
+            frames.push(body);
+            cursor += 4 + reclen as u64;
+        }
+        Ok(frames)
+    }
+
+    /// The raw ciphertext frame at a 0-based index.
+    fn read_frame_cipher_at(&self, index: usize) -> Result<Vec<u8>, CryptoError> {
+        let stream_len = {
+            let f = fs::File::open(&self.file_path)
+                .map_err(|e| CryptoError::IoRead(e.to_string()))?;
+            f.metadata().map_err(|e| CryptoError::IoRead(e.to_string()))?.len()
+        };
+        if stream_len < HEADER_LEN_BYTES_V1 as u64 {
+            return Err(CryptoError::EmptyEnvelope);
+        }
         let record_zone_len = stream_len - Self::record_stream_offset();
         let mut f = fs::File::open(&self.file_path)
             .map_err(|e| CryptoError::IoRead(e.to_string()))?;
         let mut cursor = 0u64;
-        for rec_idx in 0..=index {
+        let mut rec_idx = 0usize;
+        while cursor < record_zone_len {
             f.seek(SeekFrom::Start(Self::record_stream_offset() + cursor))
                 .map_err(|e| CryptoError::IoRead(e.to_string()))?;
             let mut lenbuf = [0u8; 4];
@@ -342,22 +567,20 @@ impl EncryptedVault {
                 return Err(CryptoError::MalformedRecord);
             }
             if rec_idx == index {
+                if cursor + 4 + reclen as u64 > record_zone_len {
+                    return Err(CryptoError::MalformedRecord);
+                }
                 let mut record_cipher = vec![0u8; reclen];
                 f.read_exact(&mut record_cipher)
                     .map_err(|e| CryptoError::IoRead(e.to_string()))?;
-                return record_decrypt_with_key(
-                    &self.key,
-                    &record_cipher,
-                    rec_idx as u64,
-                    &self.file_id,
-                );
+                return Ok(record_cipher);
             }
             cursor += 4 + reclen as u64;
-            if cursor > record_zone_len {
-                return Err(CryptoError::MalformedRecord);
-            }
+            rec_idx += 1;
         }
-        unreachable!("index prechecked")
+        Err(CryptoError::UnknownRecordFrame {
+            reason: format!("index {} beyond record count", index),
+        })
     }
 }
 

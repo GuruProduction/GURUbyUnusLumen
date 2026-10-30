@@ -51,5 +51,28 @@ data class MessageEntity(
     val toolCalls: String = "",
     @SerialName("toolResults")
     @ColumnInfo(name = "tool_results", defaultValue = "")
-    val toolResults: String = ""
+    val toolResults: String = "",
+    /**
+     * Tool identity, persisted so a restored conversation rebuilds a VALID tool
+     * call instead of an empty-named orphan.
+     *
+     * Before v29 a tool row stored only the arguments and the result. The two
+     * fields the model host actually needs, the tool name and the call id, were
+     * dropped on the way to disk, so every restore produced
+     * `ToolCall(name = "", id = null)`. A tool_call with an empty function name
+     * is not renderable by the upstream chat template, and the host answers the
+     * whole request with HTTP 500 "internal server error" — the exact symptom
+     * reported: any conversation where a tool ran fails to send after a
+     * restart, /clear fixes it because it drops those rows, and a chat with no
+     * tools restores clean.
+     *
+     * Defaults are empty so rows written before v29 read back honestly as
+     * "identity not recorded" rather than as a fabricated name.
+     */
+    @SerialName("toolName")
+    @ColumnInfo(name = "tool_name", defaultValue = "")
+    val toolName: String = "",
+    @SerialName("toolCallId")
+    @ColumnInfo(name = "tool_call_id", defaultValue = "")
+    val toolCallId: String = ""
 )

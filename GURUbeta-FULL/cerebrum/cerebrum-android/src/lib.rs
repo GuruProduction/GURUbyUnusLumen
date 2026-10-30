@@ -32,7 +32,7 @@ use tokio::sync::Mutex as TokioMutex;
 use zeroize::Zeroizing;
 
 use cerebrum_server::handler::{handle_frame, ErrorResponse};
-use cerebrum_server::persistence::{restore_state, CerebrumPersistence};
+use cerebrum_server::persistence::{restore_state, VaultSession};
 use cerebrum_server::state::CerebrumState;
 use cerebrum_server::{frame_types, Frame, FrameHeader, HEADER_SIZE};
 
@@ -55,14 +55,16 @@ struct AndroidBrain {
     state: Arc<TokioMutex<CerebrumState>>,
     /// Kept in RAM only; stop() wipes and drops. No logs carry these bytes.
     passphrase_ram: RwLock<Option<Zeroizing<String>>>,
-    data_dir: PathBuf,
+    /// Verified vault key held for the life of the brain, so a save pass is a
+    /// rewrite plus a fast seal instead of a 256 MiB Argon2id derivation.
+    vault: VaultSession,
     socket_path: PathBuf,
     listener_alive: Arc<AtomicBool>,
     save_loop_alive: Arc<AtomicBool>,
     /// Trailing-save generation counter: a mutating frame bumps it; the
     /// save watcher saves 10 trailing seconds after the LAST bump. A brain
     /// hard-killed in the window loses at most 10 seconds of writes.
-    dirty_generation: AtomicU64,
+    dirty_generation: Arc<AtomicU64>,
     started_at_unix_ms: u64,
     requests_handled: AtomicU32,
 }
@@ -74,15 +76,18 @@ impl AndroidBrain {
 
     /// Arm the trailing save: called after every MUTATING brain frame.
     fn mark_dirty(&self) {
-        static GLOBAL_DIRTY: AtomicU64 = AtomicU64::new(0);
-        let gen_value = GLOBAL_DIRTY.fetch_add(1, Ordering::SeqCst) + 1;
-        self.dirty_generation.store(gen_value, Ordering::SeqCst);
+        self.dirty_generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Save everything as one fresh vault generation under the held key.
+    async fn save_pass(&self) -> Result<usize, String> {
+        let mut locked_cell = self.state.lock().await;
+        self.vault
+            .save_all(&mut locked_cell)
+            .map(|report| report.records_written)
+            .map_err(|persist_error| format!("{:?}", persist_error))
     }
 }
-
-/// Global gen: the watcher keeps its own "seen" copy of this counter to
-/// compare with brain's own gen when scheduling the tail-save pass.
-static SAVE_WATCHER_SEEN: AtomicU64 = AtomicU64::new(0);
 
 static BRAIN_CELL: RwLock<Option<Arc<AndroidBrain>>> = RwLock::new(None);
 
@@ -236,19 +241,6 @@ async fn socket_write_frame(writer_stream: &mut UnixStream, frame_value: &Frame)
 // persistence + connection dispatch helpers
 // ============================================================================
 
-async fn brain_save_pass(
-    state_cell_ptr: Arc<TokioMutex<CerebrumState>>,
-    persist_dir: PathBuf,
-    pass_value: &str,
-) -> Result<usize, String> {
-    let persistence_handle = CerebrumPersistence::new(persist_dir);
-    let mut locked_cell = state_cell_ptr.lock().await;
-    persistence_handle
-        .save_all(&mut locked_cell, pass_value)
-        .map(|report_value| report_value.records_written)
-        .map_err(|persist_error| format!("{:?}", persist_error))
-}
-
 async fn android_connection_loop(
     mut active_stream: UnixStream,
     working_target: Arc<AndroidBrain>,
@@ -293,75 +285,58 @@ fn spawn_periodic_save_cell(brain_shared: Arc<AndroidBrain>) {
             if tick_brain.save_loop_alive.load(Ordering::SeqCst) == false {
                 break;
             }
-            let pass_for_save = match tick_brain.passphrase_ram.read() {
-                Ok(read_cell) => read_cell.as_ref().cloned(),
-                Err(_) => None,
-            };
-            if let Some(kept_pass) = pass_for_save {
-                let pass_value = brain_save_pass(
-                    Arc::clone(&tick_brain.state),
-                    tick_brain.data_dir.clone(),
-                    kept_pass.trim(),
-                )
-                .await;
-                if let Err(save_fail) = pass_value {
-                    eprintln!("cerebrum-android periodic save: {}", save_fail);
-                }
+            if let Err(save_fail) = tick_brain.save_pass().await {
+                eprintln!("cerebrum-android periodic save: {}", save_fail);
             }
         }
     });
 
     // TRAILING SAVE WATCHER (hard-close data-loss fix): the 5-minute tick
     // alone loses up to 300 seconds of writes to a process kill. Every
-    // mutating frame bumps dirty_generation; this watcher watches the
-    // counter and runs a save pass 10 seconds after the LAST bump seen.
+    // mutating frame bumps dirty_generation; this watcher runs a save pass 10
+    // seconds after the LAST bump it saw.
+    //
+    // The quiet-window check compares the generation captured BEFORE the sleep
+    // against the live value AFTER it. An earlier version compared the live
+    // value against itself, so the guard could never trip and every pass fired
+    // the tail save regardless of fresh writes.
     let tail_brain = Arc::clone(&brain_shared);
     runtime().spawn(async move {
+        let mut gen_seen: u64 = 0;
         loop {
             if tail_brain.save_loop_alive.load(Ordering::SeqCst) == false {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
             let gen_now = tail_brain.dirty_generation.load(Ordering::SeqCst);
-            let gen_seen = SAVE_WATCHER_SEEN.load(Ordering::SeqCst);
             if gen_now == gen_seen {
                 // No dirty write since the last tail save; quiet loop round.
                 continue;
             }
-            // A write landed since the last ack: wait a 10-second tail, and
-            // only save when that tail stayed quiet (no fresh bump inside
-            // the window); a fresh bump defers to the watcher's next round.
-            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(TAIL_SAVE_QUIET_SECS)).await;
             let gen_settled = tail_brain.dirty_generation.load(Ordering::SeqCst);
-            if gen_settled != tail_brain.dirty_generation.load(Ordering::SeqCst) {
-                continue; // unreachable-by-construction safety guard
+            if gen_settled != gen_now {
+                // Fresh writes landed inside the window: defer to a later round
+                // rather than rewriting a generation that is already stale.
+                continue;
             }
-            let pass_tail = tail_brain
-                .passphrase_ram
-                .read()
-                .ok()
-                .and_then(|slot_value| slot_value.clone());
-            if let Some(tail_pass) = pass_tail {
-                match brain_save_pass(
-                    Arc::clone(&tail_brain.state),
-                    tail_brain.data_dir.clone(),
-                    tail_pass.trim(),
-                )
-                .await
-                {
-                    Ok(_records_written) => {
-                        SAVE_WATCHER_SEEN.store(gen_settled, Ordering::SeqCst);
-                    }
-                    Err(tail_save_err) => {
-                        eprintln!("cerebrum-android tail save: {}", tail_save_err);
-                    }
+            match tail_brain.save_pass().await {
+                Ok(_records_written) => {
+                    gen_seen = gen_settled;
+                }
+                Err(tail_save_err) => {
+                    eprintln!("cerebrum-android tail save: {}", tail_save_err);
                 }
             }
         }
     });
 }
 
+/// Longest a mutating frame can sit unsaved before the trailing watcher fires.
 const SAVE_INTERVAL: u64 = 300;
+
+/// Quiet window the trailing watcher waits for before committing a generation.
+const TAIL_SAVE_QUIET_SECS: u64 = 10;
 
 fn spawn_socket_listener_cell(brain_shared: Arc<AndroidBrain>) {
     runtime().spawn(async move {
@@ -447,12 +422,25 @@ fn brain_boot(
         let mut guard_value = fresh_state_clone.lock().await;
         let restore_target = restore_state(&mut guard_value, real_dir.clone(), pass_value.trim());
         match restore_target {
-            Ok(completed_value) => Ok::<(), String>(completed_value),
+            Ok(report_value) => Ok::<_, String>(report_value),
             Err(failure_value_in) => Err(format!("{:?}", failure_value_in)),
         }
     });
-    if let Err(restore_fail) = restore_value {
-        return Err(restore_fail);
+    let restore_report = match restore_value {
+        Ok(report_value) => report_value,
+        Err(restore_fail) => return Err(restore_fail),
+    };
+    if !restore_report.clean() {
+        eprintln!(
+            "cerebrum-android restore: {} records, {} skipped{}",
+            restore_report.records_applied,
+            restore_report.skipped_records.len(),
+            if restore_report.legacy_salvage {
+                " (legacy salvage)"
+            } else {
+                ""
+            }
+        );
     }
 
     if let Err(hardening_fail) = cerebrum_server::hardening::install_no_network_filter_bool() {
@@ -462,6 +450,13 @@ fn brain_boot(
         );
     }
 
+    // One verified key for this brain's whole life. Held before the struct is
+    // built so a wrong passphrase fails the boot rather than the first save.
+    let vault_session = match VaultSession::open(real_dir.clone(), pass_value.trim()) {
+        Ok(session_value) => session_value,
+        Err(session_error) => return Err(format!("{:?}", session_error)),
+    };
+
     let started_stamp_value = unix_ms_now();
     let listener_state_atomic = Arc::new(AtomicBool::new(true));
     let save_state_atomic_val = Arc::new(AtomicBool::new(true));
@@ -469,11 +464,11 @@ fn brain_boot(
     let brain_final = Arc::new(AndroidBrain {
         state: Arc::clone(&fresh_state_ptr),
         passphrase_ram: RwLock::new(Some(Zeroizing::new(pass_value))),
-        data_dir: real_dir,
+        vault: vault_session,
         socket_path: socket_path.clone(),
         listener_alive: Arc::clone(&listener_state_atomic),
         save_loop_alive: Arc::clone(&save_state_atomic_val),
-        dirty_generation: AtomicU64::new(0),
+        dirty_generation: Arc::new(AtomicU64::new(0)),
         started_at_unix_ms: started_stamp_value,
         requests_handled: AtomicU32::new(0),
     });
@@ -574,21 +569,11 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
     stop_brain_target.listener_alive.store(false, Ordering::SeqCst);
     stop_brain_target.save_loop_alive.store(false, Ordering::SeqCst);
 
-    let kept_value: Option<Zeroizing<String>> = match stop_brain_target.passphrase_ram.read() {
-        Ok(write_value) => write_value.as_ref().cloned(),
-        Err(_) => None,
-    };
-    if let Some(to_run) = kept_value {
-        let save_attempt = runtime().block_on(brain_save_pass(
-            Arc::clone(&stop_brain_target.state),
-            stop_brain_target.data_dir.clone(),
-            to_run.trim(),
-        ));
-        if let Err(fail_to_run) = save_attempt {
-            let value_text = format!("cerebrum stop final save: {}", fail_to_run);
-            eprintln!("{}", value_text);
-            record_error(&value_text);
-        }
+    let save_attempt = runtime().block_on(stop_brain_target.save_pass());
+    if let Err(fail_to_run) = save_attempt {
+        let value_text = format!("cerebrum stop final save: {}", fail_to_run);
+        eprintln!("{}", value_text);
+        record_error(&value_text);
     }
 
     let stale_socket_path = std::clone::Clone::clone(&stop_brain_target.socket_path);
@@ -619,19 +604,7 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
     else {
         return 0;
     };
-    let Some(kept_pass) = living_target
-        .passphrase_ram
-        .read()
-        .ok()
-        .and_then(|cell_value| cell_value.clone())
-    else {
-        return 0;
-    };
-    match runtime().block_on(brain_save_pass(
-        Arc::clone(&living_target.state),
-        living_target.data_dir.clone(),
-        kept_pass.trim(),
-    )) {
+    match runtime().block_on(living_target.save_pass()) {
         Ok(persist_count) => persist_count as jint,
         Err(manual_save_fail) => {
             record_error(&format!("cerebrum manual save: {}", manual_save_fail));

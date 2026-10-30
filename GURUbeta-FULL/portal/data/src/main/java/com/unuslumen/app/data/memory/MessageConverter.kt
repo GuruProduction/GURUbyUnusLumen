@@ -37,7 +37,9 @@ fun ConversationMessage.toEntity() = MessageEntity(
     timestamp = timestamp,
     embedding = embedding,
     toolCalls = toolCalls,
-    toolResults = toolResults
+    toolResults = toolResults,
+    toolName = toolName,
+    toolCallId = toolCallId
 )
 
 fun MessageEntity.toDomain() = ConversationMessage(
@@ -48,7 +50,9 @@ fun MessageEntity.toDomain() = ConversationMessage(
     timestamp = timestamp,
     embedding = embedding,
     toolCalls = toolCalls,
-    toolResults = toolResults
+    toolResults = toolResults,
+    toolName = toolName,
+    toolCallId = toolCallId
 )
 
 fun MemoryFact.toEntity() = MemoryFactEntity(

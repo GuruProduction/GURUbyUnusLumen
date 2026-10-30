@@ -207,7 +207,9 @@ class MemoryRepositoryImpl(
                 timestamp = messageTimestamp(aiMessage = oneMessage),
                 embedding = emptyList(),
                 toolCalls = messageToolCalls(aiMessage = oneMessage),
-                toolResults = messageToolResults(aiMessage = oneMessage)
+                toolResults = messageToolResults(aiMessage = oneMessage),
+                toolName = messageToolName(aiMessage = oneMessage),
+                toolCallId = messageToolCallId(aiMessage = oneMessage)
             )
             persistMessage(message = domainRow)
         }
@@ -294,7 +296,9 @@ class MemoryRepositoryImpl(
             timestamp = rowMessage.timestamp,
             embedding = emptyList(),
             toolCalls = rowMessage.toolCalls,
-            toolResults = rowMessage.toolResults
+            toolResults = rowMessage.toolResults,
+            toolName = rowMessage.toolName,
+            toolCallId = rowMessage.toolCallId
         )
     }
 
@@ -307,7 +311,9 @@ class MemoryRepositoryImpl(
             timestamp = entity.timestamp,
             embedding = emptyList(),
             toolCalls = entity.toolCalls,
-            toolResults = entity.toolResults
+            toolResults = entity.toolResults,
+            toolName = entity.toolName,
+            toolCallId = entity.toolCallId
         )
     }
 
@@ -561,6 +567,28 @@ class MemoryRepositoryImpl(
 
     private fun messageToolResults(aiMessage: AiMessage): String = when (aiMessage) {
         is AiMessage.ToolCall -> aiMessage.resultRawContent
+        else -> ""
+    }
+
+    /**
+     * The tool NAME, persisted beside the arguments so a restored row can be
+     * replayed as a valid tool call. Without it every restore produced an
+     * empty-named tool_call, which the model host rejects with a 500.
+     */
+    private fun messageToolName(aiMessage: AiMessage): String = when (aiMessage) {
+        is AiMessage.ToolCall -> aiMessage.name
+        is AiMessage.StreamingToolCall -> aiMessage.toolName
+        else -> ""
+    }
+
+    /**
+     * The provider's call id, persisted so the call and its result pair up
+     * again on restore. A result with a null id is orphaned history; some
+     * providers accept it, the stricter ones reject the whole request.
+     */
+    private fun messageToolCallId(aiMessage: AiMessage): String = when (aiMessage) {
+        is AiMessage.ToolCall -> aiMessage.id ?: ""
+        is AiMessage.StreamingToolCall -> aiMessage.uuid
         else -> ""
     }
 

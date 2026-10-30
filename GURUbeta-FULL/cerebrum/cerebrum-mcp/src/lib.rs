@@ -296,7 +296,7 @@ fn as_json_from(raw: Vec<u8>) -> serde_json::Value {
 }
 
 /// Hex-string memory id (wire canonical form everywhere in Cerebrum server).
-fn memory_id_from_hex_string(hex_text: &str) -> Option<MemoryId> {
+pub fn memory_id_from_hex_string(hex_text: &str) -> Option<MemoryId> {
     let lowered = hex_text.to_lowercase();
     if lowered.len() != 64 || !lowered.chars().all(|c| c.is_ascii_hexdigit()) {
         return None;
@@ -384,7 +384,12 @@ fn build_curate_ops(params: &serde_json::Value) -> Result<serde_json::Value, Str
     serde_json::to_value(vec![op_value]).map_err(|e| e.to_string())
 }
 
-fn memory_id_hex(id: &MemoryId) -> String {
+/// Render a memory id back to its 64-char lowercase hex wire form.
+///
+/// The inverse of [`memory_id_from_hex_string`], and part of the public
+/// surface because every caller that receives a `MemoryId` from curate or
+/// search needs the wire form to pass it back into retrieve or traverse.
+pub fn memory_id_hex(id: &MemoryId) -> String {
     id.0.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
@@ -500,6 +505,10 @@ mod tests {
     }
 }
 
+/// Ascending 32-byte pattern as a stable 64-char test id: the id every MCP
+/// flow test curates under, so a failure names a known memory.
+#[cfg(test)]
 const MEMORY_HEX_A: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 /// Descending 32-byte pattern used as stable test id (verified 64 hex chars).
+#[cfg(test)]
 const MEMORY_HEX_B: &str = "1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100";

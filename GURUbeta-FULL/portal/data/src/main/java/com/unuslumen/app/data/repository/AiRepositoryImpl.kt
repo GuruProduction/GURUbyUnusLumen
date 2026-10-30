@@ -164,6 +164,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.io.IOException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -833,6 +834,11 @@ class AiRepositoryImpl(
             )
         }
 
+        // Wait for the egress policy to be usable BEFORE the first request.
+        // See awaitEgressReadiness for why this is the second half of the
+        // reported "keep sending until it goes through" bug.
+        awaitEgressReadiness(selectedProvider)
+
         var currentMessages = messages
         var consecutiveToolCalls = 0
         val resolvedConversationId = conversationId ?: kotlin.uuid.Uuid.random().toString()
@@ -1094,7 +1100,9 @@ class AiRepositoryImpl(
                 var hadToolCalls = false
                 val maxRetries = 4
 
-                for ((tryModel, tryExecutor) in modelChain) {
+                for ((modelIndex, entry) in modelChain.withIndex()) {
+                    val tryModel = entry.first
+                    val tryExecutor = entry.second
                     var retryCount = 0
                     while (retryCount < maxRetries) {
                         try {
@@ -1398,8 +1406,19 @@ class AiRepositoryImpl(
                                 val delayMs = 2000L * retryCount
                                 android.util.Log.w("guru", "LLM error on ${tryModel.id} (retry $retryCount/$maxRetries), retrying in ${delayMs}ms: ${errMsg.take(100)}")
                                 kotlinx.coroutines.delay(delayMs)
-                            } else if (modelChain.size > 1 && retryCount >= maxRetries) {
-                                android.util.Log.w("guru", "Model ${tryModel.id} failed after $maxRetries retries, trying next fallback...")
+                            } else if (isRetryable && modelIndex < modelChain.size - 1) {
+                                // Moved ahead of the fallback check on purpose.
+                                // It used to live inside `retryCount >= maxRetries`,
+                                // so exhausted retries on a retryable error fell
+                                // through to `throw e` and every fallback model
+                                // was skipped: one transient 500 killed the whole
+                                // send even though a healthy model was queued
+                                // behind it. A retryable error now always hands
+                                // over to the next model.
+                                android.util.Log.w(
+                                    "guru",
+                                    "Model ${tryModel.id} failed after $retryCount attempts, trying next fallback (${modelIndex + 1}/${modelChain.size - 1})..."
+                                )
                                 break
                             } else {
                                 throw e
@@ -1434,7 +1453,7 @@ class AiRepositoryImpl(
                 errorMsg.contains("404", ignoreCase = true) ->
                     "Model not found. Make sure the model is available on the server."
                 errorMsg.contains("500", ignoreCase = true) || errorMsg.contains("Internal Server Error", ignoreCase = true) ->
-                    "Server error (500). The server crashed internally — try restarting it. If it keeps happening, the model may be too large for available memory. Try a smaller model."
+                    "The model host rejected the request (500). This is usually a problem with the conversation history rather than the server, and it has already been retried. Send again to continue; if it keeps happening on this conversation, start a new one."
                 errorMsg.contains("503", ignoreCase = true) || errorMsg.contains("overloaded", ignoreCase = true) ->
                     "Model is temporarily overloaded (503). The server is busy — try again in a moment, or switch to a smaller model."
                 else -> "LLM error: $errorMsg"
@@ -1479,6 +1498,64 @@ class AiRepositoryImpl(
 
         // Persistence now happens in the finally block above — on success, on error,
         // AND on interruption — so the conversation context always survives.
+    }
+
+    /**
+     * Wait until the outbound path can actually carry a request.
+     *
+     * THE COLD-START HALF OF THE REPORTED BUG. TorEgress fails CLOSED: when Tor
+     * is not ready it returns an empty proxy list, so the very first send after
+     * an app restart can leave before the daemon has a circuit and fail with no
+     * request ever reaching the model. Nothing retried it, which is exactly the
+     * "send it over and over until it picks up" behaviour: each attempt is a
+     * fresh roll against Tor's boot time, and the ones that land after the
+     * circuit is up work fine.
+     *
+     * This holds the send for a bounded window instead of losing it. Local and
+     * LAN endpoints skip the wait entirely because they never ride Tor. The
+     * wait is capped, silent on timeout (the request then fails honestly
+     * through the normal path rather than hanging), and costs nothing at all
+     * when Tor is already up.
+     */
+    private suspend fun awaitEgressReadiness(provider: AiProvider) {
+        val targetHost = when (provider) {
+            AiProvider.UnusLumen -> "api.unuslumen.com"
+            AiProvider.Ollama, AiProvider.OpenAICompat -> try {
+                java.net.URI(
+                    getPreferenceUseCase(stringPreferencesKey(PrefsConstants.BYO_BASE_URL_KEY), "")
+                        .first()
+                ).host
+            } catch (e: Exception) {
+                null
+            }
+            else -> provider.fixedBaseUrl()?.let {
+                try { java.net.URI(it).host } catch (e: Exception) { null }
+            }
+        }
+
+        // Local or LAN target: the policy goes direct, Tor presence is irrelevant.
+        if (!TorEgress.needsTorFor(targetHost)) {
+            android.util.Log.d("guru", "Egress: ${targetHost ?: "local"} needs no Tor, sending immediately")
+            return
+        }
+
+        val manager = try {
+            org.koin.java.KoinJavaComponent.getKoin()
+                .get<com.unuslumen.app.data.tor.TorManager>()
+        } catch (e: Exception) {
+            null
+        } ?: return
+
+        if (manager.isReady.value) return
+
+        android.util.Log.i("guru", "Egress: Tor not ready yet, holding the send up to 60s for a circuit")
+        val waited = withTimeoutOrNull(60_000L) {
+            manager.isReady.first { it }
+        }
+        android.util.Log.i(
+            "guru",
+            if (waited == true) "Egress: Tor became ready, sending" else "Egress: Tor still down after 60s, sending anyway to fail honestly"
+        )
     }
 
     private suspend fun executeToolCallFromFrame(

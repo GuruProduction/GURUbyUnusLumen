@@ -96,6 +96,32 @@ class UnusLumenStreamingClient(
 
         android.util.Log.d("guru", "Stream HTTP response: ${response.status}")
 
+        // THE STATUS GATE. Ktor does not throw on a non-2xx status by default,
+        // so before this gate a 500 arriving as plain text parsed as nothing,
+        // produced zero frames and no error at all: the send simply vanished
+        // with no reply and no message. A failure that cannot be seen cannot be
+        // retried, so every non-success status becomes a real LLMClientException
+        // carrying the server's own words. This is what makes the 500 path
+        // reach the retry ladder and the user-visible message instead of dying
+        // silently at end-of-stream.
+        if (response.status.value !in 200..299) {
+            val bodyText = try {
+                response.bodyAsChannel().toInputStream().bufferedReader().use { it.readText() }
+            } catch (e: Exception) {
+                ""
+            }
+            val serverWords = bodyText.take(600).trim()
+            android.util.Log.e(
+                "guru",
+                "Stream HTTP ${response.status.value} from $url body: ${serverWords.ifBlank { "<empty>" }}"
+            )
+            throw LLMClientException(
+                "unuslumen",
+                "Server error (${response.status.value})." +
+                    (if (serverWords.isNotBlank()) " $serverWords" else "")
+            )
+        }
+
         val channel: ByteReadChannel = response.bodyAsChannel()
         val inputStream = channel.toInputStream()
         val reader = BufferedReader(InputStreamReader(inputStream))
@@ -344,7 +370,7 @@ class UnusLumenStreamingClient(
             // them from the context they belong to.
             val lastUserIndex = prompt.messages.indexOfLast { it is Message.User }
 
-            for ((msgIdx, msg) in prompt.messages.withIndex()) {
+            messages@ for ((msgIdx, msg) in prompt.messages.withIndex()) {
                 when (msg) {
                     is Message.User -> {
                         val images = if (msgIdx == lastUserIndex) {
@@ -364,6 +390,20 @@ class UnusLumenStreamingClient(
                         put("content", JsonPrimitive(msg.content))
                     })
                     is Message.Tool.Call -> {
+                        // A tool_call with no function name is unrenderable by
+                        // the upstream chat template, and the host answers the
+                        // WHOLE request with HTTP 500. That is the restored-chat
+                        // defect: history rebuilt from rows that never stored a
+                        // tool name. This is the last gate before the wire, so
+                        // an unnamed call is dropped here rather than shipped.
+                        if (msg.tool.isBlank()) {
+                            android.util.Log.w(
+                                "guru",
+                                "Dropping nameless tool call from the wire body (id=${msg.id}); " +
+                                    "the upstream rejects an empty function name with a 500"
+                            )
+                            continue@messages
+                        }
                         val argumentsObj = try {
                             json.parseToJsonElement(msg.content).jsonObject
                         } catch (e: Exception) {
@@ -385,6 +425,17 @@ class UnusLumenStreamingClient(
                         })
                     }
                     is Message.Tool.Result -> {
+                        // A result whose call was dropped has no partner, and an
+                        // orphaned tool result is rejected by the same hosts that
+                        // reject an unnamed call. Pair it by tool name, which is
+                        // the only identity a result carries.
+                        if (msg.tool.isBlank()) {
+                            android.util.Log.w(
+                                "guru",
+                                "Dropping orphaned tool result from the wire body (tool name blank)"
+                            )
+                            continue@messages
+                        }
                         // Tool-result text only. Images were moved to the user
                         // message above — the Go gateway's tool role carries a
                         // plain string content and tool images anchored here

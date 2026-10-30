@@ -26,7 +26,7 @@ use tokio::net::{UnixListener, TcpListener};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::Mutex;
 
-use cerebrum_server::persistence::{restore_state, CerebrumPersistence};
+use cerebrum_server::persistence::restore_state;
 use cerebrum_server::handler::{handle_frame, ErrorResponse};
 use cerebrum_server::state::CerebrumState;
 
@@ -93,8 +93,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     {
         let mut unlocked = state.lock().await;
         match restore_state(&mut unlocked, cli.data_dir.clone(), passphrase.trim()) {
-            Ok(()) => {
-                eprintln!("Cerebrum brain restored from encrypted vault.");
+            Ok(report) => {
+                eprintln!(
+                    "Cerebrum brain restored: {} records from {} frames{}.",
+                    report.records_applied,
+                    report.frames_seen,
+                    if report.skipped_records.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", {} skipped", report.skipped_records.len())
+                    }
+                );
             }
             Err(cerebrum_server::persistence::PersistError::Crypto(_)) => {
                 return Err("Cerebrum vault rejected the provided passphrase (wrong or damaged)".into());
@@ -134,17 +143,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // the handle state and passphrase-free (the passphrase lives outside the
     // timer's data; the timer holds only paths and locks. The saving vault
     // session re-locks through the process-held passphrase channel below.
+    // One verified key for the whole process: the passphrase is derived once
+    // here instead of on every save pass.
+    let session = Arc::new(
+        cerebrum_server::persistence::VaultSession::open(
+            cli.data_dir.clone(),
+            passphrase.trim(),
+        )
+        .map_err(|e| format!("Cerebrum vault session failed: {:?}", e))?,
+    );
+
     let save_state = Arc::clone(&state);
-    let save_dir = cli.data_dir.clone();
-    let save_passphrase = passphrase.clone();
+    let save_session = Arc::clone(&session);
     let periodic_save = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            let persist = CerebrumPersistence::new(save_dir.clone());
             let mut guard = save_state.lock().await;
-            match persist.save_all(&mut guard, save_passphrase.trim()) {
+            match save_session.save_all(&mut guard) {
                 Ok(_report) => {
                     // eprintln!("periodic save: {} records", _report.records_written);
                     let _ = _report;
@@ -173,9 +190,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Final durable save through the encrypted vault BEFORE tearing listeners
     // down; the very last brain write must land in cipher bytes to disk.
     {
-        let final_persist = CerebrumPersistence::new(cli.data_dir.clone());
         let mut unlocked = state.lock().await;
-        match final_persist.save_all(&mut unlocked, passphrase.trim()) {
+        match session.save_all(&mut unlocked) {
             Ok(report) => {
                 eprintln!("Final vault write: {} records.", report.records_written);
             }
