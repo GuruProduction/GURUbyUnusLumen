@@ -695,6 +695,17 @@ fn hex_id(id: &MemoryId) -> String {
 // Extension methods used by the executor for atomic upsert and merge semantics.
 impl ContextTree {
     /// Insert or replace an entry, updating the hierarchy if necessary.
+    ///
+    /// Public form for callers outside the curate executor that must land a
+    /// record atomically in one step, such as the consolidation pass writing
+    /// a merged replacement. Same semantics as the executor's internal
+    /// upsert: an existing id is replaced in place, and a hierarchy move
+    /// re-files the entry without leaving a stale id behind.
+    pub fn upsert_public(&mut self, entry: ContextEntry) {
+        self.upsert(entry)
+    }
+
+    /// Insert or replace an entry, updating the hierarchy if necessary.
     fn upsert(&mut self, entry: ContextEntry) {
         let needs_hierarchy_update = self
             .entries
