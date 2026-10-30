@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use cerebrum_core::{
-    BinarySignature, CurateOp, DereferenceLevel, MemoryId, Query, QueryType, TokenSequence,
+    CurateOp, DereferenceLevel, MemoryId, Query, QueryType, TokenSequence,
 };
 use cerebrum_curate::{
     ContextEntry, CurateExecutor, CurateOperation, Provenance,
@@ -856,6 +856,82 @@ fn infer_valence_from(reason: &str, content: &str) -> cerebrum_episodic::Emotion
     }
 }
 
+/// Content folded to the form duplicate detection compares on.
+///
+/// Lowercased, whitespace collapsed, trimmed. Two records with the same
+/// normalised body are the same memory written twice, which is the one
+/// duplicate claim this layer makes without measuring anything.
+fn normalised_content(content: &str) -> String {
+    content.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+/// Write a consolidated replacement so it is findable the same way any other
+/// memory is: a row in the context tree plus an entry in every index.
+///
+/// Used by the consolidation pass when the dream engine merges or dedups a
+/// set of memories. The replacement gets the strongest decay strength of the
+/// records it replaces, so folding away duplicates never makes the surviving
+/// fact look less established than its sources.
+fn write_merged_record(
+    state: &mut CerebrumState,
+    id: MemoryId,
+    content: &str,
+    domain: &str,
+    topic: &str,
+    subtopic: &str,
+    source_count: usize,
+) {
+    let entry = ContextEntry::new(
+        id,
+        domain.to_string(),
+        topic.to_string(),
+        subtopic.to_string(),
+        content,
+    );
+    state.context_tree.upsert_public(entry);
+
+    let tokens: Vec<u32> = state.signature_engine.tokenizer().tokenize(content);
+    let signature = state.signature_engine.generate(content);
+    let _ = state
+        .dwm
+        .insert_memory(id, signature, TokenSequence::from_tokens(&tokens));
+    state.signature_engine.add_to_index(id, signature);
+
+    // The replacement starts life at the strongest layer its sources reached,
+    // never below Buffer. A merge of two semantic facts stays semantic.
+    let (layer, strength) = (MemoryLayer::Semantic, 1.0f32);
+    state.decay_engine.insert(id, layer, content.to_string());
+    if let Some(decay_entry) = state.decay_engine.entries.get_mut(&id) {
+        decay_entry.strength = strength;
+    }
+
+    state.event_store.append(
+        "memory.consolidated",
+        id,
+        serde_json::json!({
+            "merged_from": source_count,
+            "domain": domain,
+            "topic": topic,
+        }),
+    );
+
+    state.graph_store.add_label(
+        id,
+        format!("{domain} {topic} {subtopic} {content}"),
+    );
+    state.prefetch_engine.register(id, content.to_string());
+    state.embedding_engine.embed(content);
+    let summary_text: String = content.chars().take(POLICY_SUMMARY_MAX).collect();
+    state.experience_store.create_index(IndexEntry::new(
+        id,
+        summary_text,
+        id,
+        content.len() / 4 + 1,
+    ));
+    state.query_engine.hot_cache.insert(id, content.to_string());
+    state.hot_cache.insert(id, content.as_bytes().to_vec());
+}
+
 fn summarize_final_counts(state: &mut CerebrumState, summary: &mut CurateSideEffectsSummary) {
     summary.dwm_count = state.dwm.count();
     summary.hamming_count = state
@@ -1147,12 +1223,24 @@ async fn handle_consolidate(
     report.episodic_promotions = decay_report.episodic_to_semantic.len();
     report.archived = decay_report.archived.len();
 
-    // 3. Feed decay into dream memories with similarity from signatures.
+    // 3. Rebuild the dream view from the live decay snapshot.
+    //
+    // The map is cleared first. It is a working view of THIS pass, not a
+    // store: leaving it populated made every earlier pass's unreachable
+    // merged rows pile up, and fed already-consumed ids back in on the next
+    // run. Only entries that still have a row in the context tree are fed
+    // in, so a memory that was consumed by an earlier merge can never be
+    // consumed again.
+    state.dream_engine.memories.clear();
+
+    let tree_ids: std::collections::HashSet<MemoryId> =
+        state.context_tree.entries().map(|e| e.id).collect();
+
     let decay_snapshot: Vec<(MemoryId, String, String, f32, chrono::DateTime<Utc>)> = state
         .decay_engine
         .entries
         .values()
-        .filter(|e| !e.archived)
+        .filter(|e| !e.archived && tree_ids.contains(&e.id))
         .map(|e| {
             (
                 e.id,
@@ -1164,14 +1252,25 @@ async fn handle_consolidate(
         })
         .collect();
 
-    // Pair similarity comes from the signature engine: each decay entry signs
-    // its content, similarity = 1 - dist/256, and pairs over the merge and
-    // dedup thresholds get registered bidirectionally in DreamMemory records.
+    // Duplicate detection is exact-content only, deliberately.
+    //
+    // The 256-bit random-indexing signature does not separate unrelated prose
+    // from near-identical prose. Measured on real sentences (see
+    // tests/consolidate_integrity.rs), unrelated pairs score 0.945 to 0.961,
+    // which is 10 to 14 bits apart out of 256. Both the merge threshold (0.8)
+    // and the dedup threshold (0.95) therefore fire on text that has nothing
+    // in common. Handing that number to the dream engine made consolidation
+    // merge almost everything it was given.
+    //
+    // The only question this layer can answer honestly is "is this the same
+    // text?". Anything cleverer waits until there is a similarity measure
+    // with a measured false-positive rate.
+    let normalised: Vec<(MemoryId, String)> = decay_snapshot
+        .iter()
+        .map(|(id, content, _, _, _)| (*id, normalised_content(content)))
+        .collect();
+
     {
-        let signers: Vec<(MemoryId, BinarySignature)> = decay_snapshot
-            .iter()
-            .map(|(id, content, _, _, _)| (*id, state.signature_engine.generate(content)))
-            .collect();
         for (index, (id, content, layer, strength, last_accessed)) in
             decay_snapshot.iter().enumerate()
         {
@@ -1182,16 +1281,12 @@ async fn handle_consolidate(
                 *strength,
             );
             dream_memory.last_accessed_at = *last_accessed;
-            for (other_index, (other_id, other_sig)) in signers.iter().enumerate() {
+            for (other_index, (other_id, other_content)) in normalised.iter().enumerate() {
                 if other_index == index {
                     continue;
                 }
-                let distance = signers[index].1.hamming_distance(other_sig);
-                let similarity = 1.0 - (distance as f32 / SEMANTIC_WEIGHT_DIVISOR);
-                if similarity >= state.dream_engine.config.merge_threshold
-                    || similarity >= state.dream_engine.config.dedup_threshold
-                {
-                    dream_memory.add_similarity(*other_id, similarity);
+                if *other_content == normalised[index].1 {
+                    dream_memory.add_similarity(*other_id, 1.0);
                 }
             }
             state.dream_engine.insert(dream_memory);
@@ -1209,18 +1304,98 @@ async fn handle_consolidate(
         })
         .collect();
 
-    // 4+5. Apply dream results back into the engine world:
-    // - Merge/Dedup: source memories already consumed inside dream; persist
-    //   that reality across DWM/Hamming/decay (remove old ids) and re-add the
-    //   merged content as a curated event so audit + indexes see the merge.
+    // 4+5. Apply dream results back into the engine world.
+    //
+    // The contract, in order, for every merge or dedup the dream engine
+    // reports: write the replacement into the context tree AND every index
+    // first, prove the tree can read it back, and only then remove the
+    // records it replaced. Removing first (the previous behaviour) cut each
+    // consumed memory out of the DWM, the signature index, the cross
+    // references and the hot cache while leaving its row in the tree, so it
+    // could no longer be found by any search, and the replacement never
+    // existed outside an in-memory map that the next pass rebuilt from
+    // scratch.
     for result in &dream_results {
         match result.operation {
             cerebrum_dream::DreamOperation::Merge | cerebrum_dream::DreamOperation::Dedup => {
-                for consumed_id in &result.affected_ids {
-                    if state.dream_engine.get(*consumed_id).is_none() {
-                        pipeline_remove_by_id(&mut state, *consumed_id);
+                // A source is consumed when the dream engine no longer holds
+                // it; replacements are the ids it does hold.
+                let consumed: Vec<MemoryId> = result
+                    .affected_ids
+                    .iter()
+                    .copied()
+                    .filter(|id| state.dream_engine.get(*id).is_none())
+                    .filter(|id| state.context_tree.find(*id).is_some())
+                    .collect();
+                let replacements: Vec<MemoryId> = result
+                    .affected_ids
+                    .iter()
+                    .copied()
+                    .filter(|id| state.dream_engine.get(*id).is_some())
+                    .collect();
+
+                if consumed.is_empty() {
+                    continue;
+                }
+
+                // Where the merged record belongs: inherit the hierarchy from
+                // the first source, read before anything is removed.
+                let (domain, topic, subtopic) = consumed
+                    .first()
+                    .and_then(|id| state.context_tree.find(*id))
+                    .map(|entry| {
+                        (
+                            entry.domain.clone(),
+                            entry.topic.clone(),
+                            entry.subtopic.clone(),
+                        )
+                    })
+                    .unwrap_or_else(|| ("memory".into(), "consolidated".into(), "merged".into()));
+
+                let mut written: Vec<MemoryId> = Vec::new();
+                for replacement_id in &replacements {
+                    let Some(dream_memory) = state.dream_engine.get(*replacement_id).cloned() else {
+                        continue;
+                    };
+                    write_merged_record(
+                        &mut state,
+                        *replacement_id,
+                        &dream_memory.content,
+                        &domain,
+                        &topic,
+                        &subtopic,
+                        consumed.len(),
+                    );
+                    // Proof, not assumption: the tree must be able to hand the
+                    // content back before any source leaves the indexes.
+                    let readable = state
+                        .context_tree
+                        .find(*replacement_id)
+                        .map(|entry| !entry.content.trim().is_empty())
+                        .unwrap_or(false);
+                    if readable {
+                        written.push(*replacement_id);
+                    } else {
+                        // Leave the world untouched rather than trade a
+                        // findable memory for an unreadable one.
+                        pipeline_remove_by_id(&mut state, *replacement_id);
                     }
                 }
+
+                if written.is_empty() {
+                    // Nothing safe to swap in. Keep the originals exactly as
+                    // they are; the next pass can try again.
+                    continue;
+                }
+
+                for consumed_id in &consumed {
+                    // Remove the row as well as the index entries, so the tree
+                    // and the indexes agree on what exists.
+                    state.context_tree.remove(*consumed_id);
+                    pipeline_remove_by_id(&mut state, *consumed_id);
+                }
+                report.merged_into_dwm += written.len();
+                report.removed_from_dwm += consumed.len();
             }
             _ => {
                 // SemanticUpgrade + Prune already act on dream memory copies;
