@@ -42,6 +42,14 @@ val hasReleaseSigning = !guruStoreFile.isNullOrBlank() &&
 configurations.all {
     resolutionStrategy {
         force("net.java.dev.jna:jna:5.13.0")
+        // Instrumentation deps pull androidx.concurrent 1.2.0 while the resolved
+        // graph pins 1.1.0, which fails the androidTest classpath with
+        // "multiple version constraints with conflicting requirements". Both are
+        // needed at 1.2.0 for the test APK to resolve at all; the app's own
+        // runtime graph is unaffected because this only lifts a transitive
+        // version to what the test libraries already require.
+        force("androidx.concurrent:concurrent-futures:1.2.0")
+        force("androidx.concurrent:concurrent-futures-ktx:1.2.0")
     }
 }
 
