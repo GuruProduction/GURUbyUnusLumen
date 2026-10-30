@@ -239,6 +239,22 @@ class AiRepositoryImpl(
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    /**
+     * Serialises rebuild requests so concurrent saves cannot interleave builds.
+     *
+     * DECLARED BEFORE [init], AND THAT ORDER IS LOAD-BEARING. Kotlin runs
+     * property initialisers and the init block top to bottom. With this declared
+     * after [init], `rebuildNow()` reached `rebuildModelWiring()` while the mutex
+     * was still null, and `tryLock()` threw NullPointerException on
+     * DefaultDispatcher-worker-6. The crash was reported as
+     * "Attempt to invoke interface method 'boolean Mutex.tryLock' on a null
+     * object reference" at AiRepositoryImpl line 718. Moving the declaration
+     * above init is the fix; the alternative (a lazy) would hide the ordering
+     * mistake rather than correct it.
+     */
+    private val rebuildMutex = kotlinx.coroutines.sync.Mutex()
+    private var rebuildQueued = false
+
     /** Per-instance marker for the sync loop, mirrored into the shared
      *  companion atomic; the loop is process-wide, one and only one. */
 
@@ -710,10 +726,6 @@ class AiRepositoryImpl(
         rebuildModelWiring(fromSettingsSave = true)
     }
 
-    /** Serialises rebuild requests so concurrent saves cannot interleave builds. */
-    private val rebuildMutex = kotlinx.coroutines.sync.Mutex()
-    private var rebuildQueued = false
-
     private fun rebuildModelWiring(fromSettingsSave: Boolean = false) {
         if (!rebuildMutex.tryLock()) {
             // A rebuild is already in flight; mark one more pass so the latest
@@ -856,7 +868,12 @@ class AiRepositoryImpl(
                         "content" to userMessage.content
                     )
                 )
-                memoryRepository.buildContextPreamble(userMessage.content, humanName, currentMessages)
+                memoryRepository.buildContextPreamble(
+                    query = userMessage.content,
+                    humanName = humanName,
+                    currentMessages = currentMessages,
+                    conversationId = resolvedConversationId,
+                )
             } else null
         } catch (e: Exception) {
             android.util.Log.w("guru", "Memory context failed: ${e.message}")
