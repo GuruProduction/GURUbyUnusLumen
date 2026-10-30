@@ -10,22 +10,36 @@
 //!
 //! Layout inside the data dir:
 //!   {data_dir}/cerebrum.vault  — the encrypted-at-rest brain bundle. Each
-//!   subsystem is ONE appended record whose plaintext body is
+//!   subsystem is ONE record whose plaintext body is
 //!       u32-LE tag  (SUBSYSTEM_* constant)  || JSON-encoded engine state
 //!   with the DWM entry using tag SUBSYSTEM_DWM with raw serialization
-//!   bytes per its DwmPersistence format spec. The vault's append-only
-//!   record stream is the write-ahead story between saves: reload replays
-//!   same-subsystem records in stream order so later writes win. Save
-//!   compaction: after a full save pass, earlier superseded records for the
-//!   same subsystem lose authority automatically by record order.
+//!   bytes per its DwmPersistence format spec.
+//!
+//! # One generation per save
+//!
+//! A save REPLACES the vault body rather than appending to it. The previous
+//! design appended a full snapshot of every subsystem on every pass, which grew
+//! the file without bound, and it re-used every record nonce because the writer
+//! restarted its counter at zero while the reader kept counting absolute index.
+//! That combination both broke the AEAD and made every record after the first
+//! pass undecryptable, which on device presented as a multi-gigabyte vault that
+//! failed its own restore and therefore wiped the brain on next boot.
+//!
+//! Now each save opens a new generation (fresh file id, so a fresh nonce base),
+//! writes exactly one record per subsystem at counters 0..13, and the file
+//! stays the size of the live set for ever. The key is held in RAM across saves
+//! by the caller (`CerebrumPersistence::open_session`), so repeated saves cost
+//! no Argon2id derivation.
 //!
 //! The key lives only with the caller (process RAM). Passing a passphrase in
-//! on every save call is how the writer session opens its vault handle.
+//! on every save call is how a stateless writer session opens its vault handle.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use cerebrum_crypto::{CryptoError, EncryptedVault, VaultBuilder};
+use cerebrum_crypto::{
+    CryptoError, EncryptedVault, RamKey, VaultBuilder, VerifiedPassphrase,
+};
 use cerebrum_core::{BinarySignature, MemoryId};
 
 use crate::state::CerebrumState;
@@ -47,12 +61,64 @@ pub const SUBSYSTEM_LAST_CURATED_ID: u32 = 12;
 pub const SUBSYSTEM_QUERY_HOT_CACHE: u32 = 13;
 pub const SUBSYSTEM_PREFETCH_REGISTER: u32 = 14;
 
+/// Number of subsystem records written per generation. The DWM record is the
+/// only one whose plaintext is raw bytes rather than JSON; every other tag
+/// carries one JSON body. Fixed because the counter bound is what a salvage
+/// pass uses to bound its search.
+pub const SUBSYSTEM_RECORDS_PER_GENERATION: usize = 14;
+
 /// Vault file name inside the data dir.
 pub const VAULT_FILE_NAME: &str = "cerebrum.vault";
 
 /// Persistence handle; owns the key and vault access to one brain.
 pub struct CerebrumPersistence {
     data_dir: PathBuf,
+}
+
+/// A save session that has already paid the Argon2id cost once.
+///
+/// The derived key stays in RAM for the life of the session, so every later
+/// save is a rewrite plus a fast AEAD seal rather than a 256 MiB, three-pass
+/// key derivation. A wrong passphrase still fails closed at construction.
+pub struct VaultSession {
+    data_dir: PathBuf,
+    verified: VerifiedPassphrase,
+}
+
+impl VaultSession {
+    /// Verify `passphrase` against the vault that exists now (if any) and hold
+    /// the derived key. A vault that does not exist yet is created here.
+    pub fn open(data_dir: PathBuf, passphrase: &str) -> Result<Self, PersistError> {
+        std::fs::create_dir_all(&data_dir).map_err(|e| PersistError::Io {
+            reason: e.to_string(),
+        })?;
+        let path = data_dir.join(VAULT_FILE_NAME);
+        let verified = if path.exists() {
+            VaultBuilder::verify_existing_vault_passphrase(&path, passphrase)
+                .map_err(PersistError::Crypto)?
+        } else {
+            VaultBuilder::new(path)
+                .create_from_passphrase(passphrase)
+                .map_err(PersistError::Crypto)?;
+            VaultBuilder::verify_existing_vault_passphrase(
+                &data_dir.join(VAULT_FILE_NAME),
+                passphrase,
+            )
+            .map_err(PersistError::Crypto)?
+        };
+        Ok(Self { data_dir, verified })
+    }
+
+    /// The vault path this session writes.
+    pub fn vault_path(&self) -> PathBuf {
+        self.data_dir.join(VAULT_FILE_NAME)
+    }
+
+    /// Save everything as a fresh generation using the held key.
+    pub fn save_all(&self, state: &mut CerebrumState) -> Result<PersistReport, PersistError> {
+        let persistence = CerebrumPersistence::new(self.data_dir.clone());
+        persistence.save_all_with_key(state, self.verified.key())
+    }
 }
 
 impl CerebrumPersistence {
@@ -71,8 +137,11 @@ impl CerebrumPersistence {
     // Saving
     // ==============================================================================
 
-    /// Save everything writable under `passphrase`. Appends one record per
-    /// subsystem to the vault; returns per-subsystem record byte size total.
+    /// Save everything writable under `passphrase`, as one fresh generation.
+    ///
+    /// Verifies the passphrase, derives the key once, then rewrites the vault
+    /// body. Prefer `VaultSession` on any path that saves more than once so the
+    /// derivation is not repeated.
     pub fn save_all(
         &self,
         state: &mut CerebrumState,
@@ -83,14 +152,43 @@ impl CerebrumPersistence {
         })?;
 
         let path = self.vault_path();
-        let mut vault = if path.exists() {
-            EncryptedVault::open_existing(path, passphrase)
+        let verified = if path.exists() {
+            VaultBuilder::verify_existing_vault_passphrase(&path, passphrase)
                 .map_err(PersistError::Crypto)?
         } else {
             VaultBuilder::new(path)
                 .create_from_passphrase(passphrase)
+                .map_err(PersistError::Crypto)?;
+            VaultBuilder::verify_existing_vault_passphrase(&self.vault_path(), passphrase)
                 .map_err(PersistError::Crypto)?
         };
+
+        self.save_all_with_key(state, verified.key())
+    }
+
+    /// Save everything as one fresh generation under an already-derived key.
+    ///
+    /// This is the real save path. It opens a new generation (fresh file id,
+    /// truncated body, same salt and KDF so the key still applies), appends one
+    /// record per subsystem at counters 0..13, and never appends across saves.
+    pub fn save_all_with_key(
+        &self,
+        state: &mut CerebrumState,
+        key: &RamKey,
+    ) -> Result<PersistReport, PersistError> {
+        std::fs::create_dir_all(&self.data_dir).map_err(|e| PersistError::Io {
+            reason: e.to_string(),
+        })?;
+
+        let path = self.vault_path();
+        if !path.exists() {
+            return Err(PersistError::Io {
+                reason: "save requires an existing vault; open a VaultSession or call save_all with the passphrase so the vault is created first".into(),
+            });
+        }
+        let key_copy = RamKey::from_raw_bytes(*key.raw());
+        let mut vault = EncryptedVault::begin_generation_with_key(&path, key_copy)
+            .map_err(PersistError::Crypto)?;
 
         let mut report = PersistReport::default();
 
@@ -153,34 +251,28 @@ impl CerebrumPersistence {
             &mut report,
         )?;
 
-        // DWM via its own byte format (DwmPersistence::write to in-memory).
-        // The engine crate exposes snapshot-restore to FILES, so the memory
-        // buffer path writes to a temp file INSIDE data dir then feeds its
-        // bytes straight into the encrypted bundle, and its plaintext copy is
-        // removed before the function returns. Even a kernel-torn write of a
-        // file that briefly existed on an unlocked filesystem is bounded to a
-        // few kilobytes: not silently permanent, but noted as a future
-        // zeroization improvement phase — see plan Phase C todo.
         write_subsystem(&mut vault, SUBSYSTEM_HAMMING_INDEX, &build_hamming_dump(state), &mut report)?;
 
-        // Staged DWM snapshot into the vault, atomic-zeroization after read.
-        let dwm_path = self.data_dir.join(".dwmstage.bin.tmp");
+        // DWM via its own byte format. The engine exposes disk save/load only,
+        // so the snapshot is staged to a temp file, read back, and that staging
+        // path is zeroed and removed before the function returns.
+        //
+        // The stage file lives in the SYSTEM temp directory, not in the brain
+        // data directory: this is the one moment of the save where plaintext
+        // exists on disk, and keeping it out of the app's own state folder means
+        // a crash cannot leave a plaintext DWM sitting beside the encrypted
+        // vault. It is bounded to one DWM snapshot and always removed.
+        let dwm_path = dwm_stage_path();
         if dwm_path.exists() {
-            std::fs::remove_file(&dwm_path).map_err(|e| PersistError::Io {
-                reason: e.to_string(),
-            })?;
+            let _ = std::fs::remove_file(&dwm_path);
         }
         cerebrum_dwm::DwmPersistence::save(&mut state.dwm, &dwm_path)
             .map_err(|e| PersistError::Dwm(format!("{:?}", e)))?;
         let dwm_bytes = std::fs::read(&dwm_path).map_err(|e| PersistError::Io {
             reason: e.to_string(),
         })?;
-        // zeroize disk copies of the stage file before any plaintext sits.
-        // Overwrite with zero pattern and then remove.
         let zero_pattern = vec![0u8; dwm_bytes.len()];
-        std::fs::write(&dwm_path, &zero_pattern).map_err(|e| PersistError::Io {
-            reason: e.to_string(),
-        })?;
+        let _ = std::fs::write(&dwm_path, &zero_pattern);
         let _ = std::fs::remove_file(&dwm_path);
 
         write_bytes_subsystem(&mut vault, SUBSYSTEM_DWM, &dwm_bytes, &mut report)?;
@@ -202,6 +294,11 @@ impl CerebrumPersistence {
 
     /// Load every engine to the LATEST version found for each subsystem tag
     /// in the encrypted bundle, restore DWM through its own load API.
+    ///
+    /// A record that fails to decrypt or decode is SKIPPED and recorded in
+    /// `LoadReport::skipped_records`, never promoted into a whole-vault
+    /// failure. Only a header that will not open is a hard error, because that
+    /// is the one condition that genuinely means "wrong key or damaged file".
     pub fn load_all(&self, passphrase: &str) -> Result<LoadedPersist, PersistError> {
         let path = self.vault_path();
 
@@ -214,19 +311,77 @@ impl CerebrumPersistence {
 
         let vault =
             EncryptedVault::open_existing(path, passphrase).map_err(PersistError::Crypto)?;
-        let count = vault.record_count().map_err(PersistError::Crypto)?;
 
         let mut out = LoadedPersist::default();
+        let frames = vault.read_all_records().map_err(PersistError::Crypto)?;
+        out.report.frames_seen = frames.len();
 
-        for index in 0..count {
-            let bytes = vault.read_record_by_index(index).map_err(PersistError::Crypto)?;
-            let loaded = decode_record_bytes(&bytes).ok_or(PersistError::CorruptRecord {
-                index,
-                reason: "invalid subsystem tag or body".to_string(),
-            })?;
-            out.apply_record(loaded);
+        for opened in frames {
+            match opened {
+                Ok(bytes) => match decode_record_bytes(&bytes) {
+                    Some(loaded) => {
+                        out.report.records_applied += 1;
+                        out.apply_record(loaded);
+                    }
+                    None => out.report.skipped_records.push(LoadSkip {
+                        index: out.report.records_applied,
+                        reason: "invalid subsystem tag or body".to_string(),
+                    }),
+                },
+                Err((index, _crypto)) => out.report.skipped_records.push(LoadSkip {
+                    index,
+                    reason: "record failed to open under its stream position".to_string(),
+                }),
+            }
         }
 
+        Ok(out)
+    }
+
+    /// SALVAGE a vault written by the pre-generation writer.
+    ///
+    /// That writer appended a full snapshot on every save while restarting its
+    /// record counter at zero each pass, so the stream holds many passes and a
+    /// frame's counter is its position modulo the records-per-pass count. This
+    /// tries every counter in `0..SUBSYSTEM_RECORDS_PER_GENERATION` per frame
+    /// and keeps whatever opens, which recovers whole and partial passes alike.
+    ///
+    /// Later frames win because `apply_record` overwrites by tag, which is the
+    /// same newest-wins rule the live reader uses. Nothing here writes.
+    pub fn salvage_legacy_vault(&self, passphrase: &str) -> Result<LoadedPersist, PersistError> {
+        let path = self.vault_path();
+        if !path.exists() {
+            return Ok(LoadedPersist {
+                empty: true,
+                ..Default::default()
+            });
+        }
+        let vault =
+            EncryptedVault::open_existing(path, passphrase).map_err(PersistError::Crypto)?;
+        let recovered = vault
+            .read_all_records_legacy_counter_layout(SUBSYSTEM_RECORDS_PER_GENERATION as u64)
+            .map_err(PersistError::Crypto)?;
+
+        let mut out = LoadedPersist::default();
+        out.report.frames_seen = recovered.len();
+        out.report.legacy_salvage = true;
+        let mut unopened = 0usize;
+        for (index, _counter, bytes) in recovered {
+            match decode_record_bytes(&bytes) {
+                Some(loaded) => {
+                    out.report.records_applied += 1;
+                    out.apply_record(loaded);
+                }
+                None => {
+                    unopened += 1;
+                    out.report.skipped_records.push(LoadSkip {
+                        index,
+                        reason: "invalid subsystem tag or body".to_string(),
+                    });
+                }
+            }
+        }
+        let _ = unopened;
         Ok(out)
     }
 }
@@ -250,6 +405,30 @@ pub struct PersistReport {
     pub records_written: usize,
     pub total_vault_bytes: usize,
     pub subsystem_tags: Vec<u32>,
+}
+
+/// One record the loader could not use, and why.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadSkip {
+    pub index: usize,
+    pub reason: String,
+}
+
+/// What a load actually achieved, so a partial restore is visible rather than
+/// silently indistinguishable from a clean one.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LoadReport {
+    pub frames_seen: usize,
+    pub records_applied: usize,
+    pub skipped_records: Vec<LoadSkip>,
+    /// True when the salvage path ran instead of the generation reader.
+    pub legacy_salvage: bool,
+}
+
+impl LoadReport {
+    pub fn clean(&self) -> bool {
+        self.skipped_records.is_empty()
+    }
 }
 
 /// The fully-applied state for one subsystem, decoded from ciphertext.
@@ -300,6 +479,9 @@ pub struct LoadedPersist {
     pub last_id_bytes: Option<Vec<u8>>,
     pub hot_cache_bytes: Option<Vec<u8>>,
     pub prefetch_bytes: Option<Vec<u8>>,
+    /// Per-load accounting: what came back, what was skipped, and whether the
+    /// legacy salvage path produced it.
+    pub report: LoadReport,
 }
 
 // ============================================================================
@@ -341,6 +523,16 @@ fn write_bytes_subsystem(
     report.records_written += 1;
     report.subsystem_tags.push(tag);
     Ok(())
+}
+
+/// Path of the transient DWM staging file.
+///
+/// Deliberately outside the brain data directory: `DwmPersistence` only speaks
+/// files, so each save and each restore briefly writes one plaintext snapshot.
+/// Keeping that out of the app's own state folder means a crash mid-save cannot
+/// strand plaintext beside the encrypted vault.
+fn dwm_stage_path() -> PathBuf {
+    std::env::temp_dir().join("cerebrum-dwm-stage.bin")
 }
 
 fn decode_record_bytes(bytes: &[u8]) -> Option<LoadedSubsystem> {
@@ -676,16 +868,29 @@ fn prefetch_records(engine: &cerebrum_prefetch::PrefetchEngine) -> serde_json::V
 
 /// Load into CerebrumState. Engine fields that need no restoration stay at
 /// defaults (hot cache etc.) only when their record types don't exist.
+///
+/// If the generation reader comes back with nothing usable, this retries the
+/// legacy salvage once. That is the only path that rescues a vault written by
+/// the pre-generation build, whose later passes were sealed against counters
+/// the current reader cannot reproduce.
 pub fn restore_state(
     state: &mut CerebrumState,
     data_dir: PathBuf,
     passphrase: &str,
-) -> Result<(), PersistError> {
+) -> Result<LoadReport, PersistError> {
     let persist = CerebrumPersistence::new(data_dir.clone());
-    let loaded = persist.load_all(passphrase)?;
+    let mut loaded = persist.load_all(passphrase)?;
+
+    if loaded.report.records_applied == 0 && !loaded.empty {
+        let salvaged = persist.salvage_legacy_vault(passphrase)?;
+        if salvaged.report.records_applied > 0 {
+            loaded = salvaged;
+        }
+    }
+
     if loaded.empty {
         state.data_dir = data_dir;
-        return Ok(());
+        return Ok(loaded.report);
     }
 
     if let Some(bytes) = &loaded.context_tree_bytes {
@@ -718,17 +923,16 @@ pub fn restore_state(
         restore_hamming_state(state, bytes)?;
     }
     if let Some(bytes) = &loaded.dwm_bytes {
-        // DWM loads through DwmPersistence's byte parser, staged via a hidden
-        // temp file: write the vault-decrypted bytes, load, then zeroize the
-        // staged copy before removal (no plaintext residue beyond the window).
-        let tmp = data_dir.join(".dwmrestore.bin.tmp");
+        // DWM loads through DwmPersistence's byte parser, staged via a temp
+        // file outside the brain directory: write the vault-decrypted bytes,
+        // load, then zeroize the staged copy before removal.
+        let tmp = dwm_stage_path();
         std::fs::write(&tmp, bytes)
             .map_err(|e| PersistError::Io { reason: e.to_string() })?;
         let dwm = cerebrum_dwm::DwmPersistence::load(&tmp)
             .map_err(|e| PersistError::Dwm(format!("{:?}", e)))?;
         let size = bytes.len();
-        std::fs::write(&tmp, vec![0u8; size])
-            .map_err(|e| PersistError::Io { reason: e.to_string() })?;
+        let _ = std::fs::write(&tmp, vec![0u8; size]);
         let _ = std::fs::remove_file(&tmp);
         state.dwm = dwm;
     }
@@ -785,7 +989,7 @@ pub fn restore_state(
     }
     state.data_dir = data_dir;
 
-    Ok(())
+    Ok(loaded.report)
 }
 
 fn restore_hamming_state(state: &mut CerebrumState, bytes: &[u8]) -> Result<(), PersistError> {

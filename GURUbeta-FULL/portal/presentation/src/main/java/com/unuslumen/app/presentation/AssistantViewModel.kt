@@ -188,10 +188,16 @@ class AssistantViewModel(
                                     time = msg.timestamp,
                                     uuid = msg.id
                                 )
+                                // Same restore contract as Portal: the tool
+                                // name and call id come off the row. Rows
+                                // written before v29 carry no identity, and an
+                                // unnamed tool_call makes the host reject the
+                                // entire request with a 500 — the prompt
+                                // builder drops those rows instead.
                                 "tool" -> AiMessage.ToolCall(
                                     uuid = msg.id,
-                                    id = null,
-                                    name = "",
+                                    id = msg.toolCallId.ifBlank { null },
+                                    name = msg.toolName,
                                     rawContent = msg.toolCalls.ifBlank { msg.content },
                                     resultRawContent = msg.toolResults.ifBlank { msg.content },
                                     time = msg.timestamp

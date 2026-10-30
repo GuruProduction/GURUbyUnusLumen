@@ -193,10 +193,20 @@ class PortalViewModel(
                                     time = msg.timestamp,
                                     uuid = msg.id
                                 )
+                                // Tool identity comes back off the row. It was
+                                // always empty before v29 because the name and
+                                // the call id were never written, and that
+                                // produced a tool_call with no function name:
+                                // the host rejects the whole request with a 500
+                                // and the conversation stops sending until the
+                                // history is cleared. The row is restored with
+                                // whatever identity was recorded; the prompt
+                                // builder skips an unnamed row rather than
+                                // sending something unrenderable.
                                 "tool" -> AiMessage.ToolCall(
                                     uuid = msg.id,
-                                    id = null,
-                                    name = "",
+                                    id = msg.toolCallId.ifBlank { null },
+                                    name = msg.toolName,
                                     rawContent = msg.toolCalls.ifBlank { msg.content },
                                     resultRawContent = msg.toolResults.ifBlank { msg.content },
                                     time = msg.timestamp

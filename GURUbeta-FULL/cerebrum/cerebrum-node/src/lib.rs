@@ -13,7 +13,7 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 pub use cerebrum_server::state::CerebrumState;
-use cerebrum_core::{ContextEntry, CurateOp, MemoryId};
+use cerebrum_core::MemoryId;
 use cerebrum_server::{frame_types, Frame};
 use cerebrum_server::handler::handle_frame;
 
@@ -243,7 +243,6 @@ pub fn parse_memory_hex(input_hex: &str) -> Option<MemoryId> {
     }
     Some(MemoryId(bytes))
 }
-use chrono::Utc;
 
 /// One-curated-op helper bound to content: the bridge's canonical upsert for
 /// JS-side convenience; id auto-generated hex string.
@@ -271,15 +270,15 @@ pub async fn bridge_upsert_content(
     );
     let ops_arr = vec![serde_json::to_value(raw_ops)
         .map_err(|encode_error| NodeCerebrumError::InternalError(encode_error.to_string()))?];
-    let response = match bridge.clone().curate(ops_arr).await {
-        Ok(wire_response) => wire_response,
-        Err(flow_err) => return Err(flow_err),
-    };
-    let _ = curate_upsert_shape; // shape marker unused now the real op rides wire
-    Ok((id_hex, response))
+    let response = bridge.clone().curate(ops_arr).await?;
+    // Hold the request shape against the wire result: the passthrough is the
+    // typed seam where a caller-side shape check or field projection belongs,
+    // so the returned value always arrives through one audited path.
+    let shaped_response = bridged_wirings::shape_from_curate(curate_upsert_shape, response);
+    Ok((id_hex, shaped_response))
 }
 
-mod bridged_wirings {
+pub mod bridged_wirings {
 
     /// One CurateOp::Upsert with exact shapes.
     pub fn make_core_curate_upsert(

@@ -127,7 +127,7 @@ import com.unuslumen.app.database.entity.MediaZoomLogEntity
         MediaItemEntity::class,
         MediaZoomLogEntity::class
     ],
-    version = 28
+    version = 29
 )
 @TypeConverters(DBConverters::class)
 abstract class guruDatabase: RoomDatabase() {

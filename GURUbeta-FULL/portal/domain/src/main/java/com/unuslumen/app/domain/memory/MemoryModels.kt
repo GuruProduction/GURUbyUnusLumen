@@ -19,7 +19,15 @@ data class ConversationMessage(
     val timestamp: Long,
     val embedding: List<Float> = emptyList(),
     val toolCalls: String = "",
-    val toolResults: String = ""
+    val toolResults: String = "",
+    /**
+     * Tool identity for a "tool" row. Empty when the row predates v29, which
+     * means the call cannot be replayed to a model: a tool_call with no
+     * function name is rejected by the upstream. Restored rows with an empty
+     * name are kept on screen but never sent.
+     */
+    val toolName: String = "",
+    val toolCallId: String = ""
 )
 
 data class MemoryFact(
