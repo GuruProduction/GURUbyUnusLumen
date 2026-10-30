@@ -35,3 +35,9 @@ GURUbeta-FULL/BUG_WORKFLOW.md
 GURUbeta-FULL/HEARTBEAT_ALARM_PLAN.md
 GURUbeta-FULL/MEDIA_MODULE_PLAN.md
 GURUbeta-FULL/MODULE_SYSTEM_PLAN.md
+
+# Issue and PR body files written while working. Kept out of .git/ on purpose:
+# anything newly created inside .git/ hits the harness safety check and forces a
+# manual approval prompt even with bypass permissions on, because .git is a
+# bypass-immune directory. Work happens without Steven clicking dialogs.
+/.lux-dev/
