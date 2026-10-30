@@ -176,8 +176,9 @@ class MemoryRepositoryImpl(
     override suspend fun buildContextPreamble(
         query: String,
         humanName: String,
-        currentMessages: List<AiMessage>
-    ): RetrievedContext = contextBuilder.buildPreamble(query, humanName, currentMessages)
+        currentMessages: List<AiMessage>,
+        conversationId: String,
+    ): RetrievedContext = contextBuilder.buildPreamble(query, humanName, currentMessages, conversationId)
 
     override suspend fun persistAiMessages(conversationId: String, messages: List<AiMessage>) {
         if (messages.isEmpty()) return

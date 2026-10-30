@@ -18,14 +18,54 @@ import org.koin.core.annotation.Factory
  * and BrainService. There is no Kotlin second store and no legacy Room tier
  * anywhere in the memory preamble: tool-results rows also ride the brain as
  * their upsert content rows (search hits carry both the tool name and text).
+ *
+ * Every call also records what it injected, through the optional ledger. That
+ * record is what makes retrieval falsifiable: without it the only evidence is a
+ * handful of hand-written queries, and every change to the brain is unfalsifiable
+ * on real data. The ledger is optional so unit tests and callers that predate it
+ * keep working unchanged, and a ledger failure never breaks a send.
  */
 @Factory
 class ContextBuilder(
     private val brainService: BrainService,
-    private val toolResultDao: com.unuslumen.app.database.dao.ToolResultDao
+    private val toolResultDao: com.unuslumen.app.database.dao.ToolResultDao,
+    /**
+     * NOT optional, and that is the fix.
+     *
+     * This was `InjectionLedger? = null`. Two separate things then made the
+     * ledger silently dead:
+     *
+     *  1. `@ComponentScan` generates this class's binding from its constructor
+     *     and passes only the non-defaulted parameters. A nullable with a default
+     *     is treated as "caller may omit", so the generated `factory {
+     *     ContextBuilder(brainService=get(), toolResultDao=get()) }` left the
+     *     ledger null. The hand-written `factory { ContextBuilder(get(), get(),
+     *     get()) }` in AiDataModule was dead code — KSP's generated module
+     *     overrides it, and nothing warns when a scanned class is also declared
+     *     by hand.
+     *  2. A null ledger is indistinguishable from "feature off", so the preamble
+     *     built and recorded nothing, the table stayed empty, and every test that
+     *     did not assert on row counts passed.
+     *
+     * Requiring it means the generated binding must resolve it or the app fails
+     * to start, which is the failure anyone would notice immediately.
+     */
+    private val injectionLedger: InjectionLedger,
 ) {
 
-    suspend fun buildPreamble(query: String, humanName: String = "", currentMessages: List<AiMessage> = emptyList()): RetrievedContext = withContext(Dispatchers.Default) {
+    /**
+     * Build the preamble and record what went into it.
+     *
+     * [conversationId] is required for the ledger to attribute rows; when it is
+     * blank the preamble is still built and nothing is recorded, which is the
+     * behaviour callers that do not have a conversation yet expect.
+     */
+    suspend fun buildPreamble(
+        query: String,
+        humanName: String = "",
+        currentMessages: List<AiMessage> = emptyList(),
+        conversationId: String = "",
+    ): RetrievedContext = withContext(Dispatchers.Default) {
         // ONE STORE for REMEMBERED content: fact tier rides the brain; message
         // tier reads REHYDRATED chat drawer rows through BrainService's marker
         // search (historical rows persist in the vault as rehydration source)
@@ -104,6 +144,37 @@ class ContextBuilder(
 
             if (isEmpty()) {
                 append("No relevant past context found.\n")
+            }
+        }
+
+        // Record what reached the model, before returning. Best-effort and never
+        // fatal: a ledger write cannot break a send.
+        if (conversationId.isNotBlank()) {
+            val injected = mutableListOf<InjectedMemory>()
+            facts.forEachIndexed { rank, fact ->
+                injected += InjectedMemory(
+                    memoryId = fact.id,
+                    lane = com.unuslumen.app.database.entity.MemoryInjectionEntity.LANE_FACT,
+                    rankInLane = rank + 1,
+                    score = fact.confidence,
+                    content = fact.fact,
+                )
+            }
+            messages.forEachIndexed { rank, msg ->
+                injected += InjectedMemory(
+                    memoryId = msg.id,
+                    lane = com.unuslumen.app.database.entity.MemoryInjectionEntity.LANE_MESSAGE,
+                    rankInLane = rank + 1,
+                    score = 0f,
+                    content = msg.content,
+                )
+            }
+            runCatching {
+                injectionLedger.recordInjections(
+                    query = query,
+                    conversationId = conversationId,
+                    injections = injected,
+                )
             }
         }
 
