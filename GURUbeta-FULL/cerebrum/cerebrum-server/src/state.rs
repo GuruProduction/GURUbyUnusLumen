@@ -27,6 +27,8 @@ use cerebrum_query::{QueryEngine, QueryTypeClassifier};
 use cerebrum_signatures::SignatureEngine;
 use cerebrum_storage::{InMemoryStorage, SnapshotManager, WriteAheadLog};
 
+use crate::lexical::LexicalIndex;
+
 /// Holds all subsystems that the server routes to.
 #[derive(Debug)]
 pub struct CerebrumState {
@@ -68,6 +70,12 @@ pub struct CerebrumState {
 
     /// Compressed co-index of signatures and token sequences.
     pub dwm: DynamicWaveletMatrix,
+
+    /// BM25 inverted index: the primary lexical retrieval lane.
+    ///
+    /// Kept level with the context tree on every write, update, merge and delete,
+    /// so it never claims to hold something the tree does not, or the reverse.
+    pub lexical: LexicalIndex,
 
     /// Event-sourced audit trail of every memory mutation.
     pub event_store: EventStore,
@@ -118,6 +126,7 @@ impl CerebrumState {
             signature_engine: SignatureEngine::new()
                 .expect("default signature configuration is valid"),
             dwm: DynamicWaveletMatrix::new(),
+            lexical: LexicalIndex::new(),
             event_store: EventStore::new(),
             embedding_engine: EmbeddingEngine::with_default_config(),
             experience_store: IndexedExperienceStore::new(),
