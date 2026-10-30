@@ -424,6 +424,9 @@ fn run_full_add_pipeline(
     }
     state.signature_engine.add_to_index(id, signature);
 
+    // 4b. Lexical index: the primary retrieval lane for text the user types.
+    state.lexical.upsert(id, &entry.content);
+
     // 5. Decay engine: fresh content lands in the Buffer layer.
     state
         .decay_engine
@@ -585,6 +588,9 @@ fn run_full_update_pipeline(
         state.signature_engine.add_to_index(id, signature);
         build_semantic_and_entity_edges(state, id, &new_content, &tokens);
     }
+    // Upsert on the lexical index drops the old terms first, so an edit can never
+    // leave the previous wording searchable.
+    state.lexical.upsert(id, &new_content);
 
     if let Some(decay_entry) = state.decay_engine.entries.get_mut(&id) {
         decay_entry.content = new_content.clone();
@@ -691,6 +697,7 @@ fn run_full_delete_pipeline(
 fn pipeline_remove_by_id(state: &mut CerebrumState, id: MemoryId) {
     let _ = state.dwm.remove_memory(id);
     let _ = state.signature_engine.remove_from_index(id);
+    state.lexical.remove(id);
     state.cross_ref.remove(id);
     state.hot_cache_forget(&id);
 }
@@ -896,6 +903,7 @@ fn write_merged_record(
         .dwm
         .insert_memory(id, signature, TokenSequence::from_tokens(&tokens));
     state.signature_engine.add_to_index(id, signature);
+    state.lexical.upsert(id, content);
 
     // The replacement starts life at the strongest layer its sources reached,
     // never below Buffer. A merge of two semantic facts stays semantic.
@@ -1102,121 +1110,131 @@ async fn handle_search(
         serde_json::from_slice(payload).map_err(|e| ErrorResponse::new(e.to_string()))?;
 
     let mut state = state.lock().await;
-    let query_sig = state.signature_engine.generate(&req.query);
-
-    // 1. Signature search from both indices.
-    //
-    // Calibrated against real signatures, not inherited from the old layout.
-    // These numbers were measured with `radius_calibration_probe` after the
-    // binarize fix gave the signature its full 256 bits:
-    //   relevant queries (memory <- shortened query)   64 to  98 bits apart
-    //   unrelated queries (memory <- other memory)    124 to 142 bits apart
-    // 110 sits in the gap with roughly 12 bits of margin each side.
-    //
-    // The previous value of 64 was never a meaningful threshold: signatures only
-    // occupied 32 of 256 bits, so unrelated text landed 10 to 14 bits apart and
-    // 64 matched almost everything. It worked by accident and would now miss
-    // three quarters of genuine matches.
-    const RADIUS: u32 = 110;
-    let mut hits: HashMap<MemoryId, u32> = HashMap::new();
-    for (id, dist) in state.signature_engine.search(&query_sig, RADIUS, req.limit.min(64)) {
-        hits.entry(id).and_modify(|e| *e = (*e).min(dist)).or_insert(dist);
-    }
-    for (id, dist) in state.dwm.search(&query_sig, RADIUS, req.limit.min(64)) {
-        hits.entry(id).and_modify(|e| *e = (*e).min(dist)).or_insert(dist);
-    }
-    let mut ranked: Vec<(MemoryId, u32)> = hits.into_iter().collect();
-    ranked.sort_by_key(|(_, d)| *d);
-
-    // 2+3. Build results; real contents; access strengthening on found ones.
-    let mut results: Vec<SearchResult> = Vec::new();
     let limit = req.limit;
-    for (memory_id, dist) in ranked.iter().take(limit) {
-        let entry_match = state.context_tree.find(*memory_id).map(|e| e.content.clone());
-        let (content, distance_opt) = match entry_match {
-            Some(real) => (real, Some(*dist)),
-            None => continue, // no tree entry means no body: skip
+
+    // Retrieval is rank-fused across independent lanes, not threshold-gated.
+    //
+    // A fixed Hamming radius could not separate a relevant query from an
+    // irrelevant one. Measured over 30 relevant and 512 unrelated pairs
+    // (`cerebrum-signatures/tests/radius_eval.rs`): at the radius admitting 2%
+    // junk, recall is 57%; at the radius recalling 83%, junk is 10.4%. The
+    // distributions overlap (unrelated min 82, relevant max 134), and a distance
+    // cutoff also admits more junk as the corpus grows.
+    //
+    // BM25 carries the lexical job properly: it has IDF, term-frequency
+    // saturation and length normalisation, none of which the signature has.
+    // The signature lane stays as a complementary recall pass, fused by
+    // reciprocal rank so the two never need their scores calibrated against each
+    // other. Top-k is stable under corpus growth, which a cutoff is not.
+
+    // Lane 1: BM25 over the inverted index.
+    let lexical_ranked: Vec<(MemoryId, f32)> = state.lexical.search(&req.query, limit * 3);
+
+    // Lane 2: signature neighbourhood, rank-ordered by distance.
+    //
+    // The radius here is deliberately wide. It is no longer deciding what is a
+    // match; it is deciding what enters the ranking, and RRF down-weights
+    // anything the lexical lane did not also surface.
+    let query_sig = state.signature_engine.generate(&req.query);
+    const SIGNATURE_RECALL_RADIUS: u32 = 110;
+    let mut signature_pairs: Vec<(MemoryId, u32)> = state
+        .signature_engine
+        .search(&query_sig, SIGNATURE_RECALL_RADIUS, limit * 3);
+    signature_pairs.extend(
+        state
+            .dwm
+            .search(&query_sig, SIGNATURE_RECALL_RADIUS, limit * 3),
+    );
+    let mut best_distance: HashMap<MemoryId, u32> = HashMap::new();
+    for (id, dist) in signature_pairs {
+        best_distance
+            .entry(id)
+            .and_modify(|e| *e = (*e).min(dist))
+            .or_insert(dist);
+    }
+    let mut signature_ranked: Vec<(MemoryId, u32)> = best_distance
+        .iter()
+        .map(|(id, dist)| (*id, *dist))
+        .collect();
+    signature_ranked.sort_by_key(|(_, d)| *d);
+
+    // Reciprocal rank fusion, k = 60 (the standard smoothing constant). Each lane
+    // contributes 1/(k + rank) per hit, so a memory both lanes agree on outranks
+    // one only a single lane found, without comparing raw scores from
+    // incomparable scales.
+    const RRF_K: f32 = 60.0;
+    let mut fused: HashMap<MemoryId, f32> = HashMap::new();
+    for (rank, (id, _)) in lexical_ranked.iter().enumerate() {
+        *fused.entry(*id).or_insert(0.0) += 1.0 / (RRF_K + rank as f32);
+    }
+    // The signature lane is a RECALL aid only: it may promote a memory the
+    // lexical lane also found, and it may never introduce one on its own.
+    //
+    // Its job was to catch paraphrases the lexical lane misses. Measured, it
+    // does not do that reliably: the signatures are a projection of hashed
+    // words, so "the history of the roman empire" shares its shape with memories
+    // about a router purely through function-word overlap. Admitting those
+    // produced junk for any query, and a lexical-only result set is the honest
+    // floor until a real semantic lane exists.
+    //
+    // So: agreement on a memory is worth a boost, disagreement adds nothing.
+    let lexical_ids: std::collections::HashSet<MemoryId> =
+        lexical_ranked.iter().map(|(id, _)| *id).collect();
+    for (rank, (id, _)) in signature_ranked.iter().enumerate() {
+        if lexical_ids.contains(id) {
+            *fused.entry(*id).or_insert(0.0) += 1.0 / (RRF_K + rank as f32);
+        }
+    }
+    // Drop anything only the signature lane proposed.
+    fused.retain(|id, _| lexical_ids.contains(id));
+
+    // Order by fused score, then by lexical score, then by signature distance.
+    // The tie-breaks matter because RRF produces many exact ties at low ranks.
+    let lexical_score: HashMap<MemoryId, f32> = lexical_ranked.iter().copied().collect();
+    let mut ordered: Vec<(MemoryId, f32)> = fused.into_iter().collect();
+    ordered.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                let la = lexical_score.get(&a.0).copied().unwrap_or(0.0);
+                let lb = lexical_score.get(&b.0).copied().unwrap_or(0.0);
+                lb.partial_cmp(&la).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                let da = best_distance.get(&a.0).copied().unwrap_or(u32::MAX);
+                let db = best_distance.get(&b.0).copied().unwrap_or(u32::MAX);
+                da.cmp(&db)
+            })
+    });
+
+    // Build results from real tree bodies. A fused id with no row in the tree is
+    // skipped: the index must never return a memory the tree cannot produce.
+    let mut results: Vec<SearchResult> = Vec::new();
+    for (memory_id, fused_score) in ordered.iter().take(limit) {
+        let Some(content) = state
+            .context_tree
+            .find(*memory_id)
+            .map(|entry| entry.content.clone())
+        else {
+            continue;
         };
         state.decay_engine.access(*memory_id);
-        let score = match distance_opt {
-            Some(dist) => 1.0 - (dist as f32 / SEMANTIC_WEIGHT_DIVISOR),
-            None => 0.5,
-        };
+        // Expose a 0..1 confidence for callers that want one. The fused rank
+        // score is tiny by construction, so normalise against the best hit.
+        let top = ordered.first().map(|(_, s)| *s).unwrap_or(1.0).max(f32::EPSILON);
         results.push(SearchResult {
             memory_id: *memory_id,
-            score,
+            score: fused_score / top,
             content,
         });
     }
 
-    // 4. Word-overlap fallback.
-    //
-    // Signature distance answers "is this the same neighbourhood of meaning",
-    // which is the right question for recall. It does not answer "does this
-    // contain the words I typed", and for short queries against long memories
-    // the signature can miss text that shares most of its vocabulary. This lane
-    // covers that case: if any query word appears in a memory, surface it.
-    //
-    // It runs whenever the signature lane came back thin rather than only when
-    // it came back empty, because the useful case is a broad signature match
-    // that buries the exact hit under noise.
-    if results.len() < limit {
-        let query_words: Vec<String> = req
-            .query
-            .to_lowercase()
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|w| w.len() >= 3)
-            .map(|w| w.to_string())
-            .collect();
-        let already: std::collections::HashSet<MemoryId> =
-            results.iter().map(|r| r.memory_id).collect();
-        if !query_words.is_empty() {
-            // Collect first, then mutate: the tree iterator borrows `state`
-            // immutably and `decay_engine.access` needs it mutably.
-            let mut overlap_hits: Vec<(MemoryId, f32, String)> = Vec::new();
-            for entry in state.context_tree.entries() {
-                if results.len() + overlap_hits.len() >= limit {
-                    break;
-                }
-                if already.contains(&entry.id) {
-                    continue;
-                }
-                let body = entry.content.to_lowercase();
-                let hits = query_words.iter().filter(|w| body.contains(*w)).count();
-                if hits == 0 {
-                    continue;
-                }
-                // Rank by how many query words land, so an entry sharing three
-                // words outranks one sharing a single incidental word.
-                let score = 0.5 + 0.5 * (hits as f32 / query_words.len() as f32);
-                overlap_hits.push((entry.id, score, entry.content.clone()));
-            }
-            for (id, score, content) in overlap_hits {
-                state.decay_engine.access(id);
-                results.push(SearchResult {
-                    memory_id: id,
-                    score,
-                    content,
-                });
-            }
-            // Keep the ranking honest: word-overlap hits that outscored a weak
-            // signature hit should move up, and the list stays capped.
-            results.sort_by(|a, b| {
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            results.truncate(limit);
-        }
-    }
-
-    // 5. Substring scan: exact-phrase last resort.
+    // Last resort: exact phrase present but no shared indexed term (for example a
+    // two-character query, which tokenisation drops).
     if results.is_empty() {
         let query_lower = req.query.to_lowercase();
         for entry in state.context_tree.entries() {
-            if entry.content.to_lowercase().contains(&query_lower)
-                || entry.domain.to_lowercase().contains(&query_lower)
-            {
+            if entry.content.to_lowercase().contains(&query_lower) {
                 results.push(SearchResult {
                     memory_id: entry.id,
                     score: 0.5,
