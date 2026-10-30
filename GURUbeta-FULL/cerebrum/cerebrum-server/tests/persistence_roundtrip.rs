@@ -119,7 +119,7 @@ fn restore_broken_count_witness() {
     let mut engine = cerebrum_embeddings::EmbeddingEngine::with_default_config();
     engine.embed("persist witness body for doc count roundtrip probe");
     let snap = engine.to_persistable();
-    let mut back = cerebrum_embeddings::EmbeddingEngine::with_default_config();
+    let back = cerebrum_embeddings::EmbeddingEngine::with_default_config();
     assert_eq!(back.doc_count(), 0, "fresh, default count 0 before load");
     let engine2 = cerebrum_embeddings::EmbeddingEngine::from_persistable(snap);
     assert_eq!(engine2.doc_count(), 1, "doc count rides the snapshot");
@@ -158,7 +158,23 @@ async fn test_repeated_saves_do_not_grow_or_corrupt_the_vault() {
     }
     let after_first = std::fs::metadata(persist.vault_path()).unwrap().len();
 
-    // Save pass two: three more. Same file, second generation.
+    // Save pass two with NO new content. A generation replaces, so the size
+    // must be essentially identical. An appending writer would roughly double
+    // it here, which is the exact defect this catches.
+    {
+        let mut unlocked = state.lock().await;
+        persist.save_all(&mut unlocked, PASSPHRASE).unwrap();
+    }
+    let resaved = std::fs::metadata(persist.vault_path()).unwrap().len();
+    assert!(
+        resaved <= after_first + after_first / 10,
+        "re-saving identical content changed the vault from {} to {} bytes; a generation must replace, not append",
+        after_first,
+        resaved
+    );
+
+    // Save pass three: three more memories. Content grew, so the file grows,
+    // but it must stay near one live set rather than the sum of every pass.
     curate_through_frame(&state, (0..3).map(|i| add_op(&format!(
         "second pass memory number {} holding a distinctive second-pass phrase", i
     ))).collect()).await;
@@ -167,14 +183,11 @@ async fn test_repeated_saves_do_not_grow_or_corrupt_the_vault() {
         persist.save_all(&mut unlocked, PASSPHRASE).unwrap();
     }
     let after_second = std::fs::metadata(persist.vault_path()).unwrap().len();
-
-    // A generation is a replacement, never an append. Six memories cost a
-    // little more than three, and must not cost double.
     assert!(
-        after_second < after_first * 3 / 2,
-        "vault grew from {} to {} bytes across two saves; a generation must replace, not append",
-        after_first,
-        after_second
+        after_second < after_first * 4,
+        "vault reached {} bytes from a {} byte single-pass baseline across three saves; that is accumulation, not a live set",
+        after_second,
+        after_first
     );
 
     // The second save must be the one that restores, and it must be clean.

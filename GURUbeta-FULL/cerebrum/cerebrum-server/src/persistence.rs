@@ -262,7 +262,7 @@ impl CerebrumPersistence {
         // exists on disk, and keeping it out of the app's own state folder means
         // a crash cannot leave a plaintext DWM sitting beside the encrypted
         // vault. It is bounded to one DWM snapshot and always removed.
-        let dwm_path = dwm_stage_path();
+        let dwm_path = dwm_stage_path(&self.data_dir);
         if dwm_path.exists() {
             let _ = std::fs::remove_file(&dwm_path);
         }
@@ -525,14 +525,23 @@ fn write_bytes_subsystem(
     Ok(())
 }
 
-/// Path of the transient DWM staging file.
+/// Path of the transient DWM staging file for one brain.
 ///
 /// Deliberately outside the brain data directory: `DwmPersistence` only speaks
 /// files, so each save and each restore briefly writes one plaintext snapshot.
 /// Keeping that out of the app's own state folder means a crash mid-save cannot
 /// strand plaintext beside the encrypted vault.
-fn dwm_stage_path() -> PathBuf {
-    std::env::temp_dir().join("cerebrum-dwm-stage.bin")
+///
+/// The name is derived from the data directory so two brains, or two tests in
+/// one process, never stage over each other. A fixed name meant a second writer
+/// deleted the first's file mid-save, which surfaced as the DWM reporting its
+/// own snapshot missing.
+fn dwm_stage_path(data_dir: &PathBuf) -> PathBuf {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    data_dir.hash(&mut hasher);
+    std::env::temp_dir().join(format!("cerebrum-dwm-stage-{:016x}.bin", hasher.finish()))
 }
 
 fn decode_record_bytes(bytes: &[u8]) -> Option<LoadedSubsystem> {
@@ -926,7 +935,7 @@ pub fn restore_state(
         // DWM loads through DwmPersistence's byte parser, staged via a temp
         // file outside the brain directory: write the vault-decrypted bytes,
         // load, then zeroize the staged copy before removal.
-        let tmp = dwm_stage_path();
+        let tmp = dwm_stage_path(&data_dir);
         std::fs::write(&tmp, bytes)
             .map_err(|e| PersistError::Io { reason: e.to_string() })?;
         let dwm = cerebrum_dwm::DwmPersistence::load(&tmp)
