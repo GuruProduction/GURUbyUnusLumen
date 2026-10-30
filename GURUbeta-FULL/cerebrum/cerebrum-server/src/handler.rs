@@ -1105,7 +1105,19 @@ async fn handle_search(
     let query_sig = state.signature_engine.generate(&req.query);
 
     // 1. Signature search from both indices.
-    const RADIUS: u32 = 64; // wider default per plan's Phase 3 (12.5%)
+    //
+    // Calibrated against real signatures, not inherited from the old layout.
+    // These numbers were measured with `radius_calibration_probe` after the
+    // binarize fix gave the signature its full 256 bits:
+    //   relevant queries (memory <- shortened query)   64 to  98 bits apart
+    //   unrelated queries (memory <- other memory)    124 to 142 bits apart
+    // 110 sits in the gap with roughly 12 bits of margin each side.
+    //
+    // The previous value of 64 was never a meaningful threshold: signatures only
+    // occupied 32 of 256 bits, so unrelated text landed 10 to 14 bits apart and
+    // 64 matched almost everything. It worked by accident and would now miss
+    // three quarters of genuine matches.
+    const RADIUS: u32 = 110;
     let mut hits: HashMap<MemoryId, u32> = HashMap::new();
     for (id, dist) in state.signature_engine.search(&query_sig, RADIUS, req.limit.min(64)) {
         hits.entry(id).and_modify(|e| *e = (*e).min(dist)).or_insert(dist);
@@ -1137,7 +1149,68 @@ async fn handle_search(
         });
     }
 
-    // 4. Fallback: substring scan (plan: kept as fallback for exact strings).
+    // 4. Word-overlap fallback.
+    //
+    // Signature distance answers "is this the same neighbourhood of meaning",
+    // which is the right question for recall. It does not answer "does this
+    // contain the words I typed", and for short queries against long memories
+    // the signature can miss text that shares most of its vocabulary. This lane
+    // covers that case: if any query word appears in a memory, surface it.
+    //
+    // It runs whenever the signature lane came back thin rather than only when
+    // it came back empty, because the useful case is a broad signature match
+    // that buries the exact hit under noise.
+    if results.len() < limit {
+        let query_words: Vec<String> = req
+            .query
+            .to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() >= 3)
+            .map(|w| w.to_string())
+            .collect();
+        let already: std::collections::HashSet<MemoryId> =
+            results.iter().map(|r| r.memory_id).collect();
+        if !query_words.is_empty() {
+            // Collect first, then mutate: the tree iterator borrows `state`
+            // immutably and `decay_engine.access` needs it mutably.
+            let mut overlap_hits: Vec<(MemoryId, f32, String)> = Vec::new();
+            for entry in state.context_tree.entries() {
+                if results.len() + overlap_hits.len() >= limit {
+                    break;
+                }
+                if already.contains(&entry.id) {
+                    continue;
+                }
+                let body = entry.content.to_lowercase();
+                let hits = query_words.iter().filter(|w| body.contains(*w)).count();
+                if hits == 0 {
+                    continue;
+                }
+                // Rank by how many query words land, so an entry sharing three
+                // words outranks one sharing a single incidental word.
+                let score = 0.5 + 0.5 * (hits as f32 / query_words.len() as f32);
+                overlap_hits.push((entry.id, score, entry.content.clone()));
+            }
+            for (id, score, content) in overlap_hits {
+                state.decay_engine.access(id);
+                results.push(SearchResult {
+                    memory_id: id,
+                    score,
+                    content,
+                });
+            }
+            // Keep the ranking honest: word-overlap hits that outscored a weak
+            // signature hit should move up, and the list stays capped.
+            results.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            results.truncate(limit);
+        }
+    }
+
+    // 5. Substring scan: exact-phrase last resort.
     if results.is_empty() {
         let query_lower = req.query.to_lowercase();
         for entry in state.context_tree.entries() {

@@ -148,8 +148,9 @@ impl RandomIndexing {
     /// Create a new RandomIndexing engine with the given configuration.
     pub fn new(config: SignatureConfig) -> Result<Self, CerebrumError> {
         config.validate()?;
-        let sig_bytes = config.signature_bytes();
-        let matrix_size = config.context_dim * sig_bytes;
+        // One matrix column per BIT, not per byte: the projection produces one
+        // scalar per output bit, which `binarize` then thresholds.
+        let matrix_size = config.context_dim * config.signature_bits;
         let mut rng = PcgRng::new(config.seed);
 
         // Generate random projection matrix with entries from N(0, 1/sqrt(context_dim))
@@ -176,7 +177,19 @@ impl RandomIndexing {
     /// Each token ID indexes into the context vector. Multiple occurrences
     /// of the same token increase its value (TF-weighting).
     pub fn generate_from_tokens(&self, token_ids: &[u32]) -> BinarySignature {
-        let sig_bytes = self.config.signature_bytes();
+        // Project: multiply the sparse context vector by the projection matrix
+        // to produce one projected value PER BIT, not per byte.
+        //
+        // This used to project into a `sig_bytes`-length vector (32 values for a
+        // 256-bit signature) and then hand it to `binarize`, which writes 8 bits
+        // per projected value and requires the full bit width. The result was
+        // that only the first 4 bytes ever received a set bit: the signature was
+        // 32 bits of signal stored in a 256-bit word, with everything past byte
+        // 3 pinned at zero. Measured on real sentences, unrelated text scored
+        // 0.945 to 0.961 similarity (10 to 14 bits differing) against 0.5 for
+        // genuinely independent bit strings, which is what made consolidation
+        // merge unrelated memories.
+        let signature_bits = self.config.signature_bits;
 
         // Build sparse context vector (token frequency weighted)
         let mut context = vec![0.0f32; self.config.context_dim];
@@ -185,20 +198,18 @@ impl RandomIndexing {
             context[idx] += 1.0;
         }
 
-        // Project: multiply context vector by projection matrix
-        // Result is a sig_bytes-length vector of projected values
-        let mut projected = vec![0.0f32; sig_bytes];
+        let mut projected = vec![0.0f32; signature_bits];
         for (row_idx, &ctx_val) in context.iter().enumerate() {
             if ctx_val == 0.0 {
                 continue; // Skip zero entries (sparse optimization)
             }
-            for (col_idx, proj_val) in projected.iter_mut().enumerate().take(sig_bytes) {
-                let matrix_idx = row_idx * sig_bytes + col_idx;
+            for (col_idx, proj_val) in projected.iter_mut().enumerate().take(signature_bits) {
+                let matrix_idx = row_idx * signature_bits + col_idx;
                 *proj_val += ctx_val * self.projection_matrix[matrix_idx];
             }
         }
 
-        // Binarize: threshold each projected value
+        // Binarize: threshold each projected value, one bit per value
         self.binarize(&projected)
     }
 
@@ -207,17 +218,17 @@ impl RandomIndexing {
     /// The optional fallback path: embedding → projection → threshold → binary.
     /// Used when an embedding model is available but binary signatures are still desired.
     pub fn generate_from_embedding(&self, embedding: &[f32]) -> BinarySignature {
-        let sig_bytes = self.config.signature_bytes();
+        let signature_bits = self.config.signature_bits;
 
         // Project the embedding through the matrix
-        let mut projected = vec![0.0f32; sig_bytes];
+        let mut projected = vec![0.0f32; signature_bits];
         for (row_idx, &emb_val) in embedding.iter().enumerate() {
             if emb_val == 0.0 {
                 continue;
             }
             let row = row_idx % self.config.context_dim; // wrap if embedding > context_dim
-            for (col_idx, proj_val) in projected.iter_mut().enumerate().take(sig_bytes) {
-                let matrix_idx = row * sig_bytes + col_idx;
+            for (col_idx, proj_val) in projected.iter_mut().enumerate().take(signature_bits) {
+                let matrix_idx = row * signature_bits + col_idx;
                 *proj_val += emb_val * self.projection_matrix[matrix_idx];
             }
         }
@@ -246,9 +257,18 @@ impl RandomIndexing {
         let sig_bytes = self.config.signature_bytes();
         let threshold = match self.config.threshold {
             ThresholdStrategy::Median => {
+                // Median over the projected values, which are one-per-bit.
+                // This used to index with sig_bytes/2 (16 for a 256-bit
+                // signature) into a vector that was only sig_bytes long, so it
+                // took the midpoint of the byte count rather than the median of
+                // the bit projections.
                 let mut sorted = projected.to_vec();
                 sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                sorted[sig_bytes / 2]
+                if sorted.is_empty() {
+                    0.0
+                } else {
+                    sorted[sorted.len() / 2]
+                }
             }
             ThresholdStrategy::Fixed(t) => t as f32,
             ThresholdStrategy::Adaptive => {
