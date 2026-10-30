@@ -299,9 +299,60 @@ class GitProvider(private val context: Context) {
             // through /system/bin/linker64, which is why the binary itself is
             // started through the linker above. Only load it when the file is
             // really there — an absent LD_PRELOAD breaks every linked launch.
+            // THE PRELOAD IS LOAD-BEARING, AND IT NEEDS ITS OWN INPUTS.
+            //
+            // The measured failure without these was:
+            //   fatal: cannot exec 'remote-https': Permission denied
+            // EACCES, not ENOENT, which means the kernel refused an exec of a real
+            // file in app storage. That is Android's W^X rule (targetSdk 29+): a
+            // process may not exec a binary from its own data dir. git spawns
+            // `git-remote-https` for every https remote, so the helper exec is
+            // denied and no byte ever leaves the device.
+            //
+            // libtermux-exec exists to route exactly that exec through
+            // /system/bin/linker64 instead. It only does so when it can decide the
+            // linker is usable, and `strings libtermux-exec-ld-preload.so` shows
+            // the inputs it reads:
+            //   TERMUX__PREFIX, TERMUX__ROOTFS         where the prefix lives
+            //   TERMUX_EXEC__SYSTEM_LINKER_EXEC__MODE  which interception mode
+            //   ANDROID__BUILD_VERSION_SDK            whether W^X applies at all
+            //   TERMUX__SE_PROCESS_CONTEXT            the SELinux domain, which on
+            //                                         10+ decides linker exec
+            // With those unset it loads, decides not to intercept, and every child
+            // exec is refused. Setting LD_PRELOAD alone looks correct and is inert.
+            //
+            // ROOTFS is the termux root (the parent of usr), PREFIX is usr itself.
+            // The preload uses rootfs directly rather than deriving it.
             val preload = File(termuxLibDir, "libtermux-exec-ld-preload.so")
             if (preload.exists()) {
                 env["LD_PRELOAD"] = preload.absolutePath
+                env["TERMUX__PREFIX"] = File(termuxRoot, "usr").absolutePath
+                env["TERMUX__ROOTFS"] = termuxRoot.absolutePath
+                env["TERMUX_APP__LEGACY_DATA_DIR"] = context.filesDir.parentFile?.absolutePath
+                    ?.let { File(it, context.packageName).absolutePath }
+                    ?: context.filesDir.absolutePath
+                // An INTEGER, not a word. The binary logs
+                // "Warning: Ignoring invalid system_linker_exec_mode value and
+                // using '1' instead" when it is given a string, so the value has
+                // to be a decimal digit. 1 is the direct linker mode.
+                env["TERMUX_EXEC__SYSTEM_LINKER_EXEC__MODE"] = "1"
+                // TERMUX_APP__DATA_DIR is what the preload uses to decide whether
+                // a target path is inside app data at all (its
+                // is_exe_under_termux_app_data_dir flag). Without it the prefix
+                // comparisons have nothing to compare against.
+                env["TERMUX_APP__DATA_DIR"] = context.filesDir.parentFile?.absolutePath
+                    ?.let { File(it, context.packageName).absolutePath }
+                    ?: context.filesDir.absolutePath
+                env["ANDROID__BUILD_VERSION_SDK"] = android.os.Build.VERSION.SDK_INT.toString()
+                // The SELinux context, read here rather than letting the preload
+                // read /proc/self/attr/current between fork and exec, which is
+                // reported to deadlock forked children. git forks constantly, so
+                // passing it in removes that window rather than gambling on it.
+                runCatching {
+                    File("/proc/self/attr/current").readText().trim().trim('\u0000')
+                }.getOrNull()?.takeIf { it.isNotBlank() }?.let {
+                    env["TERMUX__SE_PROCESS_CONTEXT"] = it
+                }
             } else {
                 env.remove("LD_PRELOAD")
             }
@@ -403,7 +454,17 @@ class GitProvider(private val context: Context) {
             val stdout = stdoutDeferred.await()
             val stderr = stderrDeferred.await()
             val success = exit == 0
-            if (!success) Log.w(TAG, "GitProvider: git exited $exit :: ${args.joinToString(" ")}")
+            if (!success) {
+                // Log stderr, not just the exit code. The exit code alone says a
+                // command failed and nothing about why; that is how a 255 in
+                // 250ms got mistaken for a network fault when it was a local
+                // setup error. The message is what makes a failure actionable.
+                Log.w(
+                    TAG,
+                    "GitProvider: git exited $exit :: ${args.joinToString(" ")} :: " +
+                        stderr.take(600).replace("\n", " | ")
+                )
+            }
             ShellResult(exitCode = exit, stdout = stdout.trim(), stderr = stderr.trim(), success = success)
         } catch (e: Exception) {
             ShellResult(
