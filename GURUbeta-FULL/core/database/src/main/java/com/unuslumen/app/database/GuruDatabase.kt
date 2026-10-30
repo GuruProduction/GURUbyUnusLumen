@@ -42,6 +42,7 @@ import com.unuslumen.app.database.dao.SeenImageDao
 import com.unuslumen.app.database.dao.ProjectDao
 import com.unuslumen.app.database.dao.MediaLibraryDao
 import com.unuslumen.app.database.dao.MediaZoomLogDao
+import com.unuslumen.app.database.dao.MemoryInjectionDao
 import com.unuslumen.app.database.dao.ProjectMessageDao
 import com.unuslumen.app.database.dao.ProjectDocumentDao
 import com.unuslumen.app.database.dao.ProjectFactDao
@@ -84,6 +85,7 @@ import com.unuslumen.app.database.entity.ProjectDocumentEntity
 import com.unuslumen.app.database.entity.ProjectFactEntity
 import com.unuslumen.app.database.entity.MediaItemEntity
 import com.unuslumen.app.database.entity.MediaZoomLogEntity
+import com.unuslumen.app.database.entity.MemoryInjectionEntity
 
 @Database(
     entities = [
@@ -125,9 +127,10 @@ import com.unuslumen.app.database.entity.MediaZoomLogEntity
         GuruNoteToSelfEntity::class,
         UserProfileEntity::class,
         MediaItemEntity::class,
-        MediaZoomLogEntity::class
+        MediaZoomLogEntity::class,
+        MemoryInjectionEntity::class
     ],
-    version = 29
+    version = 30
 )
 @TypeConverters(DBConverters::class)
 abstract class guruDatabase: RoomDatabase() {
@@ -170,6 +173,7 @@ abstract class guruDatabase: RoomDatabase() {
     abstract fun toolObservationDao(): ToolObservationDao
     abstract fun jobExecutionHistoryDao(): JobExecutionHistoryDao
     abstract fun seenImageDao(): SeenImageDao
+    abstract fun memoryInjectionDao(): MemoryInjectionDao
 
     companion object {
         const val DATABASE_NAME = "guru_db"

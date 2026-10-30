@@ -246,6 +246,13 @@ dependencies {
     implementation(libs.litert.gpu)
     implementation(libs.androidx.work.runtime.ktx)
 
+    // Unit-test dependencies. This module declared NONE, so a test file compiled
+    // against JUnit failed with "Unresolved reference 'junit'" and the whole
+    // test task died before running. Unit tests that measure retrieval and
+    // ledger behaviour are not optional here, so the harness has to exist.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation(libs.kotlinx.coroutines.test)
+
     implementation("org.jsoup:jsoup:1.17.2")
     implementation(libs.zxing.core)
     implementation(libs.androidx.webkit)

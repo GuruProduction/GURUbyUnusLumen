@@ -28,7 +28,17 @@ interface MemoryRepository {
     suspend fun persistThreads(threads: List<ConversationThread>)
     suspend fun getAllThreads(): List<ConversationThread>
 
-    suspend fun buildContextPreamble(query: String, humanName: String = "", currentMessages: List<AiMessage> = emptyList()): RetrievedContext
+    /**
+     * [conversationId] attributes the preamble's injections in the ledger. It
+     * defaults to blank so existing callers compile unchanged; with a blank id
+     * the preamble is built and nothing is recorded.
+     */
+    suspend fun buildContextPreamble(
+        query: String,
+        humanName: String = "",
+        currentMessages: List<AiMessage> = emptyList(),
+        conversationId: String = "",
+    ): RetrievedContext
     suspend fun persistAiMessages(conversationId: String, messages: List<AiMessage>)
 
     suspend fun getMessagesNeedingEmbeddings(): List<ConversationMessage>
