@@ -257,4 +257,10 @@ dependencies {
     // offline, no API keys. Model zip is bundled into assets and downloaded at
     // build time by the downloadVoskModel task below.
     implementation("com.alphacephei:vosk-android:0.3.47")
+
+    // Local JVM tests. The first here, added with the webFetch content-quality
+    // classifier: that logic decides whether a fetch is real, and it was
+    // previously a private method inside a class needing a Context and a
+    // TorManager, so it could only ever be checked by hand.
+    testImplementation(libs.junit)
 }
