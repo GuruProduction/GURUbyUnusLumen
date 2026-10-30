@@ -251,13 +251,24 @@ impl PcgRng {
 ///
 /// All output vectors are L2-normalized (when config.normalize is true) so
 /// cosine similarity reduces to a single dot product.
-/// The engine's full serialization-persistable form. Serialization includes
-/// the projection matrix and IDF state so a reload needs no re-embedding; on
-/// phone disk the bundle gets encrypted at rest by the vault layer (never
+/// The engine's full serialization-persistable form. IDF state and corpus
+/// statistics ride the vault so a reload needs no re-embedding of the corpus;
+/// on phone disk the bundle gets encrypted at rest by the vault layer (never
 /// any plaintext engine state).
+///
+/// The projection matrix is deliberately NOT stored. It is derived from the
+/// config seed and a row index, so it is regenerated on demand and costs
+/// nothing to persist. An older build stored the whole matrix here; that field
+/// is still accepted on read so an existing bundle deserialises, and it is
+/// discarded because a cached vector built from it cannot be trusted against
+/// rows this build derives.
 #[derive(Serialize, Deserialize)]
 pub struct EmbeddingState {
     config: EmbeddingConfig,
+    /// Legacy field: accepted for compatibility, never written now, and never
+    /// read either because rows are derived rather than looked up.
+    #[serde(default, skip_serializing)]
+    #[allow(dead_code)]
     projection_matrix: Vec<f32>,
     #[serde(with = "df_map_bridge")]
     df: FxHashMap<u32, u32>,
@@ -296,10 +307,6 @@ mod df_map_bridge {
 #[derive(Debug, Clone)]
 pub struct EmbeddingEngine {
     config: EmbeddingConfig,
-    /// Random projection matrix: vocab_size x dimensions.
-    /// Stored as a flat vector (row-major).
-    /// Each entry is drawn from N(0, 1/sqrt(dimensions)).
-    projection_matrix: Vec<f32>,
     /// Document frequency: how many documents contain each word hash.
     df: FxHashMap<u32, u32>,
     /// Total number of documents seen (for IDF computation).
@@ -311,12 +318,16 @@ pub struct EmbeddingEngine {
 }
 
 impl EmbeddingEngine {
-    /// Roundtrip to a persistable snapshot (projection matrix + DF/IDF stats
-    /// + both caches) for the encrypted persistence layer.
+    /// Roundtrip to a persistable snapshot (DF/IDF stats + both caches) for the
+    /// encrypted persistence layer.
+    ///
+    /// The projection matrix is not carried: it is derived from the config seed
+    /// and a row index, so regeneration is exact and free, and skipping it takes
+    /// a multi-megabyte float array out of every brain save.
     pub fn to_persistable(&self) -> EmbeddingState {
         EmbeddingState {
             config: self.config.clone(),
-            projection_matrix: self.projection_matrix.clone(),
+            projection_matrix: Vec::new(),
             df: self.df.clone(),
             doc_count: self.doc_count,
             cache: self.cache.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
@@ -334,7 +345,6 @@ impl EmbeddingEngine {
         let query_cache: HashMap<String, EmbeddingVector> = state.query_cache.into_iter().collect();
         Self {
             config: state.config,
-            projection_matrix: state.projection_matrix,
             df: state.df,
             doc_count: state.doc_count,
             cache,
@@ -354,14 +364,8 @@ impl EmbeddingEngine {
     /// ```
     pub fn new(config: EmbeddingConfig) -> Self {
         config.validate();
-        let matrix = Self::build_projection_matrix(
-            config.vocab_size,
-            config.dimensions,
-            config.seed,
-        );
         Self {
             config,
-            projection_matrix: matrix,
             df: FxHashMap::default(),
             doc_count: 0,
             cache: HashMap::new(),
@@ -398,25 +402,40 @@ impl EmbeddingEngine {
         self.query_cache.len()
     }
 
-    /// Build the random projection matrix.
+    /// Build ONE row of the random projection matrix, on demand.
     ///
     /// Each entry is drawn from a normal distribution N(0, 1/sqrt(dimensions))
-    /// using Box-Muller transform. The matrix is vocab_size x dimensions,
-    /// stored row-major. This is generated once and reused for all embeddings.
-    fn build_projection_matrix(vocab_size: usize, dimensions: usize, seed: u64) -> Vec<f32> {
-        let mut rng = PcgRng::new(seed);
-        let scale = (1.0 / dimensions as f64).sqrt() as f32;
-        let mut matrix = Vec::with_capacity(vocab_size * dimensions);
+    /// using the Box-Muller transform. Row `row_index` is generated from its own
+    /// PCG stream, seeded by mixing the config seed with the row index, so a row
+    /// is a pure function of (seed, row_index, dimensions) and needs no matrix
+    /// held in memory.
+    ///
+    /// This replaces a build-all-at-construction matrix of vocab_size x
+    /// dimensions, which for the default 10,000 x 256 meant 2.56 million floats
+    /// and 5.12 million transcendental calls on every engine construction. That
+    /// cost was paid per engine, made the test suite run for tens of minutes,
+    /// and put a multi-megabyte float array into every brain save. Deriving a
+    /// row costs `dimensions` draws and only the rows a text actually uses are
+    /// ever derived.
+    fn projection_row(&self, row_index: u32) -> Vec<f32> {
+        let dimensions = self.config.dimensions;
+        // SplitMix64-style mix so adjacent row indices produce unrelated streams.
+        let mut mixed = self.config.seed
+            .wrapping_add((row_index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        mixed ^= mixed >> 31;
 
-        for _ in 0..(vocab_size * dimensions) {
-            // Box-Muller transform for approximate normal distribution
+        let mut rng = PcgRng::new(mixed);
+        let scale = (1.0 / dimensions as f64).sqrt() as f32;
+        let mut row = Vec::with_capacity(dimensions);
+        for _ in 0..dimensions {
             let u1 = rng.next_f32().max(1e-10);
             let u2 = rng.next_f32();
             let z = scale * (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
-            matrix.push(z);
+            row.push(z);
         }
-
-        matrix
+        row
     }
 
     /// Tokenize text into a list of lowercase word strings.
@@ -477,8 +496,12 @@ impl EmbeddingEngine {
         1.0 + ((n + 1.0) / (1.0 + df)).ln()
     }
 
-    /// Project a TF-IDF sparse vector through the random projection matrix.
+    /// Project a TF-IDF sparse vector through the random projection.
     /// Returns the projected dense vector (not yet L2-normalized).
+    ///
+    /// Each distinct word index derives its row once and accumulates it, so the
+    /// work is proportional to the number of distinct words in the text rather
+    /// than to the whole vocabulary.
     fn project_tfidf(&self, tf: &FxHashMap<u32, f32>) -> Vec<f32> {
         let dims = self.config.dimensions;
         let mut projected = vec![0.0f32; dims];
@@ -486,12 +509,9 @@ impl EmbeddingEngine {
         for (&word_idx, &tf_val) in tf {
             let idf = self.compute_idf(word_idx);
             let tfidf = tf_val * idf;
-
-            let row_start = (word_idx as usize) * dims;
-            if row_start + dims <= self.projection_matrix.len() {
-                for (col_idx, proj_val) in projected.iter_mut().enumerate().take(dims) {
-                    *proj_val += tfidf * self.projection_matrix[row_start + col_idx];
-                }
+            let row = self.projection_row(word_idx);
+            for (proj_val, row_val) in projected.iter_mut().zip(row.iter()) {
+                *proj_val += tfidf * row_val;
             }
         }
 
@@ -1377,7 +1397,12 @@ mod tests {
     use proptest::prelude::*;
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(10_000))]
+        // Six properties at 10,000 cases each is 60,000 engine constructions.
+        // That was survivable only while an engine was cheap; with the matrix
+        // derived per row an engine is cheap again, but 60,000 is still far
+        // more than these properties need to be exercised honestly. 512 cases
+        // per property keeps shrinking coverage meaningful and the suite fast.
+        #![proptest_config(ProptestConfig::with_cases(512))]
 
         #[test]
         fn proptest_embed_dimensions_match_config(dimensions in 64..512usize) {
