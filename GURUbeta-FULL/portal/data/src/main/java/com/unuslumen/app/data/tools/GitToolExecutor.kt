@@ -169,7 +169,13 @@ class GitToolExecutor(
         val target = git.cloneTargetPath(clean)
             ?: return ToolExecutionResult.error("Malformed repository name: $repository")
 
-        if (target.exists() && java.io.File(target, ".git").exists()) {
+        // A real repository has a .git that git can read, not merely a directory
+        // named .git inside a half-clone. HEAD existing is the cheap honest check;
+        // a clone killed mid-flight leaves .git without it.
+        val looksLikeRealRepo = target.exists() &&
+            java.io.File(target, ".git").exists() &&
+            java.io.File(java.io.File(target, ".git"), "HEAD").exists()
+        if (looksLikeRealRepo) {
             return serialized(GitCloneResult.serializer(), GitCloneResult(
                 success = true,
                 repository = clean,
@@ -206,7 +212,20 @@ class GitToolExecutor(
             timeoutMs = GitProvider.NETWORK_TIMEOUT_MS
         )
 
-        return if (result.success) {
+        // Verify the clone actually exists before reporting success.
+        //
+        // THE DEFECT THIS FIXES, found by GURU on-device: gitClone returned
+        // {"success":true} pointing at a path that did not exist. A clone can
+        // leave a directory behind while failing, and the "already cloned" fast
+        // path above trusts any existing .git directory without checking it is a
+        // real repository. Reporting success for something that is not there is
+        // worse than reporting failure, because the caller then builds on it and
+        // the error surfaces somewhere unrelated.
+        val cloneIsReal = result.success &&
+            java.io.File(target, ".git").exists() &&
+            target.isDirectory
+
+        return if (cloneIsReal) {
             serialized(GitCloneResult.serializer(), GitCloneResult(
                 success = true,
                 repository = clean,
@@ -220,7 +239,13 @@ class GitToolExecutor(
             serialized(GitCloneResult.serializer(), GitCloneResult(
                 success = false,
                 repository = clean,
-                error = gitFailureText(result, "git clone failed (exit ${result.exitCode})")
+                error = if (!result.success) {
+                    gitFailureText(result, "git clone failed (exit ${result.exitCode})")
+                } else {
+                    // git exited 0 but nothing usable is on disk. Say that plainly
+                    // rather than reporting a clone that cannot be used.
+                    "git reported success but no repository exists at ${target.absolutePath}"
+                }
             ))
         }
     }
