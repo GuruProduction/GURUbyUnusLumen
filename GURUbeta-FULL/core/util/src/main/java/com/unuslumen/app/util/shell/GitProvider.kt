@@ -118,11 +118,40 @@ class GitProvider(private val context: Context) {
     /** True when the Termux git binary is installed in the prefix. */
     fun isGitAvailable(): Boolean = gitBinary != null
 
+    /**
+     * Lazily ensure the Termux prefix and its git runtime exist.
+     *
+     * WHY THIS IS HERE RATHER THAN AT THE CALL SITE. The prefix used to be
+     * extracted only when the user ran a termux* tool, so the git family reported
+     * "The Termux git runtime is not installed … open the Termux tools once to
+     * finish app setup" on a fresh install. That asked the user to perform a setup
+     * step the app is perfectly capable of doing itself, and it made git a feature
+     * that only worked after visiting a screen most users never open.
+     *
+     * GitProvider now guarantees its own runtime. Boot also calls the same
+     * initialize(), so this is normally a no-op by the time anything asks; it
+     * exists so the first git call works even on a cold process that has not
+     * finished boot work yet. Idempotent inside TermuxProvider (marker-gated on a
+     * git that actually printed a version).
+     */
+    private suspend fun ensureRuntime() {
+        if (gitBinary != null) return
+        runCatching {
+            val installed = TermuxProvider(context).initialize()
+            if (!installed) {
+                Log.w(TAG, "GitProvider: Termux prefix initialise reported unavailable")
+            }
+        }.onFailure {
+            Log.w(TAG, "GitProvider: Termux prefix initialise failed: ${it.message}")
+        }
+    }
+
     /** Why git cannot run, or null when the tree is complete. Never invented. */
     private fun missingRuntimeReason(): String? {
         if (gitBinary == null) {
-            return "The Termux git runtime is not installed at ${gitPath()}. " +
-                "Open the Termux tools once to finish app setup, then retry."
+            return "The Termux git runtime could not be installed at ${gitPath()}. " +
+                "The app installs it from its own assets; if this persists the APK is " +
+                "missing git-termux.zip or the prefix could not be written."
         }
         if (!gitExecPath.isDirectory) {
             return "git helpers are missing: ${gitExecPath.absolutePath} does not exist. " +
@@ -154,6 +183,9 @@ class GitProvider(private val context: Context) {
         torProxyUrl: String? = null,
         timeoutMs: Long = DEFAULT_TIMEOUT_MS
     ): ShellResult = withContext(Dispatchers.IO) {
+        // Guarantee the runtime before reporting it absent.
+        ensureRuntime()
+
         val missing = missingRuntimeReason()
         if (missing != null) {
             return@withContext ShellResult(exitCode = -1, stdout = "", stderr = missing, success = false)
@@ -216,12 +248,43 @@ class GitProvider(private val context: Context) {
             env["GIT_TERMINAL_PROMPT"] = "0" // never hang on an interactive stdin prompt; fail instead
             env["LC_ALL"] = "C" // stable parseable output text, no locale surprises
 
-            // WHERE THE HELPERS LIVE. git finds git-remote-https, fetch-pack,
-            // credential and the rest under GIT_EXEC_PATH; the templates it
-            // copies into a fresh repo live under GIT_TEMPLATE_DIR. Both are
-            // installed tree paths, not guesses.
+            // WHERE THE HELPERS LIVE. GIT_EXEC_PATH is where git LOOKS for its
+            // built-ins, but the remote-helper lookup does NOT use it: for
+            // `https://` git runs `git remote-https` through a plain PATH search,
+            // and the only git-remote-https in this tree is under
+            // libexec/git-core. With libexec off PATH the lookup failed with
+            // "fatal: unable to find remote helper for 'https'", which is exactly
+            // the symptom every git network tool reported.
+            //
+            // So libexec/git-core joins PATH ahead of bin. That is also where
+            // upstream Termux puts it, and it is why a real Termux install works
+            // and this prefix did not.
             env["GIT_EXEC_PATH"] = gitExecPath.absolutePath
-            env["GIT_TEMPLATE_DIR"] = gitTemplateDir.absolutePath
+            // Only point GIT_TEMPLATE_DIR at a directory that exists. The bundled
+            // git-termux.zip carries only bin/, libexec/ and share/git-core/
+            // templates — this prefix has no share/git-core/templates because
+            // TermuxProvider never extracts one there. Setting the variable to a
+            // missing directory made every clone print
+            // "warning: templates not found in /data/data/com.termux/files/usr/share/git-core/templates",
+            // a path from the upstream package that does not exist here. Unset
+            // means git uses its built-in defaults and stays quiet.
+            if (gitTemplateDir.isDirectory) {
+                env["GIT_TEMPLATE_DIR"] = gitTemplateDir.absolutePath
+            }
+
+            // WHERE LIBCURL LOOKS FOR CAs. The Termux build of libcurl has
+            // /data/data/com.termux/files/usr/etc/tls/cert.pem compiled in, a path
+            // that does not exist in this app's sandbox. Without a redirect every
+            // HTTPS operation died with "error adding trust anchors from file:
+            // /data/data/com.termux/files/usr/etc/tls/cert.pem" before a single
+            // byte left the device. SSL_CERT_FILE is libcurl's own override and
+            // takes precedence over the compiled default; GIT_SSL_CAINFO below
+            // covers git's own TLS layer.
+            val certInPrefix = File(termuxRoot, "usr/etc/tls/cert.pem")
+            if (certInPrefix.exists() && certInPrefix.length() > 0) {
+                env["SSL_CERT_FILE"] = certInPrefix.absolutePath
+                env["CA_CERT_FILE"] = certInPrefix.absolutePath
+            }
 
             // WHERE THE LIBRARIES LIVE. Both ELFs name libcurl, libssl,
             // libcrypto, libpcre2-8, libz, libiconv and friends; their RPATH
@@ -244,16 +307,31 @@ class GitProvider(private val context: Context) {
             }
 
             // A terminal-style PATH over the Termux prefix so git's own lookups
-            // (and the shell that runs the credential helper) resolve inside
-            // the installed tree first.
-            env["PATH"] = "${File(termuxRoot, "usr/bin").absolutePath}:${termuxLibDir.absolutePath}:/system/bin"
+            // (and the shell that runs the credential helper) resolve inside the
+            // installed tree first. libexec/git-core comes FIRST because the
+            // remote-helper lookup is a plain PATH search, not a GIT_EXEC_PATH
+            // lookup: git-remote-https lives there and nowhere else.
+            env["PATH"] = "${gitExecPath.absolutePath}:${File(termuxRoot, "usr/bin").absolutePath}:${termuxLibDir.absolutePath}:/system/bin"
 
             // CA chain: provision the bundle from the APK's own assets on first
             // use. Nothing guarantees an earlier tool run already copied it, and
             // git with no trustworthy CA against Android's cert layout dies
             // mid-TLS. System CA dir rides along as the fallback path too.
-            val caCert = provisionCaBundle()
-            if (caCert != null) env["GIT_SSL_CAINFO"] = caCert.absolutePath
+            // The prefix's OWN bundle is preferred: it is the one libcurl was built
+            // against and the one SSL_CERT_FILE above points at, so git's TLS layer
+            // and libcurl's agree instead of loading two different trust stores.
+            // The app-asset bundle stays the fallback, and Android's system store
+            // the last resort.
+            val prefixCert = File(termuxRoot, "usr/etc/tls/cert.pem")
+            val caCert = if (prefixCert.exists() && prefixCert.length() > 0) {
+                prefixCert
+            } else {
+                provisionCaBundle()
+            }
+            if (caCert != null) {
+                env["GIT_SSL_CAINFO"] = caCert.absolutePath
+                env["SSL_CERT_FILE"] = caCert.absolutePath
+            }
             if (File("/system/etc/security/cacerts").isDirectory) {
                 env["GIT_SSL_CAPATH"] = "/system/etc/security/cacerts"
             }
@@ -269,7 +347,15 @@ class GitProvider(private val context: Context) {
                 // handles both, so the caller's live-listener choice is passed
                 // through verbatim. The previous six environment variables are
                 // gone deliberately: a single boring route, nothing racing it.
+                // BOTH keys, deliberately. git routes an https:// URL through
+                // libcurl, which reads https.proxy for https URLs and http.proxy
+                // for http ones; setting only http.proxy works on the builds
+                // tested here but is not guaranteed across curl versions. A
+                // measured test on this device showed that with NEITHER key set
+                // git connects straight to github.com's IP over clearnet, so a
+                // single missing key is a real leak rather than a cosmetic gap.
                 configPairs.add("http.proxy" to torProxyUrl)
+                configPairs.add("https.proxy" to torProxyUrl)
             }
 
             if (credential != null && credential.isNotBlank()) {
