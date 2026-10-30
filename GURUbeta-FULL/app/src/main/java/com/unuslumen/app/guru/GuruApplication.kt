@@ -65,6 +65,7 @@ import com.unuslumen.app.util.orb.OrbChatMessage
 import com.unuslumen.app.util.shell.AdbClient
 import com.unuslumen.app.util.shell.BusyboxProvider
 import com.unuslumen.app.util.shell.PythonProvider
+import com.unuslumen.app.util.shell.TermuxProvider
 import com.unuslumen.app.util.shell.ToyboxProvider
 import com.unuslumen.app.widget.di.WidgetModule
 import com.unuslumen.app.adspace.AdSpaceManager
@@ -304,6 +305,10 @@ class GuruApplication : Application() {
         // Initialize Toybox (custom-built toybox + standalone Unix tools)
         initializeToybox()
 
+        // Initialize the Termux prefix: bash, apt, and the bundled git runtime
+        // the git tool family needs. Same boot slot as the three providers above.
+        initializeTermux()
+
         // Initialize AdSpace manager — fetches canvas pack from the Unus Lumen API
         adSpaceManager.initialize()
 
@@ -472,6 +477,36 @@ class GuruApplication : Application() {
         applicationScope.launch {
             val toyboxProvider = ToyboxProvider(this@GuruApplication)
             toyboxProvider.initialize()
+        }
+    }
+
+    /**
+     * Termux runtime, at boot like the three providers above.
+     *
+     * WHY THIS EXISTS. Busybox, Python and Toybox all initialise here. Termux did
+     * not. TermuxProvider.initialize() was only ever called lazily from
+     * TermuxToolExecutor, so the whole prefix — bash, apt, and the bundled git
+     * runtime — stayed un-extracted until the user happened to run one of the
+     * termux* tools.
+     *
+     * The consequence: every git tool reported "The Termux git runtime is not
+     * installed … open the Termux tools once to finish app setup". That is a setup
+     * step the app can perform itself, and asking the user to do it is the bug.
+     * Installing the runtime touches nothing off-device, so there is no network
+     * policy to fail closed on here.
+     */
+    private fun initializeTermux() {
+        applicationScope.launch {
+            runCatching {
+                val termuxProvider = TermuxProvider(this@GuruApplication)
+                val ok = termuxProvider.initialize()
+                android.util.Log.d(
+                    "guru",
+                    "Termux boot init: available=$ok bin=${termuxProvider.getBinPath()}"
+                )
+            }.onFailure {
+                android.util.Log.w("guru", "Termux boot init failed: ${it.message}")
+            }
         }
     }
 
