@@ -11,6 +11,7 @@
 
 pub mod handler;
 pub mod hardening;
+pub mod lexical;
 pub mod persistence;
 pub mod state;
 

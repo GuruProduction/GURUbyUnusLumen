@@ -896,7 +896,26 @@ impl DynamicWaveletMatrix {
         radius: u32,
         limit: usize,
     ) -> Vec<(MemoryId, u32)> {
-        self.search_multi_index(query, radius, limit)
+        if self.n == 0 {
+            return Vec::new();
+        }
+
+        // Multi-index hashing is only a win when the radius is a small fraction
+        // of the signature width. Its pigeonhole guarantee needs enough bits to
+        // work with: with K = radius + 1 blocks over `signature_bits` bits, the
+        // sub-block size is signature_bits / (radius + 1). At radius 110 over a
+        // 256-bit signature that is a 2-bit window, which almost every signature
+        // matches by chance, so the filter stops filtering and costs more than
+        // it saves.
+        //
+        // Above an eighth of the width, a SIMD linear scan is both exact and
+        // faster. That is the regime wide-recall retrieval runs in.
+        let narrow_enough_for_multi_index = (radius as usize) * 8 < self.signature_bits;
+        if narrow_enough_for_multi_index {
+            self.search_multi_index(query, radius, limit)
+        } else {
+            self.search_brute_force(query, radius, limit)
+        }
     }
 
     /// Multi-Index Hashing search: divide 256-bit signature into K sub-blocks.
@@ -986,11 +1005,16 @@ impl DynamicWaveletMatrix {
                 }
             }
 
-            // Early termination: if sub_radius == 0 and we already have plenty
-            // candidates, skip remaining sub-blocks.
-            if sub_radius == 0 && level0_candidates.len() >= limit * 4 {
-                break;
-            }
+            // No early termination here.
+            //
+            // This used to break out once `limit * 4` candidates had accumulated.
+            // The pigeonhole guarantee is per-block: ANY block may hold the true
+            // match, so stopping before searching them all silently drops
+            // results. It surfaced as a debug assert where multi-index returned
+            // 11 hits and brute force returned 12, with the missing one reachable
+            // only through a later sub-block. Searching every block is the whole
+            // contract of the algorithm; the `limit` truncation at the end is what
+            // bounds the result set.
         }
 
         // Sort and dedup level-0 positions.
