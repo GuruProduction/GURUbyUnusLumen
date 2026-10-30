@@ -125,5 +125,37 @@ class PreloadDiagnosticTest {
                 ),
             )
         )
+
+        println("=== I: INHERITED app env + preload vars (mirrors GitProvider exactly) ===")
+        println(
+            runInherited(
+                listOf("/system/bin/linker64", "$prefix/bin/git", "ls-remote",
+                    "https://github.com/octocat/Hello-World.git"),
+                full + mapOf(
+                    "GIT_CONFIG_COUNT" to "2",
+                    "GIT_CONFIG_KEY_0" to "http.proxy", "GIT_CONFIG_VALUE_0" to "socks5h://127.0.0.1:9050",
+                    "GIT_CONFIG_KEY_1" to "https.proxy", "GIT_CONFIG_VALUE_1" to "socks5h://127.0.0.1:9050",
+                ),
+            )
+        )
+        println("=== INHERITED ENV KEYS (looking for what the preload might read) ===")
+        val inherited = System.getenv()
+        println(inherited.keys.sorted().joinToString(", "))
+        println("LD_PRELOAD in app env: " + (inherited["LD_PRELOAD"] ?: "absent"))
+        println("TERMUX__PREFIX in app env: " + (inherited["TERMUX__PREFIX"] ?: "absent"))
+    }
+
+    private fun runInherited(cmd: List<String>, env: Map<String, String>): String {
+        return try {
+            val pb = ProcessBuilder(cmd)
+            pb.environment().putAll(env)
+            pb.redirectErrorStream(true)
+            val p = pb.start()
+            val out = p.inputStream.bufferedReader().readText()
+            p.waitFor(30, TimeUnit.SECONDS)
+            "exit=${p.exitValue()}\n$out"
+        } catch (e: Exception) {
+            "EXCEPTION: ${e.javaClass.simpleName}: ${e.message}"
+        }
     }
 }
