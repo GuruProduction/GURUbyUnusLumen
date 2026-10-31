@@ -215,8 +215,14 @@ class PermissionGrantsAndroidTest {
 
     /**
      * A privileged permission cannot be granted by any dialog, so the refusal must
-     * name Shizuku or Device Owner and must never send the person to a settings
-     * screen that cannot help.
+     * name the shell-UID route and must never send the person to a settings screen
+     * that cannot help.
+     *
+     * CORRECTED AFTER #172. This test previously required "Shizuku or Device Owner".
+     * That was wrong: setPermissionGrantState handles runtime permissions, and the
+     * platform lets `pm grant` satisfy a signature permission only when it carries
+     * the `development` protection flag. Naming Device Owner sent a person down a
+     * setup that could not work, so the assertion now pins what the platform allows.
      */
     @Test
     fun aPrivilegedPermissionReportsThePrivilegedStateNotAGrantRoute() {
@@ -225,7 +231,8 @@ class PermissionGrantsAndroidTest {
         println("privileged state=${check.state} sentence=${check.sentence()}")
         assertEquals(GrantState.PRIVILEGED, check.state)
         val sentence = check.sentence()
-        assertTrue("must name the only path: $sentence", sentence.contains("Shizuku or Device Owner"))
+        assertTrue("must name the shell-UID route: $sentence", sentence.contains("through Shizuku"))
+        assertFalse("Device Owner cannot grant a signature permission: $sentence", sentence.contains("Device Owner"))
         assertFalse("must not offer a settings dialog: $sentence", sentence.contains("Settings > Apps"))
     }
 
@@ -384,7 +391,14 @@ class PermissionGrantsAndroidTest {
         val body = PermissionGrants.refusalBodyJson(check)
         println("privileged refusal body: $body")
         assertTrue(body.contains("\"tier\":\"PRIVILEGED\""))
-        assertTrue(body.contains("\"state\":\"PRIVILEGED\""))
+        // PRIVILEGED or NOT_GRANTABLE depending on the permission's `development`
+        // flag, which is the distinction #172 added: privileged and grantable
+        // through shell UID are different facts and only one of them makes a setup
+        // worthwhile. Both are honest states, so both are accepted here.
+        assertTrue(
+            "the state must say the platform is the obstacle: $body",
+            body.contains("\"state\":\"PRIVILEGED\"") || body.contains("\"state\":\"NOT_GRANTABLE\""),
+        )
         assertTrue(body.contains("\"denied\":true"))
         assertEquals(
             "a privileged refusal must not carry a grant route",
