@@ -127,7 +127,16 @@ internal class AiDataModule
 // registry infrastructure at com.unuslumen.app.data.tools.registry.* and per-tool-set Definitions/Executor/Results files.
 
 val aiDataModule = module {
-    includes(AiDomainModule().module, AiDataModule().module, thoughtsDataModule)
+    includes(
+        AiDomainModule().module,
+        AiDataModule().module,
+        thoughtsDataModule,
+        // Device-senses domains (phone/SMS, personal data, location/camera/audio/
+        // sensors) bind their own executors from their own files. Collected here
+        // once so adding a domain never edits this module, which is the file that
+        // made two parallel agents conflict on every single issue.
+        com.unuslumen.app.data.tools.registry.permission.TeamThreeToolDomains.koinModule()
+    )
 
     // NoteToolSet migrated to registry — see NoteToolExecutor
     // TaskToolSet migrated to registry — see TaskToolExecutor
