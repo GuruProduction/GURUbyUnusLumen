@@ -70,6 +70,8 @@ class PermissionFoundationOnDeviceTest {
         }.map { it.permission }
 
         println("catalogued=${TeamThreePermissions.all.size} undeclared=$undeclared")
+        // 45 is asserted in the JVM test; this one proves every string is real on
+        // the platform, which is a different fact and cannot be faked by a table.
         assertTrue(
             "these strings are not permissions this platform declares, so no grant " +
                 "could ever satisfy them: $undeclared",

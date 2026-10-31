@@ -243,14 +243,18 @@ class GrantCheckTest {
             "android.permission.BLUETOOTH_CONNECT",
             "android.permission.BLUETOOTH_ADVERTISE",
         )
-        // 43, not 42. The batch brief listed 42 permissions across its three
-        // agents and said Agent A covered "#49 to #62", but GitHub issue #63 is
-        // READ_CELL_BROADCASTS and the brief never mentioned it. Its existence
-        // shifts every later issue number by one, which is why READ_CALL_LOG is
-        // issue #64 on GitHub and not #63 as the brief states. The permission is
-        // in the same domain, it is already declared in the manifest, so it is
-        // catalogued here rather than left as an UNKNOWN_SPEC at runtime.
-        assertEquals("catalogue size", 43, TeamThreePermissions.all.size)
+        // 45 = the batch's 42, plus READ_CELL_BROADCASTS for the reason below, plus
+        // POST_NOTIFICATIONS and SCHEDULE_EXACT_ALARM.
+        //
+        // 42 vs 43: the brief listed 42 permissions and said Agent A covered
+        // "#49 to #62", but GitHub issue #63 is READ_CELL_BROADCASTS and the brief
+        // never mentioned it. Its existence shifts every later issue number by one,
+        // which is why READ_CALL_LOG is #64 on GitHub and not #63 as stated.
+        //
+        // The last two are declared by tool sets outside this batch. The dispatcher
+        // now builds its pre-flight refusal from this catalogue, so a permission it
+        // has never heard of would come back as "unknown" and read as a broken app.
+        assertEquals("catalogue size", 45, TeamThreePermissions.all.size)
         expected.forEach {
             assertNotNull("missing from catalogue: $it", TeamThreePermissions.forPermission(it))
         }
@@ -275,7 +279,14 @@ class GrantCheckTest {
             )
         } + GrantCheck.of(TeamThreePermissions.READ_SMS, granted = false)
 
-        everyState.forEach { check ->
+        val extraStates = listOf(
+            GrantCheck.uncatalogued("android.permission.POST_NOTIFICATIONS", "GURU", granted = false),
+            GrantCheck.uncatalogued("android.permission.POST_NOTIFICATIONS", "GURU", granted = true),
+            GrantCheck.unknown("android.permission.SOME_FUTURE_THING"),
+            GrantCheck.absent("hardware:heart_rate", "heart-rate sensor", "GURU could read your heart rate"),
+        )
+
+        (everyState + extraStates).forEach { check ->
             val sentence = check.sentence()
             assertTrue("empty sentence for ${check.spec.permission}", sentence.isNotBlank())
             assertTrue("ends with a full stop: $sentence", sentence.trim().endsWith("."))
@@ -283,6 +294,35 @@ class GrantCheckTest {
             assertFalse("uninterpolated: $sentence", sentence.contains("\${"))
             assertFalse("raw permission string leaked into prose: $sentence", sentence.contains("android.permission"))
         }
+    }
+
+    /**
+     * An out-of-catalogue permission must NOT be reported as a tool defect.
+     *
+     * The dispatcher consults the catalogue for every tool in the app, and other
+     * tool sets declare real permissions this batch does not cover. Telling a
+     * person their app is broken when one grant would fix it is a lie, and this is
+     * the exact regression that appeared when the pre-flight was first routed here.
+     */
+    @Test
+    fun aRealPermissionOutsideTheCatalogueIsAnOrdinaryDenialNotADefect() {
+        val check = GrantCheck.uncatalogued("android.permission.POST_NOTIFICATIONS", "GURU", granted = false)
+        assertEquals(GrantState.UNCATALOGUED, check.state)
+        assertTrue(check.denied)
+
+        val sentence = check.sentence()
+        assertFalse("must not call a real permission a defect: $sentence", sentence.contains("Tool defect"))
+        assertTrue("must give a followable route: $sentence", sentence.contains("Settings > Apps > GURU > Permissions"))
+        assertTrue("must read as words not a constant: $sentence", sentence.contains("post notifications"))
+        assertFalse("no shouting constants in prose: $sentence", sentence.contains("POST_NOTIFICATIONS"))
+    }
+
+    @Test
+    fun aGrantedOutOfCataloguePermissionIsReportedAsGranted() {
+        val check = GrantCheck.uncatalogued("android.permission.POST_NOTIFICATIONS", "GURU", granted = true)
+        assertEquals(GrantState.GRANTED, check.state)
+        assertTrue(check.allowed)
+        assertFalse(check.denied)
     }
 
     @Test

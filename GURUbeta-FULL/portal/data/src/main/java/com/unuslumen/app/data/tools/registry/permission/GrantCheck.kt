@@ -17,8 +17,13 @@ package com.unuslumen.app.data.tools.registry.permission
  *              grant. Reported as such so nobody hunts for a settings screen.
  * ABSENT       The device has no such hardware or feature. No permission
  *              involved, nothing to grant, and the answer is about the device.
- * UNKNOWN_SPEC The tool asked about a permission not in the catalogue. A tool
- *              bug, reported plainly instead of guessed at.
+ * UNCATALOGUED A real permission this build does not carry a written entry for,
+ *              yet the platform declares it and a person can grant it. Reported as
+ *              a normal denial with a generic settings route, because sending
+ *              somebody to a screen that does not exist is bad and telling them the
+ *              tool is broken when it is not is worse.
+ * UNKNOWN_SPEC No such permission exists on this platform at all. Now a genuine
+ *              tool defect, reported plainly instead of guessed at.
  */
 enum class GrantState {
     GRANTED,
@@ -26,6 +31,7 @@ enum class GrantState {
     PRIVILEGED,
     INSTALL,
     ABSENT,
+    UNCATALOGUED,
     UNKNOWN_SPEC,
 }
 
@@ -58,7 +64,15 @@ data class GrantCheck(
      */
     val detail: String? = null,
 ) {
-    /** True only when the capability may run and a result is about real data. */
+    /**
+     * True only when the capability may run and a result is about real data.
+     *
+     * UNCATALOGUED is deliberately absent here even though the platform usually
+     * does hold such a permission: the dispatcher only asks for a refusal after its
+     * own check has already failed, so reaching this file in that state means the
+     * permission is NOT held and reporting it as allowed would let a tool run and
+     * throw underneath.
+     */
     val allowed: Boolean get() = state == GrantState.GRANTED || state == GrantState.INSTALL
 
     /** True when the capability must not run and the caller must report the reason. */
@@ -84,7 +98,11 @@ data class GrantCheck(
         // "Body sensors") and plural labels read as broken grammar when followed
         // by "is not granted". This shape is correct for every label in the
         // catalogue, which the grammatical-sentence test enforces.
-        GrantState.NOT_GRANTED -> buildString {
+        //
+        // UNCATALOGUED shares the branch deliberately: it is an ordinary denial for
+        // a real permission, and two copies of one sentence drift the moment either
+        // is edited. The state still differs, so a caller can tell them apart.
+        GrantState.NOT_GRANTED, GrantState.UNCATALOGUED -> buildString {
             append("Permission denied: GURU does not hold the ")
             append(spec.label)
             append(" permission, so GURU cannot ")
@@ -114,7 +132,7 @@ data class GrantCheck(
         GrantState.UNKNOWN_SPEC -> buildString {
             append("Tool defect: the ")
             append(spec.label)
-            append(" permission is not in GURU's catalogue, so this is a fault in the tool ")
+            append(" permission is not one this platform declares, so this is a fault in the tool ")
             append("rather than something you can grant.")
         }
     }
@@ -139,12 +157,43 @@ data class GrantCheck(
         }
 
         /**
-         * A check for a permission the catalogue has never heard of.
+         * A real permission this build has no written entry for.
          *
-         * The spec is synthesised from the raw string so the sentence can still
-         * name it, and the state makes clear this is not something to go and
-         * grant. Guessing a route here is how a tool ends up telling someone to
-         * open a settings page that has nothing to do with the problem.
+         * WHY THIS IS NOT A TOOL DEFECT. The dispatcher checks every tool's
+         * declared permissions before the tool runs, and its catalogue is this
+         * team's 43. A notifications tool declaring POST_NOTIFICATIONS is perfectly
+         * correct and simply outside that set. Reporting it as a fault would tell a
+         * person their app is broken when a single grant would fix it.
+         *
+         * The route is deliberately generic because the group name is not known
+         * here: the app's own settings screen is the one page that always exists
+         * and always lists every permission this app declares.
+         */
+        fun uncatalogued(permission: String, appLabel: String, granted: Boolean = false): GrantCheck =
+            GrantCheck(
+                spec = PermissionSpec(
+                    permission = permission,
+                    // protectionLevel is not assumed, so the tier is the plainest
+                    // true statement: it is granted through the app's settings page.
+                    tier = PermissionTier.RUNTIME,
+                    // The raw constant reads as shouting in a sentence, so it is
+                    // turned into the words a settings screen would use.
+                    label = permission.substringAfterLast('.')
+                        .lowercase()
+                        .replace('_', ' '),
+                    why = "GURU can use the capability this tool provides",
+                    grantRoute = "Settings > Apps > $appLabel > Permissions",
+                ),
+                state = if (granted) GrantState.GRANTED else GrantState.UNCATALOGUED,
+            )
+
+        /**
+         * A permission that does not exist on this platform at all.
+         *
+         * Only reachable when the platform reports no such permission name, which
+         * is a genuine tool defect: no grant can ever satisfy a string Android has
+         * never heard of. Guessing a route here is how a tool sends somebody to a
+         * screen that has nothing to do with the fault.
          */
         fun unknown(permission: String): GrantCheck = GrantCheck(
             spec = PermissionSpec(

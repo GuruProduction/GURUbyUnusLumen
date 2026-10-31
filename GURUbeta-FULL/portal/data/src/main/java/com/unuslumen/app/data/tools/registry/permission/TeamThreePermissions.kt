@@ -433,6 +433,38 @@ object TeamThreePermissions {
         grantRoute = "Settings > Apps > GURU > Permissions > Nearby devices > Allow",
     )
 
+    // ------------------------------------------------------------------
+    // Permissions other tool sets already declare
+    // ------------------------------------------------------------------
+
+    /*
+     * These two are not part of Team 3's issue range, but they ARE declared by
+     * existing tool definitions elsewhere in the app, and the dispatcher's
+     * pre-flight refusal now goes through this catalogue. Leaving them out would
+     * make an alarm or notification tool report a permission it genuinely needs as
+     * unknown, which reads to a person as a broken app.
+     *
+     * SCHEDULE_EXACT_ALARM is a special permission granted through its own settings
+     * screen rather than a dialog, so its tier is APPOP and its route names the
+     * screen. That distinction matters: a runtime-tier label would send somebody to
+     * a dialog that never appears.
+     */
+    val POST_NOTIFICATIONS = PermissionSpec(
+        permission = Manifest.permission.POST_NOTIFICATIONS,
+        tier = PermissionTier.RUNTIME,
+        label = "Notifications",
+        why = "GURU can show you a notification when something it was asked to watch has happened",
+        grantRoute = "Settings > Apps > GURU > Permissions > Notifications > Allow",
+    )
+
+    val SCHEDULE_EXACT_ALARM = PermissionSpec(
+        permission = Manifest.permission.SCHEDULE_EXACT_ALARM,
+        tier = PermissionTier.APPOP,
+        label = "Exact alarms",
+        why = "GURU can fire an alarm at the exact minute you asked for rather than roughly then",
+        grantRoute = "Settings > Apps > GURU > Alarms & reminders > Allow",
+    )
+
     /**
      * Every spec in this team's scope, keyed by platform permission string.
      *
@@ -453,6 +485,9 @@ object TeamThreePermissions {
         HIGH_SAMPLING_RATE_SENSORS, BODY_SENSORS, BODY_SENSORS_BACKGROUND,
         ACTIVITY_RECOGNITION, UWB_RANGING, BLUETOOTH_SCAN, BLUETOOTH_CONNECT,
         BLUETOOTH_ADVERTISE,
+        // Declared by other tool sets, catalogued so the dispatcher's refusal can
+        // explain them instead of calling them unknown.
+        POST_NOTIFICATIONS, SCHEDULE_EXACT_ALARM,
     ).associateBy { it.permission }
 
     fun forPermission(permission: String): PermissionSpec? = all[permission]

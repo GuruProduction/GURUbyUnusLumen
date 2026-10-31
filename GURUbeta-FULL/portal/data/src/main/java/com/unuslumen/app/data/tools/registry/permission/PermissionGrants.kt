@@ -56,14 +56,55 @@ object PermissionGrants {
     /**
      * Check a permission by its platform string against the catalogue.
      *
-     * A string the catalogue does not know is a tool defect, not a grant problem,
-     * and is reported as one so nobody goes looking for a settings toggle that
-     * would not help.
+     * A string the catalogue does not know is resolved against the platform: a real
+     * permission becomes an ordinary denial with a followable route, and only a
+     * name Android has never heard of is reported as a tool defect.
+     *
+     * The platform fallback matters because ToolDispatcher consults this for every
+     * tool in the app, and the rest of the app declares permissions outside this
+     * batch's forty-three. Calling those a tool defect would be a plain lie about
+     * a permission the person really can grant.
      */
     fun check(context: Context, permission: String): GrantCheck {
         val spec = TeamThreePermissions.forPermission(permission)
-            ?: return GrantCheck.unknown(permission)
+            ?: return resolveOutOfCatalogue(context, permission, requireDenied = false)
         return check(context, spec)
+    }
+
+    /**
+     * Resolve a permission this batch's catalogue does not list.
+     *
+     * Only forty-three permissions have a written entry, but the rest of the app
+     * legitimately declares real ones such as POST_NOTIFICATIONS. Calling those a
+     * tool defect would tell a person the app is broken when a single grant would
+     * fix it, so the platform is asked whether the name genuinely exists.
+     *
+     * A name Android has never heard of is the only case reported as a fault,
+     * because no grant could ever satisfy it.
+     *
+     * [requireDenied] is set by the dispatcher's pre-flight, which reaches this
+     * only after its own check already failed. In that case the state is forced to
+     * denied so the sentence never says "granted" about something that is not.
+     */
+    private fun resolveOutOfCatalogue(
+        context: Context,
+        permission: String,
+        requireDenied: Boolean,
+    ): GrantCheck {
+        val declared = runCatching {
+            context.packageManager.getPermissionInfo(permission, 0)
+            true
+        }.getOrDefault(false)
+
+        if (!declared) return GrantCheck.unknown(permission)
+
+        val held = !requireDenied && ContextCompat.checkSelfPermission(context, permission) ==
+            PackageManager.PERMISSION_GRANTED
+
+        // The spec lives on GrantCheck.uncatalogued so the wording of an
+        // out-of-catalogue refusal is written once, next to every other refusal
+        // wording, rather than rebuilt here in a second place that would drift.
+        return GrantCheck.uncatalogued(permission, appLabel(context), granted = held)
     }
 
     /** Convenience for a list: the first refusal, or null when every one is allowed. */
@@ -193,7 +234,23 @@ object PermissionGrants {
      * completed action with no data. The dispatcher records the failure with the
      * sentence, which is exactly the trail a later attempt needs.
      */
-    fun refusal(check: GrantCheck): ToolExecutionResult {
+    fun refusal(check: GrantCheck): ToolExecutionResult = ToolExecutionResult(
+        rawJson = refusalBodyJson(check),
+        resultData = null,
+        resultObject = null,
+        success = false,
+        error = check.sentence(),
+    )
+
+    /**
+     * The refusal body as JSON, shared by both refusal paths.
+     *
+     * A tool's own guard and the dispatcher's pre-flight both produce this, so a
+     * caller sees one shape whichever refused it. Two shapes for one condition is
+     * how a branch written against the tool path silently misses the dispatcher
+     * path and reads a refusal as a malformed success.
+     */
+    fun refusalBodyJson(check: GrantCheck): String {
         val body = RefusalBody(
             permission = check.spec.permission,
             state = check.state.name,
@@ -201,13 +258,7 @@ object PermissionGrants {
             grantRoute = check.spec.grantRoute,
             sentence = check.sentence(),
         )
-        return ToolExecutionResult(
-            rawJson = json.encodeToString(RefusalBody.serializer(), body),
-            resultData = null,
-            resultObject = null,
-            success = false,
-            error = check.sentence(),
-        )
+        return json.encodeToString(RefusalBody.serializer(), body)
     }
 
     /**
@@ -227,4 +278,52 @@ object PermissionGrants {
      */
     fun guardHardware(present: Boolean, label: String, why: String): ToolExecutionResult? =
         if (present) null else refusal(GrantCheck.absent(permission = "hardware:$label", label = label, why = why))
+
+    // ------------------------------------------------------------------
+    // The dispatcher's pre-flight refusal
+    // ------------------------------------------------------------------
+
+    /**
+     * The sentence for a permission the dispatcher refused before the tool ran.
+     *
+     * WHY THIS EXISTS. ToolDispatcher checks a tool's declared permissions before
+     * calling the executor, which is correct: a tool must not run at all when it
+     * cannot. But its refusal was the bare string
+     * "Permission denied: android.permission.READ_SMS", which names no route and
+     * does not say whether the person can fix it. Because it runs first, it
+     * short-circuits every tool's own guard and that raw string is what the model
+     * actually reads.
+     *
+     * Routing the pre-flight through the same catalogue means one refusal shape
+     * exists in the app rather than two, and a permission outside the catalogue
+     * still produces something honest instead of a raw platform string. Every tool
+     * set benefits, not only this batch's.
+     *
+     * ONLY 43 PERMISSIONS HAVE A WRITTEN ENTRY, and other tool sets legitimately
+     * declare real ones the catalogue does not know, such as POST_NOTIFICATIONS.
+     * Calling those a tool defect would tell a person the app is broken when one
+     * grant would fix it, so the platform is asked whether the name genuinely
+     * exists and only a string Android has never heard of is reported as a fault.
+     */
+    fun refusalForPermission(context: Context, permission: String): GrantCheck {
+        TeamThreePermissions.forPermission(permission)?.let { spec ->
+            // The dispatcher only reaches here when its check failed, so the state
+            // is derived the same way a tool's own guard derives it. A privileged
+            // or install-tier permission that lands here is reported as what it is
+            // rather than as a dialog nobody can find.
+            return GrantCheck.of(spec, granted = false)
+        }
+        return resolveOutOfCatalogue(context, permission, requireDenied = true)
+    }
+
+    /**
+     * The app's own name, for a settings path a person can follow.
+     *
+     * Read from the application info rather than hardcoded, because the debug build
+     * installs as a separate app and its label is what appears on the settings
+     * screen the person is being told to open.
+     */
+    private fun appLabel(context: Context): String = runCatching {
+        context.packageManager.getApplicationLabel(context.applicationInfo).toString()
+    }.getOrDefault("GURU")
 }
