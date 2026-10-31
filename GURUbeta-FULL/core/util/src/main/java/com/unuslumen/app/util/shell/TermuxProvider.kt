@@ -355,6 +355,31 @@ class TermuxProvider(private val context: Context) {
             env["REQUESTS_CA_BUNDLE"] = certPem.absolutePath
             env["GIT_SSL_CAINFO"] = certPem.absolutePath
         }
+        /*
+         * apt reads its configuration from a compiled-in com.termux path unless
+         * APT_CONFIG names a different file. That path does not exist inside
+         * this app's sandbox, so without this variable apt cannot find its own
+         * parts directory and every invocation dies with:
+         *
+         *   W: Unable to read /data/data/com.termux/files/usr/etc/apt/apt.conf.d/
+         *   E: Unable to determine a suitable packaging system type
+         *
+         * and exit code 100 — INCLUDING `apt-get --version`, which is the probe
+         * [aptRuns] uses. That is the whole of issue 30: the probe ran apt
+         * without the config, apt exited 100 before printing a version, and the
+         * diagnosis path turned that into "apt-get not present in the prefix"
+         * against a binary that was present and readable.
+         *
+         * [execAptInstall] and [execAptUpdate] already exported this inside
+         * their own scripts, so the tool paths worked while a human typing
+         * `apt update` in termuxExec got the broken default. Setting it here
+         * makes the config a property of the environment rather than of two
+         * hand-written scripts, which is where it belonged.
+         */
+        val aptConfig = File(File(etcDir, "apt"), "apt.conf.d/01-root.conf")
+        if (aptConfig.exists()) {
+            env["APT_CONFIG"] = aptConfig.absolutePath
+        }
         return env
     }
 
@@ -467,11 +492,50 @@ class TermuxProvider(private val context: Context) {
      * libraries and dpkg's architecture are all readable. It does not prove a
      * repository is reachable; [execAptUpdate] is the test for that.
      */
-    fun aptRuns(): Boolean {
+    fun aptRuns(): Boolean = aptProbe().runs
+
+    /**
+     * What apt actually did when asked to identify itself.
+     *
+     * Issue 30 asked for this to stop being a bare boolean. "The binary is not
+     * there" and "the binary is there and died" are different faults with
+     * different fixes, and collapsing them let the diagnosis path report a
+     * missing binary on a device where the binary was present, readable and
+     * merely misconfigured. A boolean cannot carry that distinction, so this
+     * carries the exit code and the real output instead and lets the caller
+     * decide what to say.
+     */
+    data class AptProbe(
+        /** The apt-get file exists and is readable. */
+        val present: Boolean,
+        /** The binary loaded and printed a version, exiting 0. */
+        val runs: Boolean,
+        /** Exit code from the probe, or null when the probe never ran. */
+        val exitCode: Int?,
+        /** First line of stderr (or stdout when stderr is empty), for the report. */
+        val detail: String,
+    )
+
+    fun aptProbe(): AptProbe {
         val aptGet = File(binDir, "apt-get")
-        if (!aptGet.exists() || !aptGet.canRead()) return false
+        if (!aptGet.exists() || !aptGet.canRead()) {
+            return AptProbe(
+                present = false,
+                runs = false,
+                exitCode = null,
+                detail = "apt-get not found at ${aptGet.absolutePath}",
+            )
+        }
         val result = execWithEnv(listOf(linker, aptGet.absolutePath, "--version"))
-        return result.exitCode == 0 && result.stdout.contains("apt")
+        val runs = result.exitCode == 0 && result.stdout.contains("apt")
+        val detail = if (runs) {
+            result.stdout.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+        } else {
+            val message = result.stderr.ifBlank { result.stdout }.trim()
+            if (message.isBlank()) "apt-get --version exited ${result.exitCode} with no output"
+            else message.lineSequence().take(3).joinToString(" | ").trim()
+        }
+        return AptProbe(present = true, runs = runs, exitCode = result.exitCode, detail = detail)
     }
 
     /**

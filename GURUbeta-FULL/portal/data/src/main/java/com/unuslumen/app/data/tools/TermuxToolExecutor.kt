@@ -59,18 +59,30 @@ class TermuxToolExecutor(private val context: Context) : ToolExecutor {
                     // the word "Reading" in the output, so a package manager that
                     // dies with exit 100 on every operation was reported as
                     // working. Two separate facts are now reported. aptPresent
-                    // means the binary loads and answers --version. aptWorking
-                    // means apt update reached its repositories and exited 0.
-                    val aptPresent = termuxProvider.aptRuns()
+                    // means the binary exists and is readable. aptWorking means
+                    // apt update reached its repositories and exited 0.
+                    //
+                    // Issue 30 added the third case: the binary exists and DIES.
+                    // The old code folded that into "not present" and asserted a
+                    // missing binary, sending anyone reading the report after the
+                    // wrong fault. aptProbe now reports what apt actually did, so
+                    // the message matches the evidence.
+                    val aptProbe = termuxProvider.aptProbe()
+                    val aptPresent = aptProbe.present
                     val aptTest = if (aptPresent) termuxProvider.execAptUpdate() else null
                     val aptWorking = aptTest != null && aptTest.exitCode == 0
-                    val aptDetail = aptTest?.let { (it.stderr.ifBlank { it.stdout }).take(500) }
-                        ?: "apt-get not present in the prefix"
+                    val aptDetail = when {
+                        !aptPresent -> aptProbe.detail
+                        !aptProbe.runs -> "apt-get will not load: ${aptProbe.detail}"
+                        else -> aptTest?.let { (it.stderr.ifBlank { it.stdout }).take(500) }
+                            ?: aptProbe.detail
+                    }
 
                     val diagnostics = mutableListOf<String>()
                     if (binCount == 0) diagnostics.add("No binaries")
                     if (!bashWorks) diagnostics.add("bash failed: ${bashTest.stderr.take(200)}")
-                    if (!aptPresent) diagnostics.add("apt-get is missing or will not load: $aptDetail")
+                    if (!aptPresent) diagnostics.add("apt-get is missing: $aptDetail")
+                    else if (!aptProbe.runs) diagnostics.add(aptDetail)
                     else if (!aptWorking) diagnostics.add("apt update failed: $aptDetail")
 
                     val r = TermuxDiagnoseResult(
