@@ -93,6 +93,7 @@ import com.unuslumen.app.data.tools.AudioConvertResult
 import com.unuslumen.app.data.tools.DiscordResult
 import com.unuslumen.app.data.tools.SlackResult
 import com.unuslumen.app.data.tools.WhatsAppResult
+import com.unuslumen.app.data.tools.WhatsAppSearchResult
 import com.unuslumen.app.data.tools.XResult
 import com.unuslumen.app.data.tools.VoiceCallResult
 import com.unuslumen.app.data.tools.HealthResult
@@ -2290,12 +2291,41 @@ class AiRepositoryImpl(
             ))
         }.getOrNull()
 
-        "whatsappSend", "whatsappSearch" -> runCatching {
+        // WhatsApp send. The action and status shown to the model and the UI are
+        // DERIVED FROM sent/drafted, never copied from a stored string, so there
+        // is exactly one place that decides what happened. A result that says
+        // sent=false, drafted=true comes out here as "drafted" and carries the
+        // explanation, which is the whole point of issue 174: a draft that is
+        // reported as a send is a lie, and the old code had no way to tell them
+        // apart because it only ever had one success flag.
+        "whatsappSend" -> runCatching {
             val result = json.decodeFromString<WhatsAppResult>(resultJson)
+            val outcome = when {
+                result.sent -> "sent"
+                result.drafted -> "drafted"
+                result.success -> result.action ?: "compose_opened"
+                else -> "failed"
+            }
             ToolCallResultObject.Communication(CommunicationInfo(
                 type = "whatsapp",
-                action = result.action,
+                action = outcome,
                 recipient = result.recipient,
+                status = result.detail,
+                error = result.error
+            ))
+        }.getOrNull()
+
+        // WhatsApp search is a different shape and must not be decoded as a send.
+        // The old arm decoded both tools as WhatsAppResult, so a search silently
+        // produced a send-shaped object with every field at its default. The type
+        // stays "whatsapp" because MessageCard labels its card from that field;
+        // the action is what separates a search from a send.
+        "whatsappSearch" -> runCatching {
+            val result = json.decodeFromString<WhatsAppSearchResult>(resultJson)
+            ToolCallResultObject.Communication(CommunicationInfo(
+                type = "whatsapp",
+                action = if (result.available) "searched" else "unavailable",
+                status = result.detail,
                 error = result.error
             ))
         }.getOrNull()

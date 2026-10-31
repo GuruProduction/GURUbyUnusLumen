@@ -137,7 +137,13 @@ object WhatsAppAutomation {
     // Compose
     // =========================================================================
 
-    /** Open WhatsApp on a compose screen for [digits] with [message] pre-filled. */
+    /**
+     * Open WhatsApp on a compose screen for [digits] with [message] pre-filled.
+     *
+     * Returns whether an activity was actually started. That is all it claims:
+     * WhatsApp renders the compose screen and stops, so every caller reports
+     * this as a draft and lets [attemptSend] decide whether a send happened.
+     */
     fun launchCompose(context: Context, digits: String, message: String): Boolean {
         val uri = Uri.parse("https://api.whatsapp.com/send?phone=$digits&text=${Uri.encode(message)}")
         // Try targeting WhatsApp directly first, because a bare ACTION_VIEW can
@@ -193,7 +199,22 @@ object WhatsAppAutomation {
         // 1. Confirm the draft actually landed in the compose box. If it did
         //    not, WhatsApp did not open where we expected and tapping send
         //    would either do nothing or send the wrong thing.
-        val draftPresent = service.typeText(message) || screenContains(service, message)
+        //
+        //    THE ORDER HERE IS LOAD-BEARING, and the old order was wrong.
+        //    typeText performs ACTION_SET_TEXT, which REPLACES the entire
+        //    content of the first editable node it finds. WhatsApp fills the
+        //    compose box from the intent, so typing first overwrote the message
+        //    that was already sitting there, and on a screen that had not
+        //    finished opening the first editable node is the chat list's search
+        //    field, so the message was typed into the wrong place entirely.
+        //
+        //    The draft is now read off the screen first. Typing happens only
+        //    when it is genuinely absent, and only when the send control is
+        //    visible, which is what marks the conversation compose screen as
+        //    opposed to any other screen that happens to have an input field.
+        val draftAlreadyVisible = editableContains(service, message) || screenContains(service, message)
+        val draftPresent = draftAlreadyVisible ||
+            (hasSendControl(service) && service.typeText(message) && editableContains(service, message))
         if (!draftPresent) return SendAttempt.DraftNotVisible
 
         // 2. Find and tap send.
@@ -296,6 +317,20 @@ object WhatsAppAutomation {
     // =========================================================================
     // Screen reading
     // =========================================================================
+
+    /**
+     * Is a send control on screen right now?
+     *
+     * Its presence is what distinguishes a conversation compose screen from any
+     * other screen in the app, so it decides whether typing the message is safe.
+     * It is the same two lookups the send step then uses, kept in one place so
+     * the two can never disagree about what the screen is.
+     */
+    private fun hasSendControl(service: GuruAccessibilityService): Boolean {
+        val root = service.rootInActiveWindow ?: return false
+        return (root.findAccessibilityNodeInfosByViewId(ID_SEND_BUTTON)?.isNotEmpty() == true) ||
+            (root.findAccessibilityNodeInfosByText("Send")?.isNotEmpty() == true)
+    }
 
     /** Does any visible node on screen contain [needle]? */
     private fun screenContains(service: GuruAccessibilityService, needle: String): Boolean {
