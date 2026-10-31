@@ -12,8 +12,48 @@ import kotlinx.serialization.Serializable
 @Serializable data class SlackResult(val success: Boolean, val action: String? = null, val messageId: String? = null, val error: String? = null) : ToolResultData
 @Serializable data class SlackReadResult(val success: Boolean, val messages: List<SlackMessage>, val error: String? = null) : ToolResultData
 @Serializable data class SlackMessage(val ts: String, val user: String, val text: String) : ToolResultData
-@Serializable data class WhatsAppResult(val success: Boolean, val action: String? = null, val recipient: String? = null, val messageId: String? = null, val error: String? = null) : ToolResultData
-@Serializable data class WhatsAppSearchResult(val success: Boolean, val messages: List<WhatsAppMessage>, val error: String? = null) : ToolResultData
+/**
+ * WhatsApp send outcome.
+ *
+ * [sent] is the load-bearing field and it means one thing only: the message
+ * text was observed in the conversation after the send tap. [drafted] means
+ * WhatsApp was opened with the message pre-filled and a human still has to tap
+ * send. Those are different outcomes and the old tool conflated them, which was
+ * issue 174.
+ *
+ * [mechanism] records how the outcome was reached: `accessibility` when GURU
+ * drove the UI, `intent` when it only opened a compose screen. [detail] explains
+ * any gap in one sentence a caller can act on.
+ */
+@Serializable data class WhatsAppResult(
+    val success: Boolean,
+    val sent: Boolean = false,
+    val drafted: Boolean = false,
+    val mechanism: String? = null,
+    val recipient: String? = null,
+    val resolvedNumber: String? = null,
+    val action: String? = null,
+    val messageId: String? = null,
+    val error: String? = null,
+    val detail: String? = null,
+) : ToolResultData
+
+/**
+ * WhatsApp search outcome.
+ *
+ * [available] distinguishes "searched and found nothing" from "could not
+ * search at all". The old tool returned an empty list for both, which is the
+ * defect this whole batch exists to remove.
+ */
+@Serializable data class WhatsAppSearchResult(
+    val success: Boolean,
+    val available: Boolean = false,
+    val messages: List<WhatsAppMessage>,
+    val mechanism: String? = null,
+    val error: String? = null,
+    val detail: String? = null,
+) : ToolResultData
+
 @Serializable data class WhatsAppMessage(val id: String, val sender: String, val content: String, val timestamp: String) : ToolResultData
 @Serializable data class XResult(val success: Boolean, val action: String? = null, val tweetId: String? = null, val error: String? = null) : ToolResultData
 @Serializable data class XSearchResult(val success: Boolean, val tweets: List<Tweet>, val error: String? = null) : ToolResultData
