@@ -40,6 +40,7 @@ import com.unuslumen.app.util.date.formatDateForMapping
 import com.unuslumen.app.util.date.inTheLastWeek
 import com.unuslumen.app.util.permissions.Permission
 import com.unuslumen.app.util.permissions.PermissionGateway
+import com.unuslumen.app.util.permissions.RestrictedSettings
 import com.unuslumen.app.util.permissions.isSpecial
 import com.unuslumen.app.util.permissions.standardRuntimePermissions
 import com.unuslumen.app.util.permissions.specialPermissions
@@ -214,7 +215,18 @@ class MainViewModel(
         val isEnabled: Boolean = true,
         val hasHardware: Boolean = true,
         val minSdkVersion: Int = 26,
-        val existsOnCurrentApi: Boolean = true
+        val existsOnCurrentApi: Boolean = true,
+        /**
+         * True when Android's restricted-settings protection is what stands between
+         * this app and the capability, rather than a grant the person has not made.
+         *
+         * A restricted capability has NOTHING to grant on the settings screen, so
+         * rendering it as a red "Tap to grant" sends somebody to a switch that will
+         * refuse them. The row says what to do instead.
+         */
+        val blockedByRestrictedSettings: Boolean = false,
+        /** The one sentence to show when [blockedByRestrictedSettings] is set. */
+        val restrictedSettingsSentence: String? = null,
     )
 
     private val _permissionGateState = MutableStateFlow(PermissionGateState(dismissed = true))
@@ -350,12 +362,43 @@ class MainViewModel(
         }
     }
 
+    /**
+     * The gate's rows.
+     *
+     * THE DEFECT THIS FIXES, measured on an API 37 emulator on 2026-10-31. READ and
+     * WRITE_EXTERNAL_STORAGE sat permanently red with "Tap to grant" on a phone they
+     * can never be granted on. Two independent answers disagreed about applicability:
+     * [isApiLevelAbsent] correctly says they stop applying at Android 13, and the
+     * request path skipped them because of it, but this function only asked
+     * `SDK_INT >= minApi` with minApi 26 and so reported them as required. Tapping one
+     * asked the platform for a permission it no longer hands out, nothing happened,
+     * and the row stayed red. They had never once been grantable through this screen.
+     *
+     * The fix is that one rule decides applicability for both the request and the
+     * display, so the two cannot drift apart again.
+     */
     private fun buildPermissionToggles(context: Context): List<PermissionToggleState> {
         val pm = context.packageManager
         return allGatePermissions.map { (permission, label, category, hwFeature, minApi) ->
             val hasHardware = hwFeature == null || pm.hasSystemFeature(hwFeature)
-            val existsOnApi = Build.VERSION.SDK_INT >= minApi
+            // BOTH conditions, and the second is the one that was missing: the
+            // manifest's minApi for the permission AND the runtime rule about whether
+            // the platform still grants it at all.
+            val existsOnApi = Build.VERSION.SDK_INT >= minApi && !isApiLevelAbsent(permission)
             val isGranted = if (!hasHardware || !existsOnApi) true else PermissionGateway.isGranted(context, permission)
+
+            // Only accessibility and the notification listener can be blocked this way,
+            // and only while they are actually off: a capability already on is on,
+            // whatever the app-op says.
+            val restricted = when {
+                isGranted -> null
+                permission == Permission.ACCESSIBILITY_SERVICE ->
+                    RestrictedSettings.of(context, "Accessibility", alreadyGranted = false)
+                permission == Permission.NOTIFICATION_LISTENER ->
+                    RestrictedSettings.of(context, "Notification access", alreadyGranted = false)
+                else -> null
+            }?.takeIf { it.blockedByRestrictedSettings }
+
             val isEnabled = when {
                 permission == Permission.ACCESS_BACKGROUND_LOCATION ->
                     PermissionGateway.isGranted(context, Permission.ACCESS_FINE_LOCATION)
@@ -373,7 +416,9 @@ class MainViewModel(
                 isEnabled = isEnabled,
                 hasHardware = hasHardware,
                 minSdkVersion = minApi,
-                existsOnCurrentApi = existsOnApi
+                existsOnCurrentApi = existsOnApi,
+                blockedByRestrictedSettings = restricted != null,
+                restrictedSettingsSentence = restricted?.sentence,
             )
         }
     }
