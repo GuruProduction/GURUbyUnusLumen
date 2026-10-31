@@ -82,11 +82,35 @@ class PhoneDomainHonestyTest {
             mapOf("number" to "+447700900123", "message" to "hello"),
         )
         println("smsSend unconfirmed: success=${result.success} error=${result.error}")
+
+        // Two honest refusals are possible here and which one arrives depends on the
+        // grant, not on this test. A missing SEND_SMS grant is refused before the
+        // confirmation is ever read, because running on to the confirmation prompt
+        // would ask someone to approve a send that could not happen anyway. When the
+        // grant is held, the confirmation is what stops it. A success is neither.
         assertFalse("an unconfirmed send must not claim success", result.success)
+
+        val grantRefused = result.rawJson.contains("\"denied\":true") &&
+            result.error.orEmpty().contains("Grant it in")
+        val confirmationRefused = result.rawJson.contains("PENDING_CONFIRMATION")
+
         assertTrue(
-            "the refusal must say what to pass: ${result.rawJson}",
-            result.rawJson.contains("PENDING_CONFIRMATION") && result.rawJson.contains("confirmed = true"),
+            "must be refused either by the missing grant or by the missing confirmation: " +
+                "${result.rawJson}",
+            grantRefused || confirmationRefused,
         )
+
+        // When the confirmation is what stopped the send, the note must name the exact
+        // flag to pass, because that is the only thing the model can act on next. When
+        // the grant is what stopped it, the grant sentence is the actionable part and
+        // demanding the flag there would be asking the tool to describe a step the
+        // person cannot reach yet.
+        if (confirmationRefused) {
+            assertTrue(
+                "a confirmation refusal must say what to pass: ${result.rawJson}",
+                result.rawJson.contains("confirmed = true"),
+            )
+        }
     }
 
     @Test

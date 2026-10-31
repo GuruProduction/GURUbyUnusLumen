@@ -363,8 +363,28 @@ object PhoneCalls {
         }
     }.getOrDefault(TelephonyManager.CALL_STATE_IDLE)
 
-    private fun result(value: CallPlacedResult): ToolExecutionResult =
-        ToolExecutionResult.success(value, JSON.encodeToString(CallPlacedResult.serializer(), value))
+    /**
+     * Serialise a call result, and set the success flag from the payload rather than
+     * from the fact that serialising worked.
+     *
+     * THIS WAS A REAL BUG FOUND BY A TEST, and it is the same defect the executor's
+     * own [PhoneToolExecutor.result] was fixed for. `ToolExecutionResult.success(...)`
+     * is a factory that unconditionally reports success, so every path that came
+     * through here claimed one: a call left at PENDING_CONFIRMATION because nobody
+     * had confirmed it, and a call that was never placed because CALL_PHONE was
+     * missing and only the dialler opened. A caller could not tell a placed call from
+     * a refusal, which is exactly what this batch exists to remove.
+     *
+     * The flag now follows the payload's own success field and the error travels with
+     * it, so an unconfirmed call is a failure that says why.
+     */
+    private fun result(value: CallPlacedResult): ToolExecutionResult = ToolExecutionResult(
+        rawJson = JSON.encodeToString(CallPlacedResult.serializer(), value),
+        resultData = value,
+        resultObject = null,
+        success = value.success,
+        error = value.error,
+    )
 
     internal val JSON = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 }
