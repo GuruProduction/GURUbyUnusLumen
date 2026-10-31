@@ -589,9 +589,51 @@ class AdbClient(
     }
 }
 
+/**
+ * The execution tier that actually served a command.
+ *
+ * Issue 40: the tool contract said "NO limits" while the executor silently fell
+ * back to app UID, and nothing reported which tier ran. A caller then read a
+ * permanent permission wall as a transient failure and retried against it.
+ *
+ * The tier is a fact about the run and belongs on the result, not in a comment.
+ */
+enum class ShellTier {
+    /** Root daemon, UID 0. Everything works. */
+    ROOT,
+    /** ADB over wireless debugging, shell UID 2000. Most things work. */
+    ADB,
+    /** ProcessBuilder at app UID. Cannot read /proc/net/arp, dumpsys or settings. */
+    APP_UID,
+    /** Nothing ran. */
+    NONE;
+
+    /**
+     * What this tier can and cannot do, in the words a model should read before
+     * attempting something.
+     *
+     * Kept here rather than in a tool description so it cannot drift away from
+     * the code that decides the tier.
+     */
+    fun capabilities(): String = when (this) {
+        ROOT -> "root: unrestricted shell access"
+        ADB -> "ADB shell (UID 2000): most system reads and writes, no root"
+        APP_UID -> "app UID only: no /proc/net, no dumpsys, no settings, no other app data. " +
+            "Permission denials here are permanent and must not be retried."
+        NONE -> "nothing ran"
+    }
+}
+
 data class ShellResult(
     val exitCode: Int,
     val stdout: String,
     val stderr: String,
-    val success: Boolean
+    val success: Boolean,
+    /**
+     * Which tier served this call. Defaults to APP_UID because that is what
+     * every existing construction site means when it does not say otherwise,
+     * and defaulting to ROOT would be the same kind of lie this field exists to
+     * remove.
+     */
+    val tier: ShellTier = ShellTier.APP_UID,
 )
