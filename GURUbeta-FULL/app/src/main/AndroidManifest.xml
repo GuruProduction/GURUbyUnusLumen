@@ -337,6 +337,25 @@
                 <action android:name="android.intent.action.TIME_SET" />
             </intent-filter>
         </receiver>
+
+        <!-- Device Owner path (#172).
+             setPermissionGrantState names an admin component, so the component has
+             to exist before the owner route can run at all. Declaring the receiver
+             here does not grant any power: GURU only becomes Device Owner if it is
+             provisioned as one, and isDeviceOwnerApp reports the truth until then.
+             Exported is required, because the device-admin system intent has to
+             reach this receiver from outside the app. -->
+        <receiver
+            android:name="com.unuslumen.app.admin.GuruDeviceAdminReceiver"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/guru_device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
         <receiver
             android:name="com.unuslumen.app.data.heartbeat.HeartbeatAlarmReceiver"
             android:enabled="true"
