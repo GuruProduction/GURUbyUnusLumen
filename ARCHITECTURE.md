@@ -141,10 +141,15 @@ Two registries: bundled skills shipped with the app, and dynamic skills that GUR
 
 ## Design Constraints
 
+- **No root. Ever.** Nothing may depend on root access. It is 2026 and nobody roots their phone. A capability that only works with `su` is not a capability, it is a demo that fails for every real user. If a feature needs root, it is not finished.
+- **No adb. Ever.** Nothing may depend on adb, a host machine, or a debug bridge. The app must do everything it does from the phone by itself, with no cable and no companion computer.
+- **No workarounds, only real builds.** When something does not work, the answer is a proper implementation, never a shim that hides the breakage or a mechanism that only functions in a debug harness.
 - **No cloud storage** — memories, files, conversations, all live and die on the device
 - **Keys on device** — non-custodial wallet, private keys never leave the phone
 - **Tor by default** — external requests route through the fail-closed Tor policy; sync fetches fall back to cached content until Tor is ready
 - **App source open** — full app source is published at this repo under AGPL-3.0; the publisher server engine stays closed (reasoning above)
+
+These three are absolute and each one has already cost real work to learn. A root-only symlink and proot were both attempted and both were dead ends: proot needs `ptrace`, which Android's seccomp filter blocks for ordinary apps, and root does not exist on a user's phone. The answer that survived is `libpathshim.so`, an LD_PRELOAD library that rewrites a compiled-in upstream path at the libc boundary. It needs no root and no adb, which is exactly why it is the one that ships.
 
 ---
 
