@@ -21,7 +21,32 @@ object ShellToolDefinitions : ToolSetRegistration {
     const val ADB_EXEC = "adbExec"
 
     override val definitions = listOf(
-        ToolDefinition(name = EXECUTE_SHELL, description = "Execute a shell command on the device. Uses ADB (Wireless Debugging) for proper shell access when available. This tool has NO limits, NO timeouts.", category = "shell", parameters = listOf(ToolParameter("command", ToolParameterType.ShellCommand, true, "The shell command to execute"), ToolParameter("forceRoot", ToolParameterType.Boolean, false, "Force root shell via su")), permissions = emptyList()),
+        /*
+         * THE DESCRIPTION MUST MATCH THE DEVICE, not the best case.
+         *
+         * Issue 40: this used to say "Uses ADB ... NO limits", which is true only
+         * on a device with wireless debugging paired. On a stock phone the
+         * executor falls back to app UID, where /proc/net/arp, dumpsys and
+         * `settings get` all return Permission denied. A model reading "NO
+         * limits" attempted those, got denials, and treated them as transient.
+         *
+         * Every result now reports the tier that actually ran, so this claim is
+         * checkable after the fact rather than taken on trust.
+         */
+        ToolDefinition(
+            name = EXECUTE_SHELL,
+            description = "Execute a shell command on the device at the best available tier, and " +
+                "every result reports which tier served it. ROOT: everything. ADB shell via " +
+                "Wireless Debugging: most system reads and writes. APP_UID: this app only, so no " +
+                "/proc/net, no dumpsys, no settings and no other app's data. On APP_UID a " +
+                "Permission denied is permanent and must not be retried.",
+            category = "shell",
+            parameters = listOf(
+                ToolParameter("command", ToolParameterType.ShellCommand, true, "The shell command to execute"),
+                ToolParameter("forceRoot", ToolParameterType.Boolean, false, "Force root shell via su. Fails honestly when there is no root."),
+            ),
+            permissions = emptyList(),
+        ),
         ToolDefinition(name = READ_FILE, description = "Read a file from the device filesystem. No size limits.", category = "shell", parameters = listOf(ToolParameter("path", ToolParameterType.String, true, "Full path to the file")), permissions = emptyList()),
         ToolDefinition(name = WRITE_FILE, description = "Write content to a file on the device.", category = "shell", parameters = listOf(ToolParameter("path", ToolParameterType.String, true, "Full path"), ToolParameter("content", ToolParameterType.String, true, "Content to write")), permissions = emptyList()),
         ToolDefinition(name = LIST_DIRECTORY, description = "List contents of a directory.", category = "shell", parameters = listOf(ToolParameter("path", ToolParameterType.String, true, "Full path to the directory")), permissions = emptyList()),

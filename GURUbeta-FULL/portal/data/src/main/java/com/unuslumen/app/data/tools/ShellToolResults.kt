@@ -6,7 +6,22 @@ package com.unuslumen.app.data.tools
 import com.unuslumen.app.data.tools.registry.ToolResultData
 import kotlinx.serialization.Serializable
 
-@Serializable data class ShellCommandResult(val exitCode: Int, val stdout: String, val stderr: String, val success: Boolean) : ToolResultData
+/*
+ * `tier` is which execution context actually served the command.
+ *
+ * Issue 40: the tool claimed "NO limits" while the executor ran at app UID, and
+ * nothing reported it, so a caller read a permanent permission denial as a
+ * transient failure and retried. Naming the tier on the result is what makes the
+ * description's promise checkable against the run.
+ */
+@Serializable data class ShellCommandResult(
+    val exitCode: Int,
+    val stdout: String,
+    val stderr: String,
+    val success: Boolean,
+    val tier: String = "APP_UID",
+    val tierCapabilities: String? = null,
+) : ToolResultData
 @Serializable data class ReadFileResult(val content: String, val exists: Boolean, val sizeBytes: Long, val error: String?) : ToolResultData
 @Serializable data class WriteFileResult(val success: Boolean, val path: String, val bytesWritten: Long, val error: String?) : ToolResultData
 @Serializable data class DirectoryEntry(val name: String, val type: String, val size: String, val modified: String) : ToolResultData
