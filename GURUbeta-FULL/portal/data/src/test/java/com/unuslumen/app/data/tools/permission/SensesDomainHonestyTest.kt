@@ -9,6 +9,7 @@ import android.hardware.SensorManager
 import androidx.test.core.app.ApplicationProvider
 import com.unuslumen.app.data.tools.registry.ToolDefinition
 import com.unuslumen.app.data.tools.registry.ToolSetRegistration
+import com.unuslumen.app.data.tools.registry.permission.TeamThreePermissions
 import com.unuslumen.app.data.tools.registry.permission.TeamThreeToolDomains
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -74,8 +75,12 @@ class SensesDomainHonestyTest {
     fun everySensesDomainIsRegistered() {
         val ids = TeamThreeToolDomains.domains.map { it.id }.sorted()
         println("registered domains: $ids")
+        // `phone` is in this list because the phone domain landed after the senses
+        // batch was written. It is asserted rather than tolerated: a registered domain
+        // is one the dispatcher will actually reach, so an unexpected id here means a
+        // domain was added without anybody deciding to add it.
         assertEquals(
-            listOf("bluetooth", "camera_audio", "location", "privileged_capture", "sensors"),
+            listOf("bluetooth", "camera_audio", "location", "phone", "privileged_capture", "sensors"),
             ids,
         )
     }
@@ -101,10 +106,21 @@ class SensesDomainHonestyTest {
      */
     @Test
     fun everyDeclaredPermissionIsInTheCatalogue() {
+        // THE REAL CATALOGUE, not a copy of it. The earlier version hardcoded the
+        // eighteen senses permissions, so the moment the phone domain registered its
+        // own tools this test reported sixteen "unreasoned" permissions that were in
+        // fact catalogued. A hand-written list drifts from the catalogue it claims to
+        // check, and a drift here reads as a permission nobody reasoned about when the
+        // truth is that the test stopped looking.
+        val declared = TeamThreePermissions.all.keys
         val outside = allDefinitions()
             .flatMap { (owner, def) -> def.permissions.map { owner to it } }
-            .filter { (_, permission) -> permission !in catalogue }
-        println("permissions used: ${allDefinitions().flatMap { it.second.permissions }.distinct().size}")
+            .filter { (_, permission) -> permission !in declared }
+
+        println(
+            "permissions used: ${allDefinitions().flatMap { it.second.permissions }.distinct().size} " +
+                "of ${declared.size} catalogued"
+        )
         assertTrue("permissions used but not reasoned about: $outside", outside.isEmpty())
     }
 
