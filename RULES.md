@@ -8,11 +8,19 @@ Nothing in this repository may require root access. It is 2026 and nobody roots 
 
 If a feature needs root, it is not finished. Find the unrooted answer or the feature does not ship.
 
-## 2. No adb. Ever.
+## 2. Nothing REQUIRES adb. adb is the last resort, and it must still exist.
 
-Nothing may depend on adb, a host machine, or a debug bridge. The app must do everything it does from the phone, by itself, with no cable and no companion computer.
+The default path is the phone alone: no cable, no companion computer, no debug bridge. Every capability must work from the phone by itself on a stock handset.
 
-Debugging with adb is fine. Depending on adb is not. If a capability is only reachable through `adb shell`, it is missing.
+adb is the LAST resort, not a write-off. Power users exist, and this app has to outlive the Android restrictions of the day, so the adb tier and the Shizuku tier stay fully built, fully wired and fully working. They are not stubs and they are not allowed to rot.
+
+The distinction is exact:
+
+- A feature must be reachable without adb, or it is missing.
+- When a permission genuinely cannot be granted without adb or Shizuku, that path is built properly and documented, because for some permissions it is the only door that exists.
+- Never build a feature that works ONLY with adb when a real unrooted answer exists.
+
+Root stays an absolute no. adb does not.
 
 ## 3. Nothing is built to work around a problem.
 
@@ -35,6 +43,10 @@ Instrumentation runs in the app's own SELinux domain, because `adb shell` and `r
 
 Every error found is fixed, including ones nobody asked about. A skipped error is a lie about the state of the system, and lies compound.
 
-## 6. Honest reporting, always.
+## 6. Finish the job: test it, verify it, then report it.
 
-Never claim more than was run. When something passed, say it passed. When something is unproven, say it is unproven. When a limit exists, name it in the commit message and the PR body, because the limit is the part a person needs to know.
+Never claim more than was run. When something passed, say it passed.
+
+There is no such thing as an "honest caveat". A caveat is a half-finished job written down politely. If something can be tested, test it. If it can be driven on the device, drive it. If a limit is real and physical, prove that it is real by measuring it, and then say what was measured. "I did not verify this" is not a caveat, it is an unfinished task, and the correct next action is to finish it.
+
+The standard for every change: the real path was driven, the real output was read, and the result is stated in one line that a person can act on.
