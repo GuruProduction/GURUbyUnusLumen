@@ -53,27 +53,124 @@ class ScreenToolExecutor(
         }
     }
 
+    /**
+     * Start and stop screen recording, honestly.
+     *
+     * ISSUE 43: `stop` answered success with a path to a ZERO-BYTE file, because
+     * the guard was `recording.exists()` and an empty file exists. It also found
+     * its file by globbing the cache for the newest `screenrecord_*`, so it could
+     * hand back a file from an earlier session. Start reported success without
+     * checking the recorder had even launched.
+     *
+     * Three changes, each covering one of those:
+     *  - the process this call started is tracked, so `stop` only ever reports a
+     *    file THIS session created;
+     *  - success requires length() > 0, via ScreenRecordingCheck;
+     *  - `start` fails when the recorder died without writing a frame, and says
+     *    what screenrecord printed.
+     */
+    private var recordingProcess: Process? = null
+    private var recordingPath: String? = null
+
     private suspend fun screenRecord(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         val action = args["action"] as? String
             ?: return@withContext ToolExecutionResult.error("Missing 'action' parameter")
-        val duration = (args["duration"] as? Number)?.toInt() ?: 30
+        val duration = ScreenRecordingCheck.durationSeconds((args["duration"] as? Number)?.toInt())
 
         try {
-            if (action.lowercase() == "start") {
-                val path = "${context.cacheDir.absolutePath}/screenrecord_${System.currentTimeMillis()}.mp4"
-                Runtime.getRuntime().exec(arrayOf("sh", "-c", "screenrecord --time-limit $duration $path &"))
-                val result = ScreenShotResult(true, path, 0, "Recording started for ${duration}s. Use 'stop' to finish.")
-                ToolExecutionResult.success(result, json.encodeToString(ScreenShotResult.serializer(), result))
-            } else {
-                Runtime.getRuntime().exec(arrayOf("sh", "-c", "killall screenrecord 2>/dev/null"))
-                val dir = File(context.cacheDir.absolutePath)
-                val recording = dir.listFiles()?.filter { it.name.startsWith("screenrecord_") }?.maxByOrNull { it.lastModified() }
-                if (recording != null && recording.exists()) {
-                    val result = ScreenShotResult(true, recording.absolutePath, recording.length(), null)
-                    ToolExecutionResult.success(result, json.encodeToString(ScreenShotResult.serializer(), result))
-                } else {
-                    val result = ScreenShotResult(false, "", 0, "No recording found. Start one first.")
-                    ToolExecutionResult.success(result, json.encodeToString(ScreenShotResult.serializer(), result))
+            when (action.lowercase()) {
+                "start" -> {
+                    // A previous recording that was never collected must not be
+                    // silently abandoned; report it rather than starting over it.
+                    val live = recordingProcess
+                    if (live != null && live.isAlive) {
+                        val existing = recordingPath
+                        val r = ScreenShotResult(
+                            false, existing ?: "", 0,
+                            "A recording is already running for ${existing ?: "an unknown path"}. " +
+                                "Call stop first.",
+                        )
+                        return@withContext ToolExecutionResult.success(r, json.encodeToString(ScreenShotResult.serializer(), r))
+                    }
+
+                    val path = "${context.cacheDir.absolutePath}/screenrecord_${System.currentTimeMillis()}.mp4"
+                    // Launch and KEEP the handle. The old code backgrounded this
+                    // with `&` inside sh -c and threw the handle away, which is
+                    // why it could only find the file by guessing.
+                    val process = ProcessBuilder("screenrecord", "--time-limit", duration.toString(), path)
+                        .redirectErrorStream(true)
+                        .start()
+                    recordingProcess = process
+                    recordingPath = path
+
+                    // Give the encoder a moment to create and start filling the
+                    // file. screenrecord creates it only once the display and
+                    // encoder are configured, so this is a real readiness signal.
+                    Thread.sleep(600)
+                    val file = File(path)
+                    val bytes = if (file.exists()) file.length() else 0L
+                    val alive = process.isAlive
+
+                    // Read whatever the recorder printed. A denied display or a
+                    // missing encoder says so here and nowhere else.
+                    val detail = runCatching {
+                        val avail = process.inputStream.available()
+                        if (avail > 0) {
+                            val buf = ByteArray(minOf(avail, 400))
+                            process.inputStream.read(buf)
+                            String(buf, Charsets.UTF_8)
+                        } else ""
+                    }.getOrDefault("")
+
+                    val failure = ScreenRecordingCheck.startFailure(alive, bytes, detail)
+                    if (failure != null) {
+                        recordingProcess = null
+                        recordingPath = null
+                        val r = ScreenShotResult(false, path, bytes, failure)
+                        ToolExecutionResult.success(r, json.encodeToString(ScreenShotResult.serializer(), r))
+                    } else {
+                        val r = ScreenShotResult(true, path, bytes, ScreenRecordingCheck.startNote(alive, bytes, duration))
+                        ToolExecutionResult.success(r, json.encodeToString(ScreenShotResult.serializer(), r))
+                    }
+                }
+                else -> {
+                    val path = recordingPath
+                    val process = recordingProcess
+                    if (path == null) {
+                        val r = ScreenShotResult(false, "", 0, "No recording was started by this session. Call start first.")
+                        return@withContext ToolExecutionResult.success(r, json.encodeToString(ScreenShotResult.serializer(), r))
+                    }
+
+                    // Ask the recorder to finish properly. screenrecord finalises
+                    // the MP4 from its SIGINT/SIGHUP handler; a hard kill leaves a
+                    // file whose index was never written, which has bytes and will
+                    // not play.
+                    var endedCleanly = true
+                    if (process != null && process.isAlive) {
+                        runCatching { process.destroy() } // SIGTERM
+                        endedCleanly = process.waitFor(4, java.util.concurrent.TimeUnit.SECONDS)
+                        if (!endedCleanly) {
+                            process.destroyForcibly()
+                        }
+                    }
+                    recordingProcess = null
+                    recordingPath = null
+
+                    val file = File(path)
+                    val bytes = if (file.isFile) file.length() else 0L
+                    val failure = ScreenRecordingCheck.stopFailure(
+                        path = path,
+                        fileExists = file.isFile,
+                        recordedBytes = bytes,
+                        endedCleanly = endedCleanly,
+                        detail = "",
+                    )
+                    val r = if (failure == null) {
+                        ScreenShotResult(true, path, bytes, null)
+                    } else {
+                        ScreenShotResult(false, path, bytes, failure)
+                    }
+                    ToolExecutionResult.success(r, json.encodeToString(ScreenShotResult.serializer(), r))
                 }
             }
         } catch (e: Exception) {
