@@ -15,24 +15,105 @@ import kotlinx.coroutines.flow.StateFlow
 /**
  * Accessibility Service that provides UI automation capabilities.
  * Enables Guru to tap, scroll, type, and navigate any screen on the device.
- * Also used to auto-enable Wireless Debugging for ADB shell access.
+ *
+ * ============================================================================
+ * ONE SOURCE OF TRUTH FOR "IS IT RUNNING", and it reports three states.
+ * ============================================================================
+ *
+ * THE DEFECT THIS FIXES, from issue 36. `checkAdbStatus` answered
+ * `accessibilityRunning` from a flag, while every automation path gated on
+ * [instance]. Two signals for one question meant a status that could not be
+ * trusted as a capability check, which is the opposite of what a status field is
+ * for.
+ *
+ * Both signals also collapsed three genuinely different states into one boolean,
+ * and callers need them apart because they need opposite responses:
+ *
+ *   DISABLED            not enabled in Settings. Waiting never helps; the human
+ *                       has to turn it on.
+ *   ENABLED_NOT_BOUND   enabled, but not bound right now: killed, restarting, or
+ *                       the accessibility subsystem has not reconnected. Asking
+ *                       again shortly may help.
+ *   RUNNING             bound and serving automation.
+ *
+ * [isRunning] is now derived from [instance] rather than tracked beside it, so
+ * the status field and the automation gate can never disagree again.
  */
 class GuruAccessibilityService : AccessibilityService() {
 
+    enum class State {
+        DISABLED,
+        ENABLED_NOT_BOUND,
+        RUNNING,
+    }
+
     companion object {
         private const val TAG = "guru"
+
+        /** Derived from [instance]; see [isRunning]. */
         private val _isRunning = MutableStateFlow(false)
+
+        /**
+         * Whether the service is bound and usable.
+         *
+         * Kept as a StateFlow because UI observes it. It is only ever true while
+         * [instance] is non-null, which is the invariant that fixes the defect.
+         */
         val isRunning: StateFlow<Boolean> = _isRunning
 
         private var _instance: GuruAccessibilityService? = null
+
+        /** The live service, or null. Every automation path checks this one. */
         val instance: GuruAccessibilityService? get() = _instance
+
+        /**
+         * Whether the service is ENABLED in Android Settings.
+         *
+         * A service cannot read this about itself, only the system can, so the app
+         * records it when it reads Settings.Secure. It decides only whether a
+         * non-bound service is DISABLED or ENABLED_NOT_BOUND.
+         */
+        @Volatile private var enabledInSettings = false
+
+        fun setEnabledInSettings(enabled: Boolean) {
+            enabledInSettings = enabled
+        }
+
+        /**
+         * The honest three-state read, for status reporting.
+         *
+         * A bound instance wins over the settings cache, because binding is the
+         * stronger evidence: if we hold the object, it is running.
+         */
+        fun state(): State = when {
+            _instance != null -> State.RUNNING
+            enabledInSettings -> State.ENABLED_NOT_BOUND
+            else -> State.DISABLED
+        }
+
+        /** Whether the service is enabled in Settings, for status reporting. */
+        fun isEnabledInSettings(): Boolean = enabledInSettings
     }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         _instance = this
         _isRunning.value = true
+        enabledInSettings = true
         Log.d(TAG, "GuruAccessibilityService: connected")
+    }
+
+    /**
+     * Unbind is the restart case: enabled, but no longer serving.
+     *
+     * Distinct from onDestroy because a restart produces this, and the old code
+     * could not distinguish it from the human having disabled the service.
+     */
+    override fun onUnbind(intent: android.content.Intent?): Boolean {
+        _instance = null
+        _isRunning.value = false
+        Log.d(TAG, "GuruAccessibilityService: unbound (still enabled in settings)")
+        return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
