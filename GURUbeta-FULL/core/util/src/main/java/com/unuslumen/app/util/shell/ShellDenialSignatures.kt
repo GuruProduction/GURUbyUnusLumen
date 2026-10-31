@@ -321,9 +321,17 @@ object ShellDenialSignatures {
 
     private fun tierGuidance(tier: ShellTier): String = when (tier) {
         ShellTier.APP_UID ->
-            "at app UID this denial is permanent and must not be retried, so use ADB shell " +
-                "(UID 2000, which has most system reads and writes) or root (unrestricted " +
-                "shell access)"
+            "at app UID this denial is permanent and must not be retried, so use Shizuku or " +
+                "ADB shell (UID 2000, which has most system reads and writes) or root " +
+                "(unrestricted shell access)"
+        // Shizuku and ADB are the same UID 2000 and the same answer, so they get
+        // the same meaning. They are separate branches only so the sentence names
+        // the tier that actually ran, and so this `when` stays exhaustive without
+        // an `else` that could silently swallow a future tier.
+        ShellTier.SHIZUKU ->
+            "this ran through Shizuku at shell UID 2000, so the refusal is the service's own " +
+                "answer rather than a tier limit, and repeating it at this tier returns the " +
+                "same answer"
         ShellTier.ADB ->
             "this ran at ADB shell (UID 2000), so the refusal is the service's own answer " +
                 "rather than a tier limit, and repeating it at this tier returns the same answer"

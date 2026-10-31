@@ -248,7 +248,17 @@ class BluetoothDomainExecutor(private val context: Context) : ToolExecutor {
                     "is turned on; the permission is separate from the switch and turning Bluetooth " +
                     "on needs no grant.",
             )
-            return emitPayload(json, json.encodeToString(AdapterOffResult.serializer(), r), r, r.success, r.error)
+            // AdapterOffResult has no `error` field: `message` IS its explanation, so
+            // that sentence is what travels in the reason slot. Without this the
+            // compiler is right to refuse it, and a caller would otherwise get a bare
+            // false with no account of why Bluetooth could not be used.
+            return emitPayload(
+                json,
+                json.encodeToString(AdapterOffResult.serializer(), r),
+                r,
+                r.success,
+                r.message,
+            )
         }
         return null
     }
