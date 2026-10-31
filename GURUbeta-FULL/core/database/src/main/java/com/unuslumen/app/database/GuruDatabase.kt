@@ -86,6 +86,9 @@ import com.unuslumen.app.database.entity.ProjectFactEntity
 import com.unuslumen.app.database.entity.MediaItemEntity
 import com.unuslumen.app.database.entity.MediaZoomLogEntity
 import com.unuslumen.app.database.entity.MemoryInjectionEntity
+import com.unuslumen.app.database.entity.FabricDeviceEntity
+import com.unuslumen.app.database.entity.FabricSceneEntity
+import com.unuslumen.app.database.dao.FabricDao
 
 @Database(
     entities = [
@@ -128,9 +131,11 @@ import com.unuslumen.app.database.entity.MemoryInjectionEntity
         UserProfileEntity::class,
         MediaItemEntity::class,
         MediaZoomLogEntity::class,
-        MemoryInjectionEntity::class
+        MemoryInjectionEntity::class,
+        FabricDeviceEntity::class,
+        FabricSceneEntity::class
     ],
-    version = 30
+    version = 31
 )
 @TypeConverters(DBConverters::class)
 abstract class guruDatabase: RoomDatabase() {
@@ -174,6 +179,7 @@ abstract class guruDatabase: RoomDatabase() {
     abstract fun jobExecutionHistoryDao(): JobExecutionHistoryDao
     abstract fun seenImageDao(): SeenImageDao
     abstract fun memoryInjectionDao(): MemoryInjectionDao
+    abstract fun fabricDao(): FabricDao
 
     companion object {
         const val DATABASE_NAME = "guru_db"
