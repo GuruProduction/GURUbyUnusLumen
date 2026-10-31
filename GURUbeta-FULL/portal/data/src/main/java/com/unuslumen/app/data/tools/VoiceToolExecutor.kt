@@ -122,8 +122,29 @@ class VoiceToolExecutor(private val context: Context) : ToolExecutor {
         ToolExecutionResult.success(r, json.encodeToString(TranscribeResult.serializer(), r))
     }
 
+    /**
+     * Record from the microphone and transcribe it.
+     *
+     * THE GRANT CHECK WAS MISSING. This method went straight to MicRecorder, so a
+     * phone without the Microphone permission reached the platform and failed with
+     * whatever MediaRecorder said, which reads as a device fault rather than as the
+     * one grant that would fix it. The guard now runs first and returns the catalogue's
+     * own sentence, and the hardware check after it turns "no microphone" into the
+     * device's answer rather than a recording error.
+     */
     private suspend fun transcribeSpeech(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val durationSeconds = (args["durationSeconds"] as? Number)?.toInt() ?: 10; val language = args["language"] as? String
+        com.unuslumen.app.data.tools.registry.permission.PermissionGrants
+            .guard(context, com.unuslumen.app.data.tools.registry.permission.TeamThreePermissions.RECORD_AUDIO)
+            ?.let { return@withContext it }
+
+        com.unuslumen.app.data.tools.registry.permission.PermissionGrants.guardHardware(
+            present = com.unuslumen.app.data.tools.registry.permission.PermissionGrants.hasMicrophone(context),
+            label = "microphone",
+            why = "GURU can hear you speak and transcribe it",
+        )?.let { return@withContext it }
+
+        val durationSeconds = ((args["durationSeconds"] as? Number)?.toInt() ?: 10).coerceIn(1, 300)
+        val language = args["language"] as? String
         val audioFile = File(context.cacheDir, "speech_${System.currentTimeMillis()}.m4a")
         val recordError = MicRecorder.record(context, audioFile, durationSeconds)
         if (recordError != null || !audioFile.exists() || audioFile.length() < 100L) {

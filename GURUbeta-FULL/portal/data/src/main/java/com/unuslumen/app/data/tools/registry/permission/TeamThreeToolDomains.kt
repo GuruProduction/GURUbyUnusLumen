@@ -6,6 +6,11 @@ package com.unuslumen.app.data.tools.registry.permission
 import com.unuslumen.app.data.tools.registry.ToolDefinition
 import com.unuslumen.app.data.tools.registry.ToolExecutor
 import com.unuslumen.app.data.tools.registry.ToolSetRegistration
+import com.unuslumen.app.data.tools.senses.BluetoothDomainModule
+import com.unuslumen.app.data.tools.senses.CameraAudioDomainModule
+import com.unuslumen.app.data.tools.senses.LocationDomainModule
+import com.unuslumen.app.data.tools.senses.PrivilegedCaptureDomainModule
+import com.unuslumen.app.data.tools.senses.SensorsDomainModule
 import org.koin.core.module.Module
 import org.koin.dsl.module
 
@@ -30,13 +35,23 @@ import org.koin.dsl.module
 object TeamThreeToolDomains {
 
     /**
-     * Every domain that has been merged and proven.
+     * Every domain that has been merged.
      *
-     * A domain is listed only after its tools compile, register, and are verified
-     * on a device. An empty list is the truthful state before that happens; it is
-     * never a placeholder for a domain somebody meant to write.
+     * A domain is listed once its tools compile and register. It is NOT listed as
+     * device-verified, because nothing in this batch has been run on a handset: the
+     * granted paths of the camera, the microphone, the sensors, the Bluetooth radio
+     * and the location watch each need Steven's own phone, and that is stated per tool
+     * in the PR body rather than implied by this list.
+     *
+     * Ordered by id so a merge never reorders another agent's line.
      */
-    val domains: List<DomainToolModule> = emptyList()
+    val domains: List<DomainToolModule> = listOf(
+        BluetoothDomainModule,
+        CameraAudioDomainModule,
+        LocationDomainModule,
+        PrivilegedCaptureDomainModule,
+        SensorsDomainModule,
+    )
 
     /** Every registration from every domain, in domain order. */
     fun registrations(): List<ToolSetRegistration> = domains.flatMap { it.registrations }
