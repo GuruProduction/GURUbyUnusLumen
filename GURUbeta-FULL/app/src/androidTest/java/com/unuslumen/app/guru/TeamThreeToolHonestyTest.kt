@@ -9,6 +9,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.unuslumen.app.data.tools.registry.permission.TeamThreeToolDomains
 import com.unuslumen.app.data.tools.registry.ToolExecutor
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
+import com.unuslumen.app.data.tools.registry.ToolSetRegistration
 import org.koin.core.context.GlobalContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -16,6 +17,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import kotlinx.coroutines.runBlocking
+import kotlin.reflect.KClass
 
 /**
  * The device proof for the whole device-senses batch, in one reusable harness.
@@ -39,6 +41,25 @@ class TeamThreeToolHonestyTest {
         get() = InstrumentationRegistry.getInstrumentation().targetContext
 
     private val koin get() = GlobalContext.get()
+
+    /**
+     * Resolve a registration's executor from Koin.
+     *
+     * Koin's `get()` is a reified inline function, so a `KClass<out ToolExecutor>`
+     * cannot satisfy its type parameter and the call does not compile. The cast
+     * narrows the projection to the one bound every executor shares; it is safe
+     * because a registration's executor class is required to implement
+     * ToolExecutor by the interface itself.
+     *
+     * A null here means the class is declared but nothing binds it, which is the
+     * fault this resolution exists to surface.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun executorFor(reg: ToolSetRegistration): ToolExecutor? = runCatching {
+        // The type argument is given explicitly because `get` is a reified inline
+        // function: passing the class as a value cannot satisfy its type parameter.
+        koin.get<ToolExecutor>(reg.executorClass() as KClass<ToolExecutor>)
+    }.getOrNull()
 
     @Test
     fun runsInTheAppDomainNotTheShellDomain() {
@@ -76,7 +97,7 @@ class TeamThreeToolHonestyTest {
         for (domain in TeamThreeToolDomains.domains) {
             for (reg in domain.registrations) {
                 val cls = reg.executorClass()
-                val resolved = runCatching { koin.get(cls) }.isSuccess
+                val resolved = executorFor(reg) != null
                 if (!resolved) missing += "${domain.id}: ${cls.simpleName}"
             }
         }
@@ -101,7 +122,7 @@ class TeamThreeToolHonestyTest {
 
         for (domain in TeamThreeToolDomains.domains) {
             for (reg in domain.registrations) {
-                val executor: ToolExecutor = runCatching { koin.get(reg.executorClass()) }.getOrNull() ?: continue
+                val executor: ToolExecutor = executorFor(reg) ?: continue
                 for (def in reg.definitions) {
                     val result = runCatching {
                         executor.execute(def.name, benignArgumentsFor(def.name))
@@ -155,7 +176,7 @@ class TeamThreeToolHonestyTest {
 
         for (domain in TeamThreeToolDomains.domains) {
             for (reg in domain.registrations) {
-                val executor: ToolExecutor = runCatching { koin.get(reg.executorClass()) }.getOrNull() ?: continue
+                val executor: ToolExecutor = executorFor(reg) ?: continue
                 for (def in reg.definitions) {
                     if (def.name !in destructive) continue
                     val result = runCatching { executor.execute(def.name, benignArgumentsFor(def.name)) }

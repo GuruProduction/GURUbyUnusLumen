@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.unuslumen.app.data.tools.registry.ToolExecutor
+import com.unuslumen.app.data.tools.registry.ToolSetRegistration
 import com.unuslumen.app.data.tools.registry.permission.PermissionTier
 import com.unuslumen.app.data.tools.registry.permission.TeamThreePermissions
 import com.unuslumen.app.data.tools.registry.permission.TeamThreeToolDomains
@@ -19,6 +20,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.koin.core.context.GlobalContext
 import kotlinx.coroutines.runBlocking
+import kotlin.reflect.KClass
 
 /**
  * The granted half of the device proof.
@@ -50,6 +52,21 @@ class TeamThreeGrantedPathTest {
         get() = InstrumentationRegistry.getInstrumentation().uiAutomation
 
     private val grantedByThisTest = mutableListOf<String>()
+
+    /**
+     * Resolve a registration's executor from Koin.
+     *
+     * Koin's `get()` is a reified inline function, so a `KClass<out ToolExecutor>`
+     * cannot satisfy its type parameter and the call does not compile. This cast
+     * narrows the projection to the one bound every executor shares, which the
+     * ToolSetRegistration interface already requires.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun executorFor(reg: ToolSetRegistration): ToolExecutor? = runCatching {
+        // The type argument is given explicitly because `get` is a reified inline
+        // function: passing the class as a value cannot satisfy its type parameter.
+        GlobalContext.get().get<ToolExecutor>(reg.executorClass() as KClass<ToolExecutor>)
+    }.getOrNull()
 
     @Before
     fun grantEveryRuntimePermissionTeamThreeOwns() {
@@ -100,9 +117,7 @@ class TeamThreeGrantedPathTest {
 
         for (domain in TeamThreeToolDomains.domains) {
             for (reg in domain.registrations) {
-                val executor: ToolExecutor = runCatching {
-                    GlobalContext.get().get(reg.executorClass())
-                }.getOrNull() ?: continue
+                val executor: ToolExecutor = executorFor(reg) ?: continue
 
                 for (def in reg.definitions) {
                     val result = runCatching { executor.execute(def.name, emptyMap()) }.getOrNull() ?: continue
@@ -159,9 +174,7 @@ class TeamThreeGrantedPathTest {
 
         for (domain in TeamThreeToolDomains.domains) {
             for (reg in domain.registrations) {
-                val executor: ToolExecutor = runCatching {
-                    GlobalContext.get().get(reg.executorClass())
-                }.getOrNull() ?: continue
+                val executor: ToolExecutor = executorFor(reg) ?: continue
 
                 for (def in reg.definitions) {
                     val result = runCatching { executor.execute(def.name, emptyMap()) }.getOrNull() ?: continue
@@ -192,9 +205,7 @@ class TeamThreeGrantedPathTest {
         val offenders = mutableListOf<String>()
         for (domain in TeamThreeToolDomains.domains) {
             for (reg in domain.registrations) {
-                val executor: ToolExecutor = runCatching {
-                    GlobalContext.get().get(reg.executorClass())
-                }.getOrNull() ?: continue
+                val executor: ToolExecutor = executorFor(reg) ?: continue
                 for (def in reg.definitions) {
                     if (!def.name.contains("bodySensor", ignoreCase = true) &&
                         !def.name.contains("heartRate", ignoreCase = true)
