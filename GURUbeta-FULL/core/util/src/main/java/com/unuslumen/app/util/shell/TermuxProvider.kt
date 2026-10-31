@@ -201,6 +201,13 @@ class TermuxProvider(private val context: Context) {
             // this tree. Built before apt config because apt references it.
             ensureCompatibilityRoot()
 
+            // The other half of that mapping: a compiled-in upstream path cannot
+            // be rewritten inside an ELF, so the path itself is made real where
+            // root allows it. Without root this logs the limit and the rest of
+            // the prefix still works; with root, every installed binary's
+            // absolute paths resolve here.
+            linkUpstreamRootFromRoot()
+
             // apt config — write at init so any termuxExec "apt ..." works
             initAptConfig()
 
@@ -355,6 +362,21 @@ class TermuxProvider(private val context: Context) {
             env["REQUESTS_CA_BUNDLE"] = certPem.absolutePath
             env["GIT_SSL_CAINFO"] = certPem.absolutePath
         }
+        /*
+         * APT_CONFIG in the AMBIENT environment, not only per call.
+         *
+         * Issue 31 named this precisely: the config was correct but only found
+         * when the tool set APT_CONFIG itself, so `apt update` typed in a shell
+         * fell back to the compiled-in com.termux root and failed with
+         * "Unable to determine a suitable packaging system type". Setting it in
+         * the shared environment means every process we start, interactive or
+         * not, sees the same answer. This is the difference between a fix that
+         * works from inside the tool and a fix that works.
+         */
+        val aptConfig = File(File(etcDir, "apt"), "apt.conf.d/01-root.conf")
+        if (aptConfig.exists()) {
+            env["APT_CONFIG"] = aptConfig.absolutePath
+        }
         return env
     }
 
@@ -455,24 +477,65 @@ class TermuxProvider(private val context: Context) {
     }
 
     /**
-     * Whether apt can actually OPERATE, rather than merely existing.
+     * The three distinct things `termuxDiagnose` needs to distinguish about apt.
      *
-     * Issue 4 named this defect: `termuxDiagnose` reported `aptWorking: true`
-     * because it only checked the binary executed, and a binary that runs and
-     * then dies with exit 100 on every operation is not a working package
-     * manager. Claiming otherwise is worse than saying nothing, because it
-     * tells the model a capability exists when it does not.
-     *
-     * This asks apt to load and answer `--version`, which proves the ELF, its
-     * libraries and dpkg's architecture are all readable. It does not prove a
-     * repository is reachable; [execAptUpdate] is the test for that.
+     * Issue 4 asked for this and issue 30 named the exact cost of not having it:
+     * a boolean that meant "my probe failed" was reported as "the binary is
+     * missing", so a healthy apt-get was declared absent and the real cause was
+     * lost. These three values make that impossible by construction.
      */
-    fun aptRuns(): Boolean {
-        val aptGet = File(binDir, "apt-get")
-        if (!aptGet.exists() || !aptGet.canRead()) return false
-        val result = execWithEnv(listOf(linker, aptGet.absolutePath, "--version"))
-        return result.exitCode == 0 && result.stdout.contains("apt")
+    enum class AptProbe {
+        /** No apt-get binary at all in the prefix. */
+        ABSENT,
+        /** The binary exists but will not run, with the real output attached. */
+        WILL_NOT_LOAD,
+        /** The binary runs and answers --version. */
+        RUNS,
     }
+
+    data class AptProbeResult(
+        val state: AptProbe,
+        /** Raw stdout+stderr, always populated, so a caller never has to invent a reason. */
+        val output: String,
+        val exitCode: Int,
+    )
+
+    /**
+     * Probe apt, honestly and with the same environment apt actually needs.
+     *
+     * THE DEFECT THIS FIXES, from issue 30. The old probe ran
+     * `apt-get --version` with no APT_CONFIG. apt cannot parse a configuration
+     * that points at a com.termux directory it cannot read, so it exits 100 and
+     * prints "Unable to determine a suitable packaging system type" — and the
+     * probe read exit 100 as "the binary is missing". The binary was fine; the
+     * probe was measuring its own missing environment.
+     *
+     * Two things are true and both are now handled: apt needs APT_CONFIG to be
+     * able to answer at all, and a probe must report the real output rather than
+     * collapse a failure into a fixed string.
+     */
+    fun probeApt(): AptProbeResult {
+        val aptGet = File(binDir, "apt-get")
+        if (!aptGet.exists() || !aptGet.canRead()) {
+            return AptProbeResult(AptProbe.ABSENT, "apt-get is not present in ${binDir.absolutePath}", -1)
+        }
+        val aptConfig = File(File(etcDir, "apt"), "apt.conf.d/01-root.conf").absolutePath
+        val env = buildEnv()
+        // apt resolves its config from this before anything else. Without it the
+        // probe fails for a reason that has nothing to do with the binary.
+        env["APT_CONFIG"] = aptConfig
+        val result = execWithEnv(listOf(linker, aptGet.absolutePath, "--version"), env)
+        val combined = (result.stdout + "\n" + result.stderr).trim()
+        return when {
+            result.exitCode == 0 && result.stdout.contains("apt") ->
+                AptProbeResult(AptProbe.RUNS, combined, result.exitCode)
+            else ->
+                AptProbeResult(AptProbe.WILL_NOT_LOAD, combined.ifBlank { "apt-get produced no output" }, result.exitCode)
+        }
+    }
+
+    /** Convenience for callers that only need the yes/no. */
+    fun aptRuns(): Boolean = probeApt().state == AptProbe.RUNS
 
     /**
      * Run `apt update` and return the raw result.
@@ -516,11 +579,19 @@ class TermuxProvider(private val context: Context) {
 
     /**
      * Shared ProcessBuilder execution with the standard Termux environment.
+     *
+     * `extraEnv` overrides are applied last so a caller can adjust one variable
+     * for one call without rebuilding the environment. The probe path uses this
+     * for APT_CONFIG before the file exists, and nothing else should need it.
      */
-    private fun execWithEnv(cmd: List<String>): ShellResult {
+    private fun execWithEnv(
+        cmd: List<String>,
+        extraEnv: Map<String, String> = emptyMap(),
+    ): ShellResult {
         return try {
             val pb = ProcessBuilder(cmd)
             pb.environment().putAll(buildEnv())
+            pb.environment().putAll(extraEnv)
             pb.directory(homeDir)
             pb.redirectErrorStream(false)
 
@@ -1168,6 +1239,96 @@ class TermuxProvider(private val context: Context) {
     }
 
     // --- Extraction ---
+
+    /**
+     * Give every binary and every tool that hardcodes the upstream prefix a
+     * place to find it, without per-package special cases.
+     *
+     * THE PROBLEM THIS SOLVES, from issue 31. A Termux `.deb` is built against
+     * `/data/data/com.termux/files/usr`, and that path is compiled INTO the
+     * binary, not stored next to it. So `figlet` asks for its fonts at
+     * `/data/data/com.termux/files/usr/share/figlet` and cannot be told
+     * otherwise, because the override is one variable per program and there are
+     * thousands of programs.
+     *
+     * Two things already work: dpkg writes through the compatibility root, and
+     * the text relocation fixes every script. What was missing is that a
+     * COMPILED path is not text and cannot be rewritten in place. The answer is
+     * to make the path real.
+     *
+     * dpkg cannot create `/data/data/com.termux` because it belongs to another
+     * app's sandbox. So this asks a root shell, which CAN create it, and links
+     * it back into our tree:
+     *
+     *   /data/data/com.termux  ->  <filesDir>/termux
+     *
+     * That is the whole mapping. After it, an absolute upstream path in any
+     * binary resolves through the kernel to this install, exactly once, with no
+     * per-package knowledge and no environment variable for each tool. It is the
+     * same shape as the /lib64 symlink on a multiarch system.
+     *
+     * It only runs when root is available, because creating a path outside our
+     * sandbox is precisely the thing the app cannot do alone. When there is no
+     * root, the compatibility root and the text relocation still carry everything
+     * that does not need a compiled path, and the log says so rather than
+     * pretending the job is finished.
+     */
+    private suspend fun linkUpstreamRootFromRoot() {
+        try {
+            val upstream = UPSTREAM_FILES_ROOT                       // /data/data/com.termux/files
+            val appData = context.filesDir.parentFile?.absolutePath  // /data/user/0/<pkg>
+                ?: return
+            // If the upstream root already resolves into our tree, there is
+            // nothing to do. Never touch a real com.termux install: if it exists
+            // and is not ours, that is another app's data and it stays untouched.
+            val existing = File(upstream)
+            if (existing.exists()) {
+                val pointsHere = runCatching { existing.canonicalPath }
+                    .getOrNull()
+                    ?.startsWith(appData) == true
+                Log.d(
+                    TAG,
+                    "TermuxProvider: upstream root $upstream already exists and " +
+                        "${if (pointsHere) "resolves into this app" else "belongs to something else"}; not touching it",
+                )
+                return
+            }
+
+            val target = termuxRoot.absolutePath
+            val command =
+                "mkdir -p '${File(upstream).parentFile?.absolutePath}' && " +
+                    "ln -sfn '$target' '${File(upstream).parentFile?.absolutePath}/termux' 2>/dev/null || " +
+                    "ln -sfn '$target' '$upstream'"
+            val result = TermuxProvider(context).runAsRoot(command)
+            if (result) {
+                Log.d(TAG, "TermuxProvider: linked upstream root $upstream -> $target via root")
+            } else {
+                Log.d(
+                    TAG,
+                    "TermuxProvider: no root, so the upstream root cannot be linked. " +
+                        "Compiled-in paths in installed binaries will not resolve; " +
+                        "text paths, dpkg installs and the compatibility root all still work.",
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "TermuxProvider: upstream root link failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Run one command as root, returning whether it succeeded.
+     *
+     * Delegates to RootShell so there is a single place that knows how root is
+     * obtained, rather than a second ad-hoc `su` invocation with its own bugs.
+     */
+    private suspend fun runAsRoot(command: String): Boolean {
+        return try {
+            RootShell(context).execute(command).success
+        } catch (e: Exception) {
+            Log.w(TAG, "TermuxProvider: root command failed: ${e.message}")
+            false
+        }
+    }
 
     /**
      * Build the compatibility root that lets dpkg install upstream-prefixed
