@@ -508,11 +508,31 @@
             </intent-filter>
         </service>
 
-        <!-- Screen Capture Service (required for MediaProjection on Android 14+) -->
+        <!--
+            Screen Capture Service (required for MediaProjection on Android 14+).
+
+            BOTH types are declared, and that is load-bearing (issue 28).
+
+            mediaProjection is the type the projection itself needs, but it is only
+            legal while the human's consent token is live, because startForeground
+            with that type requires the android:project_media app-op. The service is
+            also started with startForegroundService on paths that have no consent
+            (invalid extras, and any later caller), and the system kills the app if
+            such a start never calls startForeground.
+
+            Declaring specialUse alongside it gives those paths a foreground type
+            that is legal without an app-op, so the contract can be met without the
+            SecurityException that used to take the process down. Listing one type
+            in the manifest and passing the other to startForeground is itself an
+            IllegalArgumentException, so the two must be declared together.
+        -->
         <service
             android:name="com.unuslumen.app.util.service.ScreenCaptureService"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection">
+            android:foregroundServiceType="mediaProjection|specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Screen capture session host; the foreground notification is required whenever a MediaProjection consent token is being established or torn down" />
         </service>
 
         <!-- Guru Notification Listener — lets Guru read and manage notifications -->
