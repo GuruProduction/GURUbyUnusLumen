@@ -817,6 +817,11 @@ class TermuxProvider(private val context: Context) {
      * `extraEnv` overrides are applied last so a caller can adjust one variable
      * for one call without rebuilding the environment. The probe path uses this
      * for APT_CONFIG before the file exists, and nothing else should need it.
+     *
+     * Issue 44: a program that refuses on stdout and exits 0 must not be
+     * reported as a success. Termux binaries run at this app's UID, so a
+     * permission-class denial here is the permanent APP_UID wall the tier
+     * describes; the exit code and both streams are preserved as observed.
      */
     private fun execWithEnv(
         cmd: List<String>,
@@ -857,18 +862,27 @@ class TermuxProvider(private val context: Context) {
             drainStdout.join()
             drainStderr.join()
 
-            ShellResult(
-                exitCode = exitCode,
-                stdout = stdoutText.toString().trim(),
-                stderr = stderrText.toString().trim(),
-                success = exitCode == 0
+            // The concurrent drain above produces stdoutText/stderrText, so those are
+            // the streams this result carries. The denial check then runs on them: a
+            // Termux binary runs at this app's UID, so a permission-class refusal
+            // printed on stdout with exit 0 is a failure, not a success.
+            ShellDenialSignatures.apply(
+                ShellResult(
+                    exitCode = exitCode,
+                    stdout = stdoutText.toString().trim(),
+                    stderr = stderrText.toString().trim(),
+                    success = exitCode == 0,
+                    tier = ShellTier.APP_UID,
+                ),
+                ShellTier.APP_UID,
             )
         } catch (e: Exception) {
             ShellResult(
                 exitCode = -1,
                 stdout = "",
                 stderr = "Failed to execute: ${e.message}",
-                success = false
+                success = false,
+                tier = ShellTier.APP_UID,
             )
         }
     }

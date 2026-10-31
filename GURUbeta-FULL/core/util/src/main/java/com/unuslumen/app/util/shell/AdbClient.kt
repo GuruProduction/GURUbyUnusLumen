@@ -389,7 +389,13 @@ class AdbClient(
             val err = stderrBuilder.toString().trim()
             Log.d(TAG, "AdbClient: command '$command' out=${output.length} err=${err.length} exit=$exitCode")
 
-            ShellResult(exitCode, output, err, exitCode == 0)
+            // Issue 44: a refusal printed on stdout with exit 0 (dumpsys, pm dump)
+            // is a failure, and ADB is the tier this ran at, so the explanation
+            // names UID 2000 rather than claiming the wall is permanent.
+            ShellDenialSignatures.apply(
+                ShellResult(exitCode, output, err, exitCode == 0, ShellTier.ADB),
+                ShellTier.ADB,
+            )
         } catch (e: java.net.ConnectException) {
             _isConnected = false
             Log.w(TAG, "AdbClient: connection refused", e)
@@ -703,4 +709,30 @@ data class ShellResult(
      * remove.
      */
     val tier: ShellTier = ShellTier.APP_UID,
+    /**
+     * Why this result is a permission denial, in one actionable sentence, or
+     * null when no denial signature was found.
+     *
+     * Issue 44: `dumpsys` and `pm dump` print "Permission Denial: …" to STDOUT
+     * and exit 0, so a total refusal reported `success = true`, nothing on
+     * stderr and no error at all. [ShellDenialSignatures] detects that and the
+     * executors set this field, so `success = false` always arrives with the
+     * reason attached instead of a silent flip.
+     *
+     * stdout, stderr and exitCode are never altered by that detection. Some
+     * tools legitimately search another program's output for the words
+     * "Permission denied", and losing the observed text would trade one kind of
+     * uselessness for another.
+     */
+    val denial: String? = null,
+    /**
+     * A refusal quoted inside the output rather than aimed at this command, in
+     * one sentence, or null when there is none.
+     *
+     * A successful `logcat -d` contains other processes' "Permission denied"
+     * lines by design, and calling that run failed would be issue 44's
+     * dishonesty reversed. So it lands here and `success` is left alone;
+     * [denial] is only ever set when this command itself was refused.
+     */
+    val advisory: String? = null,
 )

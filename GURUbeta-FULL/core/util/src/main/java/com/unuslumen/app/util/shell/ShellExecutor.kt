@@ -413,6 +413,11 @@ class ShellExecutor(private val context: Context) {
     /**
      * Execute a command via Runtime.exec() -- limited to app's own UID.
      * Drains stdout and stderr concurrently to avoid waitFor() deadlock.
+     *
+     * Issue 44: anything that refuses on stdout and exits 0 (`dumpsys`, `pm
+     * dump`) is marked failed here, at the boundary every tool passes through,
+     * rather than in each tool. The exit code and both streams survive so a
+     * caller can still read what actually happened.
      */
     private suspend fun executeViaRuntime(command: String): ShellResult = coroutineScope {
         try {
@@ -433,18 +438,23 @@ class ShellExecutor(private val context: Context) {
             val stdout = stdoutDeferred.await().trim()
             val stderr = stderrDeferred.await().trim()
 
-            ShellResult(
-                exitCode = exitCode,
-                stdout = stdout,
-                stderr = stderr,
-                success = exitCode == 0
+            ShellDenialSignatures.apply(
+                ShellResult(
+                    exitCode = exitCode,
+                    stdout = stdout,
+                    stderr = stderr,
+                    success = exitCode == 0,
+                    tier = ShellTier.APP_UID,
+                ),
+                ShellTier.APP_UID,
             )
         } catch (e: Exception) {
             ShellResult(
                 exitCode = -1,
                 stdout = "",
                 stderr = "Failed to execute: ${e.message}",
-                success = false
+                success = false,
+                tier = ShellTier.APP_UID,
             )
         }
     }
