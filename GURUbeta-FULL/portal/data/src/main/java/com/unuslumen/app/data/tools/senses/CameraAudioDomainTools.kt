@@ -484,7 +484,7 @@ class CameraAudioDomainExecutor(private val context: Context) : ToolExecutor {
 
     private fun videoFailure(message: String): ToolExecutionResult {
         val r = CameraVideoResult(success = false, error = message)
-        return ToolExecutionResult.success(r, json.encodeToString(CameraVideoResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(CameraVideoResult.serializer(), r), r, r.success, r.error)
     }
 
     private fun pickCameraId(manager: CameraManager, front: Boolean): String? {
@@ -628,7 +628,9 @@ class CameraAudioDomainExecutor(private val context: Context) : ToolExecutor {
                 hasAudio = probeHasAudioTrack(outputFile),
                 cameraId = cameraId,
             )
-            ToolExecutionResult.success(r, json.encodeToString(CameraVideoResult.serializer(), r))
+            // The success flag follows the payload, never the fact that
+            // serialising worked: a refusal is a refusal whatever its JSON says elsewhere.
+            emitPayload(json, json.encodeToString(CameraVideoResult.serializer(), r), r, r.success, r.error)
         } catch (e: SecurityException) {
             PermissionGrants.refusal(PermissionGrants.check(context, TeamThreePermissions.CAMERA))
         } catch (e: Exception) {
@@ -716,7 +718,7 @@ class CameraAudioDomainExecutor(private val context: Context) : ToolExecutor {
                 success = false,
                 error = "This device has no CameraManager service, so it has no torch.",
             )
-            return ToolExecutionResult.success(r, json.encodeToString(CameraTorchResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(CameraTorchResult.serializer(), r), r, r.success, r.error)
         }
 
         val on = (args["on"] as? Boolean) ?: when ((args["on"] as? String)?.lowercase()) {
@@ -728,7 +730,7 @@ class CameraAudioDomainExecutor(private val context: Context) : ToolExecutor {
                 success = false,
                 error = "This call needs 'on' as true or false to say which way the torch should go.",
             )
-            return ToolExecutionResult.success(r, json.encodeToString(CameraTorchResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(CameraTorchResult.serializer(), r), r, r.success, r.error)
         }
 
         val front = (args["camera"] as? String)?.equals("front", ignoreCase = true) == true
@@ -738,7 +740,7 @@ class CameraAudioDomainExecutor(private val context: Context) : ToolExecutor {
                 note = "No camera on this device reports a flash unit, so the torch cannot be lit here.",
                 error = "This device has no torch.",
             )
-            return ToolExecutionResult.success(r, json.encodeToString(CameraTorchResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(CameraTorchResult.serializer(), r), r, r.success, r.error)
         }
 
         return try {
@@ -756,7 +758,9 @@ class CameraAudioDomainExecutor(private val context: Context) : ToolExecutor {
                         "within a second; another camera client or a thermal limit can hold it."
                 },
             )
-            ToolExecutionResult.success(r, json.encodeToString(CameraTorchResult.serializer(), r))
+            // The success flag follows the payload, never the fact that
+            // serialising worked: a refusal is a refusal whatever its JSON says elsewhere.
+            emitPayload(json, json.encodeToString(CameraTorchResult.serializer(), r), r, r.success, r.error)
         } catch (e: SecurityException) {
             PermissionGrants.refusal(PermissionGrants.check(context, TeamThreePermissions.CAMERA))
         } catch (e: Exception) {
@@ -765,7 +769,9 @@ class CameraAudioDomainExecutor(private val context: Context) : ToolExecutor {
                 cameraId = torchCamera,
                 error = "The torch could not be switched: ${e.message}",
             )
-            ToolExecutionResult.success(r, json.encodeToString(CameraTorchResult.serializer(), r))
+            // The success flag follows the payload, never the fact that
+            // serialising worked: a refusal is a refusal whatever its JSON says elsewhere.
+            emitPayload(json, json.encodeToString(CameraTorchResult.serializer(), r), r, r.success, r.error)
         }
     }
 
@@ -823,7 +829,7 @@ class CameraAudioDomainExecutor(private val context: Context) : ToolExecutor {
                 activeRoute = "none", confirmed = false,
                 error = "This device has no AudioManager service, so there is no route to read or set.",
             )
-            return ToolExecutionResult.success(r, json.encodeToString(AudioRouteResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(AudioRouteResult.serializer(), r), r, r.success, r.error)
         }
 
         val available = availableRouteNames(manager)
@@ -838,7 +844,7 @@ class CameraAudioDomainExecutor(private val context: Context) : ToolExecutor {
                 availableRoutes = available,
                 note = "Read only: no route was changed.",
             )
-            return ToolExecutionResult.success(r, json.encodeToString(AudioRouteResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(AudioRouteResult.serializer(), r), r, r.success, r.error)
         }
 
         val accepted = when (requested) {
@@ -859,7 +865,7 @@ class CameraAudioDomainExecutor(private val context: Context) : ToolExecutor {
                 error = "Route '$requested' is not available on this device right now. Use speaker, " +
                     "earpiece, bluetooth or headset, and check that the device is connected.",
             )
-            return ToolExecutionResult.success(r, json.encodeToString(AudioRouteResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(AudioRouteResult.serializer(), r), r, r.success, r.error)
         }
 
         val after = currentRouteName(manager)
@@ -878,7 +884,7 @@ class CameraAudioDomainExecutor(private val context: Context) : ToolExecutor {
             },
             error = if (confirmed) null else "The route did not change to $requested.",
         )
-        return ToolExecutionResult.success(r, json.encodeToString(AudioRouteResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(AudioRouteResult.serializer(), r), r, r.success, r.error)
     }
 
     private fun availableRouteNames(manager: AudioManager): List<String> {
@@ -990,7 +996,7 @@ class CameraAudioDomainExecutor(private val context: Context) : ToolExecutor {
                 error = startError,
             )
         }
-        return ToolExecutionResult.success(r, json.encodeToString(ListenStartResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(ListenStartResult.serializer(), r), r, r.success, r.error)
     }
 
     private suspend fun listenStop(): ToolExecutionResult {
@@ -1002,7 +1008,7 @@ class CameraAudioDomainExecutor(private val context: Context) : ToolExecutor {
                 note = "No listen session was running, so there was nothing to stop.",
                 error = "There is no open listen session; call listenStart first.",
             )
-            return ToolExecutionResult.success(r, json.encodeToString(ListenStopResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(ListenStopResult.serializer(), r), r, r.success, r.error)
         }
 
         val stopped = ContinuousListen.stop()
@@ -1015,7 +1021,7 @@ class CameraAudioDomainExecutor(private val context: Context) : ToolExecutor {
                 note = "The session is closed.",
                 error = stopped.error,
             )
-            return ToolExecutionResult.success(r, json.encodeToString(ListenStopResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(ListenStopResult.serializer(), r), r, r.success, r.error)
         }
 
         val capturedSeconds = pcm.length().toDouble() / (16_000.0 * 2.0)
@@ -1031,7 +1037,7 @@ class CameraAudioDomainExecutor(private val context: Context) : ToolExecutor {
                 note = "The session is closed but its audio could not be prepared for transcription.",
                 error = wrapError,
             )
-            return ToolExecutionResult.success(r, json.encodeToString(ListenStopResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(ListenStopResult.serializer(), r), r, r.success, r.error)
         }
 
         val recognition = withContext(Dispatchers.IO) {
@@ -1064,7 +1070,7 @@ class CameraAudioDomainExecutor(private val context: Context) : ToolExecutor {
                 error = "Audio was captured but transcription failed: ${recognition.reason}",
             )
         }
-        return ToolExecutionResult.success(r, json.encodeToString(ListenStopResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(ListenStopResult.serializer(), r), r, r.success, r.error)
     }
 }
 

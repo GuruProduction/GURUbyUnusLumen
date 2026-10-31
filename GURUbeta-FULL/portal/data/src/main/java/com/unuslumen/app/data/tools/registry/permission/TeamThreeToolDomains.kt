@@ -6,6 +6,7 @@ package com.unuslumen.app.data.tools.registry.permission
 import com.unuslumen.app.data.tools.registry.ToolDefinition
 import com.unuslumen.app.data.tools.registry.ToolExecutor
 import com.unuslumen.app.data.tools.registry.ToolSetRegistration
+import com.unuslumen.app.data.tools.phone.PhoneDomainModule
 import com.unuslumen.app.data.tools.senses.BluetoothDomainModule
 import com.unuslumen.app.data.tools.senses.CameraAudioDomainModule
 import com.unuslumen.app.data.tools.senses.LocationDomainModule
@@ -49,6 +50,7 @@ object TeamThreeToolDomains {
         BluetoothDomainModule,
         CameraAudioDomainModule,
         LocationDomainModule,
+        PhoneDomainModule,
         PrivilegedCaptureDomainModule,
         SensorsDomainModule,
     )

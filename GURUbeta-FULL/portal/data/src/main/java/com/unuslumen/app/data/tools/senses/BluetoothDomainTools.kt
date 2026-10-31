@@ -248,7 +248,7 @@ class BluetoothDomainExecutor(private val context: Context) : ToolExecutor {
                     "is turned on; the permission is separate from the switch and turning Bluetooth " +
                     "on needs no grant.",
             )
-            return ToolExecutionResult.success(r, json.encodeToString(AdapterOffResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(AdapterOffResult.serializer(), r), r, r.success, r.error)
         }
         return null
     }
@@ -364,12 +364,12 @@ class BluetoothDomainExecutor(private val context: Context) : ToolExecutor {
             },
             error = scanError,
         )
-        return ToolExecutionResult.success(r, json.encodeToString(BleScanResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(BleScanResult.serializer(), r), r, r.success, r.error)
     }
 
     private fun scanFailure(message: String): ToolExecutionResult {
         val r = BleScanResult(success = false, error = message)
-        return ToolExecutionResult.success(r, json.encodeToString(BleScanResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(BleScanResult.serializer(), r), r, r.success, r.error)
     }
 
     private fun bondStateName(state: Int?): String = when (state) {
@@ -409,7 +409,7 @@ class BluetoothDomainExecutor(private val context: Context) : ToolExecutor {
                 confirmed = true,
                 note = "This device is already paired, so no new pairing was started.",
             )
-            return ToolExecutionResult.success(r, json.encodeToString(BluetoothPairResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(BluetoothPairResult.serializer(), r), r, r.success, r.error)
         }
 
         val waitSeconds = ((args["waitSeconds"] as? Number)?.toInt() ?: 10).coerceIn(1, 30)
@@ -455,7 +455,7 @@ class BluetoothDomainExecutor(private val context: Context) : ToolExecutor {
             },
             error = if (bonded) null else "Pairing did not complete.",
         )
-        return ToolExecutionResult.success(r, json.encodeToString(BluetoothPairResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(BluetoothPairResult.serializer(), r), r, r.success, r.error)
     }
 
     @SuppressLint("MissingPermission")
@@ -483,7 +483,7 @@ class BluetoothDomainExecutor(private val context: Context) : ToolExecutor {
                 confirmed = true,
                 note = "This device is not paired, so there was no pairing to remove.",
             )
-            return ToolExecutionResult.success(r, json.encodeToString(BluetoothPairResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(BluetoothPairResult.serializer(), r), r, r.success, r.error)
         }
 
         // Removing a bond has no public API: the documented route on Android is a
@@ -521,12 +521,12 @@ class BluetoothDomainExecutor(private val context: Context) : ToolExecutor {
             },
             error = if (unpaired) null else "The pairing was not removed.",
         )
-        return ToolExecutionResult.success(r, json.encodeToString(BluetoothPairResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(BluetoothPairResult.serializer(), r), r, r.success, r.error)
     }
 
     private fun pairFailure(action: String, mac: String, message: String): ToolExecutionResult {
         val r = BluetoothPairResult(success = false, action = action, mac = mac, error = message)
-        return ToolExecutionResult.success(r, json.encodeToString(BluetoothPairResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(BluetoothPairResult.serializer(), r), r, r.success, r.error)
     }
 
     // ------------------------------------------------------------------
@@ -610,7 +610,7 @@ class BluetoothDomainExecutor(private val context: Context) : ToolExecutor {
                     "produce this, and none of them is a permission problem.",
                 error = "The platform did not confirm the advertisement started.",
             )
-            return ToolExecutionResult.success(r, json.encodeToString(BluetoothAdvertiseResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(BluetoothAdvertiseResult.serializer(), r), r, r.success, r.error)
         }
 
         // Hold the advertisement for the requested window, then stop it. A tool that
@@ -632,12 +632,12 @@ class BluetoothDomainExecutor(private val context: Context) : ToolExecutor {
                 "confirmed the start; whether a second device saw it can only be answered by the " +
                 "second device.",
         )
-        return ToolExecutionResult.success(r, json.encodeToString(BluetoothAdvertiseResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(BluetoothAdvertiseResult.serializer(), r), r, r.success, r.error)
     }
 
     private fun advertiseFailure(message: String): ToolExecutionResult {
         val r = BluetoothAdvertiseResult(success = false, error = message)
-        return ToolExecutionResult.success(r, json.encodeToString(BluetoothAdvertiseResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(BluetoothAdvertiseResult.serializer(), r), r, r.success, r.error)
     }
 }
 

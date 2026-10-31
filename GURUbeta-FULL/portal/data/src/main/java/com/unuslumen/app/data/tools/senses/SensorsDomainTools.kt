@@ -341,12 +341,12 @@ class SensorsDomainExecutor(private val context: Context) : ToolExecutor {
             },
             error = null,
         )
-        return ToolExecutionResult.success(r, json.encodeToString(SensorStreamResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(SensorStreamResult.serializer(), r), r, r.success, r.error)
     }
 
     private fun sensorStreamFailure(message: String): ToolExecutionResult {
         val r = SensorStreamResult(success = false, error = message)
-        return ToolExecutionResult.success(r, json.encodeToString(SensorStreamResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(SensorStreamResult.serializer(), r), r, r.success, r.error)
     }
 
     /**
@@ -440,7 +440,9 @@ class SensorsDomainExecutor(private val context: Context) : ToolExecutor {
                     windowSeconds = windowSeconds,
                     error = "This device has no body sensors.",
                 )
-                ToolExecutionResult.success(r, json.encodeToString(BodySensorsResult.serializer(), r))
+                // The success flag follows the payload, never the fact that
+                // serialising worked: a refusal is a refusal whatever its JSON says elsewhere.
+                emitPayload(json, json.encodeToString(BodySensorsResult.serializer(), r), r, r.success, r.error)
             }
         }
 
@@ -454,7 +456,7 @@ class SensorsDomainExecutor(private val context: Context) : ToolExecutor {
                 "reading taken while a finger or wrist covers the sensor, not a continuous trace.",
             error = read.error,
         )
-        return ToolExecutionResult.success(r, json.encodeToString(BodySensorsResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(BodySensorsResult.serializer(), r), r, r.success, r.error)
     }
 
     private suspend fun backgroundHealth(args: Map<String, Any?>): ToolExecutionResult {
@@ -474,7 +476,7 @@ class SensorsDomainExecutor(private val context: Context) : ToolExecutor {
                     "background or in the foreground.",
                 error = "This device has no body sensors.",
             )
-            return ToolExecutionResult.success(r, json.encodeToString(BackgroundHealthResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(BackgroundHealthResult.serializer(), r), r, r.success, r.error)
         }
 
         val read = readBodySensorsAsync(windowSeconds)
@@ -489,7 +491,7 @@ class SensorsDomainExecutor(private val context: Context) : ToolExecutor {
                 "Android permitting it while the app is not on screen, not a process of its own.",
             error = read.error,
         )
-        return ToolExecutionResult.success(r, json.encodeToString(BackgroundHealthResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(BackgroundHealthResult.serializer(), r), r, r.success, r.error)
     }
 
     private data class BodyRead(val readings: List<BodySensorReading>, val error: String?)
@@ -662,7 +664,7 @@ class SensorsDomainExecutor(private val context: Context) : ToolExecutor {
                 "Google Play Services, which this build does not depend on, so no recognised-activity " +
                 "confidence from Google's classifier exists here.",
         )
-        return ToolExecutionResult.success(r, json.encodeToString(ActivityRecognitionResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(ActivityRecognitionResult.serializer(), r), r, r.success, r.error)
     }
 
     /**
@@ -694,7 +696,7 @@ class SensorsDomainExecutor(private val context: Context) : ToolExecutor {
             method = "Inferred from the accelerometer; no reading was taken, so no activity is claimed.",
             error = message,
         )
-        return ToolExecutionResult.success(r, json.encodeToString(ActivityRecognitionResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(ActivityRecognitionResult.serializer(), r), r, r.success, r.error)
     }
 
     // ------------------------------------------------------------------
@@ -745,7 +747,7 @@ class SensorsDomainExecutor(private val context: Context) : ToolExecutor {
                     "public API to range with.",
                 error = "UWB ranging needs Android 16 or newer on this build.",
             )
-            return ToolExecutionResult.success(r, json.encodeToString(UwbRangeResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(UwbRangeResult.serializer(), r), r, r.success, r.error)
         }
 
         val windowSeconds = ((args["windowSeconds"] as? Number)?.toInt() ?: 3).coerceIn(1, 15)
@@ -873,7 +875,9 @@ private class UwbRangingProbe(
     }
 
     private fun result(value: UwbRangeResult): ToolExecutionResult =
-        ToolExecutionResult.success(value, json.encodeToString(UwbRangeResult.serializer(), value))
+        // The success flag follows the payload, never the fact that
+        // serialising worked: a refusal is a refusal whatever its JSON says elsewhere.
+        emitPayload(json, json.encodeToString(UwbRangeResult.serializer(), value), value, value.success, value.error)
 }
 
 /** Mean of a list, or null when it is empty rather than NaN or zero. */

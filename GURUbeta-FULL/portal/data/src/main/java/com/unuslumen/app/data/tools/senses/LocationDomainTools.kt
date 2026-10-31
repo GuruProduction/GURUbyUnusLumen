@@ -278,7 +278,7 @@ class LocationDomainExecutor(private val context: Context) : ToolExecutor {
                 error = "Location is switched off in Settings, so GURU holds the permission but no " +
                     "provider can answer until Location is turned on.",
             )
-            return ToolExecutionResult.success(r, json.encodeToString(LocationWatchResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(LocationWatchResult.serializer(), r), r, r.success, r.error)
         }
 
         val manager = locationManager ?: run {
@@ -287,7 +287,7 @@ class LocationDomainExecutor(private val context: Context) : ToolExecutor {
                 precision = precisionNow.name, backgroundGranted = true,
                 error = "This device has no LocationManager service, so there is nothing to watch.",
             )
-            return ToolExecutionResult.success(r, json.encodeToString(LocationWatchResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(LocationWatchResult.serializer(), r), r, r.success, r.error)
         }
 
         val provider = preferredProvider(manager, precisionNow) ?: run {
@@ -297,7 +297,7 @@ class LocationDomainExecutor(private val context: Context) : ToolExecutor {
                 error = "No location provider is enabled on this device, so no watch can start; " +
                     "this is the device's state, not a missing permission.",
             )
-            return ToolExecutionResult.success(r, json.encodeToString(LocationWatchResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(LocationWatchResult.serializer(), r), r, r.success, r.error)
         }
 
         val collected = mutableListOf<LocationFix>()
@@ -371,7 +371,7 @@ class LocationDomainExecutor(private val context: Context) : ToolExecutor {
             },
             error = watchError,
         )
-        return ToolExecutionResult.success(r, json.encodeToString(LocationWatchResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(LocationWatchResult.serializer(), r), r, r.success, r.error)
     }
 
     private fun history(args: Map<String, Any?>): ToolExecutionResult {
@@ -387,7 +387,7 @@ class LocationDomainExecutor(private val context: Context) : ToolExecutor {
                 "GURU has not recorded a location fix since this process started, so the trace is empty."
             } else null,
         )
-        return ToolExecutionResult.success(r, json.encodeToString(LocationHistoryResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(LocationHistoryResult.serializer(), r), r, r.success, r.error)
     }
 
     /**
@@ -410,7 +410,7 @@ class LocationDomainExecutor(private val context: Context) : ToolExecutor {
                 error = "This call needs the 'path' of a photo: an absolute file path or a " +
                     "content:// MediaStore URI.",
             )
-            return ToolExecutionResult.success(r, json.encodeToString(PhotoLocationResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(PhotoLocationResult.serializer(), r), r, r.success, r.error)
         }
 
         val isContentUri = path.startsWith("content://")
@@ -452,7 +452,7 @@ class LocationDomainExecutor(private val context: Context) : ToolExecutor {
                 },
                 error = "No GPS coordinates in this photo's EXIF metadata.",
             )
-            return ToolExecutionResult.success(r, json.encodeToString(PhotoLocationResult.serializer(), r))
+            return emitPayload(json, json.encodeToString(PhotoLocationResult.serializer(), r), r, r.success, r.error)
         }
 
         // getLatLong validates the reference tags; a value outside the legal range
@@ -473,7 +473,7 @@ class LocationDomainExecutor(private val context: Context) : ToolExecutor {
             note = "These are the coordinates recorded when the photo was taken, not the phone's " +
                 "current position.",
         )
-        return ToolExecutionResult.success(r, json.encodeToString(PhotoLocationResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(PhotoLocationResult.serializer(), r), r, r.success, r.error)
     }
 
     /**
@@ -513,7 +513,7 @@ class LocationDomainExecutor(private val context: Context) : ToolExecutor {
             source = if (path.startsWith("content://")) "content-uri" else "file",
             error = message,
         )
-        return ToolExecutionResult.success(r, json.encodeToString(PhotoLocationResult.serializer(), r))
+        return emitPayload(json, json.encodeToString(PhotoLocationResult.serializer(), r), r, r.success, r.error)
     }
 
     /**

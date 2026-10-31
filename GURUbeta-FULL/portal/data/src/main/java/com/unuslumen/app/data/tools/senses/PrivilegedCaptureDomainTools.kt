@@ -197,3 +197,27 @@ object PrivilegedCaptureDomainModule : DomainToolModule {
         factory { PrivilegedCaptureDomainExecutor(get()) }
     }
 }
+
+/**
+ * Serialise a payload and take its success flag from the payload itself.
+ *
+ * WHY THIS EXISTS. ToolExecutionResult.success(...) forces success = true whatever it
+ * is handed, so wrapping a refusal in it reported a denial as a completed call. That
+ * is precisely the defect this batch exists to remove, and it had reached forty-six
+ * call sites across these domains because "the function is called success" reads like
+ * the right thing to call. Taking the flag from the payload makes the mistake
+ * impossible to write by accident.
+ */
+internal fun emitPayload(
+    json: Json,
+    rawJson: String,
+    resultData: ToolResultData?,
+    success: Boolean,
+    error: String?,
+): ToolExecutionResult = ToolExecutionResult(
+    rawJson = rawJson,
+    resultData = resultData,
+    resultObject = null,
+    success = success,
+    error = error,
+)
