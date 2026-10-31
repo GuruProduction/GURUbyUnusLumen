@@ -96,6 +96,31 @@ class AdbClient(
         fun init(context: Context) {
             _context = context.applicationContext
         }
+
+        /**
+         * Parse the exit code out of an ADB shell_v2 output stream.
+         *
+         * The protocol appends a block beginning with 0x01 followed by a
+         * little-endian int32. Without shell_v2 the block is simply absent, and
+         * the output is the whole answer, so 0 is honest there. A block that is
+         * present but truncated returns -1 rather than pretending zero.
+         */
+        fun parseShellExitCode(raw: String): Int {
+            val marker = raw.lastIndexOf('\u0001')
+            if (marker < 0) return 0
+            val bytes = raw.substring(marker + 1).toByteArray(Charsets.ISO_8859_1)
+            if (bytes.size < 4) return -1
+            return (bytes[0].toInt() and 0xFF) or
+                ((bytes[1].toInt() and 0xFF) shl 8) or
+                ((bytes[2].toInt() and 0xFF) shl 16) or
+                ((bytes[3].toInt() and 0xFF) shl 24)
+        }
+
+        /** Remove the trailing shell_v2 exit block so callers see only real output. */
+        fun stripExitBlock(raw: String): String {
+            val marker = raw.lastIndexOf('\u0001')
+            return if (marker >= 0) raw.substring(0, marker) else raw
+        }
     }
 
     private var localIdCounter = 1
@@ -275,9 +300,24 @@ class AdbClient(
                 )
             }
 
-            // Open a shell session
+            /*
+             * OPEN WITH shell,v2, not the legacy "shell:".
+             *
+             * The legacy protocol transmits NO exit status at all, so every
+             * command looked like a success — the same false success as issues
+             * 25, 30, 43 and 44, and the reason a nonexistent binary reported
+             * exit 0 on device.
+             *
+             * shell,v2 multiplexes the stream: each packet payload begins with a
+             * one-byte stream id (1 stdout, 2 stderr, 3 exit-code) followed by
+             * that stream's bytes. "raw" keeps the output byte-exact rather than
+             * allocating a pty, which is what a non-interactive tool wants.
+             *
+             * The CNXN handshake above already advertises `features=cmd,shell_v2`,
+             * so the daemon will accept this form.
+             */
             val localId = localIdCounter++
-            val openPayload = "shell:$command\u0000"
+            val openPayload = "shell,v2,raw:$command\u0000"
             sendAdbMessage(outputStream, ADB_OPEN, localId, 0, openPayload.toByteArray())
 
             // Read OKAY acknowledgment
@@ -295,7 +335,9 @@ class AdbClient(
 
             // Read output — no timeout, AGI is patient
             socket.soTimeout = 0
-            val outputBuilder = StringBuilder()
+            val stdoutBuilder = StringBuilder()
+            val stderrBuilder = StringBuilder()
+            var exitCode = 0
             var readAttempts = 0
             while (readAttempts < 200) {
                 val msg = try {
@@ -307,7 +349,31 @@ class AdbClient(
 
                 when (String(msg.type, Charsets.US_ASCII).trimEnd('\u0000')) {
                     ADB_WRTE -> {
-                        outputBuilder.append(String(msg.payload, Charsets.UTF_8))
+                        /*
+                         * shell,v2 packets are [streamId][data...]. Stream 1 is
+                         * stdout, 2 is stderr, 3 is the exit code as a
+                         * little-endian int32. Anything else is ignored rather
+                         * than appended, because appending a control byte into
+                         * the text is how a caller ends up parsing garbage.
+                         */
+                        val payload = msg.payload
+                        if (payload.isNotEmpty()) {
+                            when (payload[0].toInt()) {
+                                1 -> stdoutBuilder.append(String(payload, 1, payload.size - 1, Charsets.UTF_8))
+                                2 -> stderrBuilder.append(String(payload, 1, payload.size - 1, Charsets.UTF_8))
+                                3 -> {
+                                    if (payload.size >= 5) {
+                                        exitCode = (payload[1].toInt() and 0xFF) or
+                                            ((payload[2].toInt() and 0xFF) shl 8) or
+                                            ((payload[3].toInt() and 0xFF) shl 16) or
+                                            ((payload[4].toInt() and 0xFF) shl 24)
+                                    }
+                                }
+                                // Legacy daemon answering a v2 open: no stream
+                                // byte, so treat the whole payload as stdout.
+                                else -> stdoutBuilder.append(String(payload, Charsets.UTF_8))
+                            }
+                        }
                         sendAdbMessage(outputStream, ADB_OKAY, localId, msg.arg1, ByteArray(0))
                     }
                     ADB_CLSE -> break
@@ -319,10 +385,11 @@ class AdbClient(
             socket.close()
             _isConnected = true
 
-            val output = outputBuilder.toString().trim()
-            Log.d(TAG, "AdbClient: command '$command' output length=${output.length}")
+            val output = stdoutBuilder.toString().trim()
+            val err = stderrBuilder.toString().trim()
+            Log.d(TAG, "AdbClient: command '$command' out=${output.length} err=${err.length} exit=$exitCode")
 
-            ShellResult(0, output, "", true)
+            ShellResult(exitCode, output, err, exitCode == 0)
         } catch (e: java.net.ConnectException) {
             _isConnected = false
             Log.w(TAG, "AdbClient: connection refused", e)
