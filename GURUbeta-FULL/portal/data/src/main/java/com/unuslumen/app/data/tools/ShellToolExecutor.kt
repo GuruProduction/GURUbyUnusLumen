@@ -70,10 +70,20 @@ class ShellToolExecutor(
         }
         val result = shellExecutor.execute(effectiveCommand, forceRoot)
         if (!result.success && !redirected && !forceRoot && !hasFullStorageAccess() && (result.stderr.contains("Permission denied", ignoreCase = true) || result.stderr.contains("EPERM", ignoreCase = true) || result.stderr.contains("Operation not permitted", ignoreCase = true))) {
-            if (command.contains("/sdcard/") || command.contains("/storage/emulated/")) { val appStorage = context.filesDir.absolutePath; val retryCommand = command.replace(Regex("""/storage/emulated/0/"""), "$appStorage/").replace(Regex("""/sdcard/"""), "$appStorage/"); val retryResult = shellExecutor.execute(retryCommand, forceRoot); val r = ShellCommandResult(retryResult.exitCode, retryResult.stdout + if (retryResult.success) "\n[Redirected /sdcard → $appStorage]" else "", retryResult.stderr, retryResult.success); return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r)) }
+            if (command.contains("/sdcard/") || command.contains("/storage/emulated/")) { val appStorage = context.filesDir.absolutePath; val retryCommand = command.replace(Regex("""/storage/emulated/0/"""), "$appStorage/").replace(Regex("""/sdcard/"""), "$appStorage/"); val retryResult = shellExecutor.execute(retryCommand, forceRoot); val r = ShellCommandResult(retryResult.exitCode, retryResult.stdout + if (retryResult.success) "\n[Redirected /sdcard → $appStorage]" else "", retryResult.stderr, retryResult.success, retryResult.tier.name, retryResult.tier.capabilities()); return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r)) }
         }
         val annotation = if (redirected && !hasFullStorageAccess() && result.success) "\n[Redirected /sdcard → ${context.filesDir.absolutePath}]" else ""
-        val r = ShellCommandResult(result.exitCode, result.stdout + annotation, result.stderr, result.success); return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r))
+        // The tier rides on every result so a caller can tell "this failed" from
+        // "this can never work at the tier I am on" — the distinction issue 40
+        // was filed about.
+        val r = ShellCommandResult(
+            result.exitCode,
+            result.stdout + annotation,
+            result.stderr,
+            result.success,
+            result.tier.name,
+            result.tier.capabilities(),
+        ); return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r))
     }
 
     private suspend fun readFile(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {

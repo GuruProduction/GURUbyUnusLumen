@@ -53,6 +53,15 @@ class ShellExecutor(private val context: Context) {
     /**
      * Execute a shell command with the best available method.
      * Root > ADB > Runtime fallback.
+     *
+     * EVERY result now carries the tier that served it. Issue 40: the tool
+     * contract claimed "NO limits" while the executor silently ran at app UID,
+     * and a model reading that description reached for /proc/net/arp or dumpsys,
+     * got Permission denied, and retried against a permanent wall because
+     * nothing told it the tier was the problem.
+     *
+     * The tier is stamped at the point of execution, so it cannot drift from
+     * what actually ran.
      */
     suspend fun execute(command: String, forceRoot: Boolean = false): ShellResult = withContext(Dispatchers.IO) {
         // Check root availability once
@@ -65,7 +74,7 @@ class ShellExecutor(private val context: Context) {
         // ROOT FIRST — always try root if available
         if (rootAvailable) {
             val result = rootShell.execute(command)
-            if (result.success) return@withContext result
+            if (result.success) return@withContext result.copy(tier = ShellTier.ROOT)
             Log.w(TAG, "ShellExecutor: root command failed, trying ADB")
         }
 
@@ -78,7 +87,7 @@ class ShellExecutor(private val context: Context) {
 
         if (adbAvailable) {
             val result = adbClient.executeCommand(command)
-            if (result.success) return@withContext result
+            if (result.success) return@withContext result.copy(tier = ShellTier.ADB)
             Log.w(TAG, "ShellExecutor: ADB command failed")
         } else {
             Log.d(TAG, "ShellExecutor: ADB not available")
@@ -86,7 +95,27 @@ class ShellExecutor(private val context: Context) {
 
         // Fall back to Runtime.exec
         Log.d(TAG, "ShellExecutor: falling back to Runtime.exec for: $command")
-        return@withContext executeViaRuntime(command)
+        return@withContext executeViaRuntime(command).copy(tier = ShellTier.APP_UID)
+    }
+
+    /**
+     * The tier the next execute() would most likely use, for reporting before a
+     * call rather than after one.
+     *
+     * Deliberately labelled "likely": availability can change between this check
+     * and the call, and the authoritative answer is the one on the result.
+     */
+    suspend fun describeCapabilityTier(): ShellTier {
+        if (!rootChecked) {
+            rootAvailable = rootShell.isRootAvailable()
+            rootChecked = true
+        }
+        if (rootAvailable) return ShellTier.ROOT
+        if (!adbChecked) {
+            adbAvailable = adbClient.isAdbAvailable()
+            adbChecked = true
+        }
+        return if (adbAvailable) ShellTier.ADB else ShellTier.APP_UID
     }
 
     /**
