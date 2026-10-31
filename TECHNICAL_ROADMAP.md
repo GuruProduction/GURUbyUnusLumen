@@ -262,7 +262,7 @@ Navigation includes an OtioComingSoon screen and an ic_otio_placeholder icon. Th
 ## Technical Principles
 
 - All user data lives on the device. No cloud storage. No external servers for user data.
-- All network traffic routes through Tor. No clearnet. No exceptions.
+- Outbound internet traffic routes through Tor with no clearnet fallback: if the circuit drops, requests fail closed rather than leaking. Loopback and LAN traffic stay direct, because your own network and your own model server are not the internet.
 - The brain is whatever the user connects it to. Local LLM, cloud API, rented GPU. User's choice.
 - The framework is the product, not the model. GURU is not a language model. It's the framework that drives the device.
 - Open source under AGPL-3.0. Anyone can fork, modify, and contribute. The repo is public.

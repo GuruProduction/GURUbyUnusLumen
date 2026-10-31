@@ -55,7 +55,14 @@ apksigner sign --ks /path/to/keystore.jks GURUbeta-FULL/app/build/outputs/apk/re
 - **Cloud API key:** add your key for Anthropic (Claude), OpenAI (GPT), Google (Gemini), xAI (Grok) etc. in Settings
 - **Local LLM:** point the app at an Ollama instance on your network (`http://YOUR_LAN_IP:11434`) or any OpenAI-compatible endpoint (llama.cpp, LM Studio, vLLM)
 
-The app never routes through any Unus Lumen dependency for model inference. Your key stays on your device. Your conversations stay on your device.
+The app never routes through any Unus Lumen dependency for model inference. Your key stays on your device.
+
+What leaves the device depends on the option you pick, and the difference matters:
+
+- **Cloud API key:** your conversations go to that provider. They do not stay on your device. That is the trade you are making, and it is why README marks the option INSECURE.
+- **Local LLM:** nothing about the conversation leaves your network. This is the maximum-privacy option.
+
+Unus Lumen never sees either one. The provider you choose is the only party that does.
 
 ### Optional but recommended: ADB wireless debugging
 
