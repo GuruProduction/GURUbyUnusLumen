@@ -202,11 +202,9 @@ class TermuxProvider(private val context: Context) {
             ensureCompatibilityRoot()
 
             // The other half of that mapping: a compiled-in upstream path cannot
-            // be rewritten inside an ELF, so the path itself is made real where
-            // root allows it. Without root this logs the limit and the rest of
-            // the prefix still works; with root, every installed binary's
-            // absolute paths resolve here.
-            linkUpstreamRootFromRoot()
+            // be rewritten inside an ELF, so it is redirected at the libc
+            // boundary by libpathshim.so, loaded through LD_PRELOAD in
+            // buildEnv(). That is the unrooted answer and needs no adb either.
 
             // apt config — write at init so any termuxExec "apt ..." works
             initAptConfig()
@@ -347,12 +345,39 @@ class TermuxProvider(private val context: Context) {
             "TERMUX_APP_PACKAGE" to context.packageName,
             "TERMUX_ANDROID_HOME" to homeDir.absolutePath
         )
-        // LD_PRELOAD: load libtermux-exec ONLY when its file actually exists in the
-        // canonicalised tree. Pointing LD_PRELOAD at an absent path makes Android's
-        // dynamic linker refuse every linked launch with CANNOT LINK EXECUTABLE.
-        val preload = File(libDir, "libtermux-exec-ld-preload.so")
-        if (preload.exists()) {
-            env["LD_PRELOAD"] = preload.absolutePath
+        /*
+         * LD_PRELOAD carries TWO libraries, in order, and the order matters.
+         *
+         *  1. libtermux-exec-ld-preload.so — routes app-data execs through
+         *     linker64, which is what makes `sh` and every helper script run at
+         *     all. Present since the beginning and load-bearing.
+         *
+         *  2. libpathshim.so — rewrites a leading upstream com.termux path to
+         *     this prefix at the libc boundary. This is what makes a binary with
+         *     a COMPILED-IN path (figlet's font directory is the smallest
+         *     example) find its own files without root, without adb and without
+         *     ptrace. A compiled constant cannot be edited in a file, so it has
+         *     to be handled at the point where a path becomes a syscall.
+         *
+         * Both are listed only when the file exists. Pointing LD_PRELOAD at an
+         * absent path makes Android's dynamic linker refuse every linked launch
+         * with CANNOT LINK EXECUTABLE, so one missing library would take the
+         * whole prefix down.
+         */
+        val preloads = mutableListOf<String>()
+        val termuxExec = File(libDir, "libtermux-exec-ld-preload.so")
+        if (termuxExec.exists()) preloads.add(termuxExec.absolutePath)
+        val pathShim = File(context.applicationInfo.nativeLibraryDir, "libpathshim.so")
+        if (pathShim.exists()) {
+            preloads.add(pathShim.absolutePath)
+            // The shim reads these at first use. Setting both means the shim
+            // contains no hardcoded package id, so the same library is correct
+            // in debug and in release.
+            env["GURU_SHIM_FROM"] = UPSTREAM_FILES_ROOT
+            env["GURU_SHIM_TO"] = termuxRoot.absolutePath
+        }
+        if (preloads.isNotEmpty()) {
+            env["LD_PRELOAD"] = preloads.joinToString(":")
         }
         // SSL/TLS: apt and curl need to find CA certificates
         val certPem = File(etcDir, "tls/cert.pem")
@@ -1240,95 +1265,24 @@ class TermuxProvider(private val context: Context) {
 
     // --- Extraction ---
 
-    /**
-     * Give every binary and every tool that hardcodes the upstream prefix a
-     * place to find it, without per-package special cases.
+    /*
+     * REMOVED: linkUpstreamRootFromRoot().
      *
-     * THE PROBLEM THIS SOLVES, from issue 31. A Termux `.deb` is built against
-     * `/data/data/com.termux/files/usr`, and that path is compiled INTO the
-     * binary, not stored next to it. So `figlet` asks for its fonts at
-     * `/data/data/com.termux/files/usr/share/figlet` and cannot be told
-     * otherwise, because the override is one variable per program and there are
-     * thousands of programs.
+     * It symlinked /data/data/com.termux into this app's tree via a root shell so
+     * that compiled-in paths would resolve. Two reasons it is gone.
      *
-     * Two things already work: dpkg writes through the compatibility root, and
-     * the text relocation fixes every script. What was missing is that a
-     * COMPILED path is not text and cannot be rewritten in place. The answer is
-     * to make the path real.
+     * 1. Nobody roots their phone, so a mechanism that requires root is not a
+     *    mechanism. It also cannot work on a device with a real com.termux
+     *    install without taking over another app's data path.
      *
-     * dpkg cannot create `/data/data/com.termux` because it belongs to another
-     * app's sandbox. So this asks a root shell, which CAN create it, and links
-     * it back into our tree:
+     * 2. proot was the obvious unrooted alternative and it is also dead here:
+     *    Android's seccomp filter blocks ptrace for ordinary apps, so proot
+     *    cannot execve even /system/bin/sh. Measured, not assumed.
      *
-     *   /data/data/com.termux  ->  <filesDir>/termux
-     *
-     * That is the whole mapping. After it, an absolute upstream path in any
-     * binary resolves through the kernel to this install, exactly once, with no
-     * per-package knowledge and no environment variable for each tool. It is the
-     * same shape as the /lib64 symlink on a multiarch system.
-     *
-     * It only runs when root is available, because creating a path outside our
-     * sandbox is precisely the thing the app cannot do alone. When there is no
-     * root, the compatibility root and the text relocation still carry everything
-     * that does not need a compiled path, and the log says so rather than
-     * pretending the job is finished.
+     * The replacement is libpathshim.so, loaded through LD_PRELOAD, which
+     * rewrites a leading upstream prefix at the libc boundary. It needs no root,
+     * no adb and no ptrace, and it covers every package at once. See pathshim.c.
      */
-    private suspend fun linkUpstreamRootFromRoot() {
-        try {
-            val upstream = UPSTREAM_FILES_ROOT                       // /data/data/com.termux/files
-            val appData = context.filesDir.parentFile?.absolutePath  // /data/user/0/<pkg>
-                ?: return
-            // If the upstream root already resolves into our tree, there is
-            // nothing to do. Never touch a real com.termux install: if it exists
-            // and is not ours, that is another app's data and it stays untouched.
-            val existing = File(upstream)
-            if (existing.exists()) {
-                val pointsHere = runCatching { existing.canonicalPath }
-                    .getOrNull()
-                    ?.startsWith(appData) == true
-                Log.d(
-                    TAG,
-                    "TermuxProvider: upstream root $upstream already exists and " +
-                        "${if (pointsHere) "resolves into this app" else "belongs to something else"}; not touching it",
-                )
-                return
-            }
-
-            val target = termuxRoot.absolutePath
-            val command =
-                "mkdir -p '${File(upstream).parentFile?.absolutePath}' && " +
-                    "ln -sfn '$target' '${File(upstream).parentFile?.absolutePath}/termux' 2>/dev/null || " +
-                    "ln -sfn '$target' '$upstream'"
-            val result = TermuxProvider(context).runAsRoot(command)
-            if (result) {
-                Log.d(TAG, "TermuxProvider: linked upstream root $upstream -> $target via root")
-            } else {
-                Log.d(
-                    TAG,
-                    "TermuxProvider: no root, so the upstream root cannot be linked. " +
-                        "Compiled-in paths in installed binaries will not resolve; " +
-                        "text paths, dpkg installs and the compatibility root all still work.",
-                )
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "TermuxProvider: upstream root link failed: ${e.message}")
-        }
-    }
-
-    /**
-     * Run one command as root, returning whether it succeeded.
-     *
-     * Delegates to RootShell so there is a single place that knows how root is
-     * obtained, rather than a second ad-hoc `su` invocation with its own bugs.
-     */
-    private suspend fun runAsRoot(command: String): Boolean {
-        return try {
-            RootShell(context).execute(command).success
-        } catch (e: Exception) {
-            Log.w(TAG, "TermuxProvider: root command failed: ${e.message}")
-            false
-        }
-    }
 
     /**
      * Build the compatibility root that lets dpkg install upstream-prefixed
