@@ -3,6 +3,8 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.data.tools.registry
 
+import com.unuslumen.app.data.tools.registry.permission.GrantCheck
+import com.unuslumen.app.data.tools.registry.permission.PermissionGrants
 import com.unuslumen.app.domain.model.ToolCallResultObject
 
 /**
@@ -50,13 +52,25 @@ data class ToolDispatchResult(
             status = DispatchStatus.UNKNOWN_TOOL
         )
 
-        fun permissionDenied(permission: String): ToolDispatchResult = ToolDispatchResult(
+        /**
+         * Refuse a dispatch because a declared permission is not held.
+         *
+         * Takes the resolved [GrantCheck] rather than a raw permission string,
+         * because the sentence is what the model reads and what the person acts on.
+         * The bare form this replaced named no route and gave no indication whether
+         * a dialog could fix it, so the model had nothing useful to say and the
+         * person had nothing to follow.
+         *
+         * `rawJson` carries the same structured refusal body a tool's own guard
+         * returns, so a caller sees one refusal shape whichever path refused.
+         */
+        fun permissionDenied(check: GrantCheck): ToolDispatchResult = ToolDispatchResult(
             resolvedName = "",
-            rawJson = "",
+            rawJson = PermissionGrants.refusalBodyJson(check),
             resultData = null,
             resultObject = null,
             success = false,
-            error = "Permission denied: $permission",
+            error = check.sentence(),
             status = DispatchStatus.PERMISSION_DENIED
         )
 

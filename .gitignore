@@ -41,3 +41,9 @@ GURUbeta-FULL/MODULE_SYSTEM_PLAN.md
 # manual approval prompt even with bypass permissions on, because .git is a
 # bypass-immune directory. Work happens without Steven clicking dialogs.
 /.lux-dev/
+
+# Operational notes for whichever agent instance is working in this checkout:
+# how to verify without an emulator, where the worktrees are, and the traps that
+# already cost real time. It is about how the machine is driven, not about the
+# product, so it stays on this machine like the other working documents above.
+/lux.md

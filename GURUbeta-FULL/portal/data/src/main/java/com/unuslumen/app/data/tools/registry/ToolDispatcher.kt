@@ -6,6 +6,7 @@ package com.unuslumen.app.data.tools.registry
 import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
+import com.unuslumen.app.data.tools.registry.permission.PermissionGrants
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -48,10 +49,18 @@ class ToolDispatcher(
         val definition = registry.getDefinition(resolvedName)
             ?: return ToolDispatchResult.unknownTool(resolvedName)
 
-        // Check Android runtime permissions
+        // Check Android runtime permissions.
+        //
+        // The refusal is built from the same catalogue every tool's own guard uses,
+        // because this check runs BEFORE the executor and therefore decides what
+        // the model actually reads. A bare "Permission denied: android.permission.X"
+        // names no route and does not say whether a dialog could fix it at all, so
+        // a person is left holding a platform string instead of an instruction.
         for (perm in definition.permissions) {
             if (ContextCompat.checkSelfPermission(context, perm) != PackageManager.PERMISSION_GRANTED) {
-                return ToolDispatchResult.permissionDenied(perm)
+                return ToolDispatchResult.permissionDenied(
+                    PermissionGrants.refusalForPermission(context, perm)
+                )
             }
         }
 
