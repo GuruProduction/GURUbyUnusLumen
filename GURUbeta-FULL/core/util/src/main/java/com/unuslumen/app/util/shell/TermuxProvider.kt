@@ -260,8 +260,34 @@ class TermuxProvider(private val context: Context) {
         if (is64Bit) "/system/bin/linker64" else "/system/bin/linker"
     }
 
-    fun isAvailable(): Boolean = available
-    fun isInitialized(): Boolean = initialized
+    /**
+     * Whether the prefix is installed, answered from DISK rather than from
+     * this instance's own memory.
+     *
+     * THE DEFECT THIS FIXES, reported by GURU on a fresh v3.9 install. `available`
+     * was an instance field defaulting to false and only set by [initialize] on
+     * the SAME object. Application boot constructs one provider and installs the
+     * prefix through it; TermuxToolExecutor constructs a SECOND provider, whose
+     * latch was still false. termuxStatus therefore answered
+     * {"success":false} and GURU confidently reported "Termux isn't installed"
+     * while a verified prefix, bash and git 2.56.0 sat on disk.
+     *
+     * "Is it installed" is a fact about the filesystem, not about which object
+     * asked. The latch stays for cheap short-circuiting inside [initialize], but
+     * any caller asking the public question gets the real answer.
+     */
+    fun isAvailable(): Boolean {
+        if (available) return true
+        // A real prefix has a populated bin directory. Anything else is not
+        // installed, and this cannot produce a false positive from a partial
+        // extract because initialize() only clears the wiped-tree case when bin
+        // is empty.
+        val installed = binDir.isDirectory && binDir.listFiles()?.isNotEmpty() == true
+        if (installed) available = true
+        return installed
+    }
+
+    fun isInitialized(): Boolean = initialized || isAvailable()
 
     fun getRootPath(): String = termuxRoot.absolutePath
     fun getHomePath(): String = homeDir.absolutePath
