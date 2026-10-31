@@ -1,9 +1,27 @@
 [target.aarch64-linux-android]
 linker = "/Users/unuslumen/Library/Android/sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android29-clang"
 ar = "/Users/unuslumen/Library/Android/sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar"
-
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+# 16 KB page-size alignment (issue 13).
+#
+# Android 15+ enforces 16 KB pages on real hardware, and the system refuses to
+# load a PT_LOAD segment whose p_align is 4 KB. NDK r27 defaults the Android
+# targets to 16 KB, but this repo's own library is the one artefact we can prove
+# and control, so the flag is passed explicitly rather than relying on a default
+# that varies by NDK minor version. Measured before: libcerebrum_android.so came
+# out at 0x1000 (4 KB) on every PT_LOAD segment, which is what raised the
+# compatibility warning.
+#
+# rustflags here apply to the whole workspace when these targets are selected,
+# which is intended: every crate that ends up inside the cdylib must agree.
+#
+# It is a plain key INSIDE the target table. A nested [target.<triple>.rustflags]
+# table and a dotted key outside the table are both rejected by cargo with
+# "expected a string, but found a table", because the triple itself must hold a
+# table of settings rather than a mixture of shapes.
 [target.x86_64-linux-android]
 linker = "/Users/unuslumen/Library/Android/sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/darwin-x86_64/bin/x86_64-linux-android29-clang"
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
 
 [net]
 retry = 3

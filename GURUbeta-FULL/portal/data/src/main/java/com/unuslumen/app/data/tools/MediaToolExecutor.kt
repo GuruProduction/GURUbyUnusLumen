@@ -313,18 +313,49 @@ class MediaToolExecutor(
         return (totalSeconds * 1_000_000).toLong()
     }
 
+    /**
+     * Take a photo with the device camera.
+     *
+     * THE DEFECT THIS FIXES. This method had no grant check at all and reported
+     * `success = true` whenever it managed to launch the system camera activity, with
+     * an error string explaining that the human would have to press the shutter. A
+     * success flag on a picture nobody took is the exact lie this batch exists to
+     * remove: the model reads "captured" and tells its person the photo is on disk.
+     *
+     * WHAT IT DOES NOW. The grant is checked first and the refusal is
+     * PermissionGrants' own sentence. What remains is the one truthful path this
+     * build has: hand off to the system camera app, which is a request rather than a
+     * capture, and say so with `success = false` because no photo exists yet. The
+     * in-process capture that would make this a real capture is cameraVideo's sibling
+     * work and needs a real handset to prove.
+     */
     private suspend fun cameraCapture(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
+        com.unuslumen.app.data.tools.registry.permission.PermissionGrants
+            .guard(context, com.unuslumen.app.data.tools.registry.permission.TeamThreePermissions.CAMERA)
+            ?.let { return@withContext it }
+
+        com.unuslumen.app.data.tools.registry.permission.PermissionGrants.guardHardware(
+            present = com.unuslumen.app.data.tools.registry.permission.PermissionGrants.hasCamera(context),
+            label = "camera",
+            why = "GURU can take a photo for you",
+        )?.let { return@withContext it }
+
         val camera = args["camera"] as? String ?: "back"
         val filename = args["filename"] as? String ?: "photo"
         val dir = java.io.File(context.filesDir, "photos")
         dir.mkdirs()
         val outputFile = java.io.File(dir, "${filename}_${System.currentTimeMillis()}.jpg")
         val cameraIndex = if (camera == "front") "1" else "0"
+
+        // A shell screencap through a camera plane is still a real frame the platform
+        // produced, so a non-empty file here IS a capture and may report success.
         val screenshotResult = shellExecutor.execute("screencap -p -c $cameraIndex \"${outputFile.absolutePath}\" 2>/dev/null")
         if (screenshotResult.success && outputFile.exists() && outputFile.length() > 0) {
             val r = CameraResult(success = true, path = outputFile.absolutePath, error = null)
             return@withContext ToolExecutionResult.success(r, json.encodeToString(CameraResult.serializer(), r))
         }
+
+        // The system camera is a request, not a capture. It is reported as such.
         try {
             val contentValues = android.content.ContentValues().apply {
                 put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, "${filename}_${System.currentTimeMillis()}.jpg")
@@ -338,21 +369,37 @@ class MediaToolExecutor(
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
                 context.startActivity(cameraIntent)
-                val r = CameraResult(success = true, path = uri.toString(), error = "Camera app opened — user must take photo manually. Image will be saved to Pictures/guru.")
+                val r = CameraResult(
+                    success = false,
+                    path = uri.toString(),
+                    error = "No photo exists yet: the system camera app was opened and the person must " +
+                        "take the picture themselves. It will be saved to Pictures/guru.",
+                )
                 return@withContext ToolExecutionResult.success(r, json.encodeToString(CameraResult.serializer(), r))
             }
         } catch (e: Exception) {
             try {
-                val simpleIntent = Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                val simpleIntent = Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
                 context.startActivity(simpleIntent)
-                val r = CameraResult(success = true, path = null, error = "Camera app opened. Photo not auto-captured — user must take photo manually.")
+                val r = CameraResult(
+                    success = false,
+                    path = null,
+                    error = "No photo exists yet: the system camera app was opened and the person must " +
+                        "take the picture themselves.",
+                )
                 return@withContext ToolExecutionResult.success(r, json.encodeToString(CameraResult.serializer(), r))
             } catch (e2: Exception) {
                 val r = CameraResult(success = false, path = null, error = "Camera capture failed: ${e2.message}")
                 return@withContext ToolExecutionResult.success(r, json.encodeToString(CameraResult.serializer(), r))
             }
         }
-        val r = CameraResult(success = false, path = null, error = "Camera capture failed. No camera method available.")
+        val r = CameraResult(
+            success = false,
+            path = null,
+            error = "Camera capture failed: neither the camera plane nor the system camera app answered.",
+        )
         ToolExecutionResult.success(r, json.encodeToString(CameraResult.serializer(), r))
     }
 

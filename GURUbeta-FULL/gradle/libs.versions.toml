@@ -1,4 +1,5 @@
 [versions]
+shizuku = "13.1.5"
 activityCompose = "1.12.4"
 appcompat = "1.7.1"
 biometric = "1.4.0-alpha05"
@@ -44,6 +45,9 @@ mockk = "1.13.16"
 detekt = "1.23.8"
 
 [libraries]
+shizuku-api = { module = "dev.rikka.shizuku:api", version.ref = "shizuku" }
+shizuku-provider = { module = "dev.rikka.shizuku:provider", version.ref = "shizuku" }
+shizuku-aidl = { module = "dev.rikka.shizuku:aidl", version.ref = "shizuku" }
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
 androidx-appcompat = { module = "androidx.appcompat:appcompat", version.ref = "appcompat" }
 androidx-biometric = { module = "androidx.biometric:biometric", version.ref = "biometric" }

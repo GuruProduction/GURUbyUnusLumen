@@ -37,8 +37,75 @@ class TermuxToolExecutor(private val context: Context) : ToolExecutor {
                 // is a read, and a read should not be able to claim the app cannot
                 // do something it can install itself.
                 if (!termuxProvider.isAvailable()) { runCatching { termuxProvider.initialize() } }
-                if (!termuxProvider.isAvailable()) { val r = TermuxStatusResult(false, "", "", "", "", 0, emptyMap()); ToolExecutionResult.success(r, json.encodeToString(TermuxStatusResult.serializer(), r)) } else { val binDir = File(termuxProvider.getBinPath()); val binCount = if (binDir.exists()) binDir.listFiles()?.size ?: 0 else 0; val tools = mapOf("bash" to termuxProvider.hasCommand("bash"), "apt" to termuxProvider.hasCommand("apt"), "git" to termuxProvider.hasCommand("git"), "curl" to termuxProvider.hasCommand("curl"), "python3" to termuxProvider.hasCommand("python3"), "node" to termuxProvider.hasCommand("node"), "gcc" to termuxProvider.hasCommand("gcc"), "make" to termuxProvider.hasCommand("make"), "nmap" to termuxProvider.hasCommand("nmap"), "ssh" to termuxProvider.hasCommand("ssh"), "ffmpeg" to termuxProvider.hasCommand("ffmpeg")); val r = TermuxStatusResult(true, termuxProvider.getRootPath(), termuxProvider.getBinPath(), termuxProvider.getHomePath(), termuxProvider.getLibPath(), binCount, tools); ToolExecutionResult.success(r, json.encodeToString(TermuxStatusResult.serializer(), r)) } }
-            TermuxToolDefinitions.TERMUX_HAS_COMMAND -> { val cmd = args["command"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'command'"); val available = termuxProvider.hasCommand(cmd); val r = TermuxHasCommandResult(cmd, available, if (available) "'$cmd' available" else "'$cmd' not installed"); ToolExecutionResult.success(r, json.encodeToString(TermuxHasCommandResult.serializer(), r)) }
+                if (!termuxProvider.isAvailable()) {
+                    val r = TermuxStatusResult(false, "", "", "", "", 0, emptyMap())
+                    ToolExecutionResult.success(r, json.encodeToString(TermuxStatusResult.serializer(), r))
+                } else {
+                    val binDir = File(termuxProvider.getBinPath())
+                    val binCount = if (binDir.exists()) binDir.listFiles()?.size ?: 0 else 0
+
+                    /*
+                     * EVERY ENTRY IS ACTUALLY EXECUTED, which is the whole of
+                     * issue 175's second half.
+                     *
+                     * The old map was `hasCommand(name)`, i.e. File.exists() &&
+                     * canRead(), so it answered `bash: true` for a prefix whose
+                     * binaries could not load at all. A status field that reports
+                     * a binary as available without running it is not a status
+                     * field. probeCommand distinguishes ABSENT from
+                     * WILL_NOT_LOAD from RUNS and attaches the REAL output, so a
+                     * caller can tell a missing tool from a broken prefix.
+                     */
+                    val names = listOf(
+                        "bash", "apt", "git", "curl", "python3", "node",
+                        "gcc", "make", "nmap", "ssh", "ffmpeg",
+                    )
+                    val tools = LinkedHashMap<String, Boolean>()
+                    val states = LinkedHashMap<String, String>()
+                    val details = LinkedHashMap<String, String>()
+                    for (name in names) {
+                        val probe = termuxProvider.probeCommand(name)
+                        tools[name] = probe.state == TermuxProvider.CommandProbe.RUNS
+                        states[name] = probe.state.name
+                        if (probe.state != TermuxProvider.CommandProbe.RUNS) {
+                            details[name] = probe.output
+                        }
+                    }
+
+                    val r = TermuxStatusResult(
+                        initialized = true,
+                        rootPath = termuxProvider.getRootPath(),
+                        binPath = termuxProvider.getBinPath(),
+                        homePath = termuxProvider.getHomePath(),
+                        libPath = termuxProvider.getLibPath(),
+                        binCount = binCount,
+                        availableTools = tools,
+                        toolStates = states,
+                        toolDetails = details,
+                    )
+                    ToolExecutionResult.success(r, json.encodeToString(TermuxStatusResult.serializer(), r))
+                }
+            }
+            TermuxToolDefinitions.TERMUX_HAS_COMMAND -> {
+                val cmd = args["command"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'command'")
+                val err = ensureReady()
+                if (err != null) {
+                    val r = TermuxHasCommandResult(cmd, false, err)
+                    return@withContext ToolExecutionResult.success(r, json.encodeToString(TermuxHasCommandResult.serializer(), r))
+                }
+                // Issue 175: "available" has to mean the binary RAN. The old
+                // answer was File.exists(), so a prefix whose loader was broken
+                // reported every tool present while none of them worked.
+                val probe = termuxProvider.probeCommand(cmd)
+                val message = when (probe.state) {
+                    TermuxProvider.CommandProbe.RUNS -> "'$cmd' available (${probe.path})"
+                    TermuxProvider.CommandProbe.ABSENT -> "'$cmd' not installed: ${probe.output}"
+                    TermuxProvider.CommandProbe.WILL_NOT_LOAD ->
+                        "'$cmd' exists at ${probe.path} but will not run (exit ${probe.exitCode}): ${probe.output}"
+                }
+                val r = TermuxHasCommandResult(cmd, probe.state == TermuxProvider.CommandProbe.RUNS, message)
+                ToolExecutionResult.success(r, json.encodeToString(TermuxHasCommandResult.serializer(), r))
+            }
             TermuxToolDefinitions.TERMUX_DIAGNOSE -> {
                 val err = ensureReady()
                 if (err != null) {

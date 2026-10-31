@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  GuruDeviceAdminReceiver's policy declaration.
+
+  The uses-policies list is empty on purpose. Those flags declare powers a device
+  administrator may use — wipe, lock, password rules — and GURU wants none of them.
+  The Device Owner route in #172 needs ownership for one thing only:
+  setPermissionGrantState, which requires no declared policy flag at all. Declaring
+  powers the app does not use is the kind of over-reach that makes a device
+  administrator refusal look personal, so the list stays empty until a real feature
+  needs a flag and can justify it.
+-->
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies />
+</device-admin>

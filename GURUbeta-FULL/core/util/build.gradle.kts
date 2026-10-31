@@ -40,6 +40,10 @@ android {
     }
     buildFeatures {
         compose = true
+        // The Shizuku shell service crosses a UID boundary, so its binder surface is
+        // declared in AIDL rather than serialised by hand. With AIDL off the
+        // IShizukuShell stub is never generated and the bridge cannot compile.
+        aidl = true
     }
     lint {
         disable += "NullSafeMutableLiveData"
@@ -61,4 +65,14 @@ dependencies {
     androidTestImplementation(libs.androidx.espresso.core)
 
     api(libs.kotlinx.datetime)
+
+    // Shizuku. `api` for the api module because ShizukuBridge exposes
+    // Shizuku.OnRequestPermissionResultListener in its public surface, and a
+    // consumer of this module cannot implement that listener without the type.
+    //
+    // The provider module supplies the ShizukuProvider ContentProvider, which is
+    // how Shizuku's binder becomes reachable; it is wired in the app manifest, so
+    // it is `api` here too and the app module inherits it rather than repeating it.
+    api(libs.shizuku.api)
+    api(libs.shizuku.provider)
 }

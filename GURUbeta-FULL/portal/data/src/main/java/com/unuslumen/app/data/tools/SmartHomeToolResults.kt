@@ -19,7 +19,19 @@ import kotlinx.serialization.Serializable
 @Serializable data class SonosResult(val success: Boolean, val action: String, val speaker: String? = null, val error: String? = null) : ToolResultData
 @Serializable data class BluetoothDevice(val mac: String, val name: String) : ToolResultData
 @Serializable data class BluetoothDevicesResult(val success: Boolean, val devices: List<BluetoothDevice>, val error: String? = null) : ToolResultData
-@Serializable data class BluetoothResult(val success: Boolean, val action: String, val device: String? = null, val error: String? = null) : ToolResultData
+/**
+ * Bluetooth connect or disconnect outcome.
+ *
+ * [success] means the requested action was actually carried out. [action] names
+ * the mechanism that ran, because Android offers several and they are not
+ * interchangeable: `pairing_requested` starts a bond, `connect_requested` asks
+ * the system to bring a paired device's profiles up, `disconnect_requested`
+ * asks it to bring them down, and `manual_required` / `disconnect_unavailable`
+ * mean this Android version exposes no call at all. [detail] carries the
+ * sentence the caller needs to act on, which [error] cannot hold without being
+ * read as a failure. Additive field; no consumer decodes this type.
+ */
+@Serializable data class BluetoothResult(val success: Boolean, val action: String, val device: String? = null, val error: String? = null, val detail: String? = null) : ToolResultData
 @Serializable data class NetworkDevice(val ip: String, val mac: String, val name: String) : ToolResultData
 @Serializable data class NetworkScanResult(val success: Boolean, val devices: List<NetworkDevice>, val error: String? = null) : ToolResultData
 @Serializable data class NetworkPingResult(val success: Boolean, val host: String, val output: String? = null, val error: String? = null) : ToolResultData

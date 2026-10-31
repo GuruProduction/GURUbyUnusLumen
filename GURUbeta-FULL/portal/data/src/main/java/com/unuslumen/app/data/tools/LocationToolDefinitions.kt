@@ -17,7 +17,12 @@ object LocationToolDefinitions : ToolSetRegistration {
     const val REVERSE_GEOCODE = "reverseGeocode"
 
     override val definitions = listOf(
-        ToolDefinition(name = GET_CURRENT_LOCATION, description = "Get the device's current GPS location. Returns latitude, longitude, accuracy, altitude, speed, and bearing. Use for location-based queries, weather that works without API keys, navigation, or knowing where your human is.", category = "location", parameters = emptyList(), permissions = emptyList()),
+        // COARSE ALONE, DELIBERATELY. The dispatcher refuses when any declared
+        // permission is missing, so listing FINE here would refuse a person who
+        // granted approximate only — the very degradation path this issue asks for.
+        // Coarse is the honest minimum; which of the two is in force travels on the
+        // result's `precision` field, and the executor guards both.
+        ToolDefinition(name = GET_CURRENT_LOCATION, description = "Get the device's current location. Returns latitude, longitude, accuracy, altitude, speed, bearing, and a 'precision' field saying whether the fix is PRECISE or APPROXIMATE — on Android 12+ a person can grant approximate only, and that must never be reported as a street-level fix. A result with success=false says whether it was a missing grant, Location switched off, or simply no fix. Use for weather, navigation, or knowing where your human is.", category = "location", parameters = emptyList(), permissions = listOf("android.permission.ACCESS_COARSE_LOCATION")),
         ToolDefinition(name = GEOCODE, description = "Convert an address to GPS coordinates. Use when your human says 'where is X' or you need coordinates for a place name.", category = "location", parameters = listOf(ToolParameter("address", ToolParameterType.String, true, "Address to look up, e.g. '1600 Amphitheatre Parkway, Mountain View, CA'")), permissions = emptyList()),
         ToolDefinition(name = REVERSE_GEOCODE, description = "Convert GPS coordinates to an address. Use when you have coordinates and need to know what's there.", category = "location", parameters = listOf(ToolParameter("latitude", ToolParameterType.Float, true, "Latitude"), ToolParameter("longitude", ToolParameterType.Float, true, "Longitude")), permissions = emptyList())
     )

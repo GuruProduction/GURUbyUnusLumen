@@ -337,6 +337,25 @@
                 <action android:name="android.intent.action.TIME_SET" />
             </intent-filter>
         </receiver>
+
+        <!-- Device Owner path (#172).
+             setPermissionGrantState names an admin component, so the component has
+             to exist before the owner route can run at all. Declaring the receiver
+             here does not grant any power: GURU only becomes Device Owner if it is
+             provisioned as one, and isDeviceOwnerApp reports the truth until then.
+             Exported is required, because the device-admin system intent has to
+             reach this receiver from outside the app. -->
+        <receiver
+            android:name="com.unuslumen.app.admin.GuruDeviceAdminReceiver"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/guru_device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
         <receiver
             android:name="com.unuslumen.app.data.heartbeat.HeartbeatAlarmReceiver"
             android:enabled="true"
@@ -489,11 +508,31 @@
             </intent-filter>
         </service>
 
-        <!-- Screen Capture Service (required for MediaProjection on Android 14+) -->
+        <!--
+            Screen Capture Service (required for MediaProjection on Android 14+).
+
+            BOTH types are declared, and that is load-bearing (issue 28).
+
+            mediaProjection is the type the projection itself needs, but it is only
+            legal while the human's consent token is live, because startForeground
+            with that type requires the android:project_media app-op. The service is
+            also started with startForegroundService on paths that have no consent
+            (invalid extras, and any later caller), and the system kills the app if
+            such a start never calls startForeground.
+
+            Declaring specialUse alongside it gives those paths a foreground type
+            that is legal without an app-op, so the contract can be met without the
+            SecurityException that used to take the process down. Listing one type
+            in the manifest and passing the other to startForeground is itself an
+            IllegalArgumentException, so the two must be declared together.
+        -->
         <service
             android:name="com.unuslumen.app.util.service.ScreenCaptureService"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection">
+            android:foregroundServiceType="mediaProjection|specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Screen capture session host; the foreground notification is required whenever a MediaProjection consent token is being established or torn down" />
         </service>
 
         <!-- Guru Notification Listener — lets Guru read and manage notifications -->
@@ -520,6 +559,29 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/guru_file_paths" />
         </provider>
+
+        <!-- Shizuku bridge (#173).
+             The provider is how Shizuku's binder becomes reachable at all: the
+             Shizuku app exposes its service through this ContentProvider and
+             without the declaration `Shizuku.pingBinder()` is always false, so the
+             channel would report NOT_RUNNING on a device where Shizuku is running
+             perfectly. The authority must be exactly ${applicationId}.shizuku.
+
+             The shell service is bound by Shizuku, not by GURU, and runs in
+             Shizuku's own app_process as UID 2000. Exported is required for that
+             bind, and the permission is what stops anything else binding it. -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <service
+            android:name="com.unuslumen.app.util.shell.shizuku.ShizukuShellService"
+            android:exported="true"
+            android:permission="moe.shizuku.manager.permission.API_V23" />
 
         <!-- Tor persistent foreground service — keeps Tor alive indefinitely.
              specialUse, not dataSync: Android 15+ imposes a ~6h runtime limit on

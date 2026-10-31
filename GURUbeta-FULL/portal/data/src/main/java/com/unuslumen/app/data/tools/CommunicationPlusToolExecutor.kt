@@ -34,32 +34,52 @@ class CommunicationPlusToolExecutor(private val context: Context) : ToolExecutor
     }
 
     private suspend fun discordSend(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val r = DiscordResult(success = false, error = "Discord integration requires Discord API configuration.")
+        val r = DiscordResult(
+            success = false,
+            error = blockedReason(DISCORD_CREDENTIAL, "this tool will post the message to the channel you name"),
+        )
         ToolExecutionResult.success(r, json.encodeToString(DiscordResult.serializer(), r))
     }
 
     private suspend fun discordRead(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val r = DiscordReadResult(success = false, messages = emptyList(), error = "Discord integration requires Discord API configuration.")
+        val r = DiscordReadResult(
+            success = false,
+            messages = emptyList(),
+            error = blockedReason(DISCORD_CREDENTIAL, "this tool will return the recent messages in the channel you name"),
+        )
         ToolExecutionResult.success(r, json.encodeToString(DiscordReadResult.serializer(), r))
     }
 
     private suspend fun discordReact(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val r = DiscordResult(success = false, error = "Discord integration requires Discord API configuration.")
+        val r = DiscordResult(
+            success = false,
+            error = blockedReason(DISCORD_CREDENTIAL, "this tool will add the reaction to that message id"),
+        )
         ToolExecutionResult.success(r, json.encodeToString(DiscordResult.serializer(), r))
     }
 
     private suspend fun slackSend(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val r = SlackResult(success = false, error = "Slack integration requires Slack API configuration.")
+        val r = SlackResult(
+            success = false,
+            error = blockedReason(SLACK_CREDENTIAL, "this tool will post the message to the channel you name"),
+        )
         ToolExecutionResult.success(r, json.encodeToString(SlackResult.serializer(), r))
     }
 
     private suspend fun slackRead(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val r = SlackReadResult(success = false, messages = emptyList(), error = "Slack integration requires Slack API configuration.")
+        val r = SlackReadResult(
+            success = false,
+            messages = emptyList(),
+            error = blockedReason(SLACK_CREDENTIAL, "this tool will return the recent messages in the channel you name"),
+        )
         ToolExecutionResult.success(r, json.encodeToString(SlackReadResult.serializer(), r))
     }
 
     private suspend fun slackPin(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val r = SlackResult(success = false, error = "Slack integration requires Slack API configuration.")
+        val r = SlackResult(
+            success = false,
+            error = blockedReason(SLACK_CREDENTIAL, "this tool will pin the message with that timestamp"),
+        )
         ToolExecutionResult.success(r, json.encodeToString(SlackResult.serializer(), r))
     }
 
@@ -267,22 +287,35 @@ class CommunicationPlusToolExecutor(private val context: Context) : ToolExecutor
     }
 
     private suspend fun xPost(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val r = XResult(success = false, error = "X/Twitter integration requires API configuration.")
+        val r = XResult(
+            success = false,
+            error = blockedReason(X_CREDENTIAL, "this tool will publish the tweet from the account the token belongs to"),
+        )
         ToolExecutionResult.success(r, json.encodeToString(XResult.serializer(), r))
     }
 
     private suspend fun xReply(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val r = XResult(success = false, error = "X/Twitter integration requires API configuration.")
+        val r = XResult(
+            success = false,
+            error = blockedReason(X_CREDENTIAL, "this tool will publish the reply under the tweet id you name"),
+        )
         ToolExecutionResult.success(r, json.encodeToString(XResult.serializer(), r))
     }
 
     private suspend fun xDm(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val r = XResult(success = false, error = "X/Twitter integration requires API configuration.")
+        val r = XResult(
+            success = false,
+            error = blockedReason(X_CREDENTIAL, "this tool will send the direct message to the user you name"),
+        )
         ToolExecutionResult.success(r, json.encodeToString(XResult.serializer(), r))
     }
 
     private suspend fun xSearch(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val r = XSearchResult(success = false, tweets = emptyList(), error = "X/Twitter integration requires API configuration.")
+        val r = XSearchResult(
+            success = false,
+            tweets = emptyList(),
+            error = blockedReason(X_CREDENTIAL, "this tool will return matching tweets from X's search endpoint"),
+        )
         ToolExecutionResult.success(r, json.encodeToString(XSearchResult.serializer(), r))
     }
 
@@ -341,4 +374,54 @@ class CommunicationPlusToolExecutor(private val context: Context) : ToolExecutor
             tm.callState
         }
     }
+
+    // =========================================================================
+    // Blocked integrations
+    // =========================================================================
+
+    /**
+     * The single builder for "this tool needs a credential the user must supply".
+     *
+     * The ten tools above used to answer with "requires API configuration", which
+     * named neither the credential nor where to make it nor what would then
+     * happen, so it was actionable for nobody. Every one of them now routes
+     * through here, and the reason cannot drift per tool.
+     *
+     * These are genuinely blocked. Discord, Slack and X each authenticate a bot or
+     * an app with a secret only the account owner can mint, and none of them is
+     * reachable from an Android app by any unprivileged path: there is no
+     * scraping substitute for a write, and X's search endpoint has no anonymous
+     * read. The app holds no stored secret for any of them either — CredentialVault
+     * has slots for GitHub, Trello and Notion only, and PrefsConstants carries the
+     * user's own model key — so there is nothing to fall back on and no honest
+     * implementation that does not invent a credential.
+     */
+    private fun blockedReason(credential: Credential, thenWhat: String): String =
+        "${credential.name} is not available on this install. Create it at ${credential.whereToCreate}, " +
+            "then $thenWhat. ${credential.requirement}"
+
+    /** A credential a blocked integration needs, where the user makes it, and its scope. */
+    private data class Credential(
+        val name: String,
+        val whereToCreate: String,
+        val requirement: String,
+    )
+
+    private val DISCORD_CREDENTIAL = Credential(
+        name = "a Discord bot token",
+        whereToCreate = "discord.com/developers/applications (New Application, Bot, Reset Token)",
+        requirement = "The bot must be invited to the server and given the Read Message History and Send Messages permissions on the target channel.",
+    )
+
+    private val SLACK_CREDENTIAL = Credential(
+        name = "a Slack bot token",
+        whereToCreate = "api.slack.com/apps (Create New App, OAuth & Permissions, install to workspace)",
+        requirement = "The token needs the chat:write scope for sending and pinning, and channels:history for reading.",
+    )
+
+    private val X_CREDENTIAL = Credential(
+        name = "an X API bearer token",
+        whereToCreate = "developer.x.com (create a project and app, then Keys and tokens)",
+        requirement = "Publishing needs a user-context OAuth 2.0 token with tweet.write and dm.write; search and reads need a paid API tier, because the free tier does not include them.",
+    )
 }

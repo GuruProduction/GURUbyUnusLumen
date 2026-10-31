@@ -117,8 +117,16 @@ class GrantCheckTest {
 
     /**
      * A privileged denial must never sound like the person's fault, and must name
-     * the only path that can satisfy it. This is the sentence that keeps #53, #54,
-     * #57, #62 and the three capture permissions honest while Shizuku is absent.
+     * the shell-UID route honestly. This is the sentence that keeps #53, #54, #57,
+     * #62 and the three capture permissions honest while Shizuku is absent.
+     *
+     * CORRECTED ON 31 OCT. This test previously required the words "Shizuku or
+     * Device Owner", which was taken from #47's framing. That framing is wrong for
+     * a signature permission: setPermissionGrantState handles runtime permissions,
+     * and the platform grants a signature permission to `pm grant` only when it
+     * carries the `development` protection flag. Device Owner therefore cannot
+     * satisfy this tier, and naming it sent the person down a setup that could not
+     * work. The test now pins what the platform actually allows.
      */
     @Test
     fun aPrivilegedDenialBlamesThePlatformAndNamesShizuku() {
@@ -128,9 +136,46 @@ class GrantCheckTest {
 
         val sentence = check.sentence()
         assertTrue("must say the platform reserves it: $sentence", sentence.contains("reserves it for system apps"))
-        assertTrue("must name the only path: $sentence", sentence.contains("Shizuku or Device Owner"))
+        assertTrue("must name the shell-UID route: $sentence", sentence.contains("through Shizuku"))
+        assertFalse("Device Owner cannot grant a signature permission: $sentence", sentence.contains("Device Owner"))
         assertFalse("must not send them to a settings dialog: $sentence", sentence.contains("Settings > Apps"))
         assertFalse("must not blame the person: $sentence", sentence.contains("you have not"))
+    }
+
+    /**
+     * A privileged permission that the platform does not mark with `development`
+     * cannot be granted by any command at all, and the sentence must say so rather
+     * than offering Shizuku. This is the distinction #47 did not draw: "privileged"
+     * and "grantable through shell UID" are different facts, and only the second
+     * one makes a setup worthwhile.
+     */
+    @Test
+    fun aPrivilegedPermissionWithoutTheDevelopmentFlagIsReportedAsOutOfReach() {
+        val check = GrantCheck.of(
+            TeamThreePermissions.CAPTURE_AUDIO_OUTPUT,
+            granted = false,
+            developable = false,
+        )
+        assertEquals(GrantState.NOT_GRANTABLE, check.state)
+        assertTrue(check.denied)
+
+        val sentence = check.sentence()
+        assertTrue("must say the platform reserves it: $sentence", sentence.contains("reserves the"))
+        assertFalse("must not offer a route that cannot work: $sentence", sentence.contains("Shizuku"))
+        assertFalse("must not name a settings route: $sentence", sentence.contains("Settings > Apps"))
+        assertTrue("must be final about it: $sentence", sentence.contains("No setting and no setup"))
+    }
+
+    /**
+     * A permission that reads as held is usable whatever its tier says. A tier is a
+     * statement about how a grant would be obtained, not a veto on using a grant
+     * the platform has already made.
+     */
+    @Test
+    fun aHeldPrivilegedPermissionIsAllowedRatherThanRefusedOnItsTier() {
+        val check = GrantCheck.of(TeamThreePermissions.CAPTURE_AUDIO_OUTPUT, granted = true)
+        assertEquals(GrantState.GRANTED, check.state)
+        assertTrue(check.allowed)
     }
 
     @Test
