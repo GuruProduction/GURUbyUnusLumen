@@ -37,6 +37,16 @@ android {
             freeCompilerArgs.addAll(listOf("-opt-in=kotlin.uuid.ExperimentalUuidApi", "-opt-in=kotlin.time.ExperimentalTime"))
         }
     }
+
+    // Robolectric reads the merged manifest and the resources, so the Android
+    // runtime it emulates is this app's own: the permissions it reports are the
+    // ones this build declares, not a generic platform's.
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 val modelAssetDir = project.file("src/main/assets")
@@ -270,4 +280,15 @@ dependencies {
     // previously a private method inside a class needing a Context and a
     // TorManager, so it could only ever be checked by hand.
     testImplementation(libs.junit)
+
+    // Robolectric runs the real Android framework on the JVM, so a permission
+    // check, a PackageManager lookup or a sensor probe is answered by Android's
+    // own code rather than by a hand-written stand-in. That is what makes a grant
+    // refusal or a hardware-absence report provable without a device, and it runs
+    // in seconds instead of booting an emulator that costs a machine its disk and
+    // its responsiveness.
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test:core:1.6.1")
+    testImplementation("androidx.test.ext:junit:1.2.1")
+    testImplementation(libs.mockk)
 }
