@@ -674,6 +674,15 @@ class AdbClient(
 enum class ShellTier {
     /** Root daemon, UID 0. Everything works. */
     ROOT,
+    /**
+     * Shizuku's shell UID, 2000.
+     *
+     * The same UID as ADB and reached without a network socket or a pairing code,
+     * which is why it is tried before ADB: when both are available Shizuku is the
+     * cheaper and more stable of the two, because it does not depend on wireless
+     * debugging staying enabled.
+     */
+    SHIZUKU,
     /** ADB over wireless debugging, shell UID 2000. Most things work. */
     ADB,
     /** ProcessBuilder at app UID. Cannot read /proc/net/arp, dumpsys or settings. */
@@ -690,6 +699,7 @@ enum class ShellTier {
      */
     fun capabilities(): String = when (this) {
         ROOT -> "root: unrestricted shell access"
+        SHIZUKU -> "Shizuku shell (UID 2000, no pairing needed): most system reads and writes, no root"
         ADB -> "ADB shell (UID 2000): most system reads and writes, no root"
         APP_UID -> "app UID only: no /proc/net, no dumpsys, no settings, no other app data. " +
             "Permission denials here are permanent and must not be retried."

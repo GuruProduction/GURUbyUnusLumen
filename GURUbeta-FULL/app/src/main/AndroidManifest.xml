@@ -560,6 +560,29 @@
                 android:resource="@xml/guru_file_paths" />
         </provider>
 
+        <!-- Shizuku bridge (#173).
+             The provider is how Shizuku's binder becomes reachable at all: the
+             Shizuku app exposes its service through this ContentProvider and
+             without the declaration `Shizuku.pingBinder()` is always false, so the
+             channel would report NOT_RUNNING on a device where Shizuku is running
+             perfectly. The authority must be exactly ${applicationId}.shizuku.
+
+             The shell service is bound by Shizuku, not by GURU, and runs in
+             Shizuku's own app_process as UID 2000. Exported is required for that
+             bind, and the permission is what stops anything else binding it. -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <service
+            android:name="com.unuslumen.app.util.shell.shizuku.ShizukuShellService"
+            android:exported="true"
+            android:permission="moe.shizuku.manager.permission.API_V23" />
+
         <!-- Tor persistent foreground service — keeps Tor alive indefinitely.
              specialUse, not dataSync: Android 15+ imposes a ~6h runtime limit on
              dataSync services and throws ForegroundServiceDidNotStopInTimeException
