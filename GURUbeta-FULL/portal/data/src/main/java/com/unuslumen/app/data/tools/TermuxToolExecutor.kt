@@ -39,7 +39,54 @@ class TermuxToolExecutor(private val context: Context) : ToolExecutor {
                 if (!termuxProvider.isAvailable()) { runCatching { termuxProvider.initialize() } }
                 if (!termuxProvider.isAvailable()) { val r = TermuxStatusResult(false, "", "", "", "", 0, emptyMap()); ToolExecutionResult.success(r, json.encodeToString(TermuxStatusResult.serializer(), r)) } else { val binDir = File(termuxProvider.getBinPath()); val binCount = if (binDir.exists()) binDir.listFiles()?.size ?: 0 else 0; val tools = mapOf("bash" to termuxProvider.hasCommand("bash"), "apt" to termuxProvider.hasCommand("apt"), "git" to termuxProvider.hasCommand("git"), "curl" to termuxProvider.hasCommand("curl"), "python3" to termuxProvider.hasCommand("python3"), "node" to termuxProvider.hasCommand("node"), "gcc" to termuxProvider.hasCommand("gcc"), "make" to termuxProvider.hasCommand("make"), "nmap" to termuxProvider.hasCommand("nmap"), "ssh" to termuxProvider.hasCommand("ssh"), "ffmpeg" to termuxProvider.hasCommand("ffmpeg")); val r = TermuxStatusResult(true, termuxProvider.getRootPath(), termuxProvider.getBinPath(), termuxProvider.getHomePath(), termuxProvider.getLibPath(), binCount, tools); ToolExecutionResult.success(r, json.encodeToString(TermuxStatusResult.serializer(), r)) } }
             TermuxToolDefinitions.TERMUX_HAS_COMMAND -> { val cmd = args["command"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'command'"); val available = termuxProvider.hasCommand(cmd); val r = TermuxHasCommandResult(cmd, available, if (available) "'$cmd' available" else "'$cmd' not installed"); ToolExecutionResult.success(r, json.encodeToString(TermuxHasCommandResult.serializer(), r)) }
-            TermuxToolDefinitions.TERMUX_DIAGNOSE -> { val err = ensureReady(); if (err != null) { val r = TermuxDiagnoseResult(false, 0, 0, false, err, "", false, "Environment not ready", listOf("Failed: $err")); ToolExecutionResult.success(r, json.encodeToString(TermuxDiagnoseResult.serializer(), r)) } else { val binDir = File(termuxProvider.getBinPath()); val allBins = binDir.listFiles()?.toList() ?: emptyList(); val binCount = allBins.size; val execCount = allBins.count { it.canExecute() }; val linkerPath = termuxProvider.getLinkerPath(); val bashTest = termuxProvider.execBash("echo BASH_WORKS"); val bashWorks = bashTest.exitCode == 0 && bashTest.stdout.contains("BASH_WORKS"); val aptTest = termuxProvider.execBash("apt update 2>&1 | head -5"); val aptWorking = aptTest.exitCode == 0 || aptTest.stdout.contains("Reading package lists") || aptTest.stdout.contains("All packages are up to date"); val diagnostics = mutableListOf<String>(); if (binCount == 0) diagnostics.add("No binaries"); if (!bashWorks) diagnostics.add("bash failed: ${bashTest.stderr.take(200)}"); if (!aptWorking) diagnostics.add("apt failed: ${aptTest.stderr.ifBlank { aptTest.stdout }.take(200)}"); val r = TermuxDiagnoseResult(true, binCount, execCount, aptWorking, if (!aptWorking) aptTest.stderr.ifBlank { aptTest.stdout }.take(500) else null, linkerPath, bashWorks, if (!bashWorks) bashTest.stderr.take(200) else null, diagnostics); ToolExecutionResult.success(r, json.encodeToString(TermuxDiagnoseResult.serializer(), r)) } }
+            TermuxToolDefinitions.TERMUX_DIAGNOSE -> {
+                val err = ensureReady()
+                if (err != null) {
+                    val r = TermuxDiagnoseResult(false, 0, 0, false, err, "", false, "Environment not ready", listOf("Failed: $err"))
+                    ToolExecutionResult.success(r, json.encodeToString(TermuxDiagnoseResult.serializer(), r))
+                } else {
+                    val binDir = File(termuxProvider.getBinPath())
+                    val allBins = binDir.listFiles()?.toList() ?: emptyList()
+                    val binCount = allBins.size
+                    val execCount = allBins.count { it.canExecute() }
+                    val linkerPath = termuxProvider.getLinkerPath()
+                    val bashTest = termuxProvider.execBash("echo BASH_WORKS")
+                    val bashWorks = bashTest.exitCode == 0 && bashTest.stdout.contains("BASH_WORKS")
+
+                    // APT IS MEASURED BY WHAT IT DOES, not by whether the binary
+                    // exists. Issue 4 reported this as a defect in its own right:
+                    // the old check ran one command and accepted either exit 0 or
+                    // the word "Reading" in the output, so a package manager that
+                    // dies with exit 100 on every operation was reported as
+                    // working. Two separate facts are now reported. aptPresent
+                    // means the binary loads and answers --version. aptWorking
+                    // means apt update reached its repositories and exited 0.
+                    val aptPresent = termuxProvider.aptRuns()
+                    val aptTest = if (aptPresent) termuxProvider.execAptUpdate() else null
+                    val aptWorking = aptTest != null && aptTest.exitCode == 0
+                    val aptDetail = aptTest?.let { (it.stderr.ifBlank { it.stdout }).take(500) }
+                        ?: "apt-get not present in the prefix"
+
+                    val diagnostics = mutableListOf<String>()
+                    if (binCount == 0) diagnostics.add("No binaries")
+                    if (!bashWorks) diagnostics.add("bash failed: ${bashTest.stderr.take(200)}")
+                    if (!aptPresent) diagnostics.add("apt-get is missing or will not load: $aptDetail")
+                    else if (!aptWorking) diagnostics.add("apt update failed: $aptDetail")
+
+                    val r = TermuxDiagnoseResult(
+                        environmentReady = true,
+                        binCount = binCount,
+                        executableCount = execCount,
+                        aptWorking = aptWorking,
+                        aptError = if (aptWorking) null else aptDetail,
+                        linkerPath = linkerPath,
+                        bashWorks = bashWorks,
+                        bashError = if (bashWorks) null else bashTest.stderr.take(200),
+                        diagnostics = diagnostics,
+                    )
+                    ToolExecutionResult.success(r, json.encodeToString(TermuxDiagnoseResult.serializer(), r))
+                }
+            }
             else -> ToolExecutionResult.error("Unknown tool: $toolName")
         }
     }
