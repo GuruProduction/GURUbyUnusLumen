@@ -66,6 +66,34 @@ class TermuxProvider(private val context: Context) {
 
         /** The prefix every shipped script and dpkg row was built against. */
         private const val UPSTREAM_FILES_ROOT = "/data/data/com.termux/files"
+
+        /**
+         * Done-marker for the prefix-wide RPATH sweep, and its version.
+         *
+         * The sweep runs one patchelf per ELF across the whole of usr/bin and
+         * usr/libexec, which is several hundred processes. Without a marker it
+         * would repeat on every cold start where the post-install latch had been
+         * cleared. The marker records what the pass achieved, and bumping the
+         * version re-runs it on a tree swept by an older build.
+         */
+        private const val RPATH_SWEEP_MARKER = ".rpath-swept"
+        private const val RPATH_SWEEP_VERSION = 1
+
+        /*
+         * Exact modes, as issue 175 requires. Kotlin has no octal literal, so
+         * each is written in binary grouped three bits to one octal digit —
+         * 111 101 101 is 7 5 5.
+         *
+         * Binaries are 0755 because the dynamic linker must READ an ELF's
+         * header and program headers before mapping it; the 0711 the old
+         * set* convenience calls produced gave execute without read, which is
+         * why every binary in the prefix failed with "Permission denied".
+         * Libraries are 0644 because a .so is mapped, never executed.
+         */
+        private const val MODE_BINARY = 0b111_101_101          // 0755 rwxr-xr-x
+        private const val MODE_LIBRARY = 0b110_100_100         // 0644 rw-r--r--
+        private const val MODE_READABLE_FILE = 0b110_100_100   // 0644 rw-r--r--
+        private const val MODE_DIRECTORY = 0b111_101_101       // 0755 rwxr-xr-x
     }
 
     private val termuxRoot: File
@@ -148,20 +176,6 @@ class TermuxProvider(private val context: Context) {
             File(usrDir, "var").mkdirs()
             File(etcDir, "apt").mkdirs()
 
-            // Fix permissions on all binaries and libraries
-            binDir.walkTopDown().forEach { file ->
-                if (file.isFile) {
-                    if (!file.canExecute()) file.setExecutable(true, false)
-                    if (!file.canRead()) file.setReadable(true, false)
-                }
-            }
-            libDir.walkTopDown().forEach { file ->
-                if (file.isFile) {
-                    if (!file.canExecute()) file.setExecutable(true, false)
-                    if (!file.canRead()) file.setReadable(true, false)
-                }
-            }
-
             // Copy bundled libs and tools (libexpat, libpng, zlib, patchelf, libc++_shared).
             // Every post-extract step is idempotent and NO step latches success unless its
             // outcome is real: copyBundledLibs skips existing non-empty files; library
@@ -215,6 +229,19 @@ class TermuxProvider(private val context: Context) {
             // Remove any old wrapper scripts that were created by previous versions
             // They don't work because Android SELinux blocks shebangs from app-private storage
             removeOldAptWrappers()
+
+            /*
+             * Exact modes across the whole prefix, LAST.
+             *
+             * It has to be last because every step above writes files — the
+             * bundled libs, the library symlink targets, the git runtime, the
+             * apt config, the restored wrappers — and a pass that runs before
+             * them leaves the newest files at whatever mode the copy produced.
+             * Issue 175 measured exactly that: 0711 on all 400 binaries, which
+             * gives execute without read, and the loader cannot map what it
+             * cannot read.
+             */
+            applyPrefixPermissions()
 
             available = binDir.exists() && binDir.listFiles()?.isNotEmpty() == true
             initialized = true
@@ -584,8 +611,190 @@ class TermuxProvider(private val context: Context) {
         return execWithEnv(listOf(linker, bash.absolutePath, "-c", script))
     }
 
+    /**
+     * Whether a binary of this name EXISTS in the search path.
+     *
+     * Existence only. Issue 175 named the cost precisely: termuxStatus reported
+     * `bash: true` while bash could not run at all, because this question was
+     * being answered where "does it work" was being asked. Use [probeCommand]
+     * for that; this stays for callers that genuinely mean "is the file there"
+     * and for the install tests that assert a package delivered a name.
+     */
     fun hasCommand(name: String): Boolean {
         return resolveBinary(name) != null
+    }
+
+    // --- Command execution probe ---
+
+    /**
+     * The three distinct things a caller can mean by "is this command here",
+     * mirroring [AptProbe] so one vocabulary covers the whole prefix.
+     */
+    enum class CommandProbe {
+        /** No binary of that name in the search path at all. */
+        ABSENT,
+        /** The file exists but will not run, with its real output attached. */
+        WILL_NOT_LOAD,
+        /** The binary started and produced output, so it is installed and loadable. */
+        RUNS,
+    }
+
+    data class CommandProbeResult(
+        val state: CommandProbe,
+        /** Raw stdout+stderr, always populated, so a caller never has to invent a reason. */
+        val output: String,
+        val exitCode: Int,
+        /** The path that was probed, or null when nothing was found. */
+        val path: String? = null,
+    )
+
+    /**
+     * Probe a command by RUNNING it.
+     *
+     * THE DEFECT THIS FIXES, from issue 175. `termuxStatus` built its
+     * `availableTools` map from [hasCommand], which is `File.exists() &&
+     * canRead()`. That is existence, not execution, so it reported `bash: true`
+     * for a prefix in which every binary failed to load. A status field that
+     * reports a binary as available without running it is not a status field.
+     *
+     * Modelled on [probeApt], deliberately: it distinguishes ABSENT from
+     * WILL_NOT_LOAD from RUNS, and it always attaches the real output so the
+     * reason is observed rather than guessed. --version is the argument because
+     * nearly every Unix tool answers it.
+     *
+     * A NON-ZERO EXIT IS NOT BY ITSELF "WILL NOT LOAD". Some tools reject
+     * --version and exit non-zero while running perfectly — `ssh` is the common
+     * one — and calling those broken would be issue 175's error pointed the
+     * other way. So a run counts as RUNS when it produced output and nothing in
+     * that output is one of the load failures the issues actually measured:
+     * "CANNOT LINK EXECUTABLE" and "needed by main executable" from the linker,
+     * "Permission denied" and "Exec format error" from the kernel refusing the
+     * exec. A run with no output at all is WILL_NOT_LOAD, because nothing proves
+     * the binary started.
+     */
+    fun probeCommand(name: String): CommandProbeResult {
+        val resolved = resolveBinary(name)
+            ?: return CommandProbeResult(
+                CommandProbe.ABSENT,
+                "$name is not present in ${searchPath.joinToString(":") { it.absolutePath }}",
+                -1,
+                null,
+            )
+        val processArgs = if (resolved.startsWith("/system/")) {
+            listOf(resolved, "--version")
+        } else {
+            listOf(linker, resolved, "--version")
+        }
+        val result = execWithEnv(processArgs)
+        val combined = (result.stdout + "\n" + result.stderr).trim()
+
+        // The exact shapes the issues measured when a binary could not be
+        // loaded: the linker naming a missing NEEDED library, and the kernel
+        // refusing the exec of a file the loader could not read.
+        val loadFailureMarkers = listOf(
+            "CANNOT LINK EXECUTABLE",
+            "not found: needed by main executable",
+            "Permission denied",
+            "Exec format error",
+            "No such file or directory",
+        )
+        val refusedToLoad = result.exitCode < 0 ||
+            loadFailureMarkers.any { combined.contains(it, ignoreCase = true) }
+
+        return when {
+            refusedToLoad -> CommandProbeResult(CommandProbe.WILL_NOT_LOAD, combined, result.exitCode, resolved)
+            combined.isNotEmpty() -> CommandProbeResult(CommandProbe.RUNS, combined, result.exitCode, resolved)
+            else -> CommandProbeResult(
+                CommandProbe.WILL_NOT_LOAD,
+                "$name produced no output and exited ${result.exitCode}",
+                result.exitCode,
+                resolved,
+            )
+        }
+    }
+
+    /**
+     * Apply the exact file modes the prefix needs, across the WHOLE tree.
+     *
+     * THE DEFECT THIS FIXES, from issue 175. The old pass walked bin/ and lib/
+     * only and used [File.setExecutable] / [File.setReadable] with the
+     * ownerOnly flag, which can only ADD the owner bit to the mode the zip
+     * extraction left behind. What that produces on device is 0711 —
+     * `-rwx--x--x` — which gives execute without read. The dynamic linker must
+     * READ an ELF's header and program headers before mapping it, so every
+     * binary in the prefix failed with "Permission denied" before it started,
+     * and the issue measured exactly that on all 400 of them.
+     *
+     * [android.system.Os.chmod] sets the mode rather than OR-ing bits into it,
+     * which is the only way to guarantee 0755 from a 0711 start. Directories
+     * need the execute bit to be traversable at all, libraries need no execute
+     * bit, and everything else gets a readable mode. The whole prefix is covered,
+     * not just bin/ and lib/, because libexec/, share/ and the helper scripts
+     * under them are executed too.
+     */
+    private fun applyPrefixPermissions() {
+        var binaries = 0
+        var libraries = 0
+        var directories = 0
+        var others = 0
+        var failed = 0
+
+        // The directories must be traversable before anything inside them can
+        // be reached, so they are fixed first and walked separately.
+        usrPrefix.walkTopDown().forEach { entry ->
+            if (!entry.isDirectory) return@forEach
+            if (setMode(entry, MODE_DIRECTORY)) directories++ else failed++
+        }
+
+        usrPrefix.walkTopDown().forEach { entry ->
+            if (entry.isDirectory) return@forEach
+            if (!entry.isFile) return@forEach
+            // Skip symlinks: chmod on a link follows the target, and the link
+            // itself carries no mode of its own worth setting.
+            if (java.nio.file.Files.isSymbolicLink(entry.toPath())) return@forEach
+            val name = entry.name
+            val mode = when {
+                name.endsWith(".so") || name.contains(".so.") -> MODE_LIBRARY
+                entry.parentFile?.name == "bin" || entry.parentFile?.name == "sbin" -> MODE_BINARY
+                looksExecutable(name) -> MODE_BINARY
+                else -> MODE_READABLE_FILE
+            }
+            val ok = setMode(entry, mode)
+            when {
+                !ok -> failed++
+                // Compared by what was DECIDED, not by the mode value: 0644 for a
+                // library and 0644 for a data file are the same number, so a
+                // `when (mode)` would count every library as "other".
+                mode == MODE_BINARY -> binaries++
+                name.endsWith(".so") || name.contains(".so.") -> libraries++
+                else -> others++
+            }
+        }
+
+        Log.d(
+            TAG,
+            "TermuxProvider: prefix modes set — $directories dirs, $binaries binaries (0755), " +
+                "$libraries libraries (0644), $others files (0644), $failed refused",
+        )
+    }
+
+    /**
+     * A file with no extension in a package dir, or a `.sh`, is a program the
+     * payload expects to execute. Everything else is data and gets 0644.
+     */
+    private fun looksExecutable(name: String): Boolean {
+        if (name.endsWith(".sh")) return true
+        if (name.contains('.')) return false
+        return name.isNotEmpty()
+    }
+
+    /** chmod through android.system.Os, matching the Os.symlink style used here. */
+    private fun setMode(file: File, mode: Int): Boolean = try {
+        android.system.Os.chmod(file.absolutePath, mode)
+        true
+    } catch (e: Exception) {
+        Log.w(TAG, "TermuxProvider: chmod ${file.absolutePath} failed: ${e.message}")
+        false
     }
 
     // --- Private execution helpers ---
@@ -608,6 +817,11 @@ class TermuxProvider(private val context: Context) {
      * `extraEnv` overrides are applied last so a caller can adjust one variable
      * for one call without rebuilding the environment. The probe path uses this
      * for APT_CONFIG before the file exists, and nothing else should need it.
+     *
+     * Issue 44: a program that refuses on stdout and exits 0 must not be
+     * reported as a success. Termux binaries run at this app's UID, so a
+     * permission-class denial here is the permanent APP_UID wall the tier
+     * describes; the exit code and both streams are preserved as observed.
      */
     private fun execWithEnv(
         cmd: List<String>,
@@ -621,22 +835,54 @@ class TermuxProvider(private val context: Context) {
             pb.redirectErrorStream(false)
 
             val proc = pb.start()
-            val stdout = BufferedReader(InputStreamReader(proc.inputStream)).use { it.readText() }
-            val stderr = BufferedReader(InputStreamReader(proc.errorStream)).use { it.readText() }
+            /*
+             * Drain BOTH streams CONCURRENTLY, before waitFor().
+             *
+             * Reading stdout to EOF first blocks forever if the child fills the
+             * stderr pipe buffer, and a tool printing a screenful to stderr
+             * reaches that easily. Each stream gets its own thread so both keep
+             * draining while the child runs, and the exit code is only read once
+             * neither can still be writing.
+             */
+            val stdoutText = StringBuilder()
+            val stderrText = StringBuilder()
+            val drainStdout = Thread {
+                runCatching {
+                    BufferedReader(InputStreamReader(proc.inputStream)).use { stdoutText.append(it.readText()) }
+                }
+            }
+            val drainStderr = Thread {
+                runCatching {
+                    BufferedReader(InputStreamReader(proc.errorStream)).use { stderrText.append(it.readText()) }
+                }
+            }
+            drainStdout.start()
+            drainStderr.start()
             val exitCode = proc.waitFor()
+            drainStdout.join()
+            drainStderr.join()
 
-            ShellResult(
-                exitCode = exitCode,
-                stdout = stdout.trim(),
-                stderr = stderr.trim(),
-                success = exitCode == 0
+            // The concurrent drain above produces stdoutText/stderrText, so those are
+            // the streams this result carries. The denial check then runs on them: a
+            // Termux binary runs at this app's UID, so a permission-class refusal
+            // printed on stdout with exit 0 is a failure, not a success.
+            ShellDenialSignatures.apply(
+                ShellResult(
+                    exitCode = exitCode,
+                    stdout = stdoutText.toString().trim(),
+                    stderr = stderrText.toString().trim(),
+                    success = exitCode == 0,
+                    tier = ShellTier.APP_UID,
+                ),
+                ShellTier.APP_UID,
             )
         } catch (e: Exception) {
             ShellResult(
                 exitCode = -1,
                 stdout = "",
                 stderr = "Failed to execute: ${e.message}",
-                success = false
+                success = false,
+                tier = ShellTier.APP_UID,
             )
         }
     }
@@ -802,72 +1048,183 @@ class TermuxProvider(private val context: Context) {
     }
 
     /**
-     * Patch RPATH on all native RE tool binaries so the linker finds our
-     * libraries without needing LD_LIBRARY_PATH or --library-path flags.
-     * Uses the bundled patchelf binary extracted into termux/bin/.
+     * Repoint every ELF in this prefix at this prefix's library directory.
+     *
+     * WHAT WAS WRONG (issue 193). The shipped Termux binaries carry a
+     * DT_RUNPATH of `/data/data/com.termux/files/usr/lib`, the upstream Termux
+     * path, which does not exist inside this app's sandbox. When the linker runs
+     * one it searches that dead path and fails with
+     *
+     *   CANNOT LINK EXECUTABLE "usr/bin/grep": library
+     *   "libandroid-support.so" not found: needed by main executable
+     *
+     * even though the library is sitting in this prefix's lib/. Only six
+     * binaries were ever repointed — the three RE tools, bash, git and
+     * git-remote-http — so roughly four hundred others still pointed at a path
+     * that cannot exist.
+     *
+     * THE ANSWER HERE IS THE CHEAP ONE, DELIBERATELY. No new shim and no new
+     * dependency: the same patchelf-through-linker64 invocation the RE tools and
+     * the git runtime already use, applied to the whole of usr/bin and
+     * usr/libexec. buildEnv's LD_PRELOAD path shim covers compiled-in CONSTANT
+     * paths at the libc boundary, and LD_LIBRARY_PATH plus the linker's own
+     * search already covers the unpatched case at this prefix when a process is
+     * launched from it; this pass is what makes a binary launched any other way,
+     * including from a raw shell, resolve its NEEDED libraries.
+     *
+     * Honest about what it skipped: every non-ELF, every ELF it could not patch
+     * and why, and the total. A pass that silently skipped half the tree would
+     * be the same kind of claim this whole issue is about.
+     *
+     * Marker-gated, because it is several hundred processes and nothing about
+     * the answer changes until the prefix does.
      */
     private fun patchElfBinaries() {
+        val marker = File(usrPrefix, RPATH_SWEEP_MARKER)
+        val recorded = runCatching { marker.readText() }.getOrNull()
+        if (recorded != null && recorded.contains("version=$RPATH_SWEEP_VERSION")) {
+            Log.d(TAG, "TermuxProvider: RPATH sweep v$RPATH_SWEEP_VERSION already done; skipping")
+            return
+        }
+
         val patchelfBin = File(binDir, "patchelf")
         if (!patchelfBin.exists() || !patchelfBin.canExecute()) {
             Log.w(TAG, "TermuxProvider: patchelf not available, skipping ELF RPATH patching")
             return
         }
 
-        val rpath = "${libDir.absolutePath}:${reToolsDir.absolutePath}/lib"
-        val nativeBins = listOf(
-            File(reToolsDir, "aapt"),
-            File(reToolsDir, "aapt2"),
-            File(reToolsDir, "zipalign")
-        )
+        // RE tools live outside the prefix, so they are covered here as well as
+        // the prefix tree; the git runtime's helper is reached through libexec.
+        val rpathForPrefixBinaries = libDir.absolutePath
+        val rpathForReTools = "${libDir.absolutePath}:${reToolsDir.absolutePath}/lib"
 
         var patched = 0
-        for (bin in nativeBins) {
+        var notElf = 0
+        var skipped = 0
+        val failures = mutableListOf<String>()
+
+        // The RE tools first: they are the ones most callers reach for.
+        for (bin in listOf(File(reToolsDir, "aapt"), File(reToolsDir, "aapt2"), File(reToolsDir, "zipalign"))) {
             if (!bin.exists() || !bin.canRead()) continue
-
-            try {
-                val pb = ProcessBuilder(
-                    linker, patchelfBin.absolutePath,
-                    "--set-rpath", rpath,
-                    bin.absolutePath
-                )
-                pb.environment().apply {
-                    put("LD_LIBRARY_PATH", libDir.absolutePath)
+            when (val outcome = runPatchelf(patchelfBin, rpathForReTools, bin)) {
+                PatchelfOutcome.PATCHED -> patched++
+                PatchelfOutcome.NOT_ELF -> notElf++
+                is PatchelfOutcome.REFUSED -> {
+                    skipped++
+                    failures.add("${bin.absolutePath}: ${outcome.detail}")
                 }
-                val proc = pb.start()
-                val stderr = BufferedReader(InputStreamReader(proc.errorStream)).use { it.readText() }
-                val exitCode = proc.waitFor()
-
-                if (exitCode == 0) {
-                    patched++
-                    Log.d(TAG, "TermuxProvider: patchelf --set-rpath $rpath ${bin.name}")
-                } else {
-                    Log.w(TAG, "TermuxProvider: patchelf failed on ${bin.name}: $stderr")
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "TermuxProvider: patchelf error on ${bin.name}: ${e.message}")
             }
         }
 
-        // Also patch termux bash so it finds its own libs
-        val bash = File(binDir, "bash")
-        if (bash.exists() && bash.canRead()) {
-            try {
-                val pb = ProcessBuilder(
-                    linker, patchelfBin.absolutePath,
-                    "--set-rpath", libDir.absolutePath,
-                    bash.absolutePath
-                )
-                pb.environment().apply {
-                    put("LD_LIBRARY_PATH", libDir.absolutePath)
+        // Every ELF the prefix actually executes: usr/bin and usr/libexec. A
+        // data file cannot be patched and is counted, not complained about.
+        for (tree in listOf(binDir, File(usrPrefix, "libexec"), File(usrPrefix, "sbin"))) {
+            if (!tree.isDirectory) continue
+            tree.walkTopDown().forEach { entry ->
+                if (!entry.isFile) return@forEach
+                if (java.nio.file.Files.isSymbolicLink(entry.toPath())) return@forEach
+                // patchelf is a tool we run, not a target; patching it while it is
+                // about to be exec'd is a needless risk.
+                if (entry == patchelfBin) return@forEach
+                if (!entry.canRead()) {
+                    skipped++
+                    failures.add("${entry.absolutePath}: not readable")
+                    return@forEach
                 }
-                val proc = pb.start()
-                val exitCode = proc.waitFor()
-                if (exitCode == 0) patched++
-            } catch (_: Exception) {}
+                when (val outcome = runPatchelf(patchelfBin, rpathForPrefixBinaries, entry)) {
+                    PatchelfOutcome.PATCHED -> patched++
+                    PatchelfOutcome.NOT_ELF -> notElf++
+                    is PatchelfOutcome.REFUSED -> {
+                        skipped++
+                        failures.add("${entry.absolutePath}: ${outcome.detail}")
+                    }
+                }
+            }
         }
 
-        if (patched > 0) {
-            Log.d(TAG, "TermuxProvider: patched RPATH on $patched ELF binaries")
+        // First few failures only: a broken patchelf fails on hundreds of files
+        // and one hundred identical log lines hides the pattern instead of
+        // showing it.
+        failures.take(5).forEach { Log.w(TAG, "TermuxProvider: RPATH sweep skipped $it") }
+        if (failures.size > 5) {
+            Log.w(TAG, "TermuxProvider: RPATH sweep skipped ${failures.size - 5} more of the same shape")
+        }
+
+        // The marker is written only when the sweep genuinely ran to completion
+        // over the tree, and records what it achieved so a later pass can tell a
+        // complete sweep from an interrupted one.
+        if (patched > 0 || (notElf > 0 && skipped == 0)) {
+            marker.writeText(
+                "version=$RPATH_SWEEP_VERSION;patched=$patched;not_elf=$notElf;skipped=$skipped;rpath=$rpathForPrefixBinaries\n"
+            )
+        }
+        Log.d(
+            TAG,
+            "TermuxProvider: RPATH sweep v$RPATH_SWEEP_VERSION -> $rpathForPrefixBinaries — " +
+                "$patched patched, $notElf not ELF, $skipped skipped",
+        )
+    }
+
+    /**
+     * What happened to one candidate file during the RPATH sweep.
+     *
+     * A sealed class rather than an enum because the refusal case has to carry
+     * the text patchelf actually printed; collapsing that into a fixed string is
+     * the same "my probe failed, so I will guess the reason" defect these issues
+     * are about.
+     */
+    private sealed class PatchelfOutcome {
+        object PATCHED : PatchelfOutcome()
+        object NOT_ELF : PatchelfOutcome()
+        data class REFUSED(val detail: String) : PatchelfOutcome()
+    }
+
+    /**
+     * Run patchelf --set-rpath on one file through the system linker, exactly as
+     * the original RE-tool and git passes did.
+     *
+     * The ELF magic is checked first so a data file under usr/bin costs a
+     * four-byte read instead of a process spawn. patchelf itself refuses a
+     * non-ELF, but paying a fork for each of several hundred non-binaries is
+     * the difference between a pass that completes and one that does not.
+     */
+    private fun runPatchelf(patchelfBin: File, rpath: String, target: File): PatchelfOutcome {
+        val isElf = runCatching {
+            target.inputStream().use { input ->
+                val magic = ByteArray(4)
+                input.read(magic) == 4 && magic[0] == 0x7F.toByte() &&
+                    magic[1] == 'E'.code.toByte() &&
+                    magic[2] == 'L'.code.toByte() &&
+                    magic[3] == 'F'.code.toByte()
+            }
+        }.getOrDefault(false)
+        if (!isElf) return PatchelfOutcome.NOT_ELF
+
+        return try {
+            val pb = ProcessBuilder(
+                linker, patchelfBin.absolutePath,
+                "--set-rpath", rpath,
+                target.absolutePath,
+            )
+            pb.environment().apply {
+                put("LD_LIBRARY_PATH", libDir.absolutePath)
+            }
+            // One pipe, so a chatty patchelf cannot fill stderr while stdout is
+            // being drained — the classic waitFor() deadlock. Its failure text is
+            // what matters and the stream it chose does not.
+            pb.redirectErrorStream(true)
+            val proc = pb.start()
+            val output = BufferedReader(InputStreamReader(proc.inputStream)).use { it.readText() }
+            val exitCode = proc.waitFor()
+            if (exitCode == 0) {
+                PatchelfOutcome.PATCHED
+            } else {
+                PatchelfOutcome.REFUSED(
+                    "patchelf exited $exitCode: ${output.trim().take(200)}",
+                )
+            }
+        } catch (e: Exception) {
+            PatchelfOutcome.REFUSED("patchelf error: ${e.message}")
         }
     }
 

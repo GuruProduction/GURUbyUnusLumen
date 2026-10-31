@@ -389,7 +389,13 @@ class AdbClient(
             val err = stderrBuilder.toString().trim()
             Log.d(TAG, "AdbClient: command '$command' out=${output.length} err=${err.length} exit=$exitCode")
 
-            ShellResult(exitCode, output, err, exitCode == 0)
+            // Issue 44: a refusal printed on stdout with exit 0 (dumpsys, pm dump)
+            // is a failure, and ADB is the tier this ran at, so the explanation
+            // names UID 2000 rather than claiming the wall is permanent.
+            ShellDenialSignatures.apply(
+                ShellResult(exitCode, output, err, exitCode == 0, ShellTier.ADB),
+                ShellTier.ADB,
+            )
         } catch (e: java.net.ConnectException) {
             _isConnected = false
             Log.w(TAG, "AdbClient: connection refused", e)
@@ -668,6 +674,15 @@ class AdbClient(
 enum class ShellTier {
     /** Root daemon, UID 0. Everything works. */
     ROOT,
+    /**
+     * Shizuku's shell UID, 2000.
+     *
+     * The same UID as ADB and reached without a network socket or a pairing code,
+     * which is why it is tried before ADB: when both are available Shizuku is the
+     * cheaper and more stable of the two, because it does not depend on wireless
+     * debugging staying enabled.
+     */
+    SHIZUKU,
     /** ADB over wireless debugging, shell UID 2000. Most things work. */
     ADB,
     /** ProcessBuilder at app UID. Cannot read /proc/net/arp, dumpsys or settings. */
@@ -684,6 +699,7 @@ enum class ShellTier {
      */
     fun capabilities(): String = when (this) {
         ROOT -> "root: unrestricted shell access"
+        SHIZUKU -> "Shizuku shell (UID 2000, no pairing needed): most system reads and writes, no root"
         ADB -> "ADB shell (UID 2000): most system reads and writes, no root"
         APP_UID -> "app UID only: no /proc/net, no dumpsys, no settings, no other app data. " +
             "Permission denials here are permanent and must not be retried."
@@ -703,4 +719,30 @@ data class ShellResult(
      * remove.
      */
     val tier: ShellTier = ShellTier.APP_UID,
+    /**
+     * Why this result is a permission denial, in one actionable sentence, or
+     * null when no denial signature was found.
+     *
+     * Issue 44: `dumpsys` and `pm dump` print "Permission Denial: …" to STDOUT
+     * and exit 0, so a total refusal reported `success = true`, nothing on
+     * stderr and no error at all. [ShellDenialSignatures] detects that and the
+     * executors set this field, so `success = false` always arrives with the
+     * reason attached instead of a silent flip.
+     *
+     * stdout, stderr and exitCode are never altered by that detection. Some
+     * tools legitimately search another program's output for the words
+     * "Permission denied", and losing the observed text would trade one kind of
+     * uselessness for another.
+     */
+    val denial: String? = null,
+    /**
+     * A refusal quoted inside the output rather than aimed at this command, in
+     * one sentence, or null when there is none.
+     *
+     * A successful `logcat -d` contains other processes' "Permission denied"
+     * lines by design, and calling that run failed would be issue 44's
+     * dishonesty reversed. So it lands here and `success` is left alone;
+     * [denial] is only ever set when this command itself was refused.
+     */
+    val advisory: String? = null,
 )

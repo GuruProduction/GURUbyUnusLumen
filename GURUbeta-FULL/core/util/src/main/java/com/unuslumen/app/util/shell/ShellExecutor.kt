@@ -23,10 +23,13 @@ import java.io.InputStreamReader
  *
  * Execution strategy:
  * 1. ROOT FIRST — native rootshell daemon (UID 0) via Unix socket
- * 2. ADB (Wireless Debugging) — shell UID (2000)
- * 3. Runtime.exec() fallback — app UID (limited)
+ * 2. Shizuku — shell UID (2000) over its binder, no pairing code needed
+ * 3. ADB (Wireless Debugging) — shell UID (2000), needs pairing
+ * 4. Runtime.exec() fallback — app UID (limited)
  *
- * This gives Guru full OS-level device control.
+ * Shizuku sits above ADB because the two are equally powerful and Shizuku is the
+ * one that does not break when wireless debugging is switched off. Neither is
+ * required: a device with neither still works at app UID and says so in the tier.
  */
 class ShellExecutor(private val context: Context) {
 
@@ -39,6 +42,15 @@ class ShellExecutor(private val context: Context) {
 
     private val rootShell = RootShell(context)
     private val adbClient = AdbClient(port = WIRELESS_DEBUGGING_PORT, context = context)
+
+    /**
+     * The Shizuku channel.
+     *
+     * Held as a property rather than built per call, because the bridge caches a
+     * bound UserService and a fresh bridge would re-bind on every command. Public
+     * so a caller can read its three-state detection without going through execute.
+     */
+    val shizuku = com.unuslumen.app.util.shell.shizuku.ShizukuBridge(context)
     val busybox = BusyboxProvider(context)
     val python = PythonProvider(context)
     val reTools = ReToolingProvider(context)
@@ -78,7 +90,24 @@ class ShellExecutor(private val context: Context) {
             Log.w(TAG, "ShellExecutor: root command failed, trying ADB")
         }
 
-        // ADB second
+        // SHIZUKU SECOND, and before ADB.
+        //
+        // Both are shell UID 2000, so neither is more powerful than the other. The
+        // order is about stability: Shizuku does not depend on wireless debugging
+        // staying enabled or on a pairing key staying valid, so when both are up it
+        // is the one less likely to fail between two calls. When Shizuku is absent
+        // this costs one cheap binder ping and changes nothing.
+        //
+        // A Shizuku failure falls through to ADB rather than returning, because a
+        // command that fails at one tier may succeed at another: a Shizuku bind can
+        // be stale while ADB is healthy, and vice versa.
+        if (shizuku.state().usable) {
+            val result = shizuku.execute(command)
+            if (result.success) return@withContext result.copy(tier = ShellTier.SHIZUKU)
+            Log.w(TAG, "ShellExecutor: Shizuku command failed, trying ADB")
+        }
+
+        // ADB third
         if (!adbChecked) {
             adbAvailable = adbClient.isAdbAvailable()
             adbChecked = true
@@ -111,12 +140,22 @@ class ShellExecutor(private val context: Context) {
             rootChecked = true
         }
         if (rootAvailable) return ShellTier.ROOT
+        if (shizuku.state().usable) return ShellTier.SHIZUKU
         if (!adbChecked) {
             adbAvailable = adbClient.isAdbAvailable()
             adbChecked = true
         }
         return if (adbAvailable) ShellTier.ADB else ShellTier.APP_UID
     }
+
+    /**
+     * The Shizuku channel's three-state reading, for a tool that wants to report
+     * what would unlock shell-level access rather than only that it is missing.
+     *
+     * Kept as a method on the executor so callers find it beside the ladder it
+     * belongs to instead of importing the bridge themselves and guessing at it.
+     */
+    fun shizukuState(): com.unuslumen.app.util.shell.shizuku.ShizukuState = shizuku.state()
 
     /**
      * Pair with the ADB daemon using a pairing code.
@@ -413,6 +452,11 @@ class ShellExecutor(private val context: Context) {
     /**
      * Execute a command via Runtime.exec() -- limited to app's own UID.
      * Drains stdout and stderr concurrently to avoid waitFor() deadlock.
+     *
+     * Issue 44: anything that refuses on stdout and exits 0 (`dumpsys`, `pm
+     * dump`) is marked failed here, at the boundary every tool passes through,
+     * rather than in each tool. The exit code and both streams survive so a
+     * caller can still read what actually happened.
      */
     private suspend fun executeViaRuntime(command: String): ShellResult = coroutineScope {
         try {
@@ -433,18 +477,23 @@ class ShellExecutor(private val context: Context) {
             val stdout = stdoutDeferred.await().trim()
             val stderr = stderrDeferred.await().trim()
 
-            ShellResult(
-                exitCode = exitCode,
-                stdout = stdout,
-                stderr = stderr,
-                success = exitCode == 0
+            ShellDenialSignatures.apply(
+                ShellResult(
+                    exitCode = exitCode,
+                    stdout = stdout,
+                    stderr = stderr,
+                    success = exitCode == 0,
+                    tier = ShellTier.APP_UID,
+                ),
+                ShellTier.APP_UID,
             )
         } catch (e: Exception) {
             ShellResult(
                 exitCode = -1,
                 stdout = "",
                 stderr = "Failed to execute: ${e.message}",
-                success = false
+                success = false,
+                tier = ShellTier.APP_UID,
             )
         }
     }

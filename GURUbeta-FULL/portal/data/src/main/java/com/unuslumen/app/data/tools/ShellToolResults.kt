@@ -13,6 +13,12 @@ import kotlinx.serialization.Serializable
  * nothing reported it, so a caller read a permanent permission denial as a
  * transient failure and retried. Naming the tier on the result is what makes the
  * description's promise checkable against the run.
+ *
+ * `denial` is why the call was refused, in one actionable sentence, and is null
+ * when no denial signature was found. Issue 44: `dumpsys` and `pm dump` print
+ * "Permission Denial: …" to stdout and exit 0, so a total refusal used to arrive
+ * as success=true with empty stderr. The executor now detects that and fills
+ * this field, while exitCode and stdout stay exactly as observed.
  */
 @Serializable data class ShellCommandResult(
     val exitCode: Int,
@@ -21,6 +27,15 @@ import kotlinx.serialization.Serializable
     val success: Boolean,
     val tier: String = "APP_UID",
     val tierCapabilities: String? = null,
+    val denial: String? = null,
+    /*
+     * A refusal quoted inside the output rather than aimed at this command.
+     *
+     * A successful `logcat -d` carries other processes' "Permission denied"
+     * lines by design, and calling that run failed would be the same dishonesty
+     * as issue 44 reversed. So it lands here and `success` is untouched.
+     */
+    val advisory: String? = null,
 ) : ToolResultData
 @Serializable data class ReadFileResult(val content: String, val exists: Boolean, val sizeBytes: Long, val error: String?) : ToolResultData
 @Serializable data class WriteFileResult(val success: Boolean, val path: String, val bytesWritten: Long, val error: String?) : ToolResultData

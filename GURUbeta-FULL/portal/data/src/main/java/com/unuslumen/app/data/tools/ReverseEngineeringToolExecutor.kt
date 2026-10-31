@@ -4,8 +4,12 @@
 package com.unuslumen.app.data.tools
 
 import android.content.Context
+import android.content.pm.PackageInfo
+import android.content.pm.PackageManager
+import android.os.Build
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
+import com.unuslumen.app.util.shell.ShellDenialSignatures
 import com.unuslumen.app.util.shell.ShellExecutor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -19,6 +23,10 @@ class ReverseEngineeringToolExecutor(private val context: Context) : ToolExecuto
 
     private data class ParsedAapt(val packageName: String, val versionName: String, val versionCode: Int, val permissions: List<String>, val activities: List<String>, val services: List<String>, val receivers: List<String>, val providers: List<String>)
     private data class PmPackageInfo(val versionName: String, val versionCode: Int, val permissions: List<String>, val activities: List<String>, val services: List<String>, val receivers: List<String>, val providers: List<String>)
+
+    /** The empty answer, used when a package genuinely cannot be resolved. */
+    private fun emptyPmPackageInfo() =
+        PmPackageInfo("", 0, emptyList(), emptyList(), emptyList(), emptyList(), emptyList())
 
     override suspend fun execute(toolName: String, args: Map<String, Any?>): ToolExecutionResult {
         return when (toolName) {
@@ -47,11 +55,163 @@ class ReverseEngineeringToolExecutor(private val context: Context) : ToolExecuto
         val r = InstalledPackagesResult(packages); ToolExecutionResult.success(r, json.encodeToString(InstalledPackagesResult.serializer(), r))
     }
 
+    /**
+     * Inspect an installed package: version, permissions, activities, services,
+     * receivers, providers.
+     *
+     * THE DEFECT THIS FIXES (issue 44). This ran `pm dump` and reported its
+     * exit code. `dumpsys` and `pm dump` print "Permission Denial: …" to STDOUT
+     * and exit 0, so on an unrooted device every line of the answer was a
+     * refusal and the tool called it `success: true`. Worse, the denial body
+     * keeps the "DUMP OF SERVICE <name>:" headers, so six refusals look like six
+     * services to anyone summarising the text. And DUMP is signature-level: a
+     * normal app can never hold it, so there was nothing to retry and nothing to
+     * change.
+     *
+     * The honest and useful answer is the in-process one the issue names:
+     * `PackageManager.getPackageInfo` with GET_PERMISSIONS, GET_ACTIVITIES,
+     * GET_SERVICES and GET_RECEIVERS needs no permission at all and returns the
+     * same information. It is tried FIRST, and `pm dump` runs only as a fallback
+     * for a package the in-process call cannot see.
+     *
+     * The result keeps the ShellCommandResult shape because callers already read
+     * it, and the new `denial` field carries one actionable sentence instead of
+     * a page of refusals.
+     */
     private suspend fun pmDump(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         val packageName = args["packageName"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'packageName'")
+
+        val inProcess = readPackageInfo(packageName)
+        if (inProcess != null) {
+            val report = renderPackageInfo(packageName, inProcess)
+            val r = ShellCommandResult(
+                exitCode = 0,
+                stdout = report,
+                stderr = "",
+                success = true,
+            )
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r))
+        }
+
+        // PackageManager could not resolve it — another app's package on a
+        // device where it is not visible, or not installed at all. The shell can
+        // still answer for some of those, but only when the tier holds DUMP.
         val result = shellExecutor.execute("pm dump $packageName 2>&1 | head -500")
-        val r = ShellCommandResult(result.exitCode, result.stdout, result.stderr, result.success); ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r))
+        if (ShellDenialSignatures.isDumpPermissionDenial(result.stdout, result.stderr)) {
+            // One sentence, not the page of denials. The tier the call ran at
+            // says whether it is a permanent wall.
+            val explanation = result.denial
+                ?: ShellDenialSignatures.explain("Permission Denial:", result.tier)
+            val r = ShellCommandResult(
+                exitCode = result.exitCode,
+                stdout = "",
+                stderr = "",
+                success = false,
+                tier = result.tier.name,
+                tierCapabilities = result.tier.capabilities(),
+                denial = explanation,
+                advisory = result.advisory,
+            )
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r))
+        }
+
+        // No DUMP refusal: report whatever the shell observed, including a plain
+        // non-zero exit or a clean answer from a tier that holds DUMP.
+        val r = ShellCommandResult(
+            exitCode = result.exitCode,
+            stdout = result.stdout,
+            stderr = result.stderr,
+            success = result.success,
+            tier = result.tier.name,
+            tierCapabilities = result.tier.capabilities(),
+            denial = result.denial,
+            advisory = result.advisory,
+        )
+        ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r))
     }
+
+    /**
+     * Read a package's information through PackageManager, in-process.
+     *
+     * Returns null when the package cannot be resolved this way, which is the
+     * only case that should fall back to a shell dump. The flags are the four
+     * the issue names; they are ignored rather than required on recent
+     * releases, and passing them costs nothing where they still matter.
+     */
+    private fun readPackageInfo(packageName: String): PmPackageInfo? {
+        val flags = PackageManager.GET_PERMISSIONS or
+            PackageManager.GET_ACTIVITIES or
+            PackageManager.GET_SERVICES or
+            PackageManager.GET_RECEIVERS
+        val info: PackageInfo = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.packageManager.getPackageInfo(
+                    packageName,
+                    PackageManager.PackageInfoFlags.of(flags.toLong()),
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getPackageInfo(packageName, flags)
+            }
+        } catch (_: PackageManager.NameNotFoundException) {
+            return null
+        } catch (_: Exception) {
+            return null
+        }
+
+        val requested = info.requestedPermissions?.toList() ?: emptyList()
+        // longVersionCode arrived in API 28 and this module supports 26, so it
+        // is read only where it exists rather than risking NoSuchMethodError.
+        val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode.toInt()
+        } else {
+            @Suppress("DEPRECATION")
+            info.versionCode
+        }
+        return PmPackageInfo(
+            versionName = info.versionName ?: "",
+            versionCode = versionCode,
+            // Declared permissions the package itself defines, plus the ones it
+            // asks for. Both are what `pm dump` printed under "requested
+            // permissions:", and the shell parser read only that list.
+            permissions = (requested + (info.permissions?.map { it.name } ?: emptyList())).distinct(),
+            activities = info.activities?.map { it.name } ?: emptyList(),
+            services = info.services?.map { it.name } ?: emptyList(),
+            receivers = info.receivers?.map { it.name } ?: emptyList(),
+            providers = info.providers?.map { it.name } ?: emptyList(),
+        )
+    }
+
+    /**
+     * Render package information in the same key-per-line shape `pm dump` used,
+     * so a caller that read that text still can.
+     */
+    private fun renderPackageInfo(packageName: String, info: PmPackageInfo): String = buildString {
+        appendLine("package: $packageName")
+        appendLine("versionName=${info.versionName}")
+        appendLine("versionCode=${info.versionCode}")
+        appendLine("source=PackageManager (in-process, no DUMP permission required)")
+        if (info.permissions.isNotEmpty()) {
+            appendLine("requested permissions:")
+            info.permissions.forEach { appendLine(it) }
+        }
+        if (info.activities.isNotEmpty()) {
+            appendLine("activities:")
+            info.activities.forEach { appendLine(it) }
+        }
+        if (info.services.isNotEmpty()) {
+            appendLine("services:")
+            info.services.forEach { appendLine(it) }
+        }
+        if (info.receivers.isNotEmpty()) {
+            appendLine("receivers:")
+            info.receivers.forEach { appendLine(it) }
+        }
+        if (info.providers.isNotEmpty()) {
+            appendLine("providers:")
+            info.providers.forEach { appendLine(it) }
+        }
+    }.trim()
 
     private suspend fun pullApk(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         val packageName = args["packageName"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'packageName'")
@@ -68,7 +228,7 @@ class ReverseEngineeringToolExecutor(private val context: Context) : ToolExecuto
     private suspend fun listApkContents(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         val apkPath = args["apkPath"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'apkPath'")
         val result = shellExecutor.execute("unzip -l \"$apkPath\" 2>&1 | head -500")
-        val r = ShellCommandResult(result.exitCode, result.stdout, result.stderr, result.success); ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r))
+        val r = ShellCommandResult(result.exitCode, result.stdout, result.stderr, result.success, denial = result.denial, advisory = result.advisory); ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r))
     }
 
     private suspend fun extractApk(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
@@ -182,8 +342,17 @@ class ReverseEngineeringToolExecutor(private val context: Context) : ToolExecuto
 
     private fun extractPackageName(strings: String): String? = Regex("""([a-z][a-z0-9_]*\.){2,}[a-zA-Z][a-zA-Z0-9_]*""").findAll(strings).map { it.value }.firstOrNull { it.count { c -> c == '.' } >= 2 && it.length > 8 }
 
+    /**
+     * Package information for `readManifest`'s strings-only fallback.
+     *
+     * Issue 44 applies here too: this was the second place that read `pm dump`
+     * and trusted its text. PackageManager is tried first because it needs no
+     * permission, and the shell path remains for a package the in-process call
+     * cannot resolve.
+     */
     private suspend fun getPmPackageInfo(packageName: String): PmPackageInfo {
-        if (packageName == "unknown" || packageName.isEmpty()) return PmPackageInfo("", 0, emptyList(), emptyList(), emptyList(), emptyList(), emptyList())
+        if (packageName == "unknown" || packageName.isEmpty()) return emptyPmPackageInfo()
+        readPackageInfo(packageName)?.let { return it }
         val result = shellExecutor.execute("pm dump $packageName 2>/dev/null | head -300"); val output = result.stdout
         var versionName = ""; var versionCode = 0; val permissions = mutableListOf<String>(); val activities = mutableListOf<String>(); val services = mutableListOf<String>(); val receivers = mutableListOf<String>(); val providers = mutableListOf<String>()
         var inPermissions = false; var inActivities = false

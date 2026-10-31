@@ -219,6 +219,23 @@ object CerebrumHost {
         }
     }
 
+    /**
+     * Whether the vault directory holds anything that could be real brain data.
+     *
+     * Any regular file with content counts. A directory of empty directories, or
+     * an absent directory, does not, and that distinction is what keeps a genuine
+     * first run working while making a populated-but-unopenable vault impossible to
+     * destroy. Deliberately conservative: a false positive here costs one refused
+     * boot that a human has to look at, and a false negative costs the brain.
+     */
+    private fun vaultHasContent(context: Context): Boolean {
+        val dir = vaultDataDir(context)
+        if (!dir.exists()) return false
+        return runCatching {
+            dir.walkTopDown().any { it.isFile && it.length() > 0 }
+        }.getOrDefault(true)
+    }
+
     private fun bootOnce(
         context: Context,
         freshPassphrase: String,
@@ -239,10 +256,48 @@ object CerebrumHost {
                         onStep?.invoke(failRes)
                         return failRes
                     }
-                    // no envelope: fresh brain. real wipe of any orphan vault
-                    // already done by any prior heal path; now seal + go fresh.
+                    /*
+                     * THE DECISION THIS BRANCH USED TO GET WRONG (issue 10).
+                     *
+                     * Reachable state: the Keystore envelope is gone or will not
+                     * unseal, while a vault may or may not exist on disk. Losing the
+                     * envelope is not a first run. It happens on an OS upgrade that
+                     * invalidates the Keystore alias, a restore from a backup that
+                     * carries the vault but not the key, a partial envelope write, or
+                     * a wiped app keystore. In every one of those cases the vault is
+                     * intact and the passphrase that opens it is what went missing.
+                     *
+                     * The old code dealt a fresh passphrase over the top and then
+                     * called `vaultDataDir.deleteRecursively()`. So a lost envelope
+                     * silently destroyed the human's entire brain and started clean,
+                     * with nothing said at any layer. That is the "clear it and move
+                     * on" failure this issue names as forbidden, and it is the worst
+                     * bug in the file because the data cannot be recovered afterwards.
+                     *
+                     * The rule now: a vault that exists is never deleted to make a boot
+                     * succeed. If there is real vault content and no key to open it,
+                     * fail closed, leave every byte alone, and say exactly what
+                     * happened so a human can decide whether to salvage it or accept
+                     * the loss. Deciding that is a product call, not this object's.
+                     *
+                     * Deletion remains correct in the one case it was meant for: a
+                     * genuinely empty vault directory on a true first run, where there
+                     * is nothing to lose and a fresh key is the right answer.
+                     */
+                    if (vaultHasContent(context)) {
+                        val orphanDetail =
+                            "cerebrum key envelope is missing or unreadable while a vault exists at " +
+                                "${vaultDataDir(context).absolutePath}. The vault has been LEFT INTACT and " +
+                                "nothing was deleted. The passphrase that opens it is gone, so it cannot be " +
+                                "read until it is salvaged or the loss is accepted. Refusing to overwrite it."
+                        Log.e(TAG, orphanDetail)
+                        val orphanRes = BootResult(false, 0L, orphanDetail)
+                        onStep?.invoke(orphanRes)
+                        return orphanRes
+                    }
+                    // Empty vault directory: nothing to lose, so this really is a
+                    // first run and a fresh key is correct.
                     sealCerebrumPass(context, freshPassphrase)
-                    vaultDataDir(context).deleteRecursively()
                     cerebrumDir(context).mkdirs()
                     vaultDataDir(context).mkdirs()
                     freshPassphrase

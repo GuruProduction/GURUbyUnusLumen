@@ -25,7 +25,10 @@ object EnvironmentToolDefinitions : ToolSetRegistration {
         ToolDefinition(name = SSDP_STOP_DISCOVERY, description = "Stop SSDP discovery.", category = "environment", parameters = emptyList(), permissions = emptyList()),
         ToolDefinition(name = ARP_SCAN, description = "Scan the local network using ARP table reading. Finds all devices on the network.", category = "environment", parameters = emptyList(), permissions = emptyList()),
         ToolDefinition(name = WIFI_SCAN, description = "Scan all nearby WiFi networks. Shows SSIDs, signal strengths, security types.", category = "environment", parameters = emptyList(), permissions = listOf("android.permission.ACCESS_FINE_LOCATION")),
-        ToolDefinition(name = BLUETOOTH_SCAN, description = "Active discovery of Bluetooth devices in range.", category = "environment", parameters = emptyList(), permissions = listOf("android.permission.BLUETOOTH_SCAN")),
+        // Discovery reports each device's name and bond state, which Bluetooth treats as
+        // a connect-tier read, so both grants are declared and both are guarded. Listing
+        // only SCAN here would let the pre-flight pass and the scan throw underneath.
+        ToolDefinition(name = BLUETOOTH_SCAN, description = "Active discovery of Bluetooth devices in range, returning each device's name, MAC, class, bond state and signal strength. Needs Nearby devices, which covers both the scan and reading a device's name. For a signal-strength history or a service-UUID filter use bleScan.", category = "environment", parameters = emptyList(), permissions = listOf("android.permission.BLUETOOTH_SCAN", "android.permission.BLUETOOTH_CONNECT")),
         ToolDefinition(name = TCP_CONNECT, description = "Open a raw TCP socket connection to any IP:port. NOT routed through Tor.", category = "environment", parameters = listOf(ToolParameter("host", ToolParameterType.String, true, "IP address or hostname"), ToolParameter("port", ToolParameterType.Integer, true, "Port number"), ToolParameter("data", ToolParameterType.String, true, "Data to send"), ToolParameter("timeoutMs", ToolParameterType.Integer, false, "Timeout in ms, default 5000")), permissions = emptyList())
     )
     override fun executorClass(): KClass<out ToolExecutor> = EnvironmentToolExecutor::class
