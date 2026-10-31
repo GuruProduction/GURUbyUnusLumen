@@ -172,6 +172,10 @@ val aiDataModule = module {
     single { BluetoothScanManager(get<Context>()) }
     single { FileAccessGuard() }
     single { TorManager() }
+    // The CLI bridge (issue 176). A singleton because both transports share one
+    // accepted-connection set and one pairing secret; a second instance would
+    // listen twice and disagree about who is connected.
+    single { com.unuslumen.app.data.bridge.CliBridgeService(get<Context>(), get()) }
 
     // Metadata background worker: owns the place/weather/motion refresh chain,
     // reads cadences and toggles from superadmin config at the top of every

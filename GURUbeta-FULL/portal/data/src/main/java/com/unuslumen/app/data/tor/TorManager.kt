@@ -182,6 +182,23 @@ class TorManager {
     fun getProxy(): Proxy = Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", httpPort))
     fun getSocksProxy(): Proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", socksPort))
 
+    /**
+     * The Tor control connection, for callers that need more than circuits.
+     *
+     * Added for the CLI bridge (#176), which publishes an onion service with
+     * ADD_ONION. Exposing the connection rather than wrapping each control
+     * command keeps the surface honest: the control protocol is large and this
+     * app will want more of it over time, so a narrow wrapper would be a queue of
+     * one-line additions.
+     *
+     * Null when Tor is not bound or not ready, which is a state the caller must
+     * report rather than retry blindly.
+     */
+    fun torControlConnection(): TorControlConnection? {
+        if (!_isReady.value) return null
+        return torService?.torControlConnection
+    }
+
     fun areCircuitsUsable(): Boolean {
         if (!_isReady.value) return false
         if (_circuitsHealthy.value) return true
