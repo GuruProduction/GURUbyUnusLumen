@@ -63,25 +63,207 @@ class CommunicationPlusToolExecutor(private val context: Context) : ToolExecutor
         ToolExecutionResult.success(r, json.encodeToString(SlackResult.serializer(), r))
     }
 
+    /**
+     * Send a WhatsApp message.
+     *
+     * Two mechanisms, and the result says which one ran. With the accessibility
+     * service available this drives the compose screen, taps send, and then
+     * reads the message back off the conversation — only that produces
+     * `sent = true`. Without it, WhatsApp is opened with the message pre-filled
+     * and the result says `drafted = true, sent = false`, because a human still
+     * has to tap send.
+     *
+     * The old version returned `success = true` the moment the intent fired.
+     * That was issue 174: it reported a send that never happened.
+     */
     private suspend fun whatsappSend(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val recipient = args["recipient"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'recipient'")
-        val message = args["message"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'message'")
-        try {
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                data = Uri.parse("https://api.whatsapp.com/send?phone=$recipient&text=${Uri.encode(message)}")
+        val recipient = (args["recipient"] as? String)?.trim()
+            ?: return@withContext ToolExecutionResult.error("Missing 'recipient'")
+        val message = args["message"] as? String
+            ?: return@withContext ToolExecutionResult.error("Missing 'message'")
+
+        if (message.isBlank()) {
+            return@withContext failWhatsApp("Message is empty. Nothing was sent.")
+        }
+
+        if (!WhatsAppAutomation.isInstalled(context)) {
+            return@withContext failWhatsApp("WhatsApp is not installed on this device.")
+        }
+
+        // Resolve a name to a number before touching WhatsApp. The parameter
+        // promises to accept either and the old code honoured only one.
+        val resolved = WhatsAppAutomation.resolveNumber(context, recipient)
+        val digits = when (resolved) {
+            is WhatsAppAutomation.ResolvedRecipient.Number -> resolved.digits
+            is WhatsAppAutomation.ResolvedRecipient.NotFound -> return@withContext failWhatsApp(
+                "No contact or number matched \"$recipient\". Give a phone number in international format, or a name that exists in Contacts."
+            )
+            is WhatsAppAutomation.ResolvedRecipient.Ambiguous -> return@withContext failWhatsApp(
+                "Multiple contacts match \"$recipient\": ${resolved.candidates.joinToString(", ")}. Be more specific."
+            )
+            is WhatsAppAutomation.ResolvedRecipient.NoContactsAccess -> return@withContext failWhatsApp(
+                "Cannot resolve \"$recipient\" to a number because READ_CONTACTS is not granted. Grant it in Settings > Apps > GURU > Permissions, or pass a phone number directly."
+            )
+        }
+
+        val launched = WhatsAppAutomation.launchCompose(context, digits, message)
+        if (!launched) {
+            return@withContext failWhatsApp("Could not open WhatsApp. It is installed but the compose intent was refused.")
+        }
+
+        // Try to drive the send. This is the only path that can produce a real send.
+        when (val attempt = WhatsAppAutomation.attemptSend(message)) {
+            is WhatsAppAutomation.SendAttempt.Sent -> {
+                val r = WhatsAppResult(
+                    success = true,
+                    sent = true,
+                    drafted = true,
+                    mechanism = "accessibility",
+                    recipient = recipient,
+                    resolvedNumber = digits,
+                    action = "sent",
+                    detail = "Message sent and confirmed in the conversation.",
+                )
+                ToolExecutionResult.success(r, json.encodeToString(WhatsAppResult.serializer(), r))
             }
-            context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            val r = WhatsAppResult(success = true)
-            ToolExecutionResult.success(r, json.encodeToString(WhatsAppResult.serializer(), r))
-        } catch (e: Exception) {
-            val r = WhatsAppResult(success = false, error = "WhatsApp not installed: ${e.message}")
-            ToolExecutionResult.success(r, json.encodeToString(WhatsAppResult.serializer(), r))
+
+            is WhatsAppAutomation.SendAttempt.NoAccessibility -> {
+                val r = WhatsAppResult(
+                    success = true,
+                    sent = false,
+                    drafted = true,
+                    mechanism = "intent",
+                    recipient = recipient,
+                    resolvedNumber = digits,
+                    action = "drafted",
+                    detail = "WhatsApp is open with the message ready. Nothing has been sent — a human must tap send. To let GURU send it, enable the accessibility service in Settings > Accessibility > Installed apps > GURU.",
+                )
+                ToolExecutionResult.success(r, json.encodeToString(WhatsAppResult.serializer(), r))
+            }
+
+            is WhatsAppAutomation.SendAttempt.DraftNotVisible -> {
+                val r = WhatsAppResult(
+                    success = true,
+                    sent = false,
+                    drafted = false,
+                    mechanism = "intent",
+                    recipient = recipient,
+                    resolvedNumber = digits,
+                    action = "compose_opened",
+                    detail = "WhatsApp opened but the message text was not found in an input field, so nothing was tapped. Check the screen and try again.",
+                )
+                ToolExecutionResult.success(r, json.encodeToString(WhatsAppResult.serializer(), r))
+            }
+
+            is WhatsAppAutomation.SendAttempt.SendButtonNotFound -> {
+                val r = WhatsAppResult(
+                    success = false,
+                    sent = false,
+                    drafted = true,
+                    mechanism = "accessibility",
+                    recipient = recipient,
+                    resolvedNumber = digits,
+                    action = "draft_only",
+                    error = "Send control not found on the compose screen.",
+                    detail = "The message is drafted but GURU could not find the send button. A human must tap send.",
+                )
+                ToolExecutionResult.success(r, json.encodeToString(WhatsAppResult.serializer(), r))
+            }
+
+            is WhatsAppAutomation.SendAttempt.TappedButUnconfirmed -> {
+                val r = WhatsAppResult(
+                    success = false,
+                    sent = false,
+                    drafted = true,
+                    mechanism = "accessibility",
+                    recipient = recipient,
+                    resolvedNumber = digits,
+                    action = "unconfirmed",
+                    error = "Send was tapped but the message was not found in the conversation afterwards.",
+                    detail = "This is not a confirmed send. Check WhatsApp before assuming it went out.",
+                )
+                ToolExecutionResult.success(r, json.encodeToString(WhatsAppResult.serializer(), r))
+            }
         }
     }
 
+    private fun failWhatsApp(reason: String): ToolExecutionResult {
+        val r = WhatsAppResult(success = false, sent = false, drafted = false, error = reason)
+        return ToolExecutionResult.success(r, json.encodeToString(WhatsAppResult.serializer(), r))
+    }
+
+    /**
+     * Search WhatsApp.
+     *
+     * Drives WhatsApp's own search field through the accessibility service and
+     * returns what is on screen. `available` distinguishes "searched, found
+     * nothing" from "could not search", which the old hardcoded failure did not.
+     */
     private suspend fun whatsappSearch(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val r = WhatsAppSearchResult(success = false, messages = emptyList(), error = "WhatsApp message search requires ContentProvider access.")
-        ToolExecutionResult.success(r, json.encodeToString(WhatsAppSearchResult.serializer(), r))
+        val query = (args["query"] as? String)?.trim()
+            ?: return@withContext ToolExecutionResult.error("Missing 'query'")
+        val limit = (args["limit"] as? Number)?.toInt() ?: 20
+
+        if (query.isEmpty()) {
+            return@withContext failWhatsAppSearch("Query is empty. Nothing was searched.")
+        }
+
+        if (!WhatsAppAutomation.isInstalled(context)) {
+            return@withContext failWhatsAppSearch("WhatsApp is not installed on this device.")
+        }
+
+        when (val attempt = WhatsAppAutomation.search(context, query, limit)) {
+            is WhatsAppAutomation.SearchAttempt.Results -> {
+                val messages = attempt.lines.mapIndexed { index, line ->
+                    WhatsAppMessage(
+                        id = "visible_$index",
+                        sender = "",
+                        content = line,
+                        timestamp = "",
+                    )
+                }
+                val r = WhatsAppSearchResult(
+                    success = true,
+                    available = true,
+                    messages = messages,
+                    mechanism = "accessibility",
+                    detail = "Read from WhatsApp's search results on screen. Sender and timestamp are not exposed by the search surface.",
+                )
+                ToolExecutionResult.success(r, json.encodeToString(WhatsAppSearchResult.serializer(), r))
+            }
+
+            is WhatsAppAutomation.SearchAttempt.NoResults -> {
+                val r = WhatsAppSearchResult(
+                    success = true,
+                    available = true,
+                    messages = emptyList(),
+                    mechanism = "accessibility",
+                    detail = "WhatsApp searched and returned no results for \"${attempt.query}\".",
+                )
+                ToolExecutionResult.success(r, json.encodeToString(WhatsAppSearchResult.serializer(), r))
+            }
+
+            is WhatsAppAutomation.SearchAttempt.NoAccessibility -> failWhatsAppSearch(
+                "Cannot search WhatsApp because the accessibility service is not running. Enable it in Settings > Accessibility > Installed apps > GURU. This is a grant problem, not an empty inbox."
+            )
+
+            is WhatsAppAutomation.SearchAttempt.NotInstalled -> failWhatsAppSearch(
+                "WhatsApp is not installed on this device."
+            )
+
+            is WhatsAppAutomation.SearchAttempt.SearchFieldNotFound -> failWhatsAppSearch(
+                "WhatsApp opened but its search field could not be found. The app layout may have changed, or a different screen is in front."
+            )
+
+            is WhatsAppAutomation.SearchAttempt.QueryNotEntered -> failWhatsAppSearch(
+                "The search field was found but the query could not be typed into it."
+            )
+        }
+    }
+
+    private fun failWhatsAppSearch(reason: String): ToolExecutionResult {
+        val r = WhatsAppSearchResult(success = false, available = false, messages = emptyList(), error = reason)
+        return ToolExecutionResult.success(r, json.encodeToString(WhatsAppSearchResult.serializer(), r))
     }
 
     private suspend fun xPost(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
