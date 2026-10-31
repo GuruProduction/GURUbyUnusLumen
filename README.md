@@ -21,6 +21,16 @@ GURU is a privacy focused open-source framework that lets a language model of yo
 
 The brain is yours to choose. GURU is the house that brain lives in. You connect a cloud API key, a local LLM, or a rented GPU, and GURU gives that brain real hands on your device.
 
+## No root. No adb. Not now, not ever.
+
+Every single thing GURU does works on a stock, unrooted phone with no cable attached. That is a hard rule of this project, not a goal.
+
+It is 2026. Nobody roots their phone, and nobody is going to plug in a laptop to use an app. A capability that only works with `su` or through `adb shell` is not a capability, it is a demo that fails for every real person who installs this.
+
+So if a feature cannot work without root, it is not finished. If it cannot work without adb, it is missing. The answer is always the real implementation that runs on a normal phone, never a mechanism that only functions on a developer's desk.
+
+This rule is written down where it cannot be missed: [RULES.md](RULES.md), and in the design constraints in [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## What GURU does
 
 <details>

@@ -60,3 +60,33 @@ target_link_libraries(quickjs_bridge
 )
 
 set_target_properties(quickjs_bridge PROPERTIES LINKER_LANGUAGE C)
+
+# pathshim - LD_PRELOAD library that rewrites the upstream com.termux prefix at
+# the libc boundary, so binaries with a compiled-in path work without root and
+# without adb. See pathshim.c for the full reasoning.
+add_library(pathshim SHARED
+    pathshim.c
+)
+
+target_link_libraries(pathshim log)
+
+set_target_properties(pathshim PROPERTIES LINKER_LANGUAGE C)
+
+# 16 KB page-size compatibility, set explicitly on the LINK.
+#
+# The NDK defaults shared libraries to 4 KB segment alignment. This device runs
+# 16 KB pages, and Android's linker refuses to load a library whose alignment is
+# smaller than the page size:
+#
+#   "libpathshim.so" program alignment (4096) cannot be smaller than system
+#   page size (16384)  ->  CANNOT LINK EXECUTABLE .../bash
+#
+# Because the shim is in LD_PRELOAD, that refusal took the whole preload chain
+# down and broke `sh`, `apt-key` and every helper — a library meant to fix path
+# handling instead broke the shell. Both flags are needed: the linker needs the
+# larger max page size, and the common page size keeps the shared library usable
+# on 4 KB devices as well, so one APK serves both.
+target_link_options(pathshim PRIVATE
+    "-Wl,-z,max-page-size=16384"
+    "-Wl,-z,common-page-size=16384"
+)
