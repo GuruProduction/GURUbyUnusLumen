@@ -151,8 +151,14 @@ private fun PermissionToggleRow(
     val red = Color(0xFFE53935)
     val grey = Color(0xFF9E9E9E)
     val blue = Color(0xFF2196F3)
+    // Amber, not red. A restricted-settings block is not a grant the person has
+    // withheld and not a failure of theirs; it is a protection they clear once from
+    // the app's own info screen. Red would tell them "you have not done this yet",
+    // which is the wrong instruction for a switch that will refuse them anyway.
+    val amber = Color(0xFFFFA000)
 
     val toggleColor = when {
+        toggle.blockedByRestrictedSettings -> amber
         !toggle.existsOnCurrentApi -> blue
         !toggle.hasHardware -> green
         !toggle.isEnabled -> grey
@@ -161,6 +167,7 @@ private fun PermissionToggleRow(
     }
 
     val statusText = when {
+        toggle.blockedByRestrictedSettings -> "Blocked by restricted settings"
         !toggle.existsOnCurrentApi -> "Not required on this Android version"
         !toggle.hasHardware -> "Not available on this device"
         !toggle.isEnabled -> "Grant ${getDependencyName(toggle.permission)} first"
@@ -168,7 +175,12 @@ private fun PermissionToggleRow(
         else -> "Tap to grant"
     }
 
-    val isInteractive = toggle.isEnabled && toggle.existsOnCurrentApi && toggle.hasHardware
+    // A restricted capability cannot be switched on from this screen at all, so the
+    // row must not invite a tap that cannot do anything. The sentence below it is
+    // the instruction, and it names the menu item and where the menu lives.
+    val isInteractive =
+        toggle.isEnabled && toggle.existsOnCurrentApi && toggle.hasHardware &&
+            !toggle.blockedByRestrictedSettings
 
     Row(
         modifier = Modifier
@@ -203,6 +215,17 @@ private fun PermissionToggleRow(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            // The instruction, in full, rather than a status word the person would
+            // have to interpret. This is the whole point: there is no grant to make,
+            // so the only useful thing on the row is what to do instead.
+            toggle.restrictedSettingsSentence?.let { sentence ->
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = sentence,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = amber
+                )
+            }
         }
 
         Spacer(modifier = Modifier.width(8.dp))
