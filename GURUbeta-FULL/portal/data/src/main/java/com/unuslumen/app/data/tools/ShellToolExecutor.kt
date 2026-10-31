@@ -101,8 +101,62 @@ class ShellToolExecutor(
         try { val result = if (port != null && port > 0) shellExecutor.pairWithAdb(pairingCode, port) else shellExecutor.autoPairWithAdb(pairingCode); val r = AdbPairResult(result.success, result.error); ToolExecutionResult.success(r, json.encodeToString(AdbPairResult.serializer(), r)) } catch (e: Exception) { val r = AdbPairResult(false, "Pairing error: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(AdbPairResult.serializer(), r)) }
     }
 
+    /**
+     * The capability audit, and it must not report a failure it has not observed.
+     *
+     * Issue 36: this answered `accessibilityRunning` from a boolean that could not
+     * tell "the human has not enabled the service" from "it is enabled but not
+     * bound yet". Those need opposite responses, and collapsing them made a
+     * device that can drive its own UI report that it cannot.
+     *
+     * The service now owns one three-state answer (see GuruAccessibilityService),
+     * and the Settings enabled flag is read fresh here so a human who has just
+     * toggled it sees the truth immediately rather than after a restart.
+     */
     private suspend fun checkAdbStatus(): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val r = AdbStatusResult(shellExecutor.isAdbAvailable(), shellExecutor.isAdbPaired(), shellExecutor.isAccessibilityRunning()); return@withContext ToolExecutionResult.success(r, json.encodeToString(AdbStatusResult.serializer(), r))
+        // Read the system's own view of "is it enabled", because a service cannot
+        // see this about itself. Written back so state() can distinguish DISABLED
+        // from ENABLED_NOT_BOUND.
+        val enabledInSettings = runCatching {
+            val enabled = Settings.Secure.getInt(
+                context.contentResolver,
+                Settings.Secure.ACCESSIBILITY_ENABLED,
+                0,
+            ) == 1
+            val services = Settings.Secure.getString(
+                context.contentResolver,
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+            ) ?: ""
+            val component = "${context.packageName}/com.unuslumen.app.util.shell.GuruAccessibilityService"
+            enabled && services.split(':').any {
+                it.equals(component, ignoreCase = true) ||
+                    it.contains("GuruAccessibilityService", ignoreCase = true)
+            }
+        }.getOrDefault(false)
+        com.unuslumen.app.util.shell.GuruAccessibilityService.setEnabledInSettings(enabledInSettings)
+
+        val state = com.unuslumen.app.util.shell.GuruAccessibilityService.state()
+        val running = state == com.unuslumen.app.util.shell.GuruAccessibilityService.State.RUNNING
+        val detail = when (state) {
+            com.unuslumen.app.util.shell.GuruAccessibilityService.State.RUNNING -> null
+            com.unuslumen.app.util.shell.GuruAccessibilityService.State.ENABLED_NOT_BOUND ->
+                "Accessibility service is enabled in Settings but not bound right now. " +
+                    "It is usually starting or restarting; ask again in a moment. " +
+                    "If it persists, toggle it off and on in Settings > Accessibility."
+            com.unuslumen.app.util.shell.GuruAccessibilityService.State.DISABLED ->
+                "Accessibility service is not enabled. To enable: Settings > Accessibility > " +
+                    "Installed Apps > guru > Turn ON."
+        }
+
+        val r = AdbStatusResult(
+            adbAvailable = shellExecutor.isAdbAvailable(),
+            adbPaired = shellExecutor.isAdbPaired(),
+            accessibilityRunning = running,
+            accessibilityState = state.name,
+            accessibilityEnabled = enabledInSettings,
+            accessibilityDetail = detail,
+        )
+        return@withContext ToolExecutionResult.success(r, json.encodeToString(AdbStatusResult.serializer(), r))
     }
 
     private suspend fun adbExec(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {

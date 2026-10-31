@@ -415,9 +415,35 @@ class GitProvider(private val context: Context) {
                 configPairs.add("https.proxy" to torProxyUrl)
             }
 
+            /*
+             * AUTHENTICATION: an HTTP authorization header, NOT a credential
+             * helper.
+             *
+             * Issue 33 recorded `cannot exec 'f() {...}; f get'`. Investigating
+             * it on device found that EVERY helper shape is blocked here, for
+             * four separate reasons and each one is alone fatal:
+             *
+             *   1. git strips a leading "!" from a GIT_CONFIG_VALUE pair.
+             *   2. git truncates a config value at a semicolon, and a function
+             *      body is made of semicolons: "helper = !a;b" reads back "!a".
+             *   3. whatever survives is EXEC'D as a program name, so any
+             *      multi-word value fails.
+             *   4. /data is noexec, so a helper script cannot be exec'd either,
+             *      and "helper = store" fails because git execs
+             *      git-credential-store.
+             *
+             * So the credential is delivered as an HTTP header, which works at
+             * the transport layer and needs no helper, no script, no store file
+             * and no exec. The token lives only in this one process's config and
+             * dies with it, which is the posture this class has always had.
+             */
             if (credential != null && credential.isNotBlank()) {
-                env[ENV_CREDENTIAL] = credential
-                configPairs.add("credential.helper" to CREDENTIAL_HELPER_SHELL)
+                env[GitCredentials.ENV_CREDENTIAL] = credential
+                configPairs.add(GitCredentials.extraHeaderPair(credential))
+                // Disable the helper chain explicitly. Without this git falls
+                // through to a helper (or a terminal prompt) whenever the header
+                // is not consulted, and both paths fail on this device.
+                configPairs.add(GitCredentials.noHelperPair())
             }
 
             for ((key, value) in extraConfig) {
