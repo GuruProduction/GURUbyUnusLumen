@@ -4,6 +4,7 @@
 package com.unuslumen.app.data.tools
 
 import android.content.Context
+import com.unuslumen.app.data.discovery.ArpDiscoveryManager
 import com.unuslumen.app.util.shell.ShellExecutor
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
@@ -198,18 +199,51 @@ class SmartHomeToolExecutor(private val context: Context) : ToolExecutor {
                 if (devices.isNotEmpty()) { val r = NetworkScanResult(success = true, devices = devices, error = null); return@withContext ToolExecutionResult.success(r, json.encodeToString(NetworkScanResult.serializer(), r)) }
             }
             try {
-                val wifiManager = context.applicationContext.getSystemService(android.content.Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
-                if (wifiManager != null) {
-                    @Suppress("DEPRECATION") val dhcpInfo = wifiManager.dhcpInfo
-                    val gatewayIp = intToIp(dhcpInfo.gateway); val deviceIp = intToIp(dhcpInfo.ipAddress); val netmask = intToIp(dhcpInfo.netmask)
-                    val dns1 = intToIp(dhcpInfo.dns1); val dns2 = intToIp(dhcpInfo.dns2); val server = intToIp(dhcpInfo.serverAddress)
-                    val devices = mutableListOf<NetworkDevice>()
-                    if (gatewayIp != "0.0.0.0") devices.add(NetworkDevice(ip = gatewayIp, mac = "", name = "Gateway/Router"))
-                    if (deviceIp != "0.0.0.0") devices.add(NetworkDevice(ip = deviceIp, mac = "", name = "This device"))
-                    if (dns1 != "0.0.0.0") devices.add(NetworkDevice(ip = dns1, mac = "", name = "DNS Server 1"))
-                    if (dns2 != "0.0.0.0") devices.add(NetworkDevice(ip = dns2, mac = "", name = "DNS Server 2"))
-                    if (server != "0.0.0.0" && server != gatewayIp) devices.add(NetworkDevice(ip = server, mac = "", name = "DHCP Server"))
-                    if (devices.isNotEmpty()) { val r = NetworkScanResult(success = true, devices = devices, error = "Partial scan — ARP table inaccessible. Showing network infrastructure from DHCP info. Subnet: $deviceIp/$netmask"); return@withContext ToolExecutionResult.success(r, json.encodeToString(NetworkScanResult.serializer(), r)) }
+                /*
+                 * THE FALLBACK READS THE INTERFACE, NOT dhcpInfo.
+                 *
+                 * Issue 34: this branch produced "Subnet: 192.168.0.179/0.0.0.0".
+                 * Two faults together. dhcpInfo.ipAddress and dhcpInfo.netmask are
+                 * deprecated and return ZERO on modern Android, so the mask was
+                 * always 0.0.0.0; and intToIp read the low byte as the first octet
+                 * while Android packs network order the other way, so even a real
+                 * value came out reversed.
+                 *
+                 * `ip -4 addr` is authoritative, needs no permission, and cannot be
+                 * deprecated. The address, the prefix and the network all come from
+                 * there, so the reported subnet is the one the device is on.
+                 */
+                val lan = ArpDiscoveryManager(context).getInterfaceAddress()
+                val devices = mutableListOf<NetworkDevice>()
+                if (lan != null) {
+                    devices.add(
+                        NetworkDevice(
+                            ip = lan.ip,
+                            mac = "",
+                            name = "This device (${lan.network})",
+                        ),
+                    )
+                }
+                // Gateway from the routing table, which is the one address that
+                // actually matters for a scan and is not deprecated.
+                val gateway = runCatching {
+                    val p = ProcessBuilder("sh", "-c", "ip route 2>/dev/null | grep default").start()
+                    val out = p.inputStream.bufferedReader().readText()
+                    p.waitFor()
+                    Regex("""default via (\d+\.\d+\.\d+\.\d+)""").find(out)?.groupValues?.get(1)
+                }.getOrNull()
+                if (gateway != null && devices.none { it.ip == gateway }) {
+                    devices.add(NetworkDevice(ip = gateway, mac = "", name = "Gateway/Router"))
+                }
+                if (devices.isNotEmpty()) {
+                    val subnetLabel = lan?.network ?: "unknown"
+                    val r = NetworkScanResult(
+                        success = true,
+                        devices = devices,
+                        error = "Partial scan — the ARP table was empty, so only the " +
+                            "device and its gateway are listed. Subnet: $subnetLabel",
+                    )
+                    return@withContext ToolExecutionResult.success(r, json.encodeToString(NetworkScanResult.serializer(), r))
                 }
             } catch (_: SecurityException) {} catch (_: Exception) {}
             val r = NetworkScanResult(success = false, devices = emptyList(), error = "No network devices found. The ARP table is inaccessible on this Android version. Grant location permission for WiFi-based scanning.")

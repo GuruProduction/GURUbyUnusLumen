@@ -38,23 +38,41 @@ class ArpDiscoveryManager(
      */
     fun discoverDevices(): List<ArpDevice> {
         val subnet = getSubnet()
-        if (subnet.isBlank()) {
+        if (subnet == null) {
             Log.e(TAG, "Could not determine subnet")
             return emptyList()
         }
 
-        Log.d(TAG, "Ping-sweeping subnet: $subnet")
+        // The live interface address, so ARP entries can be filtered to the LAN
+        // we are actually on. /proc/net/arp is a GLOBAL table: it holds every
+        // interface, including stale entries from networks the device has left,
+        // and returning those is what made a scan look like it was reaching data
+        // it was not. Only entries inside our own prefix are ours.
+        val address = getInterfaceAddress()
+
+        Log.d(TAG, "Ping-sweeping subnet: $subnet (interface ${address?.ip}/${address?.prefixLength})")
 
         // Ping sweep to populate ARP table
         pingSweep(subnet)
 
         // Read ARP table
-        val arpEntries = readArpTable()
+        var arpEntries = readArpTable()
 
         // If ARP table is empty, try ip neigh
         if (arpEntries.isEmpty()) {
             Log.d(TAG, "ARP table empty, trying ip neigh show")
             arpEntries.addAll(readIpNeigh())
+        }
+
+        // Keep only addresses on this network. A /24 sweep already limits the
+        // ping range, but the ARP table itself is not limited, and a stale entry
+        // from the coffee shop down the road is not a device on this LAN.
+        if (address != null) {
+            val before = arpEntries.size
+            arpEntries = arpEntries.filter { (ip, _) -> address.contains(ip) }.toMutableList()
+            if (before != arpEntries.size) {
+                Log.d(TAG, "Filtered ARP entries to ${address.network}: ${arpEntries.size} of $before kept")
+            }
         }
 
         // Enrich with manufacturer info from OUI
@@ -74,62 +92,91 @@ class ArpDiscoveryManager(
     }
 
     /**
-     * Determines the subnet from the device's WiFi connection info.
-     * Returns something like "192.168.0" (without the last octet).
+     * The live IPv4 address and prefix length, read from the interface itself.
+     *
+     * THE DEFECT THIS FIXES, from issue 34. The old code read
+     * `wifiManager.dhcpInfo`, whose `ipAddress` and `netmask` are both deprecated
+     * and return ZERO on modern Android. Combined with the old intToIp byte order
+     * that produced `192.168.0.179/0.0.0.0`: an address from somewhere, and a mask
+     * of all zeros, which describes the entire IPv4 space rather than a subnet.
+     *
+     * `ip -4 addr` is the authority here. It is what a person reads when they
+     * check the device, it needs no permission, and it cannot be deprecated out
+     * from under us by an API level.
      */
-    @Suppress("DEPRECATION")
-    private fun getSubnet(): String {
-        try {
-            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            if (wifiManager != null) {
-                val dhcpInfo = wifiManager.dhcpInfo
-                if (dhcpInfo != null) {
-                    val ip = intToIp(dhcpInfo.ipAddress)
-                    if (ip != "0.0.0.0") {
-                        // Return first 3 octets
-                        val parts = ip.split(".")
-                        if (parts.size == 4) {
-                            return "${parts[0]}.${parts[1]}.${parts[2]}"
-                        }
-                    }
-                }
+    data class InterfaceAddress(val ip: String, val prefixLength: Int) {
+        /** The network the device sits on, e.g. 192.168.0.0/24. */
+        val network: String
+            get() {
+                val parts = ip.split(".").mapNotNull { it.toIntOrNull() }
+                if (parts.size != 4) return "$ip/$prefixLength"
+                val mask = if (prefixLength <= 0) 0 else (-1 shl (32 - prefixLength))
+                val net = parts.fold(0) { acc, b -> (acc shl 8) or b } and mask
+                return "${(net shr 24) and 0xFF}.${(net shr 16) and 0xFF}.${(net shr 8) and 0xFF}.${net and 0xFF}/$prefixLength"
             }
-        } catch (e: SecurityException) {
-            Log.d(TAG, "No WiFi permission, trying /proc/net/arp for self IP")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error getting subnet from WiFi", e)
-        }
 
-        // Fallback: try to get IP from ip addr
-        try {
-            val process = ProcessBuilder("sh", "-c", "ip addr show wlan0 2>/dev/null | grep 'inet ' | awk '{print \$2}'").start()
-            val output = process.inputStream.bufferedReader().readText().trim()
-            process.waitFor()
-            if (output.contains("/")) {
-                val ip = output.split("/")[0]
-                val parts = ip.split(".")
-                if (parts.size == 4) {
-                    return "${parts[0]}.${parts[1]}.${parts[2]}"
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error getting IP from ip addr", e)
+        fun contains(candidateIp: String): Boolean {
+            val parts = candidateIp.split(".").mapNotNull { it.toIntOrNull() }
+            if (parts.size != 4) return false
+            val mask = if (prefixLength <= 0) 0 else (-1 shl (32 - prefixLength))
+            val a = parts.fold(0) { acc, b -> (acc shl 8) or b } and mask
+            val ours = ip.split(".").mapNotNull { it.toIntOrNull() }
+                .fold(0) { acc, b -> (acc shl 8) or b } and mask
+            return a == ours
         }
+    }
 
-        // Last resort: try ifconfig
-        try {
-            val process = ProcessBuilder("sh", "-c", "ifconfig wlan0 2>/dev/null | grep 'inet ' | awk '{print \$2}' | cut -d: -f2").start()
-            val output = process.inputStream.bufferedReader().readText().trim()
-            process.waitFor()
-            val parts = output.split(".")
-            if (parts.size == 4) {
-                return "${parts[0]}.${parts[1]}.${parts[2]}"
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error getting IP from ifconfig", e)
+    /**
+     * Read the live interface address, wlan0 first, then any non-loopback IPv4.
+     *
+     * Returns null when the device genuinely has no address, which is a real
+     * state (no network), and the caller must report it rather than invent one.
+     */
+    fun getInterfaceAddress(): InterfaceAddress? {
+        val attempts = listOf(
+            "ip -4 addr show wlan0 2>/dev/null",
+            "ip -4 addr 2>/dev/null",
+        )
+        for (cmd in attempts) {
+            val parsed = runCatching { readInterface(cmd) }.getOrNull()
+            if (parsed != null) return parsed
         }
+        return null
+    }
 
-        return ""
+    private fun readInterface(command: String): InterfaceAddress? {
+        val process = ProcessBuilder("sh", "-c", command).start()
+        val output = process.inputStream.bufferedReader().readText()
+        process.waitFor()
+        // Matches:  inet 192.168.0.179/24 brd 192.168.0.255 scope global wlan0
+        val match = Regex("""inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)""").find(output) ?: return null
+        val ip = match.groupValues[1]
+        val prefix = match.groupValues[2].toIntOrNull() ?: return null
+        if (ip.startsWith("127.")) return null // loopback is not the LAN
+        return InterfaceAddress(ip, prefix)
+    }
+
+    /**
+     * The subnet to sweep, derived from the real interface address.
+     *
+     * Returns something like "192.168.0" for a /24, or null when there is no
+     * usable LAN address. A /31 or /32 has no sweepable host range and returns
+     * null rather than producing a nonsense sweep.
+     */
+    private fun getSubnet(): String? {
+        val address = getInterfaceAddress() ?: run {
+            Log.e(TAG, "No LAN IPv4 address found; cannot determine a subnet")
+            return null
+        }
+        if (address.prefixLength >= 31) {
+            Log.e(TAG, "Prefix /${address.prefixLength} has no sweepable host range")
+            return null
+        }
+        // Sweep only the /24 that contains the device, which is what a home LAN
+        // is and what this tool is for. A wider prefix would mean 65k pings.
+        val parts = address.ip.split(".")
+        if (parts.size != 4) return null
+        return "${parts[0]}.${parts[1]}.${parts[2]}"
     }
 
     /**
