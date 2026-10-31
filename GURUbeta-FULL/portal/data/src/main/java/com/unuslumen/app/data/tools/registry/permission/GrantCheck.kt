@@ -9,8 +9,15 @@ package com.unuslumen.app.data.tools.registry.permission
  * GRANTED      Held right now. A tool may proceed and the result is about data.
  * NOT_GRANTED  A normal runtime permission that has not been allowed yet. The
  *              person can grant it through a dialog and will be told how.
- * PRIVILEGED   The platform will not grant this to a normal app. It is not a
- *              user mistake and must never be reported as one.
+ * PRIVILEGED   The platform will not grant this to a normal app, but the
+ *              permission does carry the `development` protection flag, so shell
+ *              UID can grant it once Shizuku is set up. It is not a user mistake
+ *              and must never be reported as one.
+ * NOT_GRANTABLE The platform reserves this permission for system apps and does not
+ *              mark it with the `development` flag, so no command, no shell UID and
+ *              no Device Owner call can grant it. The honest answer is that it is
+ *              out of reach on this device, not that the person has not done
+ *              something yet.
  * INSTALL      protectionLevel=normal, so the app holds it from install. If a
  *              check reports it missing the manifest has lost the declaration,
  *              which is a build fault rather than a permission the person can
@@ -29,6 +36,7 @@ enum class GrantState {
     GRANTED,
     NOT_GRANTED,
     PRIVILEGED,
+    NOT_GRANTABLE,
     INSTALL,
     ABSENT,
     UNCATALOGUED,
@@ -111,14 +119,33 @@ data class GrantCheck(
             append(spec.grantRoute?.let { "Grant it in $it." } ?: "It cannot be granted on this build.")
         }
 
+        // Written as "reaches it through Shizuku" rather than "Shizuku is the only
+        // path", because the platform will not hand this permission out by any
+        // other means: there is no dialog and no owner call that applies. The
+        // `development` flag is what makes the shell-UID route possible at all,
+        // and this branch is only reached when the flag is present.
         GrantState.PRIVILEGED -> buildString {
             append("Permission unavailable: GURU cannot hold the ")
             append(spec.label)
             append(" permission, because Android reserves it for system apps, so GURU cannot ")
             append(spec.consequence)
-            append(". Shizuku or Device Owner is the only path that can satisfy it")
+            append(". GURU can reach it through Shizuku once that is set up")
             append(detail?.let { ", and $it" } ?: "")
             append(".")
+        }
+
+        // The correction to #47's framing, stated in the words the person sees.
+        // Signature and privileged permissions that lack the `development` flag
+        // cannot be granted by `pm grant`, which means no Shizuku setup and no
+        // Device Owner provisioning changes the answer. Saying "set up Shizuku"
+        // here would send somebody through a flow that cannot succeed.
+        GrantState.NOT_GRANTABLE -> buildString {
+            append("Permission unavailable: Android reserves the ")
+            append(spec.label)
+            append(" permission for system apps and does not allow any app to be granted it, ")
+            append("so GURU cannot ")
+            append(spec.consequence)
+            append(". No setting and no setup on this phone changes that.")
         }
 
         GrantState.ABSENT -> buildString {
@@ -147,12 +174,34 @@ data class GrantCheck(
          * The tool then attempts the real call and reports what Android actually
          * did, which is the only evidence that counts.
          */
-        fun of(spec: PermissionSpec, granted: Boolean): GrantCheck = when {
-            spec.tier == PermissionTier.PRIVILEGED && !granted ->
-                GrantCheck(spec, GrantState.PRIVILEGED)
-            spec.tier == PermissionTier.INSTALL && !granted ->
-                GrantCheck(spec, GrantState.INSTALL)
+        fun of(spec: PermissionSpec, granted: Boolean): GrantCheck =
+            of(spec, granted, developable = true)
+
+        /**
+         * The same check, told whether the platform marks this permission with the
+         * `development` protection flag.
+         *
+         * WHY THIS PARAMETER EXISTS. A privileged permission without that flag
+         * cannot be granted by any command at all, and reporting it as "Shizuku
+         * can satisfy it" sends somebody through a setup that cannot work. The
+         * caller reads the flag from the device, because the flag is a property of
+         * the platform's own permission database rather than of this build.
+         *
+         * [developable] defaults to true in the overload above so an existing call
+         * site that has not been taught about the flag keeps its previous
+         * behaviour rather than silently changing what it tells the person.
+         */
+        fun of(spec: PermissionSpec, granted: Boolean, developable: Boolean): GrantCheck = when {
+            // Granted is granted, whatever the tier says. A permission that reads
+            // as held is held, so the tool runs and reports real data rather than
+            // refusing on a tier that was decided before the grant was read.
             granted -> GrantCheck(spec, GrantState.GRANTED)
+            spec.tier == PermissionTier.PRIVILEGED && !developable ->
+                GrantCheck(spec, GrantState.NOT_GRANTABLE)
+            spec.tier == PermissionTier.PRIVILEGED ->
+                GrantCheck(spec, GrantState.PRIVILEGED)
+            spec.tier == PermissionTier.INSTALL ->
+                GrantCheck(spec, GrantState.INSTALL)
             else -> GrantCheck(spec, GrantState.NOT_GRANTED)
         }
 
