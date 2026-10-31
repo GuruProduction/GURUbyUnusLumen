@@ -3,7 +3,6 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.data.discovery
 
-import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothClass
@@ -13,10 +12,11 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.unuslumen.app.data.tools.registry.permission.PermissionGrants
+import com.unuslumen.app.data.tools.registry.permission.TeamThreePermissions
 import kotlinx.coroutines.delay
 import kotlinx.serialization.Serializable
 import org.koin.core.annotation.Single
@@ -50,20 +50,62 @@ class BluetoothScanManager(
         val error: String?
     )
 
+    /**
+     * One classic discovery sweep.
+     *
+     * THE GRANT CHECK WAS HAND-WRITTEN AND THE FAILURE WAS A STRING. It tested the
+     * permission pair itself and returned "Missing Bluetooth permissions.", which
+     * names neither the permission nor the route, so the environment tool turned that
+     * into a success payload with an error and a person could not act on it. Every
+     * refusal now comes from PermissionGrants, whose sentence names what is missing,
+     * what it costs, and exactly where to grant it.
+     *
+     * The Bluetooth-off case stays separate and explicit: the radio being switched off
+     * is not a permission, no dialog fixes it, and the sentence says so.
+     */
     @SuppressLint("MissingPermission")
     suspend fun scan(): BluetoothScanResult {
-        val bluetoothManager = context.getSystemService(BluetoothManager::class.java)
-            ?: return BluetoothScanResult(false, emptyList(), "BluetoothManager not available")
-
-        val adapter = bluetoothManager.adapter
-            ?: return BluetoothScanResult(false, emptyList(), "Bluetooth adapter not available")
-
-        if (!adapter.isEnabled) {
-            return BluetoothScanResult(false, emptyList(), "Bluetooth is not enabled. Enable Bluetooth first.")
+        // The scan and the connect grants are both needed: discovery reports names and
+        // bond state, which Bluetooth treats as a connect-tier read.
+        val scanRefusal = PermissionGrants.guard(context, TeamThreePermissions.BLUETOOTH_SCAN)
+        if (scanRefusal != null) {
+            return BluetoothScanResult(false, emptyList(), scanRefusal.error)
+        }
+        val connectRefusal = PermissionGrants.guard(context, TeamThreePermissions.BLUETOOTH_CONNECT)
+        if (connectRefusal != null) {
+            return BluetoothScanResult(false, emptyList(), connectRefusal.error)
         }
 
-        if (!hasRequiredPermissions()) {
-            return BluetoothScanResult(false, emptyList(), "Missing Bluetooth permissions.")
+        if (!PermissionGrants.hasBluetooth(context)) {
+            val absent = PermissionGrants.guardHardware(
+                present = false,
+                label = "Bluetooth radio",
+                why = "GURU can find nearby Bluetooth devices",
+            )
+            return BluetoothScanResult(false, emptyList(), absent?.error)
+        }
+
+        val bluetoothManager = context.getSystemService(BluetoothManager::class.java)
+            ?: return BluetoothScanResult(
+                false,
+                emptyList(),
+                "This device has no BluetoothManager service, so it cannot discover Bluetooth devices.",
+            )
+
+        val adapter = bluetoothManager.adapter
+            ?: return BluetoothScanResult(
+                false,
+                emptyList(),
+                "This device reports Bluetooth support but exposes no adapter, so it cannot discover devices.",
+            )
+
+        if (!adapter.isEnabled) {
+            return BluetoothScanResult(
+                false,
+                emptyList(),
+                "Bluetooth is switched off on this phone, so no discovery can start; the permission is " +
+                    "separate from the switch and turning Bluetooth on needs no grant.",
+            )
         }
 
         val discoveredDevices = mutableMapOf<String, BluetoothDevice>()
@@ -148,21 +190,15 @@ class BluetoothScanManager(
 
             return BluetoothScanResult(true, devices, null)
         } catch (e: SecurityException) {
-            return BluetoothScanResult(false, emptyList(), "Bluetooth permission denied: ${e.message}")
+            // The grant changed between the check and the scan. Re-check so the
+            // sentence describes the state now rather than a platform message
+            // nobody can act on.
+            val refusal = PermissionGrants.check(context, TeamThreePermissions.BLUETOOTH_SCAN)
+            return BluetoothScanResult(false, emptyList(), refusal.sentence())
         } catch (e: Exception) {
             return BluetoothScanResult(false, emptyList(), "Bluetooth scan failed: ${e.message}")
         } finally {
             try { context.unregisterReceiver(receiver) } catch (e: Exception) { Log.w(TAG, "Unregister failed: ${e.message}") }
-        }
-    }
-
-    private fun hasRequiredPermissions(): Boolean {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            return ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
-                   ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
-        } else {
-            return ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH) == PackageManager.PERMISSION_GRANTED &&
-                   ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_ADMIN) == PackageManager.PERMISSION_GRANTED
         }
     }
 

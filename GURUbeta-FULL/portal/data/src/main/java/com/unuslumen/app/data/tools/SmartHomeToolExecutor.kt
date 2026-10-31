@@ -8,6 +8,8 @@ import com.unuslumen.app.data.discovery.ArpDiscoveryManager
 import com.unuslumen.app.util.shell.ShellExecutor
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
+import com.unuslumen.app.data.tools.registry.permission.PermissionGrants
+import com.unuslumen.app.data.tools.registry.permission.TeamThreePermissions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -145,22 +147,62 @@ class SmartHomeToolExecutor(private val context: Context) : ToolExecutor {
         ToolExecutionResult.success(r, json.encodeToString(SonosResult.serializer(), r))
     }
 
+    /**
+     * List paired Bluetooth devices.
+     *
+     * THE DEFECT THIS FIXES. A SecurityException was caught and turned into
+     * `success = true` with an error string, and the tool fired a raw broadcast asking
+     * the UI for a permission dialog mid-conversation. Both are wrong for this batch:
+     * the success flag lied about a refusal, and a tool must not interrupt with a
+     * dialog. The grant is checked first now, and its sentence — what is missing, why
+     * it matters, exactly where to grant it — is the refusal. The paired list is a
+     * real read: an empty list here genuinely means nothing is paired.
+     */
     private suspend fun bluetoothList(): ToolExecutionResult = withContext(Dispatchers.IO) {
+        PermissionGrants.guard(context, TeamThreePermissions.BLUETOOTH_CONNECT)?.let { return@withContext it }
+
+        if (!PermissionGrants.hasBluetooth(context)) {
+            val absent = PermissionGrants.guardHardware(
+                present = false,
+                label = "Bluetooth radio",
+                why = "GURU can connect to and talk to a paired Bluetooth device",
+            )
+            return@withContext absent ?: ToolExecutionResult.error(
+                "This device reports Bluetooth support through one API and not another, so the paired " +
+                    "list cannot be read."
+            )
+        }
+
         try {
             val bluetoothManager = context.getSystemService(android.bluetooth.BluetoothManager::class.java)
             val adapter = bluetoothManager?.adapter
-            if (adapter == null || !adapter.isEnabled) {
-                val r = BluetoothDevicesResult(success = false, devices = emptyList(), error = "Bluetooth is not enabled on this device. Enable Bluetooth first.")
+            if (adapter == null) {
+                val r = BluetoothDevicesResult(
+                    success = false,
+                    devices = emptyList(),
+                    error = "This device reports Bluetooth support but exposes no adapter, so no paired " +
+                        "devices can be listed.",
+                )
+                return@withContext ToolExecutionResult.success(r, json.encodeToString(BluetoothDevicesResult.serializer(), r))
+            }
+            if (!adapter.isEnabled) {
+                val r = BluetoothDevicesResult(
+                    success = false,
+                    devices = emptyList(),
+                    error = "Bluetooth is switched off on this phone, so the paired list cannot be read " +
+                        "until it is turned on; the permission is separate from the switch.",
+                )
                 return@withContext ToolExecutionResult.success(r, json.encodeToString(BluetoothDevicesResult.serializer(), r))
             }
             val pairedDevices = adapter.bondedDevices ?: emptySet()
-            val devices = pairedDevices.map { device -> BluetoothDevice(mac = device.address, name = device.name ?: "Unknown") }
+            val devices = pairedDevices.map { device ->
+                BluetoothDevice(mac = device.address, name = runCatching { device.name }.getOrNull() ?: "Unknown")
+            }
             val r = BluetoothDevicesResult(success = true, devices = devices, error = null)
             ToolExecutionResult.success(r, json.encodeToString(BluetoothDevicesResult.serializer(), r))
         } catch (e: SecurityException) {
-            try { val intent = android.content.Intent("com.unuslumen.app.guru.REQUEST_BLUETOOTH_PERMISSION"); intent.setPackage(context.packageName); context.sendBroadcast(intent) } catch (_: Exception) {}
-            val r = BluetoothDevicesResult(success = false, devices = emptyList(), error = "Bluetooth permission denied. A permission request has been sent — grant BLUETOOTH_CONNECT in the dialog, then try again.")
-            ToolExecutionResult.success(r, json.encodeToString(BluetoothDevicesResult.serializer(), r))
+            // The grant changed underneath us. Re-check so the sentence describes now.
+            PermissionGrants.refusal(PermissionGrants.check(context, TeamThreePermissions.BLUETOOTH_CONNECT))
         } catch (e: Exception) {
             val r = BluetoothDevicesResult(success = false, devices = emptyList(), error = "Bluetooth access failed: ${e.message}")
             ToolExecutionResult.success(r, json.encodeToString(BluetoothDevicesResult.serializer(), r))
