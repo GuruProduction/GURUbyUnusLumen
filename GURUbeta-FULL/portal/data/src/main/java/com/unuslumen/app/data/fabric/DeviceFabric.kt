@@ -247,35 +247,15 @@ class DeviceFabric(
      * Returns every match plus whether the answer is unambiguous, so a caller can
      * refuse to guess rather than picking the first.
      */
-    suspend fun resolve(query: String, room: String? = null): Resolution {
-        val devices = allDevices()
-        val needle = query.trim().lowercase()
-        if (needle.isEmpty()) return Resolution(emptyList(), false)
-
-        val inRoom = if (room == null) devices else devices.filter { it.room?.equals(room, ignoreCase = true) == true }
-
-        // Exact id, then exact name, then room-qualified name, then substring.
-        inRoom.firstOrNull { it.id.equals(query.trim(), ignoreCase = true) }?.let {
-            return Resolution(listOf(it), true)
-        }
-        inRoom.firstOrNull { it.name.equals(query.trim(), ignoreCase = true) }?.let {
-            return Resolution(listOf(it), true)
-        }
-
-        // "kitchen light" against a device named "Light" in room "Kitchen".
-        val roomQualified = inRoom.filter { d ->
-            val r = d.room?.lowercase() ?: return@filter false
-            needle.contains(r) && needle.contains(d.name.lowercase())
-        }
-        if (roomQualified.size == 1) return Resolution(roomQualified, true)
-
-        val partial = inRoom.filter {
-            it.name.lowercase().contains(needle) || (it.room?.lowercase()?.contains(needle) == true)
-        }
-        return Resolution(partial, partial.size == 1)
-    }
-
-    data class Resolution(val matches: List<Device>, val unambiguous: Boolean)
+    /**
+     * Resolve a device by name, id, or a fragment of either.
+     *
+     * Delegates to [FabricDecisions.resolve], which is the tested implementation.
+     * This method exists for the I/O: it reads the devices, then the decision is
+     * made by the pure function so the rule has one home and one set of tests.
+     */
+    suspend fun resolve(query: String, room: String? = null): FabricDecisions.Resolution =
+        FabricDecisions.resolve(query, allDevices(), room)
 
     // ------------------------------------------------------------------
     // Discovery and placement
@@ -368,27 +348,21 @@ class DeviceFabric(
                 "No device with id '$deviceId' is known to the fabric.",
             )
 
-        // RULE 1: capability enforcement. This is the refusal that stops the tool
-        // doing nothing while reporting success.
-        if (capability !in device.capabilities) {
-            val has = device.capabilities.sortedBy { it.name }.joinToString(", ") { it.name }
-            return ControlOutcome(
-                false, deviceId, capability, value, null,
-                "${device.name} does not report ${capability.name}. It reports: " +
-                    if (has.isEmpty()) "no capabilities" else has,
-            )
-        }
-        if (capability in Capability.READ_ONLY) {
-            return ControlOutcome(
-                false, deviceId, capability, value, null,
-                "${capability.name} is a reading, not a command. ${device.name} reports it but does not accept it.",
-            )
-        }
-        if (!device.available) {
-            return ControlOutcome(
-                false, deviceId, capability, value, null,
-                "${device.name} is not reachable right now, so nothing was sent.",
-            )
+        /*
+         * THE DECISION IS MADE BY THE TESTED PURE FUNCTION, not inline here.
+         *
+         * Capability enforcement and the reading check were previously written
+         * out in this method, which meant the fabric's most important rule could
+         * only be tested by faking a DAO. FabricDecisions.canControl is the same
+         * rule in a form a JVM test proves directly.
+         */
+        val verdict = FabricDecisions.canControl(
+            device = device,
+            capability = capability,
+            transportInstalled = registry.forTransport(device.transport) != null,
+        )
+        if (verdict is FabricDecisions.Verdict.Refused) {
+            return ControlOutcome(false, deviceId, capability, value, null, verdict.reason)
         }
 
         val transport = registry.forTransport(device.transport)
@@ -416,7 +390,7 @@ class DeviceFabric(
                 ControlOutcome(
                     false, deviceId, capability, value, write.stillReports,
                     "${device.name} accepted the ${capability.name} command but does not report " +
-                        "the change: it still shows ${describe(write.stillReports)}.",
+                        "the change: it still shows ${FabricDecisions.describe(write.stillReports)}.",
                 )
 
             is TransportWrite.Confirmed -> {
@@ -427,22 +401,17 @@ class DeviceFabric(
                     null
                 }
                 val observed = readBack?.get(capability)
-                val matches = observed != null && observed.asComparable() == write.observed.asComparable()
 
-                if (observed != null) {
+                if (readBack != null) {
                     // Persist what the device reports, which is the truth.
                     dao.updateState(device.id, encodeState(readBack), true, System.currentTimeMillis())
                 }
 
-                if (matches) {
-                    ControlOutcome(true, deviceId, capability, value, observed, null)
-                } else {
-                    ControlOutcome(
-                        false, deviceId, capability, value, observed,
-                        "${device.name} reported ${capability.name} as ${describe(observed)} " +
-                            "when ${describe(value)} was written, so the change was not confirmed. " +
-                            if (observed == null) "The device could not be read back at all." else "",
-                    )
+                when (val confirmation = FabricDecisions.confirm(device.name, capability, value, observed)) {
+                    is FabricDecisions.Confirmation.Confirmed ->
+                        ControlOutcome(true, deviceId, capability, value, confirmation.observed, null)
+                    is FabricDecisions.Confirmation.NotConfirmed ->
+                        ControlOutcome(false, deviceId, capability, value, confirmation.observed, confirmation.reason)
                 }
             }
         }
