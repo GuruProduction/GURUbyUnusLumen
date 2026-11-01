@@ -73,22 +73,78 @@ class SamsungRemote(
                 "Samsung's remote protocol has no ${button.name.lowercase().replace('_', ' ')} key.",
             )
 
-        connect(key)
+        val message = """{"method":"ms.remote.control","params":{"Cmd":"Click","""
+            .plus(""""DataOfCmd":"$key",""")
+            .plus(""""Option":"false","TypeOfRemote":"SendRemoteKey"}}""")
+
+        send(message, "the $key keypress")
     }
 
     /**
-     * Open the channel, send one key, and close it.
+     * Launch an app by name.
      *
-     * A connection per press rather than a held channel: a television closes an idle
-     * channel itself, so a cached socket is a socket that is usually dead, and a stale
-     * socket fails in exactly the way a wrong code does.
+     * THE CAPABILITY THAT MAKES A REMOTE INTO CONTROL. Pressing buttons means walking the app
+     * grid with the D-pad. This asks the set to start the app directly, over the same channel a
+     * keypress uses.
      *
-     * THE KEY IS PASSED IN rather than computed here. It was computed in `press` and
-     * referenced here, which does not compile, and more importantly would have been the
-     * wrong shape: the key is the caller's decision and this method's job is only the
-     * channel.
+     * The message is `ms.channel.emit` on the app channel rather than a remote key, and the
+     * payload carries the app id, which is why [TvApps] holds the Samsung mapping.
      */
-    private fun connect(key: String): TvCommandOutcome {
+    override suspend fun launchApp(app: String): TvCommandOutcome = withContext(Dispatchers.IO) {
+        val id = TvApps.samsungId(app)
+            ?: return@withContext TvCommandOutcome.Failed(
+                TvApps.refusal("The Samsung set at $host", TvVendor.SAMSUNG, app),
+            )
+
+        val message = """{"method":"ms.channel.emit","params":{"event":"ed.apps.launch","""
+            .plus(""""to":"host",""")
+            .plus(""""data":{"action_type":"DEEP_LINK","appId":"$id"}}}""")
+
+        send(message, "launch '$app' (app id $id)")
+    }
+
+    /**
+     * Type text into a focused Samsung field.
+     *
+     * Samsung's text channel takes an IME string, so a person can fill a search box rather than
+     * spelling it out with directional presses.
+     */
+    override suspend fun typeText(text: String): TvCommandOutcome = withContext(Dispatchers.IO) {
+        if (text.isEmpty()) {
+            return@withContext TvCommandOutcome.Failed("There is no text to type.")
+        }
+        val escaped = text.replace("\\", "\\\\").replace("\"", "\\\"")
+        val message = """{"method":"ms.remote.control","params":{"Cmd":"SendInputString","""
+            .plus(""""DataOfCmd":"base64:${java.util.Base64.getEncoder().encodeToString(text.toByteArray())}",""")
+            .plus(""""TypeOfRemote":"SendInputString"}}""")
+
+        send(message, "type text")
+    }
+
+    /**
+     * Push a stream onto a Samsung set.
+     *
+     * The remote channel does not accept a media URL, so this refuses rather than sending a
+     * message the television will drop. Casting to a Samsung set goes through the Cast or DIAL
+     * layer, not the remote channel.
+     */
+    override suspend fun castMedia(
+        url: String,
+        title: String?,
+        mimeType: String?,
+    ): TvCommandOutcome = TvCommandOutcome.Failed(
+        "Samsung's remote channel does not accept a media URL, so nothing was sent. Use launchApp " +
+            "to start an app and typeText to search inside it, both of which this adapter supports.",
+    )
+
+    /**
+     * Send one message on a fresh channel and report what came back.
+     *
+     * EVERY Samsung command goes through here, so the token handling, the acknowledgement and the
+     * pairing prompt live in one place rather than three. The keypress path passes its own message
+     * and this method does not care what it says.
+     */
+    private fun send(message: String, describe: String): TvCommandOutcome {
         val url = buildString {
             append("ws://$host:$port/api/v2/channels/samsung.remote.control")
             append("?name=")
@@ -100,28 +156,21 @@ class SamsungRemote(
             }
         }
 
-        // The full path INCLUDING the query string, because the query carries the token
-        // and a channel opened without it makes the set ask for permission again.
         val path = url.removePrefix("ws://$host:$port")
         val result = WebSocketClient.connect(host, port, path, timeoutMillis)
         val client = result.client
             ?: return TvCommandOutcome.Failed(
-                "Could not open Samsung's remote channel on $host:$port: ${result.reason}." +
-                    " A set that is fully powered down has no network stack and cannot be woken " +
-                    "over wifi; Samsung's Network Standby setting has to be on for that.",
+                "Could not open Samsung's channel on $host:$port to $describe: ${result.reason}.",
             )
 
         return try {
-            // The connect acknowledgement carries the token, so it is read before the
-            // keypress rather than after: a set that has not acknowledged is not ready.
             val greeting = runCatching { client.readText() }.getOrNull()
-            if (greeting == null) {
-                return TvCommandOutcome.Failed(
-                    "Samsung's channel opened but the set did not acknowledge the connection, so " +
-                        "nothing was sent.",
+                ?: return TvCommandOutcome.Failed(
+                    "Samsung's channel opened but the set did not acknowledge it, so $describe was " +
+                        "not sent.",
                     needsPairing = true,
                 )
-            }
+
             Regex("\"token\"\\s*:\\s*\"([^\"]+)\"").find(greeting)?.groupValues?.getOrNull(1)?.let {
                 issuedToken = it
             }
@@ -134,12 +183,9 @@ class SamsungRemote(
                 )
             }
 
-            val message = """{"method":"ms.remote.control","params":{"Cmd":"Click","""
-                .plus(""""DataOfCmd":"$key",""")
-                .plus(""""Option":"false","TypeOfRemote":"SendRemoteKey"}}""")
             client.sendText(message)
             TvCommandOutcome.Sent(
-                "Samsung accepted the $key keypress on $host. " +
+                "Samsung accepted $describe on $host. " +
                     if (issuedToken != null) {
                         "The set issued a token, so it will not ask again."
                     } else {
@@ -148,7 +194,8 @@ class SamsungRemote(
             )
         } catch (error: Exception) {
             TvCommandOutcome.Failed(
-                "Samsung's channel broke while sending: ${error.message ?: error.javaClass.simpleName}.",
+                "Samsung's channel broke while sending $describe: " +
+                    "${error.message ?: error.javaClass.simpleName}.",
             )
         } finally {
             client.close()
