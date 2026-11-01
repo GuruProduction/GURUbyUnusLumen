@@ -171,12 +171,27 @@ object AdapterCatalogue {
         // ---- Still gaps, named rather than hidden ----
         Adapter(
             id = "android-tv-remote",
-            target = "Android TV and Google TV, including Fire TV's Android side",
-            mechanism = "The Remote v2 pairing protocol on 6466, with an on-screen code",
+            target = "Android TV, Google TV, Fire TV, Nvidia Shield and Chromecast with Google TV",
+            mechanism = "Remote v2 over TLS: pairing on 6467, remote on 6466",
             requirement = 0,
-            built = false,
-            detail = "Needs a protobuf implementation and the pairing exchange. His own scan found " +
-                "an Amazon Fire TV at 192.168.0.71, so this is a live gap on his network.",
+            built = true,
+            detail = "Hand-written protobuf because the module declares no protobuf runtime: " +
+                "varints, field tags and the two-field outer frame, all asserted by a JVM test. " +
+                "Keycodes are Android's own, so the mapping cannot drift. Pairing takes the " +
+                "six-digit code the set shows and keeps the certificate it issues.",
+        ),
+        Adapter(
+            id = "xbox-smartglass",
+            target = "Xbox One and Series consoles",
+            mechanism = "SmartGlass on UDP 5050: discovery, the 0xDD02 power-on, then ECDH + AES",
+            requirement = 0,
+            built = true,
+            detail = "Discovery, power on over message 0xDD02 with the Live ID, and Wake-on-LAN " +
+                "are real and built. The crypto channel is built too: an ephemeral P-384 key, the " +
+                "salted SHA-512 derivation, AES-128-CBC payloads and HMAC-SHA-256 signatures. The " +
+                "Connect Request exchange a console requires before accepting a signed message is " +
+                "the one step not proven against hardware, and it reports that rather than " +
+                "claiming the command landed.",
         ),
         Adapter(
             id = "vizio-smartcast",
