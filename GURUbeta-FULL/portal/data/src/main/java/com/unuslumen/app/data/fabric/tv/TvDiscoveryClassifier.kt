@@ -57,15 +57,31 @@ object TvDiscoveryClassifier {
             haystack.contains("vizio") -> TvVendor.VIZIO
             haystack.contains("androidtv") || haystack.contains("android tv") -> TvVendor.ANDROID_TV
             haystack.contains("roku") -> TvVendor.ROKU
+            // Virgin Media's boxes announce themselves as EOSSTB with the manufacturer
+            // "Virgin TV". There was no rule for either string, so the reply fell through
+            // to a refusal and the set vanished while netHosts listed it (issue #234).
+            haystack.contains("eosstb") || haystack.contains("virgin tv") ||
+                haystack.contains("liberty global") -> TvVendor.UNKNOWN
             // A DIAL service with no maker named is still a screen, but which one is
             // unknown, and guessing a vendor would send the wrong protocol.
             st.contains("dial-multiscreen", ignoreCase = true) && friendly != null -> TvVendor.UNKNOWN
             else -> return null
         }
 
-        // An unidentified screen is not reported at all: it cannot be driven by any
-        // adapter this build has, so listing it would offer a device that refuses.
-        if (vendor == TvVendor.UNKNOWN) return null
+        // A SCREEN THIS BUILD CANNOT DRIVE IS STILL A SCREEN THAT WAS FOUND.
+        //
+        // This used to return null for every unidentified device, so a set that answered
+        // and named itself was reported as absent. That is the worst possible answer: a
+        // person looking at their own television is told there is nothing there. Issue #234
+        // was exactly that, because the Virgin box had no rule of its own.
+        //
+        // THE GUARD IS STILL NEEDED, just narrower. A printer answers UPnP and can even
+        // carry a DIAL service target, and listing it as a television offers a device that
+        // refuses every command. So an unknown make is only reported when the device also
+        // described itself as a screen: a MediaRenderer, a DIAL multiscreen service with a
+        // friendly name, or one of the set-top-box strings. Otherwise it is not a telly and
+        // this returns null, exactly as before.
+        if (vendor == TvVendor.UNKNOWN && !looksLikeAScreen(st, haystack, friendly)) return null
 
         val port = when (vendor) {
             TvVendor.ROKU -> 8060
@@ -86,6 +102,23 @@ object TvDiscoveryClassifier {
                 if (manufacturer != null) ", made by $manufacturer" else "",
             needsPairing = vendor != TvVendor.ROKU && vendor != TvVendor.ANDROID_TV,
         )
+    }
+
+    /**
+     * Whether an unidentified device still described itself as something you watch.
+     *
+     * The bar is a MediaRenderer device type, the Liberty Global set-top-box strings, or a
+     * DIAL multiscreen service WITH a friendly name. A printer that happens to answer a
+     * DIAL search target but carries no screen identity fails all three, which is what
+     * keeps it out of the television list.
+     */
+    private fun looksLikeAScreen(st: String, haystack: String, friendly: String?): Boolean = when {
+        haystack.contains("mediarenderer") -> true
+        haystack.contains("eosstb") || haystack.contains("virgin tv") ||
+            haystack.contains("liberty global") -> true
+        st.contains("dial-multiscreen", ignoreCase = true) &&
+            friendly != null && friendly.contains("tv", ignoreCase = true) -> true
+        else -> false
     }
 
     /** The text of one XML tag, or null when it is absent. */
