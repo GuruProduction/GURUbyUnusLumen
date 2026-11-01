@@ -187,23 +187,41 @@ class NetworkScanner(
 
     private data class SweptHost(val address: String, val ports: List<Int>)
 
+    /**
+     * Sweep the /24 against [portMeanings], every port on every host at once.
+     *
+     * THE DEFECT THIS REMOVES. This used to connect to each port in sequence inside the
+     * per-host coroutine, so a host that is switched off cost forty-eight timeouts back to
+     * back. Across a real house that is several seconds of nothing, and it felt like the
+     * scan had hung. Firing the ports concurrently makes the worst case one timeout rather
+     * than forty-eight, and a closed port refuses immediately anyway.
+     *
+     * Chunked so a bounded number of sockets exist at once, because this phone has been
+     * OOM-killed by an unbounded loop before.
+     */
     private suspend fun sweep(subnet: String): List<SweptHost> = coroutineScope {
-        (1..254).map { last ->
-            async {
-                val address = "$subnet.$last"
-                val open = mutableListOf<Int>()
-                for (port in portMeanings.keys) {
+        val pairs = (1..254).flatMap { last ->
+            val address = "$subnet.$last"
+            portMeanings.keys.map { address to it }
+        }
+
+        val open = mutableListOf<Pair<String, Int>>()
+        for (chunk in pairs.chunked(SWEEP_CHUNK)) {
+            open += chunk.map { (address, port) ->
+                async {
                     val reachable = runCatching {
                         Socket().use { socket ->
                             socket.connect(InetSocketAddress(address, port), connectTimeoutMillis)
                             true
                         }
                     }.getOrDefault(false)
-                    if (reachable) open.add(port)
+                    if (reachable) address to port else null
                 }
-                if (open.isEmpty()) null else SweptHost(address, open)
-            }
-        }.awaitAll().filterNotNull()
+            }.awaitAll().filterNotNull()
+        }
+
+        open.groupBy({ it.first }, { it.second })
+            .map { (address, ports) -> SweptHost(address, ports) }
     }
 
     // ------------------------------------------------------------------
@@ -279,44 +297,14 @@ class NetworkScanner(
     }
 
     /**
-     * Build the DNS-SD enumeration query packet.
+     * The DNS-SD enumeration query, which asks a device to list every service it offers.
      *
-     * A DNS packet is: a 12-byte header, then one question made of length-prefixed
-     * labels and a type and class. The query name is `_services._dns-sd._udp.local`,
-     * type PTR (12), class IN (1), and the mDNS bit (0x8000) is not set because a query
-     * asks rather than answers.
-     *
-     * Built by hand rather than with a library because it is nine labels and twenty
-     * bytes, and a dependency for one packet would be a build change for no gain.
+     * DELEGATES TO THE ONE SHARED BUILDER. Two copies of a byte layout drift the moment one
+     * is edited, and the copy the app runs would be the one nothing tests. The shared
+     * builder also sets the unicast-response bit, which is the difference between Bonjour
+     * answering this app and answering a multicast group this app cannot hear.
      */
-    private fun mdnsEnumerationQuery(): ByteArray {
-        val out = java.io.ByteArrayOutputStream()
-
-        // Header, twelve bytes: transaction id (2), flags (2), question count (2),
-        // answer count (2), authority count (2), additional count (2).
-        //
-        // The question count MUST be 1, written as its own pair. My earlier version put
-        // the 1 in the wrong pair, so the packet claimed one answer and zero questions
-        // and no resolver answered it, which reads exactly like a device that stays
-        // silent.
-        out.write(byteArrayOf(0, 0))   // transaction id 0
-        out.write(byteArrayOf(0, 0))   // flags: a query, not a response
-        out.write(byteArrayOf(0, 1))   // one question
-        out.write(byteArrayOf(0, 0))   // no answers
-        out.write(byteArrayOf(0, 0))   // no authority records
-        out.write(byteArrayOf(0, 0))   // no additional records
-
-        // The labels of "_services._dns-sd._udp.local", each length-prefixed.
-        for (label in listOf("_services", "_dns-sd", "_udp", "local")) {
-            out.write(label.length)
-            out.write(label.toByteArray(Charsets.US_ASCII))
-        }
-        out.write(0)                                  // end of name
-
-        // QTYPE 12 is PTR, QCLASS 1 is IN.
-        out.write(byteArrayOf(0, 12, 0, 1))
-        return out.toByteArray()
-    }
+    private fun mdnsEnumerationQuery(): ByteArray = MdnsQuery.ptrQuery("_services._dns-sd._udp.local")
 
     // ------------------------------------------------------------------
     // SSDP
@@ -470,13 +458,26 @@ class NetworkScanner(
             for (address in iface.inetAddresses.toList()) {
                 if (address !is java.net.Inet4Address || address.isLoopbackAddress) continue
                 val host = address.hostAddress ?: continue
-                if (host.startsWith("192.168.") || host.startsWith("10.") || host.startsWith("172.")) {
-                    return host.substringBeforeLast(".")
-                }
+                // 172 is checked as a range rather than a prefix: 172.1.x and 172.217.x are
+                // public addresses, and sweeping one would be a scan of somebody else's
+                // network rather than this one.
+                if (isPrivateIpv4(host)) return host.substringBeforeLast(".")
             }
         }
         null
     }.getOrNull()
+
+    /** Whether an address is in a private range a home network can use. */
+    private fun isPrivateIpv4(host: String): Boolean {
+        val octets = host.split('.').mapNotNull { it.toIntOrNull() }
+        if (octets.size != 4) return false
+        return when {
+            octets[0] == 10 -> true
+            octets[0] == 192 && octets[1] == 168 -> true
+            octets[0] == 172 && octets[1] in 16..31 -> true
+            else -> false
+        }
+    }
 
     private fun fetch(url: String, post: Boolean = false): String {
         val connection = com.unuslumen.app.data.fabric.net.LocalRoute.open(url)
@@ -517,6 +518,9 @@ class NetworkScanner(
         host.kind == HostKind.TELEVISION && host.openPorts.any { it in setOf(8060, 8001, 3000) }
 
     companion object {
+        /** How many probes are in flight at once, bounded so the phone is never OOM-killed. */
+        private const val SWEEP_CHUNK = 512
+
         /**
          * The port-only kind inference, lifted to the companion so a test can call it
          * without constructing a scanner that would try to touch the network.
