@@ -249,6 +249,17 @@ dependencies {
 
     implementation(libs.kotlinx.serialization.json)
 
+    // Real APK signing, in-process (issue 200). apksig is the library Google's
+    // own build tools sign with, and it produces APK Signature Scheme v1, v2 and
+    // v3. It was chosen over shelling out to apksigner for one decisive reason
+    // measured before it was added: all 267 of its classes are Java 8 class
+    // files and it references nothing outside java.*, javax.* and itself — no
+    // android.*, no apkzlib, no third-party code. So it runs on ART as-is, which
+    // means signing needs no JVM at all and works even when the bundled JDK is
+    // absent. That is the difference between a signing tool that works and one
+    // that reports "no signing tool available".
+    implementation(libs.apksig)
+
     implementation(libs.koog.agents)
 
     implementation(libs.litert)

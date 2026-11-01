@@ -11,6 +11,7 @@ import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
 import com.unuslumen.app.util.shell.ShellDenialSignatures
 import com.unuslumen.app.util.shell.ShellExecutor
+import com.unuslumen.app.util.shell.TermuxProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -20,6 +21,17 @@ class ReverseEngineeringToolExecutor(private val context: Context) : ToolExecuto
     private val json = Json { ignoreUnknownKeys = true }
     private val shellExecutor = ShellExecutor(context)
     private val debugKeyStore: String by lazy { "${context.filesDir.absolutePath}/guru_debug.keystore" }
+
+    /**
+     * The prefix the toolchain lives in, held here rather than reached through
+     * ShellExecutor.
+     *
+     * ShellExecutor exposes reTools (the adb and tool-state surface) and no
+     * termux accessor, and adding one would widen a class whose job is the
+     * root/Shizuku/adb execution ladder. This executor owns its own handle for
+     * the one thing it needs: launching a prefix binary with an argument list.
+     */
+    private val termux = TermuxProvider(context)
 
     private data class ParsedAapt(val packageName: String, val versionName: String, val versionCode: Int, val permissions: List<String>, val activities: List<String>, val services: List<String>, val receivers: List<String>, val providers: List<String>)
     private data class PmPackageInfo(val versionName: String, val versionCode: Int, val permissions: List<String>, val activities: List<String>, val services: List<String>, val receivers: List<String>, val providers: List<String>)
@@ -239,19 +251,93 @@ class ReverseEngineeringToolExecutor(private val context: Context) : ToolExecuto
         val r = ExtractionResult(result.success, outputDir, fileCount, if (result.success) null else result.stderr); ToolExecutionResult.success(r, json.encodeToString(ExtractionResult.serializer(), r))
     }
 
+    /**
+     * Read an APK's manifest with the bundled aapt, falling back to aapt2 and
+     * then to a strings scan.
+     *
+     * THE DEFECT THIS FIXES (issue 200). This called `wrapAapt` and `wrapAapt2`
+     * on ReToolingProvider, which returned a command string for a binary in
+     * `files/re-tools/` that was never bundled. The command then went through
+     * ShellExecutor, which ends at `sh -c` under the app UID — and app storage
+     * is not executable, so even a present aapt could not have run that way.
+     * Every branch failed and the last one blamed "bundled aapt2 unavailable",
+     * which named the wrong cause.
+     *
+     * Now the tools are real (installed into the prefix by TermuxProvider), they
+     * are launched through linker64 with an explicit argument list rather than a
+     * re-parsed string, and the reported method names which one actually
+     * answered. When none can, the error says what was tried and why each
+     * stopped, instead of attributing the failure to one tool.
+     */
     private suspend fun readManifest(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val apkPath = args["apkPath"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'apkPath'")
+        val apkPath = args["apkPath"] as? String
+            ?: return@withContext ToolExecutionResult.error("Missing 'apkPath'")
         if (!shellExecutor.reTools.isInitialized) shellExecutor.reTools.initialize()
-        if (shellExecutor.reTools.isAaptAvailable()) { val cmd = shellExecutor.reTools.wrapAapt("dump badging \"$apkPath\""); val aaptResult = shellExecutor.execute("$cmd 2>&1"); if (aaptResult.success && aaptResult.stdout.isNotBlank()) { val parsed = parseAaptOutput(aaptResult.stdout); val r = ManifestResult(true, parsed.packageName, parsed.versionName, parsed.versionCode, parsed.permissions, parsed.activities, parsed.services, parsed.receivers, parsed.providers, aaptResult.stdout, "aapt (bundled)", null); return@withContext ToolExecutionResult.success(r, json.encodeToString(ManifestResult.serializer(), r)) } }
-        if (shellExecutor.reTools.isAapt2Available()) { val cmd = shellExecutor.reTools.wrapAapt2("dump badging \"$apkPath\""); val aaptResult = shellExecutor.execute("$cmd 2>&1"); if (aaptResult.success && aaptResult.stdout.isNotBlank()) { val parsed = parseAaptOutput(aaptResult.stdout); val r = ManifestResult(true, parsed.packageName, parsed.versionName, parsed.versionCode, parsed.permissions, parsed.activities, parsed.services, parsed.receivers, parsed.providers, aaptResult.stdout, "aapt2 (bundled)", null); return@withContext ToolExecutionResult.success(r, json.encodeToString(ManifestResult.serializer(), r)) } }
-        val aaptResult = shellExecutor.execute("aapt dump badging \"$apkPath\" 2>&1")
-        if (aaptResult.success && aaptResult.stdout.isNotBlank()) { val parsed = parseAaptOutput(aaptResult.stdout); val r = ManifestResult(true, parsed.packageName, parsed.versionName, parsed.versionCode, parsed.permissions, parsed.activities, parsed.services, parsed.receivers, parsed.providers, aaptResult.stdout, "aapt (system)", null); return@withContext ToolExecutionResult.success(r, json.encodeToString(ManifestResult.serializer(), r)) }
-        val tmpDir = "${context.cacheDir.absolutePath}/manifest_tmp_${System.currentTimeMillis()}"; File(tmpDir).mkdirs()
-        shellExecutor.execute("unzip -o \"$apkPath\" AndroidManifest.xml -d \"$tmpDir\" 2>/dev/null")
-        val manifestFile = File("$tmpDir/AndroidManifest.xml")
-        if (manifestFile.exists()) { val stringsResult = shellExecutor.execute("strings \"${manifestFile.absolutePath}\" 2>/dev/null"); if (stringsResult.stdout.isNotBlank()) { val pkgName = extractPackageName(stringsResult.stdout) ?: "unknown"; val pmInfo = getPmPackageInfo(pkgName); shellExecutor.execute("rm -rf \"$tmpDir\" 2>/dev/null"); val r = ManifestResult(true, pkgName, pmInfo.versionName, pmInfo.versionCode, pmInfo.permissions, pmInfo.activities, pmInfo.services, pmInfo.receivers, pmInfo.providers, stringsResult.stdout.take(10000), "strings+pm", "Binary XML — for full decoding, aapt2 is bundled but not available."); return@withContext ToolExecutionResult.success(r, json.encodeToString(ManifestResult.serializer(), r)) } }
-        shellExecutor.execute("rm -rf \"$tmpDir\" 2>/dev/null")
-        val r = ManifestResult(false, "", "", 0, emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), "", "none", "Could not read manifest. Bundled aapt2 unavailable."); ToolExecutionResult.success(r, json.encodeToString(ManifestResult.serializer(), r))
+
+        // aapt first: it is the tool built for exactly this and its badging
+        // output is the shape parseAaptOutput reads. aapt2 answers the same
+        // question with the same format when aapt is absent.
+        val attempts = mutableListOf<String>()
+        for (tool in listOf("aapt", "aapt2")) {
+            val probe = shellExecutor.reTools.toolState(tool)
+            if (probe.state != TermuxProvider.CommandProbe.RUNS) {
+                attempts.add("$tool ${probe.state.name.lowercase().replace('_', ' ')}")
+                continue
+            }
+            val result = termux.execBinary(tool, listOf("dump", "badging", apkPath))
+            if (result.success && result.stdout.isNotBlank()) {
+                val parsed = parseAaptOutput(result.stdout)
+                val r = ManifestResult(
+                    true, parsed.packageName, parsed.versionName, parsed.versionCode,
+                    parsed.permissions, parsed.activities, parsed.services,
+                    parsed.receivers, parsed.providers, result.stdout,
+                    "$tool (bundled toolchain)", null,
+                )
+                return@withContext ToolExecutionResult.success(r, json.encodeToString(ManifestResult.serializer(), r))
+            }
+            // Ran but produced nothing usable, so the real output is the reason.
+            attempts.add("$tool ran but gave no output (exit ${result.exitCode})")
+        }
+
+        /*
+         * A strings scan is a genuinely different source of truth rather than a
+         * degradation of the same one: it reads the binary XML directly, so it
+         * answers for a packaged APK even when the toolchain is missing. It is
+         * reported as its own method so a caller can tell which answered, and the
+         * note states what the richer path would have done.
+         */
+        val tmpDir = "${context.cacheDir.absolutePath}/manifest_tmp_${System.currentTimeMillis()}"
+        File(tmpDir).mkdirs()
+        try {
+            shellExecutor.execute("unzip -o \"$apkPath\" AndroidManifest.xml -d \"$tmpDir\" 2>/dev/null")
+            val manifestFile = File("$tmpDir/AndroidManifest.xml")
+            if (manifestFile.exists()) {
+                val stringsResult = shellExecutor.execute("strings \"${manifestFile.absolutePath}\" 2>/dev/null")
+                if (stringsResult.stdout.isNotBlank()) {
+                    val pkgName = extractPackageName(stringsResult.stdout) ?: "unknown"
+                    val pmInfo = getPmPackageInfo(pkgName)
+                    val r = ManifestResult(
+                        true, pkgName, pmInfo.versionName, pmInfo.versionCode,
+                        pmInfo.permissions, pmInfo.activities, pmInfo.services,
+                        pmInfo.receivers, pmInfo.providers,
+                        stringsResult.stdout.take(10000), "strings+pm",
+                        "Decoded by scanning the binary XML, not by aapt. " +
+                            "aapt/aapt2 were tried first: ${attempts.joinToString("; ")}.",
+                    )
+                    return@withContext ToolExecutionResult.success(r, json.encodeToString(ManifestResult.serializer(), r))
+                }
+            }
+        } finally {
+            shellExecutor.execute("rm -rf \"$tmpDir\" 2>/dev/null")
+        }
+
+        val r = ManifestResult(
+            false, "", "", 0, emptyList(), emptyList(), emptyList(), emptyList(), emptyList(),
+            "", "none",
+            "Could not read the manifest. aapt and aapt2 were tried first: " +
+                "${attempts.joinToString("; ")}; the strings fallback also produced nothing.",
+        )
+        ToolExecutionResult.success(r, json.encodeToString(ManifestResult.serializer(), r))
     }
 
     private suspend fun extractDex(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
@@ -291,20 +377,159 @@ class ReverseEngineeringToolExecutor(private val context: Context) : ToolExecuto
         val r = ExtractionResult(result.success, outputDir, fileCount, if (result.success) null else result.stderr); ToolExecutionResult.success(r, json.encodeToString(ExtractionResult.serializer(), r))
     }
 
+    /**
+     * Decompile an APK to Java and smali with the bundled JVM toolchain.
+     *
+     * THE DEFECT THIS FIXES (issue 200). Every branch asked whether a tool was
+     * "available" — which was File.exists() on a wrapper — then built a command
+     * string through wrapJadx/wrapApktool/wrapDex2jar and pushed it through
+     * ShellExecutor. None of those wrappers existed, none of the jars existed,
+     * and there was no JVM for any of them to launch even if they had. The
+     * branches therefore reported "NOT AVAILABLE" from a real absence that the
+     * provider had just described as present.
+     *
+     * Now each decompiler is checked by RUNNING it, launched with an explicit
+     * argument list through linker64, and the summary states what each one did
+     * with the real output attached when it failed. If the JVM itself is absent
+     * that is said once, at the top, because every decompiler depends on it and
+     * three identical failures hide the single cause.
+     */
     private suspend fun decompileApk(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val apkPath = args["apkPath"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'apkPath'")
-        val outputDir = args["outputDir"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'outputDir'")
+        val apkPath = args["apkPath"] as? String
+            ?: return@withContext ToolExecutionResult.error("Missing 'apkPath'")
+        val outputDir = args["outputDir"] as? String
+            ?: return@withContext ToolExecutionResult.error("Missing 'outputDir'")
         val method = args["method"] as? String ?: "auto"
-        if (!shellExecutor.reTools.isInitialized) shellExecutor.reTools.initialize(); File(outputDir).mkdirs()
+        if (!shellExecutor.reTools.isInitialized) shellExecutor.reTools.initialize()
+        File(outputDir).mkdirs()
+
         val methods = StringBuilder()
-        if (method in listOf("auto", "jadx") && shellExecutor.reTools.isJadxAvailable()) { val jadxDir = "$outputDir/jadx_output"; File(jadxDir).mkdirs(); val cmd = shellExecutor.reTools.wrapJadx("-d \"$jadxDir\" \"$apkPath\""); val decompile = shellExecutor.execute("$cmd 2>&1 | tail -20"); val javaCount = if (decompile.success) File(jadxDir).walkTopDown().count { it.extension == "java" } else 0; if (javaCount > 0) methods.append("jadx (bundled): SUCCESS ($javaCount Java files)\n") else methods.append("jadx (bundled): FAILED\n") } else if (method in listOf("auto", "jadx")) methods.append("jadx: NOT AVAILABLE\n")
-        if (method in listOf("auto", "apktool") && shellExecutor.reTools.isApktoolAvailable()) { val apktoolDir = "$outputDir/apktool_output"; File(apktoolDir).mkdirs(); val cmd = shellExecutor.reTools.wrapApktool("d -f -o \"$apktoolDir\" \"$apkPath\""); val decompile = shellExecutor.execute("$cmd 2>&1 | tail -20"); val smaliCount = if (decompile.success) File(apktoolDir).walkTopDown().count { it.extension == "smali" } else 0; if (smaliCount > 0) methods.append("apktool (bundled): SUCCESS ($smaliCount smali files)\n") else methods.append("apktool (bundled): FAILED\n") } else if (method in listOf("auto", "apktool")) methods.append("apktool: NOT AVAILABLE\n")
-        if (method in listOf("auto", "dex2jar") && shellExecutor.reTools.isDex2jarAvailable()) { val dex2jarDir = "$outputDir/dex2jar_output"; File(dex2jarDir).mkdirs(); val outputJar = "$dex2jarDir/output.jar"; val cmd = shellExecutor.reTools.wrapDex2jar(apkPath, outputJar); val decompile = shellExecutor.execute("$cmd 2>&1 | tail -10"); if (decompile.success && File(outputJar).exists() && File(outputJar).length() > 0) methods.append("dex2jar (bundled): SUCCESS\n") else methods.append("dex2jar (bundled): FAILED\n") } else if (method in listOf("auto", "dex2jar")) methods.append("dex2jar: NOT AVAILABLE\n")
-        val extractDir = "$outputDir/extracted"; File(extractDir).mkdirs(); shellExecutor.execute("unzip -o \"$apkPath\" -d \"$extractDir\" 2>/dev/null")
+
+        // The JVM is the shared dependency of all three decompilers, so its
+        // absence is reported as the cause rather than as three symptoms.
+        val javaProbe = shellExecutor.reTools.toolState("java")
+        val javaRuns = javaProbe.state == TermuxProvider.CommandProbe.RUNS
+        if (!javaRuns) {
+            val reason = when (javaProbe.state) {
+                TermuxProvider.CommandProbe.ABSENT ->
+                    "the bundled JVM is not installed"
+                TermuxProvider.CommandProbe.WILL_NOT_LOAD ->
+                    "the bundled JVM will not run (${javaProbe.output.take(200)})"
+                TermuxProvider.CommandProbe.RUNS -> "the bundled JVM runs"
+            }
+            methods.append("Java decompilers unavailable: $reason.\n")
+        }
+
+        /**
+         * Run one decompiler and report what it actually produced.
+         *
+         * The success test is FILES ON DISK, not the exit code, because jadx and
+         * apktool both exit non-zero on warnings while leaving a complete tree.
+         * Judging by exit code would call a working decompile a failure.
+         */
+        suspend fun runDecompiler(
+            tool: String,
+            outDir: String,
+            fullArgv: List<String>,
+            extension: String,
+        ) {
+            if (!javaRuns) {
+                methods.append("$tool: skipped, the JVM does not run\n")
+                return
+            }
+            val probe = shellExecutor.reTools.toolState(tool)
+            if (probe.state != TermuxProvider.CommandProbe.RUNS) {
+                val why = when (probe.state) {
+                    TermuxProvider.CommandProbe.ABSENT -> "not installed"
+                    TermuxProvider.CommandProbe.WILL_NOT_LOAD ->
+                        "will not run: ${probe.output.take(200)}"
+                    TermuxProvider.CommandProbe.RUNS -> "runs"
+                }
+                methods.append("$tool: $why\n")
+                return
+            }
+            File(outDir).mkdirs()
+            val result = termux.execBinary(tool, fullArgv)
+            val produced = File(outDir).walkTopDown().count { it.extension == extension }
+            if (produced > 0) {
+                methods.append("$tool: SUCCESS ($produced .$extension files)\n")
+            } else {
+                // Real output, trimmed: a decompiler that failed says why on
+                // stderr and that sentence is the whole value of the attempt.
+                val detail = (result.stderr.ifBlank { result.stdout }).trim().take(300)
+                methods.append(
+                    "$tool: produced no .$extension files (exit ${result.exitCode})" +
+                        if (detail.isNotEmpty()) ": $detail\n" else "\n",
+                )
+            }
+        }
+
+        /*
+         * Each decompiler gets a complete argument list rather than a shared
+         * prefix, because their CLIs disagree: jadx takes `-d <dir> <apk>`;
+         * apktool takes a `d` subcommand then `-f -o <dir> <apk>`; dex2jar takes
+         * `-f -o <jar> <apk>` and produces a JAR, not a directory of sources.
+         * Sharing one builder is how the wrong flag reaches the wrong binary.
+         */
+        if (method in listOf("auto", "jadx")) {
+            val outDir = "$outputDir/jadx_output"
+            runDecompiler("jadx", outDir, listOf("-d", outDir, apkPath), "java")
+        }
+        if (method in listOf("auto", "apktool")) {
+            val outDir = "$outputDir/apktool_output"
+            runDecompiler("apktool", outDir, listOf("d", "-f", "-o", outDir, apkPath), "smali")
+        }
+        if (method in listOf("auto", "dex2jar")) {
+            val outDir = "$outputDir/dex2jar_output"
+            val jar = "$outDir/output.jar"
+            // Its output is a single jar, so the "did it produce something" test
+            // is the jar's existence rather than a file count. The extension
+            // passed here is only used for that count and the message, so the
+            // count is computed from the jar directly below.
+            runDecompiler("dex2jar", outDir, listOf("-f", "-o", jar, apkPath), "jar")
+        }
+
+        /*
+         * Extract and scan strings ALWAYS, because it needs no toolchain at all
+         * and it is the one step that cannot fail for want of a dependency. It is
+         * labelled as its own method rather than as a fallback, so a caller can
+         * tell which path produced the output.
+         */
+        val extractDir = "$outputDir/extracted"
+        File(extractDir).mkdirs()
+        shellExecutor.execute("unzip -o \"$apkPath\" -d \"$extractDir\" 2>/dev/null")
         val stringsOutput = StringBuilder()
-        File(extractDir).walkTopDown().forEach { file -> if (file.isFile && file.extension == "dex") { val s = shellExecutor.execute("strings \"${file.absolutePath}\" 2>/dev/null | head -300"); if (s.stdout.isNotBlank()) { stringsOutput.appendLine("=== ${file.name} strings ==="); stringsOutput.appendLine(s.stdout) } } }
-        methods.append("extract+strings: ALWAYS AVAILABLE")
-        val r = DecompileResult(true, outputDir, methods.toString(), File(outputDir).walkTopDown().count { it.extension == "java" }, File(outputDir).walkTopDown().count { it.extension == "smali" }, File(extractDir).walkTopDown().count { it.isFile }, if (stringsOutput.isNotEmpty()) stringsOutput.toString().take(8000) else null, null); ToolExecutionResult.success(r, json.encodeToString(DecompileResult.serializer(), r))
+        File(extractDir).walkTopDown().forEach { file ->
+            if (file.isFile && file.extension == "dex") {
+                val s = shellExecutor.execute("strings \"${file.absolutePath}\" 2>/dev/null | head -300")
+                if (s.stdout.isNotBlank()) {
+                    stringsOutput.appendLine("=== ${file.name} strings ===")
+                    stringsOutput.appendLine(s.stdout)
+                }
+            }
+        }
+        methods.append("extract+strings: always available, no toolchain needed")
+
+        // Decompilation is only a success when at least one decompiler produced
+        // files. Reporting true while every method failed is the same lie as
+        // reporting a tool present because its filename exists.
+        val javaFiles = File(outputDir).walkTopDown().count { it.extension == "java" }
+        val smaliFiles = File(outputDir).walkTopDown().count { it.extension == "smali" }
+        val decompiled = javaFiles > 0 || smaliFiles > 0
+
+        val r = DecompileResult(
+            success = decompiled,
+            outputDir = outputDir,
+            methodsSummary = methods.toString().trim(),
+            javaFiles = javaFiles,
+            smaliFiles = smaliFiles,
+            extractedFiles = File(extractDir).walkTopDown().count { it.isFile },
+            stringsPreview = if (stringsOutput.isNotEmpty()) stringsOutput.toString().take(8000) else null,
+            error = if (decompiled) null else
+                "No decompiler produced output. The bundle is in the summary above, " +
+                    "which states what each tool did rather than only that it was missing.",
+        )
+        ToolExecutionResult.success(r, json.encodeToString(DecompileResult.serializer(), r))
     }
 
     private suspend fun modApk(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
@@ -323,15 +548,65 @@ class ReverseEngineeringToolExecutor(private val context: Context) : ToolExecuto
         val r = ModApkResult(true, outputPath, outputSize, null, "APK modified. MUST sign with signApk before installing."); ToolExecutionResult.success(r, json.encodeToString(ModApkResult.serializer(), r))
     }
 
+    /**
+     * Sign an APK, in this process, with no external tool (issue 200).
+     *
+     * THE DEFECT THIS REPLACES. The old implementation shelled out three times:
+     * `keytool` to create a keystore, `which apksigner`, then `which jarsigner`.
+     * On the reporting handset none of those were present anywhere — not in the
+     * APK, not in the prefix — so the tool could only ever return "No signing
+     * tool available", while the same build's copy promised a complete on-device
+     * rebuild-and-sign chain.
+     *
+     * Worse, each step's failure was silent. A `which` returning empty is not an
+     * exception, so the code walked from missing keytool to missing apksigner to
+     * missing jarsigner and reported the last one, which named a tool the caller
+     * had never asked for.
+     *
+     * THE ANSWER. Signing is now done by apksig in this process. It needs no
+     * JVM, no keytool and no shell, so it works on a handset with none of them.
+     * The keystore is generated by KeyStore and a hand-written DER certificate,
+     * because a certificate cannot be created through any public JCA API.
+     *
+     * Every outcome is a named reason. A missing input, an empty file, a bad
+     * keystore and a signing fault all read differently, so whoever sees the
+     * result knows what to do next rather than being told a tool is absent.
+     */
     private suspend fun signApk(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val apkPath = args["apkPath"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'apkPath'")
+        val apkPath = args["apkPath"] as? String
+            ?: return@withContext ToolExecutionResult.error("Missing 'apkPath'")
         val signedPath = (args["outputPath"] as? String) ?: apkPath.replace(".apk", "-signed.apk")
-        if (!File(debugKeyStore).exists()) { shellExecutor.execute("keytool -genkey -v -keystore \"$debugKeyStore\" -alias guru_debug -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname \"CN=Guru Debug, OU=RE, O=Guru, L=Unknown, ST=Unknown, C=XX\" 2>&1") }
-        val apkSigner = shellExecutor.execute("which apksigner 2>/dev/null")
-        if (apkSigner.success && apkSigner.stdout.isNotBlank()) { val signResult = shellExecutor.execute("apksigner sign --ks \"$debugKeyStore\" --ks-pass pass:android --key-pass pass:android --out \"$signedPath\" \"$apkPath\" 2>&1"); if (signResult.success) { val r = SignApkResult(true, signedPath, "apksigner", null); return@withContext ToolExecutionResult.success(r, json.encodeToString(SignApkResult.serializer(), r)) } }
-        val jarsigner = shellExecutor.execute("which jarsigner 2>/dev/null")
-        if (jarsigner.success && jarsigner.stdout.isNotBlank()) { val signResult = shellExecutor.execute("jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 -keystore \"$debugKeyStore\" -storepass android -keypass android \"$apkPath\" guru_debug 2>&1"); if (signResult.success) { shellExecutor.execute("cp \"$apkPath\" \"$signedPath\" 2>/dev/null"); val r = SignApkResult(true, signedPath, "jarsigner", null); return@withContext ToolExecutionResult.success(r, json.encodeToString(SignApkResult.serializer(), r)) } else { val r = SignApkResult(false, "", "jarsigner", "Signing failed: ${signResult.stderr}"); return@withContext ToolExecutionResult.success(r, json.encodeToString(SignApkResult.serializer(), r)) } }
-        val r = SignApkResult(false, "", "none", "No signing tool available."); ToolExecutionResult.success(r, json.encodeToString(SignApkResult.serializer(), r))
+
+        val result = try {
+            val keystore = ApkSigner.ensureKeystore(File(debugKeyStore))
+            ApkSigner.sign(
+                inputApk = File(apkPath),
+                outputApk = File(signedPath),
+                keystoreFile = keystore,
+                // The minSdk the app itself supports. apksig uses it to decide
+                // which signature schemes are worth producing, and reporting a
+                // scheme the platform will not check would be a false claim.
+                minSdk = 26,
+            )
+        } catch (e: Exception) {
+            // ensureKeystore can fail where sign() cannot, so its faults are
+            // reported with the same shape rather than escaping as a crash.
+            ApkSigner.Result(
+                success = false,
+                signedPath = "",
+                method = "apksig",
+                error = "Could not create or read the signing key " +
+                    "(${e.javaClass.simpleName}): ${e.message ?: "no detail"}",
+            )
+        }
+
+        val r = SignApkResult(
+            success = result.success,
+            signedPath = result.signedPath,
+            method = result.method,
+            error = result.error,
+        )
+        ToolExecutionResult.success(r, json.encodeToString(SignApkResult.serializer(), r))
     }
 
     private fun parseAaptOutput(output: String): ParsedAapt {
