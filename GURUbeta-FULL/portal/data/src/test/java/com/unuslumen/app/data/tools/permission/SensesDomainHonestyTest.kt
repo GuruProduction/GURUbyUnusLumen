@@ -79,8 +79,22 @@ class SensesDomainHonestyTest {
         // batch was written. It is asserted rather than tolerated: a registered domain
         // is one the dispatcher will actually reach, so an unexpected id here means a
         // domain was added without anybody deciding to add it.
+        //
+        // `smart_home` and `ir` joined for #187. The fabric merged in #196 with no
+        // aggregator line, so its five generic tools did not exist in the running app
+        // at all and a request to control a television reached nothing. Naming both
+        // here is the fix, and this assertion is what proves they are named.
         assertEquals(
-            listOf("bluetooth", "camera_audio", "location", "phone", "privileged_capture", "sensors"),
+            listOf(
+                "bluetooth",
+                "camera_audio",
+                "ir",
+                "location",
+                "phone",
+                "privileged_capture",
+                "sensors",
+                "smart_home",
+            ),
             ids,
         )
     }

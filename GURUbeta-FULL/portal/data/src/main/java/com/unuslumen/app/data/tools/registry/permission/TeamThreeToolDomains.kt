@@ -6,6 +6,8 @@ package com.unuslumen.app.data.tools.registry.permission
 import com.unuslumen.app.data.tools.registry.ToolDefinition
 import com.unuslumen.app.data.tools.registry.ToolExecutor
 import com.unuslumen.app.data.tools.registry.ToolSetRegistration
+import com.unuslumen.app.data.fabric.ir.IrDomainModule
+import com.unuslumen.app.data.fabric.smart.SmartHomeDomainModule
 import com.unuslumen.app.data.tools.phone.PhoneDomainModule
 import com.unuslumen.app.data.tools.senses.BluetoothDomainModule
 import com.unuslumen.app.data.tools.senses.CameraAudioDomainModule
@@ -49,6 +51,13 @@ object TeamThreeToolDomains {
     val domains: List<DomainToolModule> = listOf(
         BluetoothDomainModule,
         CameraAudioDomainModule,
+        // The smart home fabric's five generic tools (#182) and the IR transport's
+        // three (#187. Both live here because the fabric was merged but never
+        // named, so its tools did not exist in the running app at all: that is why a
+        // request to turn a television off did nothing. A domain is not installed
+        // until it appears in this list.
+        SmartHomeDomainModule,
+        IrDomainModule,
         LocationDomainModule,
         PhoneDomainModule,
         PrivilegedCaptureDomainModule,
