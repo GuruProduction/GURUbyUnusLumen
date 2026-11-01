@@ -164,6 +164,18 @@ object PermissionRegistry {
         runtime("BLUETOOTH_SCAN", null, "bluetooth", "Discover nearby Bluetooth devices."),
         runtime("BLUETOOTH_ADVERTISE", "bluetoothAdvertise", "bluetooth", "Advertise GURU to nearby Bluetooth devices."),
 
+        // ===== Infrared (#187) =====
+        // protectionLevel=normal, so SELF_GUARD is the honest mechanism: nothing has to
+        // request it and no dialog can deny it. A denial would mean the manifest lost
+        // the line, which is a build fault rather than a missing grant.
+        normal(
+            "TRANSMIT_IR",
+            "irDevices",
+            "smart_home",
+            "Send infrared pulses through the phone's own emitter, which is how GURU presses a " +
+                "button on a television, an air conditioner or anything else with a remote.",
+        ),
+
         // ===== NFC =====
         normal("NFC", "nfcRead", "nfc", "Use the NFC radio at all."),
         privileged("NFC_TRANSACTION_EVENT", tool = "nfcTransactions", skill = "nfc", unlocks = "Observe raw NFC transaction events, which the reader API covers without this."),

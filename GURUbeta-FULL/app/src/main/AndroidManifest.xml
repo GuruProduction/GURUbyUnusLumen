@@ -90,6 +90,19 @@
     <!-- ===== UWB ===== -->
     <uses-permission android:name="android.permission.UWB_RANGING" />
 
+    <!-- ===== Infrared (#187) =====
+         TRANSMIT_IR is protectionLevel=normal, so it is granted at install with no
+         dialog. That is why an absent IR transmitter is never a grant problem: it is
+         the hardware, or a manifest that lost this line.
+
+         consumerir is declared NOT required on purpose. Marking it required would
+         hide the whole app from every phone without an emitter, and a phone without
+         one is exactly the case the network-blaster backend exists for. -->
+    <uses-permission android:name="android.permission.TRANSMIT_IR" />
+    <uses-feature
+        android:name="android.hardware.consumerir"
+        android:required="false" />
+
     <!-- ===== System Settings ===== -->
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
     <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
