@@ -97,7 +97,7 @@ class ArpDiscoveryManager(
      * THE DEFECT THIS FIXES, from issue 34. The old code read
      * `wifiManager.dhcpInfo`, whose `ipAddress` and `netmask` are both deprecated
      * and return ZERO on modern Android. Combined with the old intToIp byte order
-     * that produced `192.168.0.179/0.0.0.0`: an address from somewhere, and a mask
+     * that produced `192.168.1.179/0.0.0.0`: an address from somewhere, and a mask
      * of all zeros, which describes the entire IPv4 space rather than a subnet.
      *
      * `ip -4 addr` is the authority here. It is what a person reads when they
@@ -105,7 +105,7 @@ class ArpDiscoveryManager(
      * from under us by an API level.
      */
     data class InterfaceAddress(val ip: String, val prefixLength: Int) {
-        /** The network the device sits on, e.g. 192.168.0.0/24. */
+        /** The network the device sits on, e.g. 192.168.1.0/24. */
         val network: String
             get() {
                 val parts = ip.split(".").mapNotNull { it.toIntOrNull() }
@@ -148,7 +148,7 @@ class ArpDiscoveryManager(
         val process = ProcessBuilder("sh", "-c", command).start()
         val output = process.inputStream.bufferedReader().readText()
         process.waitFor()
-        // Matches:  inet 192.168.0.179/24 brd 192.168.0.255 scope global wlan0
+        // Matches:  inet 192.168.1.179/24 brd 192.168.1.255 scope global wlan0
         val match = Regex("""inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)""").find(output) ?: return null
         val ip = match.groupValues[1]
         val prefix = match.groupValues[2].toIntOrNull() ?: return null
@@ -159,7 +159,7 @@ class ArpDiscoveryManager(
     /**
      * The subnet to sweep, derived from the real interface address.
      *
-     * Returns something like "192.168.0" for a /24, or null when there is no
+     * Returns something like "192.168.1" for a /24, or null when there is no
      * usable LAN address. A /31 or /32 has no sweepable host range and returns
      * null rather than producing a nonsense sweep.
      */
@@ -243,7 +243,7 @@ class ArpDiscoveryManager(
 
             for (line in output.lines()) {
                 if (line.isBlank()) continue
-                // Format: 192.168.0.1 dev wlan0 lladdr 00:1f:a4:xx:xx:xx REACHABLE
+                // Format: 192.168.1.1 dev wlan0 lladdr 00:1f:a4:xx:xx:xx REACHABLE
                 val ipMatch = Regex("\\d+\\.\\d+\\.\\d+\\.\\d+").find(line)
                 val macMatch = Regex("([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}").find(line)
                 if (ipMatch != null && macMatch != null) {
