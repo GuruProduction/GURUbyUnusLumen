@@ -1,0 +1,364 @@
+// GURU by Unus Lumen - an AI framework that gives a language model real hands on an Android phone.
+// Copyright (C) 2026 Steven Newman, Founder and Developer, Unus Lumen Ltd, Bristol UK.
+// Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
+package com.unuslumen.app.data.tor
+
+import java.net.InetAddress
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+
+/**
+ * The single routing decision every outbound connection asks for.
+ *
+ * WHY THIS EXISTS (#215). Tor cannot reach RFC1918 space. A SOCKS proxy asked
+ * to CONNECT to 192.168.0.115 either refuses or fails, and `socks5h` means DNS
+ * resolution happens at the exit node, so even a `.local` name is dead before
+ * the address is examined. The result was that discovery could find a
+ * television on the LAN and then nothing in the app could talk to it: `curl`
+ * returned `000`, `httpGet` returned "Tor not running", and both read like the
+ * device was offline.
+ *
+ * The rule is one rule, applied in one place, and it is deliberately not a flag
+ * each tool has to remember: a bypass that half the tools forget is the bug
+ * that produced the silent `000` in the first place.
+ *
+ * This object is pure. No Android, no Koin, no I/O of its own, so the decision
+ * can be proved on the JVM in seconds without a device or an emulator.
+ */
+object EgressClassifier {
+
+    /** Where a request must be sent to leave the device. */
+    enum class Route {
+        /** Straight onto the socket. Loopback and the local network. */
+        DIRECT,
+
+        /** Through Tor's SOCKS listener. Everything on the public internet. */
+        TOR,
+    }
+
+    // ---------------------------------------------------------------------
+    // Address classification
+    // ---------------------------------------------------------------------
+
+    /**
+     * The route for an already-resolved address.
+     *
+     * Everything that Java considers loopback, link-local or site-local is
+     * direct, plus two ranges Java does not cover: carrier-grade NAT, which
+     * Tailscale and some mobile carriers hand out, and IPv6 unique-local
+     * addresses, which are the IPv6 equivalent of 10/8.
+     */
+    fun routeForAddress(address: InetAddress): Route = when {
+        address.isLoopbackAddress -> Route.DIRECT
+        address.isLinkLocalAddress -> Route.DIRECT
+        address.isSiteLocalAddress -> Route.DIRECT
+        isCarrierGradeNat(address) -> Route.DIRECT
+        isUniqueLocalIpv6(address) -> Route.DIRECT
+        else -> Route.TOR
+    }
+
+    /** 100.64.0.0/10, used by Tailscale and by several mobile carriers. */
+    private fun isCarrierGradeNat(address: InetAddress): Boolean {
+        val bytes = address.address
+        if (bytes.size != 4) return false
+        val first = bytes[0].toInt() and 0xFF
+        val second = bytes[1].toInt() and 0xFF
+        return first == 100 && second in 64..127
+    }
+
+    /** fc00::/7, the IPv6 equivalent of a private address. */
+    private fun isUniqueLocalIpv6(address: InetAddress): Boolean {
+        val bytes = address.address
+        if (bytes.size != 16) return false
+        return (bytes[0].toInt() and 0xFE) == 0xFC
+    }
+
+    // ---------------------------------------------------------------------
+    // Host classification
+    // ---------------------------------------------------------------------
+
+    /**
+     * The route for a host as written by the caller, before any DNS lookup.
+     *
+     * A name that is not an IP literal and does not end in a local suffix is
+     * assumed public, because assuming local for an unknown name would send a
+     * clearnet request direct. Callers that can afford a lookup should use
+     * [routeForHostResolved] instead, which catches a public-looking name that
+     * split-horizon DNS points at the router.
+     */
+    fun routeForHost(host: String?): Route = if (isLocalName(host)) Route.DIRECT else Route.TOR
+
+    /**
+     * The route for a host that looked public, decided after a local lookup.
+     *
+     * This is the case a `NO_PROXY` list cannot cover and the reason a single
+     * classifier was needed rather than an environment variable: `NO_PROXY`
+     * compares the literal string the caller passed, so a name that resolves
+     * into the LAN still goes to the proxy. Resolving first and inspecting the
+     * result is what makes the decision correct.
+     *
+     * Returns TOR when the lookup fails, because a name that cannot be resolved
+     * is not evidence that it is local.
+     */
+    fun routeForHostResolved(
+        host: String?,
+        resolve: (String) -> List<InetAddress>,
+    ): Route {
+        if (host == null) return Route.TOR
+        if (isLocalName(host)) return Route.DIRECT
+
+        val addresses = try {
+            resolve(host)
+        } catch (_: Exception) {
+            return Route.TOR
+        }
+        if (addresses.isEmpty()) return Route.TOR
+
+        // Any private answer means the request was aimed at this network. A
+        // mixed answer is treated as local so a split-horizon host still works.
+        return if (addresses.any { routeForAddress(it) == Route.DIRECT }) Route.DIRECT else Route.TOR
+    }
+
+    /** True when the host addresses something on the device or on this network. */
+    fun isLocalName(host: String?): Boolean {
+        if (host.isNullOrBlank()) return false
+        val h = host.trim().lowercase().removeSurrounding("[", "]")
+        if (h.isEmpty()) return false
+
+        if (h == "localhost" || h == "localhost.localdomain") return true
+
+        parseIpv4(h)?.let { return routeForAddress(it) == Route.DIRECT }
+        parseIpv6(h)?.let { return routeForAddress(it) == Route.DIRECT }
+
+        // Anything that is not a plausible hostname is not evidence of a local
+        // target. Without this, the bare-name rule below turned a malformed
+        // string such as "not a host" into a direct connection, which is the
+        // direction a classifier must never fail in.
+        if (!isPlausibleHostname(h)) return false
+
+        // A name with no dot cannot be resolved by public DNS; it is either an
+        // mDNS/NetBIOS neighbour or a search-domain name. Both mean this LAN.
+        if (!h.contains('.')) return true
+
+        // Suffixes that only ever name something on the local network. `.local`
+        // is mDNS, `.lan` and `.home` are the usual router defaults, and
+        // `.home.arpa` is the registered one for home networks.
+        for (suffix in LOCAL_SUFFIXES) {
+            if (h == suffix.removePrefix(".") || h.endsWith(suffix)) return true
+        }
+
+        if (h == "host.docker.internal" || h == "gateway.docker.internal") return true
+
+        return false
+    }
+
+    /**
+     * Whether a string could name a host at all.
+     *
+     * Letters, digits, hyphen and dot, with no space and no empty label. This
+     * is deliberately permissive about what a valid name is and strict about
+     * what it is not, because anything rejected here falls through to Tor.
+     */
+    private fun isPlausibleHostname(h: String): Boolean {
+        if (h.isEmpty() || h.length > 253) return false
+        if (h.any { it.isWhitespace() }) return false
+        for (label in h.split('.')) {
+            if (label.isEmpty()) return false
+            if (label.length > 63) return false
+            for (c in label) {
+                val ok = c.isLetterOrDigit() || c == '-' || c == '_'
+                if (!ok) return false
+            }
+        }
+        return true
+    }
+
+    private val LOCAL_SUFFIXES = listOf(
+        ".local",
+        ".lan",
+        ".home",
+        ".home.arpa",
+        ".internal",
+        ".localdomain",
+    )
+
+    /**
+     * Parse a dotted-quad strictly.
+     *
+     * A loose prefix test on `10.` or `192.168.` also matches a hostname like
+     * `10.example.com`, and it silently accepts `192.168.1.999`. Requiring four
+     * numeric octets in range means only a real IPv4 literal can be classified
+     * as one, and anything else falls through to the name rules.
+     */
+    private fun parseIpv4(host: String): InetAddress? {
+        val parts = host.split('.')
+        if (parts.size != 4) return null
+        val octets = IntArray(4)
+        for (i in 0..3) {
+            val part = parts[i]
+            if (part.isEmpty() || part.length > 3) return null
+            val value = part.toIntOrNull() ?: return null
+            if (value !in 0..255) return null
+            octets[i] = value
+        }
+        return try {
+            InetAddress.getByAddress(byteArrayOf(
+                octets[0].toByte(),
+                octets[1].toByte(),
+                octets[2].toByte(),
+                octets[3].toByte(),
+            ))
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Parse an IPv6 literal, including the `::` compression and a trailing
+     * dotted-quad, without letting Java do a DNS lookup for a name that merely
+     * contains a colon.
+     */
+    private fun parseIpv6(host: String): InetAddress? {
+        if (!host.contains(':')) return null
+        return try {
+            // getByName on a string containing ':' is an address literal, never
+            // a hostname, so this cannot touch DNS.
+            InetAddress.getByName(host)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Shell command classification
+    // ---------------------------------------------------------------------
+
+    private val SCHEME_URL = Regex("""[a-zA-Z][a-zA-Z0-9+.\-]*://([^/\s'"\\]+)""")
+
+    /**
+     * Every host a shell command appears to target.
+     *
+     * Used to decide whether a `curl` or `wget` in `busyboxExec` needs Tor. The
+     * parse is deliberately narrow: a scheme URL, or a bare `host:port` or bare
+     * IP following the command, which covers the way these are actually typed.
+     * Anything it cannot see is treated as public by [commandNeedsTor], so a
+     * miss can only make the check stricter, never leak.
+     */
+    fun hostsInCommand(command: String): List<String> {
+        val found = mutableListOf<String>()
+        for (match in SCHEME_URL.findAll(command)) {
+            found += stripUserInfoAndPort(match.groupValues[1])
+        }
+        if (found.isNotEmpty()) return found.distinct()
+
+        // No scheme, so look for bare addresses: an IPv4 literal or a
+        // hostname:port token.
+        for (token in command.split(Regex("\\s+"))) {
+            val cleaned = token.trim('"', '\'', '`', ';', '&', '|', ')', '(')
+            if (cleaned.isEmpty()) continue
+            val withoutPort = cleaned.substringBefore(':')
+            if (withoutPort.isEmpty()) continue
+            val looksLikeIp = withoutPort.count { it == '.' } == 3 &&
+                withoutPort.all { it.isDigit() || it == '.' }
+            val looksLikeHostPort = cleaned.contains(':') &&
+                cleaned.substringAfter(':').takeWhile { it.isDigit() }.isNotEmpty() &&
+                withoutPort.any { it.isLetter() || it == '.' }
+            if (looksLikeIp || looksLikeHostPort) found += withoutPort
+        }
+        return found.filter { it.isNotEmpty() }.distinct()
+    }
+
+    private fun stripUserInfoAndPort(raw: String): String =
+        raw.substringAfterLast('@').substringBefore(':')
+
+    /**
+     * Whether a shell command that is about to run `curl` or `wget` needs a
+     * live Tor circuit first.
+     *
+     * A command aimed entirely at the local network does not, and requiring it
+     * was the reason a LAN fetch failed with "Tor is not running" even when the
+     * target was the router. A command with no address this can see does need
+     * it, because the alternative is running it unproxied.
+     */
+    fun commandNeedsTor(command: String): Boolean {
+        val hosts = hostsInCommand(command)
+        if (hosts.isEmpty()) return true
+        return hosts.any { !isLocalName(it) }
+    }
+
+    /**
+     * The `NO_PROXY` value that keeps a proxied command off the local network.
+     *
+     * Both cases are set by the caller, because curl reads the lowercase form
+     * and other tooling reads the uppercase one. The list is always emitted so
+     * a command that mixes a public and a local address gets both right.
+     */
+    const val NO_PROXY_VALUE: String =
+        "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16," +
+            "169.254.0.0/16,100.64.0.0/10,*.local,*.lan,*.home,*.home.arpa,*.internal"
+
+    // ---------------------------------------------------------------------
+    // Failure reporting
+    // ---------------------------------------------------------------------
+
+    /**
+     * Name the actual cause of a failed request.
+     *
+     * Four different facts used to collapse into one empty result: Tor refused
+     * the hop, the host was unreachable, the host answered but nothing was
+     * listening, and the name did not resolve. The model reasons from this
+     * sentence, so reporting the wrong one sends it looking at the network when
+     * the fault is a route, or at the device when the fault is a closed port.
+     */
+    fun failureSentence(host: String, port: Int?, route: Route, error: Throwable?): String {
+        val target = if (port != null && port > 0) "$host:$port" else host
+        val message = error?.message?.lowercase().orEmpty()
+
+        // A proxy refusal is checked first and on both routes, because it is
+        // the cause that looks most like a dead device and is not one.
+        val proxyRefused = message.contains("proxy") ||
+            message.contains("socks") ||
+            message.contains("unable to tunnel")
+        if (route == Route.TOR && proxyRefused) {
+            return "The Tor proxy refused the connection to $target, so the request never reached it. " +
+                "Tor cannot route to a private address. This target may be on the local network and " +
+                "should have been classified local."
+        }
+
+        val dnsFailed = error is UnknownHostException ||
+            message.contains("unable to resolve host") ||
+            message.contains("nodename nor servname") ||
+            message.contains("no address associated with hostname")
+        if (dnsFailed) {
+            return "Could not resolve the name $host. The name lookup itself failed, so nothing was " +
+                "attempted against any address. This is a DNS result, not a device that refused."
+        }
+
+        val refused = message.contains("econnrefused") ||
+            message.contains("connection refused")
+        if (refused) {
+            return "$target refused the connection. The host answered and nothing is listening on " +
+                "that port, which means the address is right and the service is not running there."
+        }
+
+        val unreachable = message.contains("ehostunreach") ||
+            message.contains("network is unreachable") ||
+            message.contains("no route to host")
+        if (unreachable) {
+            return "$target is not reachable from this device. Either it is not on this network, or " +
+                "the network itself has no route to it."
+        }
+
+        if (error is SocketTimeoutException || message.contains("timed out")) {
+            val via = if (route == Route.TOR) "through Tor" else "directly"
+            return "$target did not answer before the timeout, contacted $via. A silent host and a " +
+                "dropped packet look identical from here."
+        }
+
+        val via = if (route == Route.TOR) "through Tor" else directly()
+        val detail = error?.message?.takeIf { it.isNotBlank() } ?: error?.javaClass?.simpleName ?: "no detail"
+        return "The request to $target failed $via: $detail"
+    }
+
+    private fun directly(): String = "directly"
+}
