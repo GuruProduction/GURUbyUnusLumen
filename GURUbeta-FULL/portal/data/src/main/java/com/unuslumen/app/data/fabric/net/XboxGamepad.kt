@@ -79,36 +79,28 @@ object XboxGamepad {
         }
     }
 
-    /** The state of the pad: which buttons are down, and how far each trigger is pulled. */
+    /**
+     * The state of the pad: which buttons are down, how far each trigger is pulled, and where the
+     * sticks sit.
+     *
+     * THE STICKS ARE PART OF THE STATE, not an afterthought. A console reads the whole pad from
+     * each message, so a message that omits a stick position recentres it. That is why every
+     * state carries all four coordinates rather than only the one being moved.
+     */
     data class State(
         val masks: Int = 0,
         /** 0.0 to 1.0, because the protocol sends the trigger as a float. */
         val leftTrigger: Float = 0f,
         val rightTrigger: Float = 0f,
+        /** -1.0 to 1.0, the range the console expects for a stick. */
+        val leftX: Float = 0f,
+        val leftY: Float = 0f,
+        val rightX: Float = 0f,
+        val rightY: Float = 0f,
     ) {
         fun with(button: Button): State = copy(masks = masks or button.mask)
         fun without(button: Button): State = copy(masks = masks and button.mask.inv())
         fun isDown(button: Button): Boolean = (masks and button.mask) != 0
-    }
-
-    /**
-     * The gamepad payload for one state.
-     *
-     * Layout, which is the part a console is unforgiving about: the message id (0xF0A) as a
-     * uint16, then the button bitmask as a uint16, then a pad, then the two trigger floats.
-     * Everything is big-endian like the rest of SmartGlass, so a little-endian payload is
-     * well-formed and simply does nothing.
-     */
-    fun payload(state: State, messageId: Int = 0xF0A): ByteArray {
-        val buffer = java.nio.ByteBuffer.allocate(2 + 2 + 2 + 4 + 4)
-            .order(java.nio.ByteOrder.BIG_ENDIAN)
-        buffer.putShort(messageId.toShort())
-        buffer.putShort(state.masks.toShort())
-        // A zeroed pad field the protocol carries between the mask and the triggers.
-        buffer.putShort(0)
-        buffer.putFloat(state.leftTrigger.coerceIn(0f, 1f))
-        buffer.putFloat(state.rightTrigger.coerceIn(0f, 1f))
-        return buffer.array()
     }
 
     /**

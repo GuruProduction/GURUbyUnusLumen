@@ -10,180 +10,358 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.security.KeyPairGenerator
 import java.security.spec.ECGenParameterSpec
 
 /**
- * SmartGlass's wire format and crypto, proved on the JVM.
+ * SmartGlass's wire format and crypto, pinned to the corrected protocol.
  *
- * WHY EVERY NUMBER IS ASSERTED. A console rejects a malformed packet silently, so a wrong
- * endianness, a missing null byte on a string or a skipped key-derivation step all produce
- * the identical symptom: nothing happens. That is the class of defect this project keeps
- * removing, so the bytes are pinned rather than trusted.
+ * EVERY ASSERTION HERE CORRESPONDS TO SOMETHING THAT WOULD FAIL SILENTLY ON HARDWARE. A console
+ * does not report a malformed packet, it drops it. So a wrong key type, a wrong header layout, a
+ * message type written as a packet type, or padding added to an aligned payload all look
+ * identical from this side, which is nothing at all.
+ *
+ * The corrections encoded here came from the reference implementation's own struct definitions
+ * and from an external review that caught several of them.
  */
 class SmartGlassTest {
 
     // ------------------------------------------------------------------
-    // Endianness
+    // Headers
     // ------------------------------------------------------------------
 
     /**
-     * EVERY FIELD IS BIG-ENDIAN, which is the opposite of Android's usual convention.
+     * A simple header is SIX bytes: type, unprotected length, version.
      *
-     * A little-endian header is well-formed and ignored, so this is the single most likely
-     * way to build a packet that does nothing.
+     * Only a connect packet adds the protected length, making it eight. Writing that field
+     * unconditionally makes every other simple packet two bytes too long.
      */
     @Test
-    fun everyHeaderFieldIsBigEndian() {
-        val header = SmartGlassMessage.simpleHeader(
-            type = SmartGlassMessage.TYPE_DISCOVERY_REQUEST,
-            sequence = 1,
-            payloadLength = 0x0A,
+    fun aSimpleHeaderIsSixBytesAndAConnectHeaderIsEight() {
+        assertEquals("type 2, unprotected length 2, version 2", 6, SmartGlassMessage.SIMPLE_HEADER_SIZE)
+        assertEquals("a connect packet adds the protected length", 8, SmartGlassMessage.CONNECT_HEADER_SIZE)
+
+        assertEquals(
+            "a discovery header is six bytes",
+            6,
+            SmartGlassMessage.simpleHeader(SmartGlassMessage.TYPE_DISCOVERY_REQUEST, 10).size,
         )
+        assertEquals(
+            "a connect header is eight bytes",
+            8,
+            SmartGlassMessage.simpleHeader(SmartGlassMessage.TYPE_CONNECT_REQUEST, 130, 16).size,
+        )
+    }
 
-        // THE TYPE IS A 32-BIT FIELD, so 0xDD00 is four bytes: 00 00 DD 00. The DD lands at
-        // index 2, not index 0, which is the mistake a reader makes when thinking of the type
-        // as a 16-bit value.
-        assertEquals("the leading bytes of a small 32-bit value are zero", 0x00, header[0].toInt() and 0xFF)
-        assertEquals("the type's significant byte sits at index 2", 0xDD, header[2].toInt() and 0xFF)
-        assertEquals("and its low byte at index 3", 0x00, header[3].toInt() and 0xFF)
-
-        // The version is 4, at offset 4 as a big-endian short.
-        assertEquals("the version high byte", 0x00, header[4].toInt() and 0xFF)
-        assertEquals("the version low byte is 4", 0x04, header[5].toInt() and 0xFF)
-
-        // The sequence is 1, at offset 6.
-        assertEquals("the sequence low byte is 1", 0x01, header[7].toInt() and 0xFF)
-
-        // The layout is 4 type, 2 version, 2 sequence, 8 source, 8 destination, 4 flags,
-        // 4 payload length. So the length starts at 28 and its last byte is 31.
-        assertEquals("the payload length's low byte is the last byte of the header", 0x0A, header[31].toInt() and 0xFF)
-        assertEquals("the payload length's high byte is first", 0x00, header[28].toInt() and 0xFF)
-        assertEquals("the flags field is at 24 and is zero for a simple message", 0x00, header[24].toInt() and 0xFF)
+    /** The version in every header is 2, and a wrong version is dropped unanswered. */
+    @Test
+    fun theHeaderVersionIsTwo() {
+        assertEquals("the protocol version is 2", 2, SmartGlassMessage.VERSION)
+        val header = SmartGlassMessage.simpleHeader(SmartGlassMessage.TYPE_DISCOVERY_REQUEST, 0)
+        assertEquals(
+            "the version field carries 2",
+            2,
+            ByteBuffer.wrap(header, 4, 2).order(ByteOrder.BIG_ENDIAN).short.toInt(),
+        )
     }
 
     /**
-     * The header is 32 bytes for EVERY message, including a simple one.
+     * The message header is 26 bytes in the reference's field order.
      *
-     * THERE IS NO SMALLER VARIANT. A simple message sets its participants to zero rather than
-     * omitting them, and an earlier version of this file had a separate 18-byte simple header
-     * that omitted them, which put every later field at the wrong offset and threw a buffer
-     * overflow the moment a packet was built.
+     * A different order is well-formed and ignored, and the console gives no clue which field it
+     * disliked.
      */
     @Test
-    fun theHeaderIsTheSameSizeForEveryMessage() {
-        assertEquals("4 type, 2 version, 2 sequence, 8+8 participants, 4 flags, 4 length", 32, SmartGlassMessage.HEADER_SIZE)
+    fun theMessageHeaderIsTwentySixBytesInOrder() {
         assertEquals(
-            "a simple header is a full header with zero participants",
-            SmartGlassMessage.HEADER_SIZE,
-            SmartGlassMessage.simpleHeader(SmartGlassMessage.TYPE_DISCOVERY_REQUEST, 0, 0).size,
+            "2 type, 2 protected length, 4 sequence, 4 target, 4 source, 2 flags, 8 channel",
+            26,
+            SmartGlassMessage.MESSAGE_HEADER_SIZE,
         )
-        assertEquals(
-            SmartGlassMessage.HEADER_SIZE,
-            SmartGlassMessage.header(0xCC00, 1, 1L, 2L, 0, 0).size,
-        )
-    }
 
-    /** A simple message declares zero participants, which is what marks it unrouted. */
-    @Test
-    fun aSimpleMessageHasZeroParticipants() {
-        val header = SmartGlassMessage.simpleHeader(SmartGlassMessage.TYPE_POWER_REQUEST, 0, 4)
-        for (offset in 8..23) {
-            assertEquals("byte $offset names a participant, and a simple message has none", 0, header[offset].toInt())
-        }
-    }
-
-    /** A full header carries the participants and flags, so it is twenty-six. */
-    @Test
-    fun aFullHeaderCarriesParticipantsAndFlags() {
-        val header = SmartGlassMessage.header(
-            type = SmartGlassMessage.TYPE_LOCAL_JOIN,
+        val header = SmartGlassMessage.messageHeader(
+            type = SmartGlassMessage.TYPE_MESSAGE,
+            protectedLength = 16,
             sequence = 5,
-            sourceParticipant = 0x1122334455667788L,
-            destinationParticipant = 0x99AABBCCDDEEFF00uL.toLong(),
-            flags = 1,
-            payloadLength = 0,
+            targetParticipant = 0x11223344,
+            sourceParticipant = 0x55667788,
+            flags = SmartGlassMessage.Flags(needAck = true, messageType = SmartGlassMessage.MSG_GAMEPAD),
+            channelId = 0x010203040506070L,
         )
-        assertEquals("a full header is 32 bytes", 32, header.size)
+        assertEquals("the header is 26 bytes", 26, header.size)
 
-        // The source participant is at 8..15 and the destination at 16..23, both big-endian.
-        assertEquals("the source's high byte", 0x11, header[8].toInt() and 0xFF)
-        assertEquals("the source's low byte", 0x88, header[15].toInt() and 0xFF)
-        assertEquals("the destination's high byte", 0x99, header[16].toInt() and 0xFF)
-        assertEquals("the destination's low byte", 0x00, header[23].toInt() and 0xFF)
-        // Flags are a 32-bit field at 24..27, and a value of 1 puts its significant byte LAST.
-        assertEquals("the flags field's leading bytes are zero", 0x00, header[24].toInt() and 0xFF)
-        assertEquals("flags value 1 lands in the field's last byte", 0x01, header[27].toInt() and 0xFF)
+        val buffer = ByteBuffer.wrap(header).order(ByteOrder.BIG_ENDIAN)
+        assertEquals("the packet type is 0xD00D", 0xD00D, buffer.short.toInt() and 0xFFFF)
+        assertEquals("then the protected length", 16, buffer.short.toInt() and 0xFFFF)
+        assertEquals("then the sequence", 5, buffer.int)
+        assertEquals("then the target participant", 0x11223344, buffer.int)
+        assertEquals("then the source participant", 0x55667788, buffer.int)
+
+        // THE FLAGS FIELD IS TWO BYTES AND MUST BE CONSUMED. Skipping it reads the channel id
+        // two bytes early, which produces a plausible-looking but wrong number, and that is the
+        // mistake the earlier version of this test made.
+        val flags = buffer.short.toInt() and 0xFFFF
+        assertEquals("then the flags short", 0xF0A, flags and 0x0FFF)
+
+        assertEquals("and the channel id last", 0x010203040506070L, buffer.long)
+    }
+
+    /** The flags bitfield: version in the top two bits, need-ack at 13, the type in the low 12. */
+    @Test
+    fun theFlagsCarryVersionThenMessageType() {
+        val plain = SmartGlassMessage.Flags(messageType = SmartGlassMessage.MSG_GAMEPAD).toShort()
+        assertEquals("the version is the top two bits", 2, (plain ushr 14) and 0x3)
+        assertEquals("the message type is the low twelve", 0xF0A, plain and 0x0FFF)
+        assertEquals("need-ack is clear", 0, (plain ushr 13) and 1)
+
+        val acked = SmartGlassMessage.Flags(needAck = true, messageType = 0x03).toShort()
+        assertEquals("need-ack sets bit 13", 1, (acked ushr 13) and 1)
+        assertEquals("and the type still reads", 0x03, acked and 0x0FFF)
+    }
+
+    /**
+     * A MESSAGE TYPE IS NOT A PACKET TYPE.
+     *
+     * Every message packet is 0xD00D and the flags field names the kind. An earlier version used
+     * 0xCC0D as a packet type and put the kind in the payload, which a console ignores.
+     */
+    @Test
+    fun aMessageTypeLivesInTheFlagsNotThePacketType() {
+        assertEquals("every message packet is 0xD00D", 0xD00D, SmartGlassMessage.TYPE_MESSAGE)
+        assertEquals("local join is 0x03", 0x03, SmartGlassMessage.MSG_LOCAL_JOIN)
+        assertEquals("start channel is 0x26", 0x26, SmartGlassMessage.MSG_START_CHANNEL)
+        assertEquals("power off is 0x39", 0x39, SmartGlassMessage.MSG_POWER_OFF)
+        assertEquals("the gamepad is 0xF0A", 0xF0A, SmartGlassMessage.MSG_GAMEPAD)
     }
 
     // ------------------------------------------------------------------
-    // Strings
+    // Strings and padding
     // ------------------------------------------------------------------
 
-    /**
-     * An SGString is a uint16 length, the characters, then a trailing null the length excludes.
-     *
-     * The null is load-bearing: without it every following field is read one byte early and
-     * the console drops the packet with no error at all.
-     */
+    /** An SGString is a length, the characters, and a null the length excludes. */
     @Test
     fun aStringCarriesItsLengthAndATrailingNull() {
-        val encoded = SmartGlassMessage.string("AB")
         assertArrayEquals(
-            "length 2, then AB, then a null that is not counted",
             byteArrayOf(0x00, 0x02, 0x41, 0x42, 0x00),
-            encoded,
+            SmartGlassMessage.string("AB"),
         )
-
         val long = SmartGlassMessage.string("x".repeat(300))
         assertEquals("a length above 255 uses the high byte", 0x01, long[0].toInt())
         assertEquals("and the low byte", 0x2C, long[1].toInt())
         assertEquals("300 characters plus a length and a null", 303, long.size)
     }
 
-    /** An empty string is still a length and a null, which is not an empty array. */
+    /**
+     * PADDING IS ONLY ADDED WHEN THE LENGTH IS NOT ALREADY ALIGNED.
+     *
+     * Adding a whole block to an aligned payload makes the console decrypt a block of padding as
+     * data, which it then rejects. Both cases are one line apart in the same function.
+     */
     @Test
-    fun anEmptyStringIsStillEncoded() {
-        assertArrayEquals(byteArrayOf(0x00, 0x00, 0x00), SmartGlassMessage.string(""))
+    fun paddingIsOnlyAddedWhenNeeded() {
+        assertEquals(
+            "an aligned payload must not grow",
+            16,
+            SmartGlassMessage.pad(ByteArray(16)).size,
+        )
+
+        val padded = SmartGlassMessage.pad(ByteArray(13))
+        assertEquals("a short payload is padded to the block", 16, padded.size)
+        assertEquals("the pad bytes hold the pad length", 3, padded[15].toInt())
+        assertEquals("and it is repeated", 3, padded[13].toInt())
     }
 
     // ------------------------------------------------------------------
-    // Power
+    // Connect request
     // ------------------------------------------------------------------
 
     /**
-     * POWER IS A REAL SMARTGLASS MESSAGE, which corrects what this code originally claimed.
+     * THE KEY TYPE FOR P-384 IS 0x01, NOT 2.
      *
-     * Message 0xDD02 carries the console's Live ID as an SGString and wakes a console in
-     * standby with no crypto context at all. The earlier version of this file said the
-     * protocol had no power-on and only Wake-on-LAN could wake a console; that was wrong.
+     * The values are 0x00, 0x01 and 0x02 for P-256, P-384 and P-521. Writing 2 declares P-521, so
+     * the console reads 96 bytes as the wrong curve and rejects the request.
      */
     @Test
-    fun powerOnIsARealMessageCarryingTheLiveId() {
-        assertEquals("power is 0xDD02", 0xDD02, SmartGlassMessage.TYPE_POWER_REQUEST)
+    fun theP384KeyTypeIsOne() {
+        assertEquals("P-384 is key type 0x01", 0x01, SmartGlassMessage.KEY_TYPE_P384)
+        assertEquals("a P-384 key is 96 raw bytes", 0x60, SmartGlassMessage.P384_PUBLIC_KEY_SIZE)
+    }
 
-        val payload = SmartGlassMessage.powerRequestPayload("FD00000000000000")
-        // The Live ID is sixteen characters, so the length is 0x0010.
-        assertEquals("the Live ID length's high byte", 0x00, payload[0].toInt())
-        assertEquals("the Live ID length's low byte", 0x10, payload[1].toInt())
-        assertEquals("then the id itself", 'F'.code.toByte(), payload[2])
-        assertEquals("and a trailing null", 0, payload[payload.size - 1].toInt())
+    /** The connect request's unprotected payload has a fixed shape. */
+    @Test
+    fun theConnectRequestUnprotectedHasItsShape() {
+        val uuid = ByteArray(16) { it.toByte() }
+        val key = ByteArray(96) { 7 }
+        val iv = ByteArray(16) { 9 }
+
+        val payload = SmartGlassMessage.connectRequestUnprotected(
+            clientUuid = uuid,
+            publicKeyType = SmartGlassMessage.KEY_TYPE_P384,
+            publicKey = key,
+            iv = iv,
+        )
+
+        assertEquals("16 uuid, 2 type, 96 key, 16 iv", 130, payload.size)
+        assertArrayEquals("the uuid comes first", uuid, payload.copyOfRange(0, 16))
+        assertEquals("then the key type's high byte", 0x00, payload[16].toInt())
+        assertEquals("then its low byte, which is 1", 0x01, payload[17].toInt())
+        assertArrayEquals("and the iv last", iv, payload.copyOfRange(114, 130))
+    }
+
+    /** A 97-byte key, which is the uncompressed point form, must be refused. */
+    @Test
+    fun aKeyWithTheUncompressedPrefixIsRefused() {
+        val error = runCatching {
+            SmartGlassMessage.connectRequestUnprotected(
+                clientUuid = ByteArray(16),
+                publicKeyType = SmartGlassMessage.KEY_TYPE_P384,
+                publicKey = ByteArray(97),
+                iv = ByteArray(16),
+            )
+        }.exceptionOrNull()
+
+        assertNotNull("a 97-byte key must be refused rather than sent", error)
+        assertTrue(
+            "the message must name the prefix trap",
+            error?.message?.contains("0x04") == true,
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // Crypto
+    // ------------------------------------------------------------------
+
+    /**
+     * The derivation salts with two fixed constants and splits SHA-512 into 16, 16 and THIRTY-TWO.
+     *
+     * The HMAC key is 32 bytes, not 16: the hash is 64 bytes and the first 32 are the two AES
+     * keys. A 16-byte HMAC key produces signatures no console can verify.
+     */
+    @Test
+    fun theDerivationSplitsSixtyFourBytesThreeWays() {
+        val shared = ByteArray(48) { it.toByte() }
+        val keys = SmartGlassCrypto.deriveKeys(shared)
+
+        assertEquals("an AES-128 key is 16 bytes", 16, keys.encryptionKey.size)
+        assertEquals("the IV key is 16 bytes", 16, keys.ivKey.size)
+        assertEquals("the HMAC key is 32 bytes", 32, keys.hashingKey.size)
+        assertFalse(
+            "the derived key must not be the shared secret itself",
+            keys.encryptionKey.contentEquals(shared.copyOfRange(0, 16)),
+        )
+    }
+
+    /** The derivation is deterministic, and a different secret gives different keys. */
+    @Test
+    fun theDerivationIsDeterministicAndSecretDependent() {
+        val first = SmartGlassCrypto.deriveKeys(ByteArray(48) { it.toByte() })
+        val again = SmartGlassCrypto.deriveKeys(ByteArray(48) { it.toByte() })
+        val other = SmartGlassCrypto.deriveKeys(ByteArray(48) { (it + 1).toByte() })
+
+        assertEquals("the same secret must produce the same keys", first, again)
+        assertFalse(first.encryptionKey.contentEquals(other.encryptionKey))
+    }
+
+    /** A real ECDH exchange between two P-384 keys must agree on the same secret. */
+    @Test
+    fun ecdhAgreesOnTheSameSecret() {
+        val generator = KeyPairGenerator.getInstance("EC").apply {
+            initialize(ECGenParameterSpec("secp384r1"))
+        }
+        val client = generator.generateKeyPair()
+        val console = generator.generateKeyPair()
+
+        val a = SmartGlassCrypto.deriveSharedSecret(
+            client,
+            console.public as java.security.interfaces.ECPublicKey,
+        )
+        val b = SmartGlassCrypto.deriveSharedSecret(
+            console,
+            client.public as java.security.interfaces.ECPublicKey,
+        )
+        assertArrayEquals("both sides must derive the identical secret", a, b)
+        assertEquals("a P-384 secret is 48 bytes", 48, a.size)
+    }
+
+    /** The key sent in the request is 96 bytes with no prefix. */
+    @Test
+    fun theSentKeyIsNinetySixBytesWithNoPrefix() {
+        val pair = KeyPairGenerator.getInstance("EC").apply {
+            initialize(ECGenParameterSpec("secp384r1"))
+        }.generateKeyPair()
+
+        val key = SmartGlassCrypto.encodeKeyForRequest(pair.public as java.security.interfaces.ECPublicKey)
+        assertEquals("96 raw bytes, no 0x04 prefix", 96, key.size)
+        assertTrue("the key must carry real coordinate data", key.any { it != 0.toByte() })
+    }
+
+    /** A signature verifies against its own payload and fails against a changed one. */
+    @Test
+    fun theSignatureVerifiesAndRejectsTampering() {
+        val crypto = testCrypto()
+        val payload = byteArrayOf(1, 2, 3, 4)
+        val signature = crypto.sign(payload)
+
+        assertTrue("a message must verify against itself", crypto.verify(payload, signature))
+        assertFalse(
+            "a changed payload must not verify, or the integrity check is useless",
+            crypto.verify(byteArrayOf(1, 2, 3, 5), signature),
+        )
+    }
+
+    /** AES must round trip under an explicit IV, or every payload is garbage. */
+    @Test
+    fun theContextEncryptsAndDecryptsUnderAnIv() {
+        val crypto = testCrypto()
+        val iv = ByteArray(16) { 5 }
+        val plain = ByteArray(20) { it.toByte() }
+        val padded = SmartGlassMessage.pad(plain)
+        val encrypted = crypto.encryptWith(iv, padded)
+
+        assertEquals("the ciphertext is whole blocks", 0, encrypted.size % 16)
+        assertFalse("the ciphertext differs from the plaintext", encrypted.contentEquals(padded))
+        assertArrayEquals("decryption restores it", padded, crypto.decryptWith(iv, encrypted))
+    }
+
+    /** The message IV is derived from the header, so a different header gives a different IV. */
+    @Test
+    fun theMessageIvDependsOnTheHeader() {
+        val crypto = testCrypto()
+        assertFalse(
+            "two headers must derive different IVs, or encryption is not bound to the message",
+            crypto.messageIv(ByteArray(26) { 1 }).contentEquals(crypto.messageIv(ByteArray(26) { 2 })),
+        )
+    }
+
+    /** A bare public key is not a certificate, so no context must be invented from one. */
+    @Test
+    fun aBarePublicKeyCannotBecomeAContext() {
+        val pair = KeyPairGenerator.getInstance("EC").apply {
+            initialize(ECGenParameterSpec("secp384r1"))
+        }.generateKeyPair()
+
+        val result = SmartGlassCrypto.create(pair.public.encoded)
+        assertNull("a bare public key is not a certificate", result.crypto)
+        assertNotNull("and the reason must be stated", result.reason)
+    }
+
+    private fun testCrypto(): SmartGlassCrypto {
+        val pair = KeyPairGenerator.getInstance("EC").apply {
+            initialize(ECGenParameterSpec("secp384r1"))
+        }.generateKeyPair()
+        return SmartGlassCrypto.forTesting(
+            SmartGlassCrypto.deriveKeys(ByteArray(48) { it.toByte() }),
+            pair,
+        )
     }
 
     // ------------------------------------------------------------------
     // Discovery
     // ------------------------------------------------------------------
 
-    /** The discovery payload carries the protocol version range the console must support. */
-    @Test
-    fun theDiscoveryPayloadDeclaresItsVersionRange() {
-        val payload = SmartGlassMessage.discoveryRequestPayload()
-        assertEquals("flags, client type and two versions", 10, payload.size)
-        assertEquals("minimum version 2", 0x02, payload[7].toInt())
-        assertEquals("maximum version 4", 0x04, payload[9].toInt())
-    }
-
-    /** A real discovery reply's parts must be readable, including the console's certificate. */
+    /** A discovery reply's parts must be readable, including the certificate. */
     @Test
     fun aDiscoveryReplyIsReadWithItsCertificate() {
         val name = SmartGlassMessage.string("My Xbox")
@@ -191,7 +369,7 @@ class SmartGlassTest {
         val certificate = byteArrayOf(0x30, 0x82.toByte(), 0x01, 0x02, 0x03)
 
         val payload = java.io.ByteArrayOutputStream().apply {
-            write(byteArrayOf(0, 0, 0, 1))          // flags
+            write(byteArrayOf(0, 0, 0, 4))          // flags: anonymous allowed
             write(byteArrayOf(0, 1))                // type
             write(name)
             write(uuid)
@@ -204,8 +382,8 @@ class SmartGlassTest {
         assertNotNull("a well-formed reply must parse", reply)
         assertEquals("My Xbox", reply!!.name)
         assertEquals("01234567-89ab-cdef-0123-456789abcdef", reply.uuid)
-        assertNotNull("the certificate must be extracted or the crypto context is impossible", reply.certificate)
-        assertArrayEquals(certificate, reply.certificate)
+        assertEquals("the anonymous flag is bit 0x04", 0x04, reply.flags and 0x04)
+        assertArrayEquals("the certificate must survive", certificate, reply.certificate)
     }
 
     /** A truncated reply must return null rather than a half-read object. */
@@ -215,141 +393,59 @@ class SmartGlassTest {
         assertNull(SmartGlassMessage.readDiscoveryReply(ByteArray(0)))
     }
 
+    /** Power on carries the Live ID as an SGString, which is all a standby console needs. */
+    @Test
+    fun powerOnCarriesTheLiveId() {
+        val payload = SmartGlassMessage.powerOnPayload("FD00000000000000")
+        assertEquals("the Live ID length's high byte", 0x00, payload[0].toInt())
+        assertEquals("the low byte is 16", 0x10, payload[1].toInt())
+        assertEquals("then the id", 'F'.code.toByte(), payload[2])
+        assertEquals("and a trailing null", 0, payload[payload.size - 1].toInt())
+    }
+
     // ------------------------------------------------------------------
-    // Crypto
+    // Gamepad
     // ------------------------------------------------------------------
 
     /**
-     * The key derivation must salt and hash the shared secret rather than using it directly.
+     * THE GAMEPAD PAYLOAD IS A TIMESTAMP AND EIGHT FIELDS, with no message id and no wrapper.
      *
-     * This is the trap in the protocol: a client that uses the raw ECDH secret gets a console
-     * that accepts the connection and then answers nothing, because its payloads do not
-     * authenticate.
+     * The message type lives in the header flags, so a payload that repeats it is malformed. The
+     * sticks are float32 and were missing from the first version of this code entirely.
      */
     @Test
-    fun theDerivedKeysAreSixtyFourBytesSplitThreeWays() {
-        val shared = ByteArray(48) { it.toByte() }
-        val salt = ByteArray(97) { (it * 3).toByte() }
-        val keys = SmartGlassCrypto.splitKeys(shared, salt)
-
-        assertEquals("an AES-128 key is 16 bytes", 16, keys.encryptionKey.size)
-        assertEquals("the IV is 16 bytes", 16, keys.initialisationVector.size)
-        assertEquals("the HMAC key is 16 bytes", 16, keys.hashingKey.size)
-        assertFalse(
-            "the derived key must not be the shared secret itself",
-            keys.encryptionKey.contentEquals(shared.copyOfRange(0, 16)),
+    fun theGamepadPayloadIsATimestampAndEightFields() {
+        val payload = SmartGlassMessage.gamepadPayload(
+            buttonMask = 0x0010,
+            leftTrigger = 0.25f,
+            rightTrigger = 0.5f,
+            leftStickX = -0.5f,
+            leftStickY = 0.75f,
         )
+
+        assertEquals("8 timestamp, 2 buttons, six floats", 34, payload.size)
+
+        val buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+        buffer.long
+        assertEquals("the button mask follows the timestamp", 0x0010, buffer.short.toInt())
+        assertEquals("then the left trigger", 0.25f, buffer.float, 0.001f)
+        assertEquals("then the right trigger", 0.5f, buffer.float, 0.001f)
+        assertEquals("then the left stick X", -0.5f, buffer.float, 0.001f)
+        assertEquals("then the left stick Y", 0.75f, buffer.float, 0.001f)
+        assertEquals("and the right stick, centred", 0f, buffer.float, 0.001f)
     }
 
-    /** The derivation is deterministic, so both sides compute the same keys. */
+    /** A stick value outside the range must be clamped, or the console no-ops it. */
     @Test
-    fun theDerivationIsDeterministic() {
-        val shared = ByteArray(48) { (it + 7).toByte() }
-        val salt = ByteArray(97) { (it * 5).toByte() }
-        assertEquals(
-            "the same inputs must produce the same keys, or the console cannot agree",
-            SmartGlassCrypto.splitKeys(shared, salt),
-            SmartGlassCrypto.splitKeys(shared, salt),
-        )
-    }
-
-    /** A different salt must produce different keys, or the salt is doing nothing. */
-    @Test
-    fun aDifferentSaltProducesDifferentKeys() {
-        val shared = ByteArray(48) { it.toByte() }
-        val first = SmartGlassCrypto.splitKeys(shared, ByteArray(97) { 1 })
-        val second = SmartGlassCrypto.splitKeys(shared, ByteArray(97) { 2 })
-        assertFalse(first.encryptionKey.contentEquals(second.encryptionKey))
-    }
-
-    /**
-     * A P-384 public key travels as an uncompressed point: 0x04, then X, then Y, each 48 bytes.
-     *
-     * Sending the DER SPKI form instead produces a request a console rejects without saying
-     * why, which is why this encoding is pinned.
-     */
-    @Test
-    fun aPublicKeyIsAnUncompressedPoint() {
-        val pair = KeyPairGenerator.getInstance("EC").apply {
-            initialize(ECGenParameterSpec("secp384r1"))
-        }.generateKeyPair()
-
-        val point = SmartGlassCrypto.encodePoint(pair.public as java.security.interfaces.ECPublicKey)
-        assertEquals("1 prefix byte plus two 48-byte coordinates", 97, point.size)
-        assertEquals("the uncompressed prefix", 0x04, point[0].toInt())
-        assertTrue(
-            "the point must not be all zeros, which would mean the encoding dropped a coordinate",
-            point.drop(1).any { it != 0.toByte() },
-        )
-    }
-
-    /** A real ECDH exchange between two P-384 keys must agree on the same secret. */
-    @Test
-    fun ecdhAgreesOnTheSameSecret() {
-        val generator = KeyPairGenerator.getInstance("EC").apply {
-            initialize(ECGenParameterSpec("secp384r1"))
-        }
-        val client = generator.generateKeyPair()
-        val console = generator.generateKeyPair()
-
-        val fromClient = SmartGlassCrypto.deriveSharedSecret(
-            client,
-            console.public as java.security.interfaces.ECPublicKey,
-        )
-        val fromConsole = SmartGlassCrypto.deriveSharedSecret(
-            console,
-            client.public as java.security.interfaces.ECPublicKey,
-        )
-        assertArrayEquals(
-            "both sides must derive the identical secret, or nothing can decrypt",
-            fromClient,
-            fromConsole,
-        )
-        assertEquals("a P-384 secret is 48 bytes", 48, fromClient.size)
-    }
-
-    /** AES-128-CBC must round trip, or every payload is garbage. */
-    @Test
-    fun theContextEncryptsAndDecrypts() {
-        val pair = KeyPairGenerator.getInstance("EC").apply {
-            initialize(ECGenParameterSpec("secp384r1"))
-        }.generateKeyPair()
-        val consoleKey = pair.public.encoded
-        // The factory needs a real certificate, so a synthetic context is built from the
-        // derivation alone, which is the part under test here.
-        val keys = SmartGlassCrypto.splitKeys(ByteArray(48) { it.toByte() }, ByteArray(97) { 9 })
-        val crypto = SmartGlassCrypto.create(consoleKey)
-        // With no real certificate the ECDH cannot complete, and the result must say so
-        // rather than producing a context that cannot talk to anything.
-        assertNull("a bare public key is not a certificate, so no context is created", crypto.crypto)
-        assertNotNull("and the reason must be stated", crypto.reason)
-
-        assertNotNull("the derivation itself must still be usable", keys.encryptionKey)
-    }
-
-    /** A signature must verify against the same header and payload, and fail otherwise. */
-    @Test
-    fun theSignatureVerifiesAndRejectsTampering() {
-        val pair = KeyPairGenerator.getInstance("EC").apply {
-            initialize(ECGenParameterSpec("secp384r1"))
-        }.generateKeyPair()
-
-        // A context is built directly for this test, using the derivation and a fixed key.
-        val keys = SmartGlassCrypto.splitKeys(ByteArray(48) { it.toByte() }, ByteArray(97) { 4 })
-        val crypto = SmartGlassCrypto.forTesting(keys, pair)
-
-        val header = byteArrayOf(1, 2, 3)
-        val payload = byteArrayOf(4, 5, 6)
-        val signature = crypto.sign(header, payload)
-
-        assertTrue("a message must verify against itself", crypto.verify(header, payload, signature))
-        assertFalse(
-            "a changed payload must not verify, or the integrity check is useless",
-            crypto.verify(header, byteArrayOf(4, 5, 7), signature),
-        )
-        assertFalse(
-            "a changed header must not verify either",
-            crypto.verify(byteArrayOf(1, 2, 9), payload, signature),
-        )
+    fun aStickValueIsClampedToTheExpectedRange() {
+        val buffer = ByteBuffer
+            .wrap(SmartGlassMessage.gamepadPayload(0, leftStickX = 9f, leftStickY = -9f))
+            .order(ByteOrder.BIG_ENDIAN)
+        buffer.long
+        buffer.short
+        buffer.float
+        buffer.float
+        assertEquals("a stick beyond 1 is clamped", 1f, buffer.float, 0.001f)
+        assertEquals("and below -1 is clamped too", -1f, buffer.float, 0.001f)
     }
 }

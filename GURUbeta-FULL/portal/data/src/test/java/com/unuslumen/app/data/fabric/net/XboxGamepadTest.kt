@@ -123,36 +123,20 @@ class XboxGamepadTest {
     }
 
     /**
-     * THE PAYLOAD LAYOUT, which a console is unforgiving about: message id, bitmask, a pad,
-     * then the two trigger floats, all big-endian.
+     * A combined state must export both bits, so two buttons can be held at once.
      *
-     * A little-endian payload is well-formed and simply does nothing, which is why the byte
-     * order is asserted rather than trusted.
+     * The mask is the SECOND field of the payload, after the timestamp, which is why the buffer
+     * skips a long before reading it.
      */
-    @Test
-    fun thePayloadCarriesTheMaskAndTriggersBigEndian() {
-        val state = XboxGamepad.State(masks = XboxGamepad.Button.A.mask, leftTrigger = 0.5f)
-        val payload = XboxGamepad.payload(state)
-
-        assertEquals("2 id + 2 mask + 2 pad + 4 left + 4 right", 14, payload.size)
-
-        val buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
-        assertEquals("the message id is 0xF0A", 0xF0A, buffer.short.toInt() and 0xFFFF)
-        assertEquals("the bitmask follows", XboxGamepad.Button.A.mask, buffer.short.toInt() and 0xFFFF)
-
-        buffer.short    // skip the pad field
-        assertEquals("the left trigger is a float", 0.5f, buffer.float, 0.001f)
-        assertEquals("the right trigger is a float", 0f, buffer.float, 0.001f)
-    }
-
-    /** A combined state must export both bits, so two buttons can be held at once. */
     @Test
     fun aCombinedStateExportsBothBits() {
         val state = XboxGamepad.State()
             .with(XboxGamepad.Button.LEFT_BUMPER)
             .with(XboxGamepad.Button.DPAD_UP)
-        val buffer = ByteBuffer.wrap(XboxGamepad.payload(state)).order(ByteOrder.BIG_ENDIAN)
-        buffer.short
+        val buffer = ByteBuffer
+            .wrap(SmartGlassMessage.gamepadPayload(state.masks))
+            .order(ByteOrder.BIG_ENDIAN)
+        buffer.long
         assertEquals(
             "both bits must be present in the mask",
             0x1000 or 0x0100,
@@ -163,19 +147,18 @@ class XboxGamepadTest {
     /** The console's discovery packet must be a real SmartGlass packet, not an ASCII string. */
     @Test
     fun theDiscoveryPacketIsAFramedSmartGlassMessage() {
-        val console = XboxConsole()
-        val packet = console.discoveryPacket()
+        val packet = XboxConsole().discoveryPacket()
 
         assertEquals(
-            "a discovery packet is a header plus the version payload",
-            SmartGlassMessage.HEADER_SIZE + 10,
+            "a discovery packet is a six-byte header plus the ten-byte payload",
+            SmartGlassMessage.SIMPLE_HEADER_SIZE + 10,
             packet.size,
         )
         val buffer = ByteBuffer.wrap(packet).order(ByteOrder.BIG_ENDIAN)
         assertEquals(
-            "the type is the discovery request, as a 32-bit field",
+            "the type is the discovery request, as a 16-bit field",
             SmartGlassMessage.TYPE_DISCOVERY_REQUEST,
-            buffer.int,
+            buffer.short.toInt() and 0xFFFF,
         )
     }
 
@@ -185,9 +168,11 @@ class XboxGamepadTest {
         val console = XboxConsole()
         assertEquals(null, console.readReply(ByteArray(0)))
         assertEquals(null, console.readReply(ByteArray(10)))
-        val wrongType = ByteBuffer.allocate(SmartGlassMessage.HEADER_SIZE + 8)
+
+        // A packet that is a request rather than a reply must not be read as a console.
+        val wrongType = ByteBuffer.allocate(SmartGlassMessage.SIMPLE_HEADER_SIZE + 8)
             .order(ByteOrder.BIG_ENDIAN)
-            .putInt(0xDD00)
+            .putShort(SmartGlassMessage.TYPE_DISCOVERY_REQUEST.toShort())
             .array()
         assertEquals("a request is not a reply", null, console.readReply(wrongType))
     }
