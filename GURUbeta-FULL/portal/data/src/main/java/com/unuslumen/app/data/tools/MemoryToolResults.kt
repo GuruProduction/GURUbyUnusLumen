@@ -8,6 +8,21 @@ import kotlinx.serialization.Serializable
 
 @Serializable data class MemoryFactInfo(val id: String, val category: String, val fact: String, val confidence: Float, val extractedDate: Long) : ToolResultData
 @Serializable data class MemoryFactsResult(val facts: List<MemoryFactInfo>) : ToolResultData
+
+/**
+ * The memory listing, with its totals stated rather than implied.
+ *
+ * `shown` is how many rows this reply carries; `totalLive` is how many live
+ * memories the brain holds; `totalMatching` is how many matched the category
+ * filter. They are separate fields so a caller can tell a short page from a
+ * short memory, which a bare list cannot express.
+ */
+@Serializable data class MemoryListingResult(
+    val facts: List<MemoryFactInfo>,
+    val shown: Int,
+    val totalLive: Int,
+    val totalMatching: Int,
+) : ToolResultData
 @Serializable data class MemoryFactResult(val fact: MemoryFactInfo) : ToolResultData
 @Serializable data class DeleteMemoryFactResult(val deletedFactId: String, val deletedFact: String) : ToolResultData
 @Serializable data class ConversationInfo(val id: String, val title: String, val createdDate: Long, val updatedDate: Long, val messageCount: Int) : ToolResultData
