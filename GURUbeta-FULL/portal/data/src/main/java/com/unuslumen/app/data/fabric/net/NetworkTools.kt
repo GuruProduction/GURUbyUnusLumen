@@ -325,13 +325,16 @@ object NetworkDomainModule : DomainToolModule {
     override val id: String = "network"
 
     override val registrations: List<ToolSetRegistration> =
-        listOf(NetworkToolDefinitions, NetworkControlToolDefinitions)
+        listOf(NetworkToolDefinitions, NetworkControlToolDefinitions, NetworkReconToolDefinitions)
 
     override fun bindings(): Module = module {
         single { NetworkStore() }
         single { NetworkScanner() }
         single { UpnpSoapClient() }
+        single { ShellNetworkRecon() }
+        single { DeepPortScanner() }
         factory { NetworkToolExecutor(get(), get()) }
         factory { NetworkControlExecutor(get(), get(), get()) }
+        factory { NetworkReconExecutor(get(), get()) }
     }
 }
