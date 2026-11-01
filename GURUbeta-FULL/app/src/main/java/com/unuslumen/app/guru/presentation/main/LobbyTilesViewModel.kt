@@ -36,7 +36,8 @@ class LobbyTilesViewModel(
         CALENDAR("calendar", "Calendar"),
         SETTINGS("settings", "Settings"),
         THOUGHTS("thoughts", "Thoughts"),
-        SKILLS("skills", "Skills");
+        SKILLS("skills", "Skills"),
+        AGENTS("agents", "Agents");
 
         companion object {
             fun fromKey(key: String): StaticTile? = entries.find { it.key == key.substringAfter("static:") }

@@ -58,6 +58,8 @@ import com.unuslumen.app.presentation.JournalScreen
 import com.unuslumen.app.presentation.JournalSearchScreen
 import com.unuslumen.app.presentation.MemoryScreen
 import com.unuslumen.app.presentation.luxify.SkillsScreen
+import com.unuslumen.app.presentation.agents.AgentsScreen
+import com.unuslumen.app.presentation.agents.AgentMarketScreen
 import com.unuslumen.app.presentation.NoteDetailsScreen
 import com.unuslumen.app.presentation.NoteFolderDetailsScreen
 import com.unuslumen.app.presentation.NotesScreen
@@ -439,6 +441,18 @@ fun guruApp(
                     exitTransition = { slideOutTransition() },
                 ) {
                     SkillsScreen(navController = navController)
+                }
+                composable<Screen.AgentsScreen>(
+                    enterTransition = { slideInTransition() },
+                    exitTransition = { slideOutTransition() },
+                ) {
+                    AgentsScreen(navController = navController)
+                }
+                composable<Screen.AgentMarketScreen>(
+                    enterTransition = { slideInTransition() },
+                    exitTransition = { slideOutTransition() },
+                ) {
+                    AgentMarketScreen(navController = navController)
                 }
                 composable<Screen.ThoughtCyclesScreen>(
                     enterTransition = { slideInTransition() },

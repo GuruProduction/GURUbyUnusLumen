@@ -21,6 +21,7 @@ import com.unuslumen.app.database.dao.MessageDao
 import com.unuslumen.app.database.dao.NoteDao
 import com.unuslumen.app.database.dao.PromptAmendmentDao
 import com.unuslumen.app.database.dao.PromptSectionDao
+import com.unuslumen.app.database.dao.GuruAgentDao
 import com.unuslumen.app.database.dao.GuruDefinedToolDao
 import com.unuslumen.app.database.dao.GuruAutomationDao
 import com.unuslumen.app.database.dao.GuruModuleDao
@@ -62,6 +63,7 @@ import com.unuslumen.app.database.entity.NoteFolderEntity
 import com.unuslumen.app.database.entity.PromptAmendmentEntity
 import com.unuslumen.app.database.entity.PromptSectionEntity
 import com.unuslumen.app.database.entity.GuruDefinedToolEntity
+import com.unuslumen.app.database.entity.GuruAgentEntity
 import com.unuslumen.app.database.entity.GuruAutomationEntity
 import com.unuslumen.app.database.entity.GuruModuleEntity
 import com.unuslumen.app.database.entity.GuruModuleRevisionEntity
@@ -109,6 +111,7 @@ import com.unuslumen.app.database.dao.FabricDao
         PromptSectionEntity::class,
         PromptAmendmentEntity::class,
         GuruDefinedToolEntity::class,
+        GuruAgentEntity::class,
         GuruAutomationEntity::class,
         GuruModuleEntity::class,
         GuruModuleRevisionEntity::class,
@@ -135,7 +138,7 @@ import com.unuslumen.app.database.dao.FabricDao
         FabricDeviceEntity::class,
         FabricSceneEntity::class
     ],
-    version = 31
+    version = 32
 )
 @TypeConverters(DBConverters::class)
 abstract class guruDatabase: RoomDatabase() {
@@ -158,6 +161,7 @@ abstract class guruDatabase: RoomDatabase() {
     abstract fun promptSectionDao(): PromptSectionDao
     abstract fun promptAmendmentDao(): PromptAmendmentDao
     abstract fun guruDefinedToolDao(): GuruDefinedToolDao
+    abstract fun guruAgentDao(): GuruAgentDao
     abstract fun guruAutomationDao(): GuruAutomationDao
     abstract fun guruModuleDao(): GuruModuleDao
     abstract fun guruModuleRevisionDao(): GuruModuleRevisionDao
