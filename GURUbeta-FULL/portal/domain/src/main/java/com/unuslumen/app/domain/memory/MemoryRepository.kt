@@ -18,8 +18,39 @@ interface MemoryRepository {
     suspend fun getMessagesByConversation(conversationId: String): List<ConversationMessage>
     suspend fun updateMessageEmbedding(messageId: String, embedding: List<Float>)
 
-    suspend fun persistFacts(facts: List<MemoryFact>)
+    /**
+     * Persist facts and return them as the brain stored them.
+     *
+     * The return value is load-bearing, not a convenience. The brain assigns its
+     * own deterministic 64-hex id from the content, and that id is the only
+     * handle any later delete or update can resolve. A persist that returned
+     * nothing forced callers to invent an id or to search for one afterwards,
+     * and both of those are why a fact could be written and then be impossible
+     * to remove.
+     */
+    suspend fun persistFacts(facts: List<MemoryFact>): List<MemoryFact>
+
+    /** Every live fact the brain holds, newest first. */
     suspend fun getAllFacts(): List<MemoryFact>
+
+    /**
+     * One fact by its exact brain id, or null when the brain does not hold it.
+     *
+     * This is the existence check a delete or an update uses. Proving existence
+     * with a relevance search reported "not found" for any memory that happened
+     * not to share a word with the search string.
+     */
+    suspend fun getFact(factId: String): MemoryFact?
+
+    /**
+     * A listing page: the rows, the true totals, and whether the brain answered.
+     *
+     * `brainReachable` exists because an unreachable brain and an empty memory
+     * are different facts about the machine, and a listing that reported the
+     * first as the second would be lying to the person reading it.
+     */
+    suspend fun listFacts(category: String? = null): FactListing
+
     suspend fun getFactsByCategory(category: String): List<MemoryFact>
     suspend fun searchFacts(query: String, category: String? = null): List<MemoryFact>
     suspend fun markFactRecalled(factId: String)

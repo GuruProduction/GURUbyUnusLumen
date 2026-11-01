@@ -33,10 +33,14 @@ pub mod frame_types {
     pub const GRAPH_TRAVERSE: u8 = 0x05;
     pub const CONSOLIDATE: u8 = 0x06;
     pub const PREFETCH: u8 = 0x07;
+    /// Enumerate live memories with their metadata, independent of any query
+    /// text. Search answers a relevance question and cannot answer "what do you
+    /// hold"; this frame can.
+    pub const LIST: u8 = 0x08;
     pub const RESPONSE: u8 = 0x80;
     pub const ERROR: u8 = 0x81;
 
-    pub const ALL: [u8; 9] = [
+    pub const ALL: [u8; 10] = [
         QUERY,
         CURATE,
         RETRIEVE,
@@ -44,6 +48,7 @@ pub mod frame_types {
         GRAPH_TRAVERSE,
         CONSOLIDATE,
         PREFETCH,
+        LIST,
         RESPONSE,
         ERROR,
     ];

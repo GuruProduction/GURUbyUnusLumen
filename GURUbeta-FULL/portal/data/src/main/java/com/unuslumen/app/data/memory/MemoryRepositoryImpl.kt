@@ -7,6 +7,7 @@ import com.unuslumen.app.data.brain.BrainService
 import com.unuslumen.app.data.brain.cerebrum.CerebrumHost
 import com.unuslumen.app.domain.memory.Conversation
 import com.unuslumen.app.domain.memory.ConversationMessage
+import com.unuslumen.app.domain.memory.FactListing
 import com.unuslumen.app.domain.memory.MemoryFact
 import com.unuslumen.app.domain.memory.MemoryRepository
 import com.unuslumen.app.domain.memory.ConversationThread
@@ -123,13 +124,47 @@ class MemoryRepositoryImpl(
     // fact persistence/search, direct brain frames (as in the G1 shape)
     // =====================================================================
 
-    override suspend fun persistFacts(facts: List<MemoryFact>) {
+    /**
+     * Persist facts and hand back the stored rows.
+     *
+     * The brain's id for a fact is deterministic from its content, and it is
+     * the only handle a later delete or update can resolve. Returning Unit here
+     * discarded that id at the one moment it was authoritative, which is why
+     * `addMemoryFact` had to invent a uuid and why the delete that followed
+     * could never find the row.
+     */
+    override suspend fun persistFacts(facts: List<MemoryFact>): List<MemoryFact> {
+        val storedRows = ArrayList<MemoryFact>(facts.size)
         for (oneFact in facts) {
-            brainService.storeFact(oneFact)
+            storedRows.add(brainService.storeFact(oneFact))
         }
+        return storedRows
     }
 
     override suspend fun getAllFacts(): List<MemoryFact> = brainService.getAllFacts()
+
+    override suspend fun getFact(factId: String): MemoryFact? = brainService.getFact(factId)
+
+    override suspend fun listFacts(category: String?): FactListing {
+        val page = brainService.getAllFactsWithTotals()
+        if (!page.brainReachable) {
+            return FactListing(emptyList(), 0, 0, brainReachable = false)
+        }
+        if (category == null) {
+            return FactListing(page.facts, page.totalLive, page.totalMatching, brainReachable = true)
+        }
+        // The whole-brain page already carries every row, so a category filter
+        // is a partition of it rather than a second brain call. Comparing on the
+        // category the row reports keeps the filter honest about what a fact IS,
+        // not about which words its body happens to contain.
+        val matching = page.facts.filter { fact -> fact.category.equals(category, ignoreCase = true) }
+        return FactListing(
+            facts = matching,
+            totalLive = page.totalLive,
+            totalMatching = matching.size,
+            brainReachable = true,
+        )
+    }
 
     override suspend fun getFactsByCategory(category: String): List<MemoryFact> =
         brainService.getFactsByCategory(category)
@@ -148,10 +183,13 @@ class MemoryRepositoryImpl(
 
     override suspend fun deleteFact(factId: String) {
         withContext(Dispatchers.IO) {
-            if (factId.length == 64 && factId.all { it in "0123456789abcdef" }) {
+            if (brainService.isBrainId(factId)) {
                 brainService.deleteFact(factId)
             } else {
-                android.util.Log.w(logTag, "deleteFact skipped: not brain hex")
+                // A non-brain id is a refusal, not a silent no-op. Reporting
+                // success for a delete that never reached the brain is how a
+                // fact that could not be removed looked removed.
+                error("not a brain id, nothing was deleted: $factId")
             }
         }
         Unit

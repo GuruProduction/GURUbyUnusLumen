@@ -68,6 +68,15 @@ class BrainService(
      * Store a fact with the brain doing its REAL processing (signature/DWM/
      * graph/episodic/event trail inside the encrypted vault path), triggered
      * by one real CURATE frame. No Kotlin write path remains for facts.
+     *
+     * Returns the row as the brain holds it, carrying the REAL deterministic
+     * 64-hex id (never a caller's synthetic uuid) and the category and
+     * confidence the write carried. The id is computed here, before dispatch,
+     * from the same hash the wire payload carries, so it needs no readback and
+     * cannot disagree with what the brain stored.
+     *
+     * `category` becomes the brain's domain, because that is the only hierarchy
+     * slot the brain has and a filter has to partition on something real.
      */
     suspend fun storeFact(
         fact: MemoryFact,
@@ -79,14 +88,19 @@ class BrainService(
         conversationText: String = ""
     ): MemoryFact = withContext(Dispatchers.Default) {
         val currentTime = System.currentTimeMillis()
-        val reasoning = if (conversationText.isBlank()) "store (role=$role)" else "store ($role in $conversationId)"
-        val provenance = "guru.role=$role conversation=$conversationId message=$messageId"
+        val provenanceSource =
+            "guru.role=$role conversation=$conversationId message=$messageId"
+        // Confidence rides inside the provenance label, because the core wire
+        // entry has no confidence field and dropping it made every read-back
+        // report full belief in a fact the caller had marked as doubtful.
+        val provenance = brainApi.provenanceLabelFor(provenanceSource, fact.confidence)
 
         val ack = brainApi.storeFact(
             factText = fact.fact,
             category = fact.category,
             provenanceLabel = provenance,
             createdAtMillis = if (fact.extractedDate > 0) fact.extractedDate else currentTime,
+            domainLabel = domainForCategory(fact.category),
             topicLabel = fact.topic.ifBlank { "recall" },
             subtopicLabel = fact.subtopic.ifBlank { "fact" },
         )
@@ -99,7 +113,124 @@ class BrainService(
         // Honest identity: the returned row carries the REAL deterministic
         // 64-hex brain id (never the caller's synthetic uid), so tool-side
         // delete/update act on rows the brain actually holds.
-        fact.copy(id = brainApi.realIdFor(fact.fact))
+        fact.copy(
+            id = brainApi.realIdFor(fact.fact),
+            category = fact.category,
+            confidence = fact.confidence.coerceIn(0f, 1f),
+            domain = domainForCategory(fact.category),
+        )
+    }
+
+    /**
+     * The category a write files under.
+     *
+     * The brain's own hierarchy is domain/topic/subtopic, so the caller's
+     * category IS the domain. Filing every fact under a constant "memory" domain
+     * made a category filter a search for that word rather than a real
+     * partition, which is why `getFactsByCategory` could not answer.
+     */
+    private fun domainForCategory(category: String): String {
+        val trimmed = category.trim().lowercase()
+        return if (trimmed.isEmpty()) "knowledge" else trimmed
+    }
+
+    /**
+     * The category a stored row was filed under: read back from the rationale
+     * the write recorded, falling back to the row's own domain, which is the
+     * same value. A row written by any older path still reports a real
+     * category rather than a blank.
+     */
+    private fun categoryOf(rationale: String, domain: String): String {
+        val markerText = "guru storeFact: "
+        val markerAt = rationale.indexOf(markerText)
+        if (markerAt >= 0) {
+            val tail = rationale.substring(markerAt + markerText.length).trim()
+            if (tail.isNotEmpty()) return tail
+        }
+        return domain.ifBlank { "knowledge" }
+    }
+
+    /**
+     * Build a domain fact from a retrieved body: every field the brain actually
+     * stores, read back rather than invented.
+     */
+    private fun buildDomainFactFrom(body: CerebrumBrainApi.RetrievedBody): MemoryFact =
+        MemoryFact(
+            id = body.idHex,
+            category = categoryOf(body.rationale, body.domain),
+            fact = body.content,
+            embedding = emptyList(),
+            confidence = body.confidence.coerceIn(0f, 1f),
+            sourceConversationIds = emptyList(),
+            extractedDate = System.currentTimeMillis(),
+            lastRecalledDate = System.currentTimeMillis(),
+            layer = body.decayLayer.uppercase(),
+            strength = body.decayStrength.coerceIn(0f, 1f),
+            accessCount = body.decayAccesses.toInt(),
+            source = body.provenanceSource,
+            trigger = "",
+            beforeContext = "",
+            afterContext = "",
+            emotionalValence = 0f,
+            domain = body.domain,
+            topic = body.topic,
+            subtopic = body.subtopic,
+            signature = ""
+        )
+
+    /**
+     * Build a domain fact from a LIST row.
+     *
+     * The listing carries the same metadata the retrieve path does, which is
+     * what lets a listing be both complete and informative: a caller asks what
+     * is remembered and gets every row with its category and its confidence,
+     * not a page of bare sentences.
+     */
+    private fun buildDomainFactFromListed(row: CerebrumBrainApi.ListedMemory): MemoryFact =
+        MemoryFact(
+            id = row.idHex,
+            category = categoryOf(row.rationale, row.domain),
+            fact = row.content,
+            embedding = emptyList(),
+            confidence = row.confidence.coerceIn(0f, 1f),
+            sourceConversationIds = emptyList(),
+            extractedDate = System.currentTimeMillis(),
+            lastRecalledDate = System.currentTimeMillis(),
+            layer = "BUFFER",
+            strength = 1.0f,
+            accessCount = 0,
+            source = "",
+            trigger = "",
+            beforeContext = "",
+            afterContext = "",
+            emotionalValence = 0f,
+            domain = row.domain,
+            topic = row.topic,
+            subtopic = row.subtopic,
+            signature = ""
+        )
+
+    /**
+     * One memory by exact id, or null when the brain does not hold it.
+     *
+     * This is the lookup the tool lane's delete and update are built on. It
+     * replaced proving existence with a relevance search for a keyword, which
+     * only ever saw the rows sharing a word with that keyword and therefore
+     * reported "not found" for memories the brain held.
+     */
+    suspend fun getFact(factId: String): MemoryFact? = withContext(Dispatchers.Default) {
+        if (!isBrainId(factId)) return@withContext null
+        val body = brainApi.retrieveDeepOrShallow(factId, wantDeep = true) ?: return@withContext null
+        buildDomainFactFrom(body)
+    }
+
+    /** A real brain id: 64 lowercase hex characters. */
+    fun isBrainId(candidate: String): Boolean =
+        candidate.length == 64 && candidate.all { it in "0123456789abcdef" }
+
+    /** One consolidation result, including how many entries changed. */
+    suspend fun consolidate(): Boolean = withContext(Dispatchers.Default) {
+        brainApi.runDreamConsolidation()
     }
 
     /**
@@ -268,34 +399,72 @@ class BrainService(
     }
 
     /**
-     * Facts listing by category; real RETRIEVE-shaped via brain SEARCH with a
-     * domain query (top-k covers it on small categories; deep filters land in
-     * a follow-up wire pass through the engine's Query frame with a Composite
-     * search shape).
+     * Facts in one category: a real partition of the brain's domain, resolved
+     * by the LIST frame.
+     *
+     * The category comparison is case-insensitive and exact on the word, not a
+     * relevance query. The previous version searched for the category name as
+     * text, so it returned every fact whose body happened to contain that word
+     * and omitted every fact filed under the category that did not.
      */
     suspend fun getFactsByCategory(category: String): List<MemoryFact> = withContext(Dispatchers.Default) {
-        brainApi.searchFacts(category, 50).map { hit ->
-            buildDomainFact(hit.idHex, hit.content, hit.score)
-        }
+        val listing = brainApi.listFacts(domainFilter = domainForCategory(category), limit = 0)
+            ?: return@withContext emptyList()
+        listing.memories.map { row -> buildDomainFactFromListed(row) }
     }
 
     suspend fun getFactsByDomain(domain: String, topic: String? = null): List<MemoryFact> = withContext(Dispatchers.Default) {
-        val searchKey = if (topic == null) domain else "$domain $topic"
-        brainApi.searchFacts(searchKey, 50).map { hit ->
-            buildDomainFact(hit.idHex, hit.content, hit.score)
-        }
+        val listing = brainApi.listFacts(domainFilter = domain, limit = 0) ?: return@withContext emptyList()
+        val rows = listing.memories
+        val narrowed = if (topic == null) rows else rows.filter { row -> row.topic.equals(topic, ignoreCase = true) }
+        narrowed.map { row -> buildDomainFactFromListed(row) }
     }
 
     /**
-     * "All facts" through the same SEARCH surface (query "brain memory" topK
-     * covers recent memories on device); full list surfaces follow in the
-     * brain's RETRIEVE path battery (next wire pass: LIST frame).
+     * Every live memory the brain holds, newest first.
+     *
+     * This was a SEARCH for the literal word "memory" capped at 200 rows, which
+     * is the defect issue 201 reports: a fact whose text did not contain that
+     * word was invisible to the listing and to the delete path's existence
+     * check. It is now a real enumeration.
      */
     suspend fun getAllFacts(): List<MemoryFact> = withContext(Dispatchers.Default) {
-        brainApi.searchFacts("memory", 200).map { hit ->
-            buildDomainFact(hit.idHex, hit.content, hit.score)
-        }
+        val listing = brainApi.listFacts(domainFilter = "", limit = 0)
+            ?: return@withContext emptyList()
+        listing.memories.map { row -> buildDomainFactFromListed(row) }
     }
+
+    /**
+     * Every live memory plus the brain's own totals.
+     *
+     * The totals let a listing report "showing N of M" honestly instead of
+     * presenting a page as the whole memory.
+     */
+    suspend fun getAllFactsWithTotals(): BrainListPage = withContext(Dispatchers.Default) {
+        val listing = brainApi.listFacts(domainFilter = "", limit = 0)
+            ?: return@withContext BrainListPage(emptyList(), 0, 0, brainReachable = false)
+        BrainListPage(
+            facts = listing.memories.map { row -> buildDomainFactFromListed(row) },
+            totalMatching = listing.totalMatching,
+            totalLive = listing.totalLive,
+            brainReachable = true,
+        )
+    }
+
+    /**
+     * One page of the memory listing.
+     *
+     * `brainReachable` is carried rather than inferred from an empty list: a
+     * brain that is not running and a brain that holds nothing are different
+     * answers, and reporting the first as the second is a lie about the state
+     * of the machine.
+     */
+    data class BrainListPage(
+        val facts: List<MemoryFact>,
+        val totalMatching: Int,
+        val totalLive: Int,
+        val brainReachable: Boolean,
+    )
 
     fun classifyQuery(query: String): String = "CEREBRUM"
 

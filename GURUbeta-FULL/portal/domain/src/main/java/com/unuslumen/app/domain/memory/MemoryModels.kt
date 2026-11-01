@@ -76,3 +76,19 @@ data class ToolResultSearchHit(
     val timestamp: Long,
     val conversationId: String
 )
+
+/**
+ * One listing of the memory, with its totals stated rather than implied.
+ *
+ * [facts] is the page; [totalLive] is every live memory the brain holds and
+ * [totalMatching] is every one that matched the category filter. They are
+ * separate so a reader can tell a short page from a short memory, and
+ * [brainReachable] distinguishes "nothing remembered" from "the brain did not
+ * answer", which are different truths about the machine.
+ */
+data class FactListing(
+    val facts: List<MemoryFact>,
+    val totalLive: Int,
+    val totalMatching: Int,
+    val brainReachable: Boolean,
+)
