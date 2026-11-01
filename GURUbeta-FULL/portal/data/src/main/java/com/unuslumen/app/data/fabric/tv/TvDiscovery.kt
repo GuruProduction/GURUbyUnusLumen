@@ -69,10 +69,10 @@ class TvDiscovery(
      */
     suspend fun discover(): DiscoveryReport = withContext(Dispatchers.IO) {
         val found = ConcurrentHashMap<String, DiscoveredTv>()
-        val problems = mutableListOf<String>()
+        val problems = java.util.Collections.synchronizedList(mutableListOf<String>())
 
         val ssdp = async { ssdpDiscover() }
-        val sweep = async { sweepLocalSubnet() }
+        val sweep = async { sweepLocalSubnet(problems) }
 
         for (device in ssdp.await()) {
             found[device.host] = device
@@ -108,39 +108,59 @@ class TvDiscovery(
      * router or a printer.
      */
     private suspend fun ssdpDiscover(): List<DiscoveredTv> = coroutineScope {
-        val replies = mutableListOf<Pair<String, String>>()
+        val replies = java.util.Collections.synchronizedList(mutableListOf<Pair<String, String>>())
+
+        // ASK FOR EVERY DEVICE TYPE, NOT ONE.
+        //
+        // THE BUG THIS FIXES. This used to send a single M-SEARCH for the DIAL service, so a
+        // television that announces itself as a MediaRenderer or as a Basic device never got
+        // asked at all. His Sharp answered because it happens to advertise DIAL; a set that
+        // advertises something else was invisible.
+        //
+        // `ssdp:all` is what a scanner asks, and each reply still names its own type so the
+        // classifier can tell a telly from a printer.
+        val searchTargets = listOf(
+            "ssdp:all",
+            "upnp:rootdevice",
+            "urn:schemas-upnp-org:device:MediaRenderer:1",
+            "urn:dial-multiscreen-org:service:dial:1",
+            "urn:schemas-upnp-org:device:Basic:1",
+        )
+
         runCatching {
-            DatagramSocket().use { socket ->
+            java.net.DatagramSocket().use { socket ->
                 socket.soTimeout = timeoutMillis * 2
                 val group = InetAddress.getByName("239.255.255.250")
-                val message = buildString {
-                    append("M-SEARCH * HTTP/1.1\r\n")
-                    append("HOST: 239.255.255.250:1900\r\n")
-                    append("MAN: \"ssdp:discover\"\r\n")
-                    append("MX: 2\r\n")
-                    append("ST: urn:dial-multiscreen-org:service:dial:1\r\n")
-                    append("\r\n")
+                for (target in searchTargets) {
+                    val message = buildString {
+                        append("M-SEARCH * HTTP/1.1\r\n")
+                        append("HOST: 239.255.255.250:1900\r\n")
+                        append("MAN: \"ssdp:discover\"\r\n")
+                        append("MX: 2\r\n")
+                        append("ST: $target\r\n")
+                        append("\r\n")
+                    }
+                    val payload = message.toByteArray(Charsets.UTF_8)
+                    runCatching { socket.send(DatagramPacket(payload, payload.size, group, 1900)) }
                 }
-                val payload = message.toByteArray(Charsets.UTF_8)
-                socket.send(DatagramPacket(payload, payload.size, group, 1900))
 
                 val deadline = System.currentTimeMillis() + timeoutMillis * 2L
                 val buffer = ByteArray(4096)
                 while (System.currentTimeMillis() < deadline) {
                     val response = DatagramPacket(buffer, buffer.size)
-                    runCatching { socket.receive(response) }
-                        .onSuccess {
-                            val body = String(response.data, 0, response.length, Charsets.UTF_8)
-                            val host = response.address?.hostAddress ?: return@onSuccess
-                            replies.add(host to body)
-                        }
+                    runCatching { socket.receive(response) }.onSuccess {
+                        val body = String(response.data, 0, response.length, Charsets.UTF_8)
+                        val host = response.address?.hostAddress ?: return@onSuccess
+                        // A set answers once per search target, so the same reply arrives several
+                        // times. Deduplicating by host plus body keeps the classifier honest.
+                        val key = host to body
+                        if (replies.none { it.first == host }) replies.add(key)
+                    }
                 }
             }
         }
 
         replies.mapNotNull { (host, body) ->
-            // A description document often names the make where the headers only name
-            // the stack, so it is fetched when the reply offers one.
             val location = body.lines()
                 .firstOrNull { it.trim().startsWith("LOCATION:", ignoreCase = true) }
                 ?.substringAfter(":", "")
@@ -159,82 +179,232 @@ class TvDiscovery(
     // ------------------------------------------------------------------
 
     /**
-     * Probe every host on this device's own /24 for a known remote port.
+     * Two passes over the local subnet, because one is not enough.
      *
-     * A /24 is 254 hosts, which is why the probes run concurrently: serially at a
-     * second each that is four minutes, and nobody waits four minutes for a remote.
-     * The connect timeout is short because a closed port refuses immediately and an
-     * absent host times out.
+     * PASS 1 probes every host on EVERY known device port, concurrently. That is 254 hosts
+     * times a handful of ports, which finishes in seconds, and it finds any set that has its
+     * remote port open.
+     *
+     * PASS 2 takes the hosts that answered anything at all and sweeps every one of their
+     * 65535 ports, asking each open port to identify itself. That is how a set on a non-standard
+     * port is found, and it is bounded to hosts that already proved they exist, because
+     * 254 times 65535 connects would take hours and melt the router.
+     *
+     * THE BUG THIS REPLACES. The old sweep returned on the FIRST port that answered, so a host
+     * whose first open port was not its remote port was never tested as a television at all.
+     * His downstairs Roku was found by nothing because of it.
      */
-    private suspend fun sweepLocalSubnet(): List<DiscoveredTv> = coroutineScope {
-        val prefix = localSubnetPrefix() ?: return@coroutineScope emptyList()
-        val targets = (1..254).map { "$prefix.$it" }
+    private suspend fun sweepLocalSubnet(problems: MutableList<String>): List<DiscoveredTv> {
+        val prefix = localSubnetPrefix()
+        if (prefix == null) {
+            problems.add(
+                "This phone is not on a wifi network with an IPv4 address, so there is no subnet " +
+                    "to sweep. A device on mobile data cannot see the local network.",
+            )
+            return emptyList()
+        }
 
-        targets.map { host ->
-            async {
-                for ((port, vendor) in portHints) {
-                    val reachable = runCatching {
-                        Socket().use { socket ->
-                            socket.connect(InetSocketAddress(host, port), 250)
-                            true
-                        }
-                    }.getOrDefault(false)
-                    if (!reachable) continue
-
-                    // The port answered, so identity is confirmed rather than assumed:
-                    // two vendors share ports, and a port open on a machine that is not
-                    // a television would otherwise be reported as one.
-                    return@async identify(host, port, vendor)
+        // ---- Pass 1: every known device port on every host ----
+        val widePorts = portHints.keys.toList() + EXTRA_DEVICE_PORTS
+        val answered = coroutineScope {
+            (1..254).map { last ->
+                async {
+                    val host = "$prefix.$last"
+                    val open = widePorts.filter { port -> isOpen(host, port) }
+                    if (open.isEmpty()) null else host to open
                 }
-                null
+            }.awaitAll().filterNotNull()
+        }
+
+        if (answered.isEmpty()) {
+            problems.add(
+                "Nothing answered on $prefix.0/24, across ${widePorts.size} device ports on every " +
+                    "address. A device answers nothing when it is switched off, on a different " +
+                    "network, or behind its own firewall.",
+            )
+            return emptyList()
+        }
+
+        // ---- Identify from the ports already known to be open ----
+        val found = mutableListOf<DiscoveredTv>()
+        val unidentified = mutableListOf<String>()
+
+        for ((host, openPorts) in answered) {
+            var identified = false
+            for (port in openPorts) {
+                val hint = portHints[port] ?: continue
+                val device = identify(host, port, hint)
+                if (device != null) {
+                    found.add(device)
+                    identified = true
+                    // One set per host, so a vendor with two remote ports cannot list it twice.
+                    break
+                }
             }
-        }.awaitAll().filterNotNull()
+            if (!identified) unidentified.add(host)
+        }
+
+        // ---- Pass 2: full sweep on anything that answered but was not identified ----
+        //
+        // THIS IS THE PART THAT MAKES DISCOVERY COMPLETE. A set on a port nobody has heard of is
+        // found here and nowhere else.
+        for (host in unidentified) {
+            val deep = deepScan(host)
+            if (deep != null) found.add(deep)
+        }
+
+        return found
     }
 
     /**
      * Confirm what is on an open port, and name it.
      *
-     * The Roku check is decisive because its device-info document is unambiguous. For
-     * every other vendor the port and the vendor's own port hint are all that can be
-     * read without a handshake, so that is what is reported and no more.
+     * The Roku check is decisive because its device-info document is unambiguous. For the other
+     * vendors a port that is open is strong evidence and not proof, so the evidence line says
+     * exactly that rather than claiming a confident name.
      */
-    private fun identify(host: String, port: Int, hint: TvVendor): DiscoveredTv? {
-        return when (hint) {
-            TvVendor.ROKU -> {
-                val body = runCatching { fetch("http://$host:8060/query/device-info", post = false) }
-                    .getOrNull()
-                if (body == null || !body.contains("<device-info", ignoreCase = true)) {
-                    return null
-                }
-                val name = tag(body, "friendly-device-name")
-                    ?: tag(body, "model-name")
-                    ?: "Roku"
+    private fun identify(host: String, port: Int, hint: TvVendor): DiscoveredTv? = when (hint) {
+        TvVendor.ROKU -> {
+            // Direct, because a private address cannot be routed over a Tor circuit and the
+            // failure would look exactly like a set that is switched off.
+            val body = runCatching { fetch("http://$host:$port/query/device-info") }.getOrNull()
+            if (body == null || !body.contains("<device-info", ignoreCase = true)) {
+                null
+            } else {
                 DiscoveredTv(
                     vendor = TvVendor.ROKU,
-                    name = name,
+                    name = tag(body, "friendly-device-name")
+                        ?: tag(body, "model-name")
+                        ?: "Roku",
                     host = host,
-                    port = 8060,
-                    evidence = "answered Roku's device-info on port 8060",
+                    port = port,
+                    evidence = "answered Roku's device-info on port $port",
                     needsPairing = false,
                 )
             }
+        }
 
-            /**
-             * A port that is open and belongs to one vendor's remote protocol.
-             *
-             * Reported with the caveat in the evidence line rather than a confident name,
-             * because a port being open is strong evidence and not proof.
-             */
-            else -> DiscoveredTv(
-                vendor = hint,
-                name = "${hint.name.lowercase().replaceFirstChar { it.uppercase() }} on $host",
-                host = host,
-                port = port,
-                evidence = "port $port is open, which is ${hint.name}'s remote port",
-                needsPairing = hint != TvVendor.ANDROID_TV,
-            )
+        else -> DiscoveredTv(
+            vendor = hint,
+            name = "${hint.name.lowercase().replaceFirstChar { it.uppercase() }} on $host",
+            host = host,
+            port = port,
+            evidence = "port $port is open, which is ${hint.name}'s remote port",
+            needsPairing = hint != TvVendor.ANDROID_TV,
+        )
+    }
+
+    /** Whether a TCP connection is accepted, which a closed port answers instantly. */
+    private fun isOpen(host: String, port: Int): Boolean = runCatching {
+        Socket().use { socket ->
+            socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MILLIS)
+            true
+        }
+    }.getOrDefault(false)
+
+    /**
+     * Sweep every port on one host and work out what it is from what its services say.
+     *
+     * The banners are the point: an open port is one bit, and a banner is identity. A device that
+     * says "Roku" in an HTTP header is a Roku whatever port it chose.
+     */
+    private fun deepScan(host: String): DiscoveredTv? {
+        val open = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+        val gate = kotlinx.coroutines.sync.Semaphore(DEEP_SCAN_CONCURRENCY)
+
+        // Chunked so the semaphore is actually respected. Firing 65535 coroutines at once is the
+        // shape that got a hand-rolled loop OOM-killed at exit 137 on this phone.
+        kotlinx.coroutines.runBlocking {
+            (1..65535).chunked(2048).forEach { chunk ->
+                coroutineScope {
+                    chunk.map { port ->
+                        async {
+                            gate.acquire()
+                            try {
+                                if (isOpen(host, port)) open.add(port)
+                            } finally {
+                                gate.release()
+                            }
+                        }
+                    }.awaitAll()
+                }
+            }
+        }
+
+        if (open.isEmpty()) return null
+
+        // Ask each open port what it is, most likely ports first so a real answer arrives early.
+        val ordered = open.sortedBy { port ->
+            when (port) {
+                in portHints -> 0
+                in EXTRA_DEVICE_PORTS -> 1
+                else -> 2
+            }
+        }
+
+        for (port in ordered.take(DEEP_SCAN_BANNER_LIMIT)) {
+            val banner = readBanner(host, port) ?: continue
+            val vendor = vendorFromBanner(banner)
+            if (vendor != null) {
+                return DiscoveredTv(
+                    vendor = vendor,
+                    name = nameFromBanner(banner) ?: "${vendor.name.lowercase().replaceFirstChar { it.uppercase() }} on $host",
+                    host = host,
+                    port = port,
+                    evidence = "port $port answered with ${banner.firstLine().take(80)}",
+                    needsPairing = vendor != TvVendor.ROKU,
+                )
+            }
+        }
+        return null
+    }
+
+    /** Read whatever a port says when asked, over HTTP first and raw second. */
+    private fun readBanner(host: String, port: Int): String? {
+        // An HTTP request first, because most remote interfaces answer one and name themselves.
+        val http = runCatching {
+            val connection = URL("http://$host:$port/").openConnection() as HttpURLConnection
+            connection.connectTimeout = BANNER_TIMEOUT_MILLIS
+            connection.readTimeout = BANNER_TIMEOUT_MILLIS
+            connection.inputStream.bufferedReader().use { it.readText().take(4000) }
+        }.getOrNull()
+        if (!http.isNullOrBlank()) return http
+
+        // Then a raw read, which catches SSH, RTSP and anything with its own banner.
+        return runCatching {
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MILLIS)
+                socket.soTimeout = BANNER_TIMEOUT_MILLIS
+                val buffer = ByteArray(2048)
+                val read = socket.getInputStream().read(buffer)
+                if (read <= 0) null else String(buffer, 0, read, Charsets.ISO_8859_1)
+            }
+        }.getOrNull()
+    }
+
+    /** Which vendor a banner names, or null when it names none of them. */
+    private fun vendorFromBanner(banner: String): TvVendor? {
+        val haystack = banner.lowercase()
+        return when {
+            haystack.contains("roku") -> TvVendor.ROKU
+            haystack.contains("samsung") || haystack.contains("tizen") -> TvVendor.SAMSUNG
+            haystack.contains("webos") || haystack.contains("lg electronics") -> TvVendor.LG
+            haystack.contains("vizio") || haystack.contains("smartcast") -> TvVendor.VIZIO
+            haystack.contains("philips") || haystack.contains("jointspace") -> TvVendor.PHILIPS
+            haystack.contains("androidtv") || haystack.contains("android tv") ||
+                haystack.contains("google tv") -> TvVendor.ANDROID_TV
+            else -> null
         }
     }
+
+    /** A human name from a banner, when the banner carries one. */
+    private fun nameFromBanner(banner: String): String? =
+        tag(banner, "friendlyName")
+            ?: tag(banner, "friendly-device-name")
+            ?: tag(banner, "modelName")
+            ?: tag(banner, "model-name")
+
+    private fun String.firstLine(): String = lineSequence().firstOrNull()?.trim() ?: ""
 
     /** This device's /24, from the phone's own wifi address. */
     private fun localSubnetPrefix(): String? {
@@ -257,8 +427,17 @@ class TvDiscovery(
         }.getOrNull()
     }
 
+    /**
+     * Fetch a local document, bypassing the proxy.
+     *
+     * THE BUG THIS FIXES LOST A REAL TELEVISION. Discovery opened a Roku's port with a raw socket,
+     * which needs no proxy, then fetched its device-info over HTTP, which went through Tor and
+     * died. The set was found and then discarded, so only sets that announced themselves over
+     * SSDP ever appeared.
+     */
     private fun fetch(url: String, post: Boolean = false): String {
-        val connection = URL(url).openConnection() as HttpURLConnection
+        val connection = com.unuslumen.app.data.fabric.net.LocalRoute.open(url)
+            ?: throw IllegalStateException("no connection could be built to $url")
         return try {
             connection.connectTimeout = timeoutMillis
             connection.readTimeout = timeoutMillis
@@ -279,6 +458,28 @@ class TvDiscovery(
             .find(xml)?.groupValues?.getOrNull(1)?.trim()?.ifBlank { null }
 
     companion object {
+        /** A short connect timeout, because a closed port refuses instantly. */
+        private const val CONNECT_TIMEOUT_MILLIS = 140
+
+        /** How long to wait for a banner before moving on. */
+        private const val BANNER_TIMEOUT_MILLIS = 600
+
+        /** How many ports to sweep at once, bounded because this phone has been OOM-killed before. */
+        private const val DEEP_SCAN_CONCURRENCY = 128
+
+        /** How many open ports on a host are asked to identify themselves before giving up. */
+        private const val DEEP_SCAN_BANNER_LIMIT = 24
+
+        /**
+         * Ports beyond the vendor remote ports worth probing on every host.
+         *
+         * These are the ones a television or a media box commonly exposes something on, so the
+         * first pass finds a set before the expensive full sweep has to run.
+         */
+        private val EXTRA_DEVICE_PORTS = listOf(
+            80, 443, 1900, 5000, 7000, 8008, 8009, 8080, 8081, 8443, 9080, 9999, 55000, 49152, 49153,
+        )
+
         /** The port a vendor's remote protocol answers on. */
         fun defaultPortFor(vendor: TvVendor): Int = when (vendor) {
             TvVendor.ROKU -> 8060

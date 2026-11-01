@@ -3,10 +3,11 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.data.fabric.tv
 
+import com.unuslumen.app.data.fabric.net.LocalRoute
+
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
-import java.net.URL
 
 /**
  * Roku's External Control Protocol. Issue #187.
@@ -215,9 +216,18 @@ class RokuRemote(
         TvButton.INPUT -> "Info"
     }
 
-    /** One HTTP call, returning the body or throwing with the platform's own words. */
+    /**
+     * One HTTP call, returning the body or throwing with the platform's own words.
+     *
+     * THE CONNECTION BYPASSES THE PROXY, and that is the whole reason a Roku was being found and
+     * then thrown away. Every outbound path in this app is injected with a Tor SOCKS proxy, and
+     * Tor will not route to a private address, so the device-info fetch died with a bare 000 that
+     * looked exactly like a set that was switched off. A local address is unreachable through a
+     * Tor circuit by definition, so routing it there removes capability and adds no privacy.
+     */
     private fun request(method: String, path: String): String {
-        val connection = URL("http://$host:$port$path").openConnection() as HttpURLConnection
+        val connection = LocalRoute.open("http://$host:$port$path")
+            ?: throw IllegalStateException("the connection to $host:$port could not be built")
         return try {
             connection.requestMethod = method
             connection.connectTimeout = timeoutMillis

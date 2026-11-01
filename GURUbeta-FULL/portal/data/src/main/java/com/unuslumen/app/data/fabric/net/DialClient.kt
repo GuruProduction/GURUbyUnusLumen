@@ -50,7 +50,9 @@ class DialClient(
      */
     suspend fun appList(): Result<AppList> = withContext(Dispatchers.IO) {
         val connection = runCatching {
-            URL("http://$host:$port/ssdp/device-desc.xml").openConnection() as HttpURLConnection
+            com.unuslumen.app.data.fabric.net.LocalRoute
+                .open("http://$host:$port/ssdp/device-desc.xml")
+                as HttpURLConnection
         }.getOrNull()
             ?: return@withContext Result.failure(
                 IllegalStateException(
@@ -150,7 +152,7 @@ class DialClient(
      */
     private fun request(method: String, url: String): Result<String> {
         val connection = runCatching {
-            URL(url).openConnection() as HttpURLConnection
+            com.unuslumen.app.data.fabric.net.LocalRoute.open(url) as HttpURLConnection
         }.getOrNull()
             ?: return Result.failure(IllegalStateException("Could not reach $url."))
 
