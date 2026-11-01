@@ -57,13 +57,20 @@ class PermissionRegistryManifestParityTest {
         assertTrue("manifest not found at ${manifestFile.absolutePath}", manifestFile.isFile)
     }
 
+    /**
+     * The manifest's declared count, pinned so an undocumented grant cannot slip in.
+     *
+     * 167 since #187 added TRANSMIT_IR for infrared, with a registry entry beside it.
+     * The number moves only when a permission is added deliberately and described in
+     * the same change, which is the whole point of pinning it.
+     */
     @Test
-    fun theManifestDeclares166Permissions() {
+    fun theManifestDeclares167Permissions() {
         assertEquals(
-            "The manifest no longer declares 166 permissions. That is not automatically " +
+            "The manifest no longer declares 167 permissions. That is not automatically " +
                 "wrong, but the registry's hardcoded list and every skill that quotes the " +
-                "number assume 166, so update both together.",
-            166,
+                "number assume 167, so update both together.",
+            167,
             manifestPermissions().size
         )
     }

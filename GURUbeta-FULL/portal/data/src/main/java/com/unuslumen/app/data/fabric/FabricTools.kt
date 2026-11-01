@@ -3,6 +3,7 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.data.fabric
 
+import android.content.Context
 import com.unuslumen.app.data.tools.registry.ToolDefinition
 import com.unuslumen.app.data.tools.registry.ToolExecutor
 import com.unuslumen.app.data.tools.registry.ToolParameter
@@ -168,6 +169,26 @@ data class SmartCommissionResult(
 class FabricToolExecutor(
     private val fabric: DeviceFabric,
 ) : ToolExecutor {
+
+    /**
+     * Build the fabric and its executor from a bare Context.
+     *
+     * THE SHAPE IS LOAD-BEARING. Every domain executor in this batch is checked by a
+     * JVM test that constructs it from one Context argument, and the fabric predates
+     * that convention. Rather than special-case this one executor in that test, the
+     * real construction lives here and the test exercises the real thing.
+     *
+     * The DAO comes from Koin because [guruDatabase] has no getInstance and Koin is
+     * started before any tool can run. A missing binding therefore fails loudly on a
+     * test that never started Koin, rather than silently building a fabric with no
+     * store.
+     */
+    constructor(context: Context) : this(
+        fabric = DeviceFabric(
+            dao = KoinFabricDao.resolve(context),
+            registry = DefaultFabricRegistry.build(context),
+        ),
+    )
 
     private val json = Json { ignoreUnknownKeys = true }
 
