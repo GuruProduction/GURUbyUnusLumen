@@ -265,6 +265,7 @@ fun LobbyScreen(
                                     tile.key == "static:settings" -> navController.navigate(Screen.SettingsScreen)
                                     tile.key == "static:thoughts" -> navController.navigate(Screen.ThoughtCyclesScreen)
                                     tile.key == "static:skills" -> navController.navigate(Screen.SkillsScreen)
+                                    tile.key == "static:agents" -> navController.navigate(Screen.AgentsScreen)
                                 }
                             }
                         )
@@ -311,6 +312,7 @@ private fun LobbyTileCard(
         "static:settings" -> R.drawable.lobby_settings
         "static:thoughts" -> R.drawable.lobby_thoughts
         "static:skills" -> R.drawable.lobby_skills
+        "static:agents" -> R.drawable.lobby_skills
         else -> R.drawable.lobby_skills // grown rooms without an icon fall back to skills art
     }
 

@@ -34,6 +34,7 @@ import com.unuslumen.app.data.tools.JobToolDefinitions
 import com.unuslumen.app.data.tools.NoteToSelfToolDefinitions
 import com.unuslumen.app.data.tools.TaskToolDefinitions
 import com.unuslumen.app.data.tools.MemoryToolDefinitions
+import com.unuslumen.app.data.tools.AgentToolDefinitions
 import com.unuslumen.app.data.tools.MetaToolDefinitions
 import com.unuslumen.app.data.tools.EmailToolDefinitions
 import com.unuslumen.app.data.tools.FileSystemToolDefinitions
@@ -151,6 +152,7 @@ object GeneratedToolRegistrations {
         TaskToolDefinitions,
         MemoryToolDefinitions,
         MetaToolDefinitions,
+        AgentToolDefinitions,
         EmailToolDefinitions,
         FileSystemToolDefinitions,
         EncryptionToolDefinitions,

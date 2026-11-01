@@ -186,6 +186,20 @@ class GuruApplication : Application() {
             }
         }
 
+        // Agent catalogue sync: one pass at boot, then every six hours while
+        // the process lives. Same doctrine as the skills lane — the publisher
+        // leads, force-push updates synced rows and retraction withdraws them,
+        // and a person's own agents are never candidates for either.
+        applicationScope.launch {
+            val agentRepository: com.unuslumen.app.domain.repository.GuruAgentRepository by inject()
+            val worker = com.unuslumen.app.data.agents.AgentLibrarySyncWorker(this@GuruApplication, agentRepository)
+            while (true) {
+                runCatching { worker.syncNow(force = false) }
+                    .onFailure { android.util.Log.w("guru", "Agent sync failed: ${it.message}") }
+                delay(6L * 60 * 60 * 1000)
+            }
+        }
+
         HiveMindWorker.schedulePeriodic(this)
         BrainScheduler.schedule(this)
         com.unuslumen.app.data.heartbeat.HeartbeatScheduler.schedule(this)
