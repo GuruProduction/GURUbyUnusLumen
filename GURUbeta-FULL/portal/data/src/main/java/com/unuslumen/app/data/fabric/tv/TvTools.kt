@@ -77,10 +77,12 @@ object TvToolDefinitions : ToolSetRegistration {
         ToolDefinition(
             name = TV_DISCOVER,
             description = "Find the televisions on this wifi network and work out each one's make, " +
-                "so GURU can drive it the way a universal remote app does. Returns the name, make, " +
-                "address and whether this build can actually control it, plus what each set said " +
-                "to identify itself. A set answers only while it is awake on the same network, and " +
-                "several makes need their network remote feature switched on first.",
+                "so GURU can drive it the way a universal remote app does. Asks over UPnP, over " +
+                "Bonjour, and across every port a television actually opens, all at once, so it " +
+                "answers in a couple of seconds rather than scanning forever. Returns the name, " +
+                "make, address and whether this build can actually control it, plus what each set " +
+                "said to identify itself. A set answers only while it is awake on the same network, " +
+                "and several makes need their network remote feature switched on first.",
             category = "smart_home",
             parameters = emptyList(),
             permissions = emptyList(),
