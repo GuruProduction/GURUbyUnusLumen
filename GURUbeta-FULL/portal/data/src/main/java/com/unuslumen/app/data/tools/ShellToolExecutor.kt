@@ -12,6 +12,7 @@ import android.os.StatFs
 import android.provider.Settings
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
+import com.unuslumen.app.data.tor.EgressClassifier
 import com.unuslumen.app.data.tor.TorManager
 import com.unuslumen.app.util.shell.ShellExecutor
 import com.unuslumen.app.util.shell.ShellResult
@@ -31,6 +32,21 @@ class ShellToolExecutor(
     private val torManager: TorManager
 ) : ToolExecutor {
     private val json = Json { ignoreUnknownKeys = true }
+
+    private companion object {
+        /**
+         * The bypass list for proxied shell commands.
+         *
+         * Both cases are emitted because curl reads the lowercase form and
+         * other tooling reads the uppercase one. It is a safety net, not the
+         * mechanism: the route decision is made by EgressClassifier before the
+         * proxy is ever injected, so a command aimed only at the LAN does not
+         * receive proxy variables at all.
+         */
+        const val NO_PROXY_VALUE: String =
+            "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16," +
+                "169.254.0.0/16,100.64.0.0/10,*.local,*.lan,*.home,*.home.arpa,*.internal"
+    }
     private val shellExecutor = ShellExecutor(context)
     private var rootAvailable: Boolean? = null
     private var hasManageExternalStorage: Boolean? = null
@@ -227,8 +243,84 @@ class ShellToolExecutor(
                 return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r))
             }
         }
+        // curl and wget are the escape hatch for anything the named tools do
+        // not cover, and they were the widest part of issue #215: every one of
+        // them was handed the Tor proxy environment with no bypass, so a
+        // request to the router returned curl exit 97 (CURLE_PROXY) and read
+        // as a dead host.
+        //
+        // Two fixes here, and they are different problems.
+        //
+        // 1. NO_PROXY for private space. Curl honours it and it costs nothing.
+        // 2. The proxy environment is only injected when the command actually
+        //    targets somewhere public. A command aimed entirely at the LAN gets
+        //    no proxy variables at all, which is the correct state for a
+        //    private address and does not depend on curl parsing a list.
+        //
+        // NO_PROXY alone is not enough because it matches the literal string
+        // the caller typed: a name that resolves into the LAN still matches
+        // nothing and goes to the proxy. That gap needs resolve-then-classify,
+        // which is why the classifier exists rather than an env var (see
+        // EgressClassifier.routeForHostResolved).
         val needsTorProxy = command.contains("curl") || command.contains("wget")
-        if (needsTorProxy) { if (!torManager.isReady.value) { val r = ShellCommandResult(-1, "", "Tor is not running.", false); return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r)) }; val socksPort = (torManager.getSocksProxy().address() as? InetSocketAddress)?.port ?: 9050; if (!shellExecutor.toybox.isToyboxAvailable()) shellExecutor.toybox.initialize(); val caCertPath = File(context.filesDir, "cacert.pem"); if (!caCertPath.exists()) { try { context.assets.open("cacert.pem").use { input -> FileOutputStream(caCertPath).use { output -> input.copyTo(output) } } } catch (_: Exception) {} }; val symlinkPath = shellExecutor.toybox.getSymlinkDir(); val nativeLibPath = context.applicationInfo.nativeLibraryDir; val httpPort = (torManager.getProxy().address() as? InetSocketAddress)?.port ?: 8118; val isWget = command.contains("wget"); val caCert = "CURL_CA_BUNDLE=${caCertPath.absolutePath} SSL_CERT_FILE=${caCertPath.absolutePath}"; val proxyEnv = if (isWget) "http_proxy=http://127.0.0.1:$httpPort https_proxy=http://127.0.0.1:$httpPort $caCert" else "ALL_PROXY=socks5h://127.0.0.1:$socksPort HTTP_PROXY=socks5h://127.0.0.1:$socksPort HTTPS_PROXY=socks5h://127.0.0.1:$socksPort $caCert"; val fullCommand = "export $proxyEnv; PATH=$symlinkPath:$nativeLibPath:\$PATH; $command"; val result = shellExecutor.execute(fullCommand); val r = ShellCommandResult(result.exitCode, result.stdout, result.stderr, result.success, denial = result.denial, advisory = result.advisory); return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r)) }
+        if (needsTorProxy) {
+            if (!shellExecutor.toybox.isToyboxAvailable()) shellExecutor.toybox.initialize()
+            val symlinkPath = shellExecutor.toybox.getSymlinkDir()
+            val nativeLibPath = context.applicationInfo.nativeLibraryDir
+            val caCertPath = File(context.filesDir, "cacert.pem")
+            if (!caCertPath.exists()) {
+                try {
+                    context.assets.open("cacert.pem").use { input ->
+                        FileOutputStream(caCertPath).use { output -> input.copyTo(output) }
+                    }
+                } catch (_: Exception) {
+                }
+            }
+            val caCert = "CURL_CA_BUNDLE=${caCertPath.absolutePath} SSL_CERT_FILE=${caCertPath.absolutePath}"
+            val noProxy = "NO_PROXY=$NO_PROXY_VALUE no_proxy=$NO_PROXY_VALUE"
+
+            if (!EgressClassifier.commandNeedsTor(command)) {
+                // Aimed entirely at the local network. Nothing to proxy, and
+                // Tor is irrelevant to whether this works.
+                val fullCommand = "export $caCert $noProxy; PATH=$symlinkPath:$nativeLibPath:\$PATH; $command"
+                val result = shellExecutor.execute(fullCommand)
+                val r = ShellCommandResult(result.exitCode, result.stdout, result.stderr, result.success, denial = result.denial, advisory = result.advisory)
+                return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r))
+            }
+
+            if (!torManager.isReady.value) {
+                val r = ShellCommandResult(
+                    -1,
+                    "",
+                    "Tor is not running, so this command was not run. It targets a public address and " +
+                        "public traffic rides Tor, so it will not be sent direct. Commands that only " +
+                        "touch the local network do not need Tor and are unaffected.",
+                    false,
+                )
+                return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r))
+            }
+
+            val socksPort = (torManager.getSocksProxy().address() as? InetSocketAddress)?.port ?: 9050
+            val httpPort = (torManager.getProxy().address() as? InetSocketAddress)?.port ?: 8118
+            val isWget = command.contains("wget")
+            val proxyEnv = if (isWget) {
+                "http_proxy=http://127.0.0.1:$httpPort https_proxy=http://127.0.0.1:$httpPort"
+            } else {
+                "ALL_PROXY=socks5h://127.0.0.1:$socksPort HTTP_PROXY=socks5h://127.0.0.1:$socksPort " +
+                    "HTTPS_PROXY=socks5h://127.0.0.1:$socksPort"
+            }
+            val fullCommand = "export $proxyEnv $noProxy $caCert; PATH=$symlinkPath:$nativeLibPath:\$PATH; $command"
+            val result = shellExecutor.execute(fullCommand)
+            val r = ShellCommandResult(
+                result.exitCode,
+                result.stdout,
+                result.stderr,
+                result.success,
+                denial = result.denial,
+                advisory = result.advisory,
+            )
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r))
+        }
         if (!shellExecutor.busybox.isAvailable()) shellExecutor.busybox.initialize()
         val hasShellOperators = command.contains("|") || command.contains(">>") || command.contains("&&") || command.contains("||") || command.contains(";")
         if (hasShellOperators) { if (!shellExecutor.toybox.isToyboxAvailable()) shellExecutor.toybox.initialize(); val symlinkPath = shellExecutor.toybox.getSymlinkDir(); val nativeLibPath = shellExecutor.toybox.getSymlinkDir(); val fullCommand = "PATH=$symlinkPath:$nativeLibPath:\$PATH; $command"; val result = shellExecutor.execute(fullCommand); val r = ShellCommandResult(result.exitCode, result.stdout, result.stderr, result.success, denial = result.denial, advisory = result.advisory); return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r)) }

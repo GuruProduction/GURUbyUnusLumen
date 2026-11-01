@@ -11,6 +11,7 @@ import android.webkit.WebViewClient
 import androidx.webkit.ProxyConfig
 import androidx.webkit.ProxyController
 import androidx.webkit.WebViewFeature
+import com.unuslumen.app.data.tor.EgressClassifier
 import com.unuslumen.app.data.tor.TorManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -45,23 +46,80 @@ class WebFetchService(
     private fun hollownessOf(rawContent: String): String? =
         WebFetchContentQuality.hollownessOf(rawContent)
 
-    private fun getProxies(): List<Proxy> {
-        if (!torManager.isReady.value) return emptyList()
-        return listOf(
-            torManager.getProxy(),       // HTTP tunnel port 8118
-            torManager.getSocksProxy(),  // SOCKS port 9050
-        )
+    /**
+     * The proxies to attempt for a host.
+     *
+     * Issue #215: this used to return the Tor proxies for every URL and an
+     * empty list whenever Tor was down. Both were wrong for a local address,
+     * and the empty list meant a LAN fetch was never attempted at all. A local
+     * host now gets a single direct attempt, and a public host fails closed.
+     */
+    private fun getProxies(host: String): List<Proxy?> =
+        when (EgressClassifier.routeForHost(host)) {
+            EgressClassifier.Route.DIRECT -> listOf(null)
+            EgressClassifier.Route.TOR -> {
+                if (!torManager.isReady.value) {
+                    emptyList()
+                } else {
+                    listOf(
+                        torManager.getProxy(),       // HTTP tunnel port 8118
+                        torManager.getSocksProxy(),  // SOCKS port 9050
+                    )
+                }
+            }
+        }
+
+    private fun hostOf(url: String): String? = try {
+        java.net.URI(url).host
+    } catch (_: Exception) {
+        null
     }
 
-    private fun tryFetchWithProxies(url: String, maxLength: Int): FetchResult? {
-        for (proxy in getProxies()) {
+    /**
+     * Attempt a Jsoup fetch and always answer with a result.
+     *
+     * This used to return null for every failure, which threw away the cause
+     * and forced the caller to invent a generic sentence. It now always says
+     * what happened, including which of the four network failures it was.
+     */
+    private fun tryFetchWithProxies(url: String, maxLength: Int): FetchResult {
+        val host = hostOf(url)
+        val route = EgressClassifier.routeForHost(host)
+        val proxies = host?.let { getProxies(it) } ?: emptyList()
+
+        // A public host with no Tor circuit is a refusal, not a network fact.
+        // Reporting it as one used to make a stopped Tor look like a dead site.
+        if (proxies.isEmpty()) {
+            return FetchResult(
+                url = url,
+                title = "",
+                content = "",
+                success = false,
+                error = EgressClassifier.failureSentence(
+                    host ?: url,
+                    null,
+                    route,
+                    java.net.ProtocolException("Tor is not ready"),
+                ).let {
+                    "Tor is not running, so $url was not fetched. Public pages ride Tor and never fall " +
+                        "back to a direct connection."
+                },
+            )
+        }
+
+        var lastError: Exception? = null
+        for (proxy in proxies) {
             try {
-                val doc = Jsoup.connect(url)
+                val request = Jsoup.connect(url)
                     .userAgent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
-                    .proxy(proxy)
                     .ignoreContentType(true)
                     .maxBodySize(1024 * 1024)
-                    .get()
+
+                // Jsoup rejects a null proxy rather than defaulting to direct,
+                // so a local route leaves the proxy off the connection entirely.
+                if (proxy != null) request.proxy(proxy)
+
+                val doc = request.get()
 
                 val title = doc.title().trim()
                 doc.select("script, style, nav, footer, header").remove()
@@ -89,11 +147,28 @@ class WebFetchService(
                 }
 
                 return FetchResult(url = url, title = title, content = content, success = true)
-            } catch (_: Exception) {
-                // try next proxy
+            } catch (e: Exception) {
+                // Keep the cause so the caller can be told which of the four
+                // failures this was. Swallowing it is what produced a generic
+                // "failed through all methods" sentence for every outcome.
+                lastError = e
             }
         }
-        return null
+
+        // Every attempt failed. Say which failure it was rather than returning
+        // null and letting the caller invent a reason.
+        return FetchResult(
+            url = url,
+            title = "",
+            content = "",
+            success = false,
+            error = EgressClassifier.failureSentence(
+                host ?: url,
+                null,
+                route,
+                lastError,
+            ),
+        )
     }
 
     /**
@@ -118,11 +193,41 @@ class WebFetchService(
         var pageTitle: String? = null
         var loadError: String? = null
 
-        // Route WebView through Tor using ProxyController
-        val proxyController = if (WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
-            ProxyController.getInstance()
+        // Whether this URL needs Tor at all. A local page — a router admin
+        // page, a NAS, a device's own web UI — must load DIRECT, because the
+        // old code forced every URL through the SOCKS listener and a LAN host
+        // cannot be reached that way. This returned a black page for a device
+        // that was answering perfectly well.
+        val route = EgressClassifier.routeForHost(hostOf(url))
+        if (route == EgressClassifier.Route.TOR && !torManager.isReady.value) {
+            return@withContext FetchResult(
+                url = url,
+                title = "",
+                content = "",
+                success = false,
+                error = "Tor is not running, so $url was not loaded in the WebView. " +
+                    "Public pages ride Tor and never fall back to a direct connection.",
+            )
+        }
+
+        val proxyController = if (route == EgressClassifier.Route.TOR) {
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+                ProxyController.getInstance()
+            } else {
+                // Without PROXY_OVERRIDE the WebView would load the public page
+                // direct, which is the leak this whole object exists to stop.
+                Log.w(TAG, "ProxyController not supported, refusing to load a public URL unfiltered")
+                return@withContext FetchResult(
+                    url = url,
+                    title = "",
+                    content = "",
+                    success = false,
+                    error = "This device's WebView cannot be routed through Tor " +
+                        "(PROXY_OVERRIDE is unsupported), so $url was not loaded. Loading it " +
+                        "would have gone direct.",
+                )
+            }
         } else {
-            Log.w(TAG, "ProxyController not supported on this device, WebView will NOT go through Tor")
             null
         }
 
@@ -286,19 +391,28 @@ class WebFetchService(
     suspend fun fetch(url: String, maxLength: Int = 10000): FetchResult = withContext(Dispatchers.IO) {
         // Step 1: Try Jsoup first — fast, works for server-rendered pages
         val jsoupResult = tryFetchWithProxies(url, maxLength)
-        if (jsoupResult != null && jsoupResult.success && jsoupResult.content.length >= MIN_CONTENT_LENGTH) {
+        if (jsoupResult.success && jsoupResult.content.length >= MIN_CONTENT_LENGTH) {
             return@withContext jsoupResult
         }
 
         // Step 2: If Jsoup returned empty or very little content, the page is
         // likely JS-rendered. Fall back to WebView which executes JavaScript.
-        Log.d(TAG, "Jsoup returned thin content (${jsoupResult?.content?.length ?: 0} chars), falling back to WebView for: $url")
+        Log.d(TAG, "Jsoup returned thin content (${jsoupResult.content.length} chars), falling back to WebView for: $url")
         val webViewResult = fetchWithWebView(url, maxLength)
 
-        // Step 3: If Jsoup could not connect at all, try circuit recovery once.
-        // Only when there was NO response: a hollow response already came back
-        // from the network, so a new circuit would fetch the same wall again.
-        val recovered = if (jsoupResult == null && torManager.isReady.value) {
+        // Step 3: If Jsoup could not reach the host at all, try circuit recovery
+        // once — a new circuit fixes a bad exit, not a device that is off.
+        //
+        // A LOCAL address is excluded deliberately: recovering a Tor circuit
+        // cannot help a direct connection, and doing it wasted a minute of
+        // NEWNYM retries before reporting a LAN host as unreachable.
+        val host = hostOf(url)
+        val route = EgressClassifier.routeForHost(host)
+        val recovered = if (
+            !jsoupResult.success &&
+            route == EgressClassifier.Route.TOR &&
+            torManager.isReady.value
+        ) {
             if (torManager.requestNewCircuits()) tryFetchWithProxies(url, maxLength) else null
         } else {
             null
