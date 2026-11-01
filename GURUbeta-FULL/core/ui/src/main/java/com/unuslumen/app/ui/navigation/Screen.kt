@@ -99,6 +99,12 @@ sealed class Screen {
     @Serializable
     data object SkillsScreen : Screen()
 
+    // Agents — definitions the numen can call, made in the app or downloaded
+    @Serializable
+    data object AgentsScreen : Screen()
+    @Serializable
+    data object AgentMarketScreen : Screen()
+
     // Thought cycles — the background reflection engine's own screens
     @Serializable
     data object ThoughtCyclesScreen : Screen()

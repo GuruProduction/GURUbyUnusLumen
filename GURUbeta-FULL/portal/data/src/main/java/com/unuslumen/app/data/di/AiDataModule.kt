@@ -328,6 +328,19 @@ val aiDataModule = module {
     factory { TaskToolExecutor(get(), get(), get(), get(), get(), get(), get()) }
     factory { MemoryToolExecutor(get()) }
     factory { MetaToolExecutor(get()) }
+    // The agent lane. The runtime is a factory because it reads the connected
+    // provider on every spawn, so switching model mid-session takes effect on
+    // the next job rather than needing a restart.
+    factory { com.unuslumen.app.data.tools.AgentToolExecutor(get(), get()) }
+    factory {
+        com.unuslumen.app.data.agents.AgentRuntime(
+            get(),
+            get(),
+            get(),
+            get(),
+            get<Context>()
+        )
+    }
     factory { EmailToolExecutor(get<Context>()) }
     // Batch 6 executor bindings
     factory { FileSystemToolExecutor(get<Context>()) }
