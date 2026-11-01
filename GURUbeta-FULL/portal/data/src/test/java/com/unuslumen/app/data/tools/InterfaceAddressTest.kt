@@ -13,7 +13,7 @@ import org.junit.Test
  * Holds the subnet arithmetic, because issue 34 was a mask that described the
  * entire IPv4 space.
  *
- * WHAT WAS BROKEN. `networkScan` reported `192.168.0.179/0.0.0.0`. Two faults
+ * WHAT WAS BROKEN. `networkScan` reported `192.168.1.179/0.0.0.0`. Two faults
  * combined: `dhcpInfo.netmask` is deprecated and returns zero on modern Android,
  * and the integer-to-quad converter read the bytes in the wrong order. Either
  * one alone produces an unusable subnet.
@@ -26,18 +26,18 @@ class InterfaceAddressTest {
 
     @Test
     fun aSlashTwentyFourProducesTheNetworkNotTheHostAddress() {
-        val a = ArpDiscoveryManager.InterfaceAddress("192.168.0.179", 24)
+        val a = ArpDiscoveryManager.InterfaceAddress("192.168.1.179", 24)
         assertEquals(
             "The reported subnet must be the NETWORK, not the host address. " +
                 "Reporting the host as a subnet was half of issue 34.",
-            "192.168.0.0/24",
+            "192.168.1.0/24",
             a.network,
         )
     }
 
     @Test
     fun aZeroPrefixNeverAppearsAsAValidMaskForALanAddress() {
-        val a = ArpDiscoveryManager.InterfaceAddress("192.168.0.179", 24)
+        val a = ArpDiscoveryManager.InterfaceAddress("192.168.1.179", 24)
         assertFalse(
             "A /0 subnet describes the whole IPv4 space and is never a LAN answer.",
             a.network.endsWith("/0"),
@@ -46,14 +46,14 @@ class InterfaceAddressTest {
 
     @Test
     fun membershipIsLimitedToTheRealPrefix() {
-        val a = ArpDiscoveryManager.InterfaceAddress("192.168.0.179", 24)
-        assertTrue("own address is on the network", a.contains("192.168.0.179"))
-        assertTrue("gateway is on the network", a.contains("192.168.0.1"))
+        val a = ArpDiscoveryManager.InterfaceAddress("192.168.1.179", 24)
+        assertTrue("own address is on the network", a.contains("192.168.1.179"))
+        assertTrue("gateway is on the network", a.contains("192.168.1.1"))
         assertFalse(
             "a stale ARP entry from another network must not be reported as a local device",
             a.contains("10.0.0.5"),
         )
-        assertFalse("a different /24 is not local", a.contains("192.168.1.20"))
+        assertFalse("a different /24 is not local", a.contains("192.168.2.20"))
     }
 
     @Test
@@ -67,6 +67,6 @@ class InterfaceAddressTest {
     @Test
     fun aMalformedAddressDoesNotThrow() {
         val a = ArpDiscoveryManager.InterfaceAddress("not-an-ip", 24)
-        assertFalse("garbage must never match", a.contains("192.168.0.1"))
+        assertFalse("garbage must never match", a.contains("192.168.1.1"))
     }
 }

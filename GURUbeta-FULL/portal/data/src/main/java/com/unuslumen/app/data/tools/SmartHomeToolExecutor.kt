@@ -580,7 +580,7 @@ class SmartHomeToolExecutor(private val context: Context) : ToolExecutor {
                 /*
                  * THE FALLBACK READS THE INTERFACE, NOT dhcpInfo.
                  *
-                 * Issue 34: this branch produced "Subnet: 192.168.0.179/0.0.0.0".
+                 * Issue 34: this branch produced "Subnet: 192.168.1.179/0.0.0.0".
                  * Two faults together. dhcpInfo.ipAddress and dhcpInfo.netmask are
                  * deprecated and return ZERO on modern Android, so the mask was
                  * always 0.0.0.0; and intToIp read the low byte as the first octet
