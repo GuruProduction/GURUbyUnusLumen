@@ -61,11 +61,18 @@ val SettingsGold = Color(0xFFDAA520)
 val SettingsGoldDeep = Color(0xFFB8956A)
 val SettingsSlate = Color(0xFF5B7C99) // grey slate-blue — the non-cyan accent
 
-/** Vertical wash behind every settings page: cream fading to warm bone. */
+/**
+ * The settings page brush, now fully transparent.
+ *
+ * Settings used to paint its own cream wash over the page, which put it out of
+ * step with every other screen once the app had one shared background. The token
+ * is kept rather than deleted because settings call sites still reference it,
+ * and an alpha of zero is the honest statement: paint nothing.
+ */
 val SettingsPageBrush = Brush.verticalGradient(
     colors = listOf(
-        SettingsPaperHigh.copy(alpha = 0.96f),
-        SettingsPaperLow.copy(alpha = 0.9f),
+        Color.Transparent,
+        Color.Transparent,
     )
 )
 

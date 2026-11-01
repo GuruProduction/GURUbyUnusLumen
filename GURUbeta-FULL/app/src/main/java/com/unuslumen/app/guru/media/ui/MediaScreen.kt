@@ -73,7 +73,6 @@ fun MediaScreen(
         Modifier
             .fillMaxSize()
             .statusBarsPadding()
-            .background(MaterialTheme.colorScheme.background)
     ) {
         // Header: back arrow and the Media label, matching the lobby's small-caps style
         Row(

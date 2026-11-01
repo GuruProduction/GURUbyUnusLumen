@@ -55,25 +55,7 @@ fun ModuleScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     Box(Modifier.fillMaxSize()) {
-        // Portal background stack — the room sits inside the app's own look.
-        Image(
-            painter = painterResource(id = R.drawable.portal_bg_art),
-            contentDescription = null,
-            modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.Crop,
-        )
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            Color(0xFFF0E8DA).copy(alpha = 0.75f),
-                            Color(0xFFE4D9C6).copy(alpha = 0.55f),
-                        )
-                    )
-                )
-        )
+        // No page backdrop. The app root owns the one background.
 
         when {
             state.loading -> {

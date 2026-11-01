@@ -73,19 +73,7 @@ fun ThoughtCyclesScreen(
     val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
 
     Box(Modifier.fillMaxSize()) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        listOf(
-                            Color(0xFFF0E8DA).copy(alpha = 0.9f),
-                            Color(0xFFE4D9C6).copy(alpha = 0.6f)
-                        )
-                    )
-                )
-        )
-
+        // No page wash: the app root owns the one background.
         LazyColumn(Modifier.fillMaxSize()) {
             // Header
             item {
