@@ -324,8 +324,13 @@ object NetworkDomainModule : DomainToolModule {
 
     override val id: String = "network"
 
-    override val registrations: List<ToolSetRegistration> =
-        listOf(NetworkToolDefinitions, NetworkControlToolDefinitions, NetworkReconToolDefinitions)
+    override val registrations: List<ToolSetRegistration> = listOf(
+        NetworkToolDefinitions,
+        NetworkControlToolDefinitions,
+        NetworkReconToolDefinitions,
+        // The Xbox tools, so a console is reachable rather than only described by classes.
+        XboxToolDefinitions,
+    )
 
     override fun bindings(): Module = module {
         single { NetworkStore() }
@@ -336,5 +341,7 @@ object NetworkDomainModule : DomainToolModule {
         factory { NetworkToolExecutor(get(), get()) }
         factory { NetworkControlExecutor(get(), get(), get()) }
         factory { NetworkReconExecutor(get(), get()) }
+        single { XboxConsole() }
+        factory { XboxToolExecutor(get<XboxConsole>()) }
     }
 }

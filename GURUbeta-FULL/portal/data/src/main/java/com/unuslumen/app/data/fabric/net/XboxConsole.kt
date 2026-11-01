@@ -229,20 +229,15 @@ class XboxConsole(
      * A tap is a press and a release, because the bitmask is the pad's state rather than an edge.
      */
     suspend fun pressButton(
-        session: SmartGlassSession,
         handshake: SmartGlassSession.Handshake,
         button: XboxGamepad.Button,
-    ): Result = sendGamepadStates(session, handshake, XboxGamepad.tap(button), "press ${button.label}")
+    ): Result = sendGamepadStates(handshake, XboxGamepad.tap(button), "press ${button.label}")
 
     /** Press a direction by name, so a menu can be driven. */
-    suspend fun pressDirection(
-        session: SmartGlassSession,
-        handshake: SmartGlassSession.Handshake,
-        word: String,
-    ): Result {
+    suspend fun pressDirection(handshake: SmartGlassSession.Handshake, word: String): Result {
         val button = XboxGamepad.direction(word)
             ?: return Result(false, "'$word' is not a direction. Use up, down, left or right.")
-        return pressButton(session, handshake, button)
+        return pressButton(handshake, button)
     }
 
     /**
@@ -252,12 +247,10 @@ class XboxConsole(
      * [travel] runs 0 to 1.
      */
     suspend fun pullTrigger(
-        session: SmartGlassSession,
         handshake: SmartGlassSession.Handshake,
         travel: Float,
         right: Boolean = true,
     ): Result = sendGamepadStates(
-        session,
         handshake,
         XboxGamepad.trigger(travel, right),
         "pull the ${if (right) "right" else "left"} trigger",
@@ -270,7 +263,6 @@ class XboxConsole(
      * stick appears to do nothing, so the values are clamped here.
      */
     suspend fun moveStick(
-        session: SmartGlassSession,
         handshake: SmartGlassSession.Handshake,
         x: Float,
         y: Float,
@@ -282,7 +274,6 @@ class XboxConsole(
             XboxGamepad.State(leftX = x, leftY = y)
         }
         return sendGamepadStates(
-            session,
             handshake,
             listOf(state, XboxGamepad.State()),
             "move the ${if (right) "right" else "left"} stick to $x, $y",
@@ -291,11 +282,10 @@ class XboxConsole(
 
     /** Send arbitrary gamepad states, which is how a held button or a movement burst is done. */
     private suspend fun sendGamepadStates(
-        session: SmartGlassSession,
         handshake: SmartGlassSession.Handshake,
         states: List<XboxGamepad.State>,
         describe: String,
-    ): Result = session.send(
+    ): Result = handshake.session.send(
         handshake = handshake,
         messageType = SmartGlassMessage.MSG_GAMEPAD,
         payloads = states.map { state ->
@@ -318,17 +308,13 @@ class XboxConsole(
      * Message 0x39 on the encrypted channel, carrying the Live ID. It works on an Xbox One; some
      * Series firmware ignores it, and the refusal says so rather than claiming the console slept.
      */
-    suspend fun powerOff(
-        session: SmartGlassSession,
-        handshake: SmartGlassSession.Handshake,
-        console: Console,
-    ): Result {
+    suspend fun powerOff(handshake: SmartGlassSession.Handshake, console: Console): Result {
         val liveId = console.liveId
             ?: return Result(
                 false,
                 "Powering off needs the console's Live ID, which discovery reports.",
             )
-        return session.send(
+        return handshake.session.send(
             handshake = handshake,
             messageType = SmartGlassMessage.MSG_POWER_OFF,
             payloads = listOf(SmartGlassMessage.string(liveId)),
@@ -337,11 +323,8 @@ class XboxConsole(
     }
 
     /** A media command: play, pause or stop. */
-    suspend fun mediaCommand(
-        session: SmartGlassSession,
-        handshake: SmartGlassSession.Handshake,
-        command: Int,
-    ): Result = session.send(
+    suspend fun mediaCommand(handshake: SmartGlassSession.Handshake, command: Int): Result =
+        handshake.session.send(
         handshake = handshake,
         messageType = SmartGlassMessage.MSG_MEDIA_CONTROL,
         payloads = listOf(

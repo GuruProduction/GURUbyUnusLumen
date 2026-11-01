@@ -44,6 +44,15 @@ class SmartGlassSession(
         val crypto: SmartGlassCrypto?,
         val participantId: Int?,
         val channelId: Long?,
+        /**
+         * The session that produced this handshake.
+         *
+         * A CONSOLE DOES NOT ACCEPT A MESSAGE FROM A DIFFERENT SOCKET than the one that joined the
+         * channel, so a command must go out through the session that did the handshake. Passing a
+         * fresh SmartGlassSession to each command would build a second socket with no session on
+         * it, and every press would fail with the console dropping it.
+         */
+        val session: SmartGlassSession,
     ) {
         val connected: Boolean
             get() = stages.all { it.ok } && crypto != null && participantId != null
@@ -79,7 +88,7 @@ class SmartGlassSession(
                         "to exchange keys against. Run discovery again with the console awake.",
                 ),
             )
-            return@withContext Handshake(stages, null, null, null)
+            return@withContext Handshake(stages, null, null, null, this@SmartGlassSession)
         }
 
         val context = SmartGlassCrypto.create(certificate)
@@ -88,14 +97,14 @@ class SmartGlassSession(
             stages.add(
                 Stage("derive the keys", false, context.reason ?: "the crypto context could not be built"),
             )
-            return@withContext Handshake(stages, null, null, null)
+            return@withContext Handshake(stages, null, null, null, this@SmartGlassSession)
         }
         stages.add(Stage("derive the keys", true, "An ECDH shared secret and three derived keys exist."))
 
         val socket = runCatching { DatagramSocket() }.getOrNull()
         if (socket == null) {
             stages.add(Stage("open a socket", false, "This phone could not open a UDP socket."))
-            return@withContext Handshake(stages, null, null, null)
+            return@withContext Handshake(stages, null, null, null, this@SmartGlassSession)
         }
 
         try {
@@ -145,7 +154,7 @@ class SmartGlassSession(
                             "another network answers nothing.",
                     ),
                 )
-                return@withContext Handshake(stages, crypto, null, null)
+                return@withContext Handshake(stages, crypto, null, null, this@SmartGlassSession)
             }
 
             val replyType = ByteBuffer.wrap(reply, 0, 2).order(ByteOrder.BIG_ENDIAN).short.toInt() and 0xFFFF
@@ -158,7 +167,7 @@ class SmartGlassSession(
                             "it is not speaking SmartGlass to this client.".format(replyType),
                     ),
                 )
-                return@withContext Handshake(stages, crypto, null, null)
+                return@withContext Handshake(stages, crypto, null, null, this@SmartGlassSession)
             }
 
             // The reply's unprotected payload holds the IV, and its protected payload is
@@ -166,7 +175,7 @@ class SmartGlassSession(
             val unprotectedStart = SmartGlassMessage.CONNECT_HEADER_SIZE
             if (reply.size < unprotectedStart + 16) {
                 stages.add(Stage("connect", false, "The Connect Response was too short to carry an IV."))
-                return@withContext Handshake(stages, crypto, null, null)
+                return@withContext Handshake(stages, crypto, null, null, this@SmartGlassSession)
             }
             val replyIv = reply.copyOfRange(unprotectedStart, unprotectedStart + 16)
             val protectedStart = unprotectedStart + 16
@@ -174,7 +183,7 @@ class SmartGlassSession(
                 stages.add(
                     Stage("connect", false, "The Connect Response carried no protected payload."),
                 )
-                return@withContext Handshake(stages, crypto, null, null)
+                return@withContext Handshake(stages, crypto, null, null, this@SmartGlassSession)
             }
             val replyProtected = reply.copyOfRange(protectedStart, reply.size)
             val decrypted = crypto.decryptWith(replyIv, replyProtected)
@@ -190,7 +199,7 @@ class SmartGlassSession(
                             "the salt or the key encoding rather than at the network.",
                     ),
                 )
-                return@withContext Handshake(stages, crypto, null, null)
+                return@withContext Handshake(stages, crypto, null, null, this@SmartGlassSession)
             }
             if (!connectReply.succeeded) {
                 stages.add(
@@ -201,7 +210,7 @@ class SmartGlassSession(
                             "pairing state ${connectReply.pairingState}.",
                     ),
                 )
-                return@withContext Handshake(stages, crypto, null, null)
+                return@withContext Handshake(stages, crypto, null, null, this@SmartGlassSession)
             }
             stages.add(
                 Stage(
@@ -260,7 +269,7 @@ class SmartGlassSession(
                 ),
             )
             if (joinReply == null) {
-                return@withContext Handshake(stages, crypto, participant, null)
+                return@withContext Handshake(stages, crypto, participant, null, this@SmartGlassSession)
             }
 
             // ---- Stage 3: Start the system input channel ----
@@ -301,7 +310,7 @@ class SmartGlassSession(
                             "have nowhere to go.",
                     ),
                 )
-                return@withContext Handshake(stages, crypto, participant, null)
+                return@withContext Handshake(stages, crypto, participant, null, this@SmartGlassSession)
             }
 
             // The response's protected payload is a request id, the channel id and a result, so
@@ -319,8 +328,8 @@ class SmartGlassSession(
                 ),
             )
 
-            Handshake(stages, crypto, participant, channelId)
-            Handshake(stages, crypto, participant, channelId)
+            Handshake(stages, crypto, participant, channelId, this@SmartGlassSession)
+            Handshake(stages, crypto, participant, channelId, this@SmartGlassSession)
         } catch (error: Exception) {
             stages.add(
                 Stage(
@@ -329,7 +338,7 @@ class SmartGlassSession(
                     "The session failed: ${error.message ?: error.javaClass.simpleName}.",
                 ),
             )
-            Handshake(stages, null, null, null)
+            Handshake(stages, null, null, null, this@SmartGlassSession)
         } finally {
             runCatching { socket.close() }
         }
