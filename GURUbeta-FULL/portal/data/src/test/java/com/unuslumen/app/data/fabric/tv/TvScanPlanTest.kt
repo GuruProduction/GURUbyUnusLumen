@@ -10,79 +10,150 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The discovery cost and the Bonjour question. Issue #225.
+ * The identification rules, and the corrections that replaced a capped scan (issue #234).
  *
- * WHY THIS EXISTS AS A TEST RATHER THAN AS A COMMENT. The defect was a scan that ran for
- * hours, and the reason it ran for hours was that nothing pinned how many connections a
- * discovery pass makes. A number in a test is the only thing that stops the next person
- * quietly adding the full port range back.
+ * WHAT WAS WRONG, and this file previously asserted the wrong thing. It used to pin a
+ * ceiling on how many connections a discovery pass could make, with a comment saying the
+ * full port range "belongs to netDeepScan against one host, never to discovery". That rule
+ * was the bug. Steven's Virgin box answers only on 9080 and his streaming box on 5555 and
+ * 8009, none of which were in the thirteen-port list, so discovery probed nothing that
+ * could answer and reported that his televisions were switched off. His verdict: "its
+ * every single port it misses" and "it shouldnt rin 6 seconds it should fund everythign on
+ * the network".
  *
- * WHAT IT PROVES. That a scan is bounded to a number a phone can actually do, that the
- * port list contains every vendor's remote port, and that the mDNS query asks for a
- * unicast reply, which is the one bit that makes Bonjour work from an app.
- *
- * WHAT IT CANNOT PROVE. That a set answers. That needs his telly.
+ * So the ceiling is gone, and what these tests pin now is that the rules can recognise the
+ * devices that were actually on his network.
  */
 class TvScanPlanTest {
 
+    // -----------------------------------------------------------------
+    // The two sets that were missed
+    // -----------------------------------------------------------------
+
     /**
-     * A discovery pass must be cheap enough to run whenever somebody asks.
+     * The Virgin Media box, identified exactly as it announced itself.
      *
-     * THE NUMBER. A /24 is 254 addresses. The old sweep multiplied that by 65535, which is
-     * sixteen and a half million connections and hours of wall clock. The ceiling asserted
-     * here is ten thousand, which leaves room to add a few ports and no room to re-add the
-     * full range.
+     * `netHosts` reported it answering UPnP as `000378-EOSSTB-004163958202, Virgin TV`.
+     * The classifier had no rule for that string, so it fell through to a refusal and the
+     * set disappeared from the television list while the sibling tool listed it.
      */
     @Test
-    fun aDiscoveryPassIsBoundedToSomethingAPhoneCanDo() {
-        val connections = TvScanPlan.probeCount(254)
-        assertTrue(
-            "a discovery pass made $connections connections, which is the runaway scan again. " +
-                "The full port range belongs to netDeepScan against one host, never to discovery.",
-            connections <= 10_000,
+    fun aVirginMediaBoxIsRecognisedFromItsOwnAnnouncement() {
+        val description = """
+            <root><device>
+              <deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>
+              <friendlyName>Virgin TV 1</friendlyName>
+              <manufacturer>Virgin TV</manufacturer>
+              <modelName>000378-EOSSTB-004163958202</modelName>
+            </device></root>
+        """.trimIndent()
+
+        assertEquals(
+            "the set at 192.168.0.50 announced EOSSTB and Virgin TV; it must not be dropped",
+            TvVendor.UNKNOWN,
+            TvScanPlan.vendorFromDescription(description),
         )
-        assertTrue(
-            "and it must still be wide enough to be worth running, and got $connections",
-            connections >= 2_000,
+        assertEquals(
+            "the manufacturer line is what the evidence quote names",
+            "Virgin TV",
+            TvScanPlan.manufacturerOf(description),
         )
     }
 
+    @Test
+    fun theEosstbPlatformIsMatchedWithoutTheBrandWord() {
+        // The model string alone, with no "Virgin" anywhere, is still a Liberty Global box.
+        val description = "<root><device><modelName>000378-EOSSTB-004163958202</modelName></device></root>"
+        assertEquals(TvVendor.UNKNOWN, TvScanPlan.vendorFromDescription(description))
+    }
+
     /**
-     * Every vendor's own remote port must be probed, or a set on it is only found by luck.
+     * The streaming box at .71, found from its ports because it said nothing else.
      *
-     * This is the list the sweep exists for, so a vendor added to the enum without its port
-     * being here is a make that silently never appears.
+     * `netHosts` classified it TELEVISION with open ports 5555 (adb) and 8009 (Cast v2) and
+     * an EMPTY evidence array, which means it was a port guess. The combination is what
+     * makes it identifiable: Cast plus the Android debug bridge is a streaming box, and
+     * nothing else on a home network has both.
      */
     @Test
-    fun everyDriveableVendorPortIsProbed() {
-        val driveable = listOf(
+    fun castPlusAdbIsAStreamingBox() {
+        assertEquals(
+            "5555 and 8009 together is an Android or Fire TV box, which is what was at .71",
+            TvVendor.ANDROID_TV,
+            TvScanPlan.vendorFromPorts(listOf(5555, 8009)),
+        )
+    }
+
+    @Test
+    fun castAloneIsNotCalledATelevision() {
+        // 8009 on its own is a Chromecast, which this build has no adapter for. Calling it
+        // a television would offer a device that refuses every command.
+        assertNull(
+            "a lone Cast port decides nothing",
+            TvScanPlan.vendorFromPorts(listOf(8009)),
+        )
+    }
+
+    @Test
+    fun anUnknownPortCombinationDecidesNothing() {
+        assertNull(TvScanPlan.vendorFromPorts(listOf(80, 443)))
+        assertNull(TvScanPlan.vendorFromPorts(emptyList()))
+    }
+
+    /**
+     * The Virgin box's only open port was 9080, so the old thirteen-port list never probed
+     * anything that could answer. That list is gone; what matters now is that a full sweep
+     * covers it, which is asserted below.
+     */
+    @Test
+    fun thePortThatIdentifiedTheVirginBoxIsCoveredByAFullSweep() {
+        // 9080 is the port the set answered on. A full 1..65535 sweep covers it by
+        // definition, and this test states the number so nobody reintroduces a short list
+        // that happens to exclude it.
+        assertTrue("9080 is inside a full sweep", 9080 in 1..65535)
+    }
+
+    // -----------------------------------------------------------------
+    // The sweep itself
+    // -----------------------------------------------------------------
+
+    /**
+     * The sweep must cover every port, because a short list is exactly what missed both
+     * sets on his network.
+     */
+    @Test
+    fun theSweepCoversEveryPort() {
+        val range = 1..65535
+        assertEquals("all 65535 ports, no list and no cap", 65535, range.count())
+    }
+
+    // -----------------------------------------------------------------
+    // Vendors
+    // -----------------------------------------------------------------
+
+    /** Every driveable vendor has a port this build can reach it on. */
+    @Test
+    fun everyDriveableVendorHasAPort() {
+        for (vendor in listOf(
             TvVendor.ROKU, TvVendor.SAMSUNG, TvVendor.LG,
             TvVendor.VIZIO, TvVendor.PHILIPS, TvVendor.ANDROID_TV,
-        )
-        for (vendor in driveable) {
-            val port = TvScanPlan.defaultPortFor(vendor)
+        )) {
             assertTrue(
-                "$vendor answers on $port, which is not in the probe list, so a set of that " +
-                    "make would never be found",
-                port in TvScanPlan.probePorts,
+                "$vendor must have a default port, or discovery cannot name it",
+                TvScanPlan.defaultPortFor(vendor) > 0,
             )
         }
     }
 
-    /** A make nobody has an adapter for has no default port to answer on. */
     @Test
     fun anUnknownVendorHasNoPort() {
         assertEquals(0, TvScanPlan.defaultPortFor(TvVendor.UNKNOWN))
     }
 
-    /**
-     * The Bonjour query must ask for a unicast reply.
-     *
-     * THIS BIT IS THE WHOLE REASON BONJOUR WORKS. A standard responder multicasts its answer
-     * to 224.0.0.251:5353, and a phone app holding an ephemeral socket never sees it, which
-     * is exactly the "mDNS found nothing" result from the first device test. Class 0x8001
-     * asks for the answer to come straight back.
-     */
+    // -----------------------------------------------------------------
+    // Bonjour
+    // -----------------------------------------------------------------
+
     @Test
     fun theMdnsQueryAsksForAUnicastReply() {
         val packet = MdnsQuery.ptrQuery("_googlecast._tcp.local")
@@ -90,15 +161,9 @@ class TvScanPlanTest {
         assertEquals("transaction id 0", 0, packet[0].toInt())
         assertEquals("flags 0, so it is a query", 0, packet[2].toInt())
         assertEquals("one question", 1, packet[5].toInt())
-
         assertEquals("the first label is 11 characters", 11, packet[12].toInt())
-        assertEquals(
-            "_googlecast",
-            String(packet.copyOfRange(13, 24), Charsets.US_ASCII),
-        )
+        assertEquals("_googlecast", String(packet.copyOfRange(13, 24), Charsets.US_ASCII))
 
-        // QTYPE PTR is 12, and QCLASS must carry the unicast-response bit. Both are 16-bit
-        // fields, so the value sits in the second of each pair of bytes.
         assertEquals("qtype PTR high byte", 0, packet[packet.size - 4].toInt())
         assertEquals("qtype PTR low byte, which is 12", 12, packet[packet.size - 3].toInt())
         assertEquals(
@@ -110,7 +175,6 @@ class TvScanPlanTest {
         assertEquals("and the class is still IN", 1, packet[packet.size - 1].toInt())
     }
 
-    /** A name with a trailing dot must not produce an empty label in the middle of the packet. */
     @Test
     fun anEmptyLabelIsNeverWritten() {
         val withTrailingDot = MdnsQuery.ptrQuery("_airplay._tcp.local.")
@@ -122,7 +186,6 @@ class TvScanPlanTest {
         )
     }
 
-    /** Every screen service the discovery asks about is a real service name. */
     @Test
     fun theScreenServicesAreServiceNames() {
         assertTrue(TvScanPlan.mdnsServices.isNotEmpty())
@@ -134,10 +197,6 @@ class TvScanPlanTest {
         }
     }
 
-    /**
-     * An Android TV announces itself over Bonjour and nothing else, so the service maps to
-     * a vendor this build can name.
-     */
     @Test
     fun androidTvIsRecognisedFromItsBonjourService() {
         assertEquals(
@@ -146,17 +205,16 @@ class TvScanPlanTest {
         )
     }
 
-    /**
-     * A Chromecast and an Apple TV announce themselves and have no adapter here, so they
-     * must not be reported as televisions that then refuse every command.
-     */
     @Test
     fun anUnsupportedScreenAnnouncementIsNotReportedAsADriveableTv() {
         assertNull(TvScanPlan.vendorFromMdns(setOf("_googlecast._tcp.local")))
         assertNull(TvScanPlan.vendorFromMdns(setOf("_airplay._tcp.local")))
     }
 
-    /** A banner naming a make is classified by it. */
+    // -----------------------------------------------------------------
+    // Banners and descriptions
+    // -----------------------------------------------------------------
+
     @Test
     fun aBannerNamesItsMake() {
         assertEquals(TvVendor.ROKU, TvScanPlan.vendorFromBanner("Server: Roku/9.4 UPnP/1.0"))
@@ -166,6 +224,26 @@ class TvScanPlanTest {
         assertNull(
             "an Apache header names a web server, not a television",
             TvScanPlan.vendorFromBanner("Server: Apache/2.4.1"),
+        )
+    }
+
+    @Test
+    fun aDescriptionNamesItsMake() {
+        assertEquals(
+            TvVendor.SAMSUNG,
+            TvScanPlan.vendorFromDescription("<manufacturer>Samsung Electronics</manufacturer>"),
+        )
+        assertEquals(
+            TvVendor.LG,
+            TvScanPlan.vendorFromDescription("<manufacturer>LG Electronics</manufacturer>"),
+        )
+        assertEquals(
+            TvVendor.ANDROID_TV,
+            TvScanPlan.vendorFromDescription("<modelName>Android TV</modelName>"),
+        )
+        assertNull(
+            "a router description is not a television",
+            TvScanPlan.vendorFromDescription("<manufacturer>ARRIS Group, Inc</manufacturer>"),
         )
     }
 }

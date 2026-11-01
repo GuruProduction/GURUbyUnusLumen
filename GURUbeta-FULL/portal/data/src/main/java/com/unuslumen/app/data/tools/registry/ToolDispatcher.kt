@@ -42,6 +42,21 @@ class ToolDispatcher(
         toolName: String,
         rawArgs: JsonObject,
         conversationId: String? = null
+    ): ToolDispatchResult = dispatchStreaming(toolName, rawArgs, conversationId, ToolProgressSink.NONE)
+
+    /**
+     * Dispatch a tool and forward whatever it reports while it runs.
+     *
+     * [progress] is handed straight to the executor's [ToolExecutor.executeWithProgress],
+     * which every tool inherits as a plain call. A tool with something to say calls
+     * the sink as it finds things; one with nothing to say never touches it. Nothing
+     * about the returned result changes.
+     */
+    suspend fun dispatchStreaming(
+        toolName: String,
+        rawArgs: JsonObject,
+        conversationId: String? = null,
+        progress: ToolProgressSink = ToolProgressSink.NONE,
     ): ToolDispatchResult {
         val resolvedName = nameResolver.resolve(toolName, registry, rawArgs)
             ?: return ToolDispatchResult.unknownTool(toolName)
@@ -73,7 +88,10 @@ class ToolDispatcher(
             ?: return ToolDispatchResult.unknownTool(resolvedName)
 
         val startedAt = System.currentTimeMillis()
-        val execResult = executor.execute(resolvedName, repairedArgs)
+        // The progress-aware entry point, which every executor inherits as a
+        // plain execute(). A tool that reports as it goes has its events forwarded
+        // by the caller's sink; one that does not behaves exactly as before.
+        val execResult = executor.executeWithProgress(resolvedName, repairedArgs, progress)
         val durationMs = System.currentTimeMillis() - startedAt
 
         if (failed(execResult)) {
