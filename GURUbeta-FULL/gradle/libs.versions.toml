@@ -43,6 +43,10 @@ media3 = "1.8.0"
 coil = "2.7.0"
 mockk = "1.13.16"
 detekt = "1.23.8"
+# apksig ships with the Android Gradle Plugin and is versioned in step with it.
+# 9.3.3 is the version in this toolchain's Gradle cache and matches
+# androidGradlePlugin below, which matters because the two are released together.
+apksig = "9.3.3"
 
 [libraries]
 shizuku-api = { module = "dev.rikka.shizuku:api", version.ref = "shizuku" }
@@ -117,6 +121,7 @@ coil-compose = { module = "io.coil-kt:coil-compose", version.ref = "coil" }
 coil-gif = { module = "io.coil-kt:coil-gif", version.ref = "coil" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+apksig = { module = "com.android.tools.build:apksig", version.ref = "apksig" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "androidGradlePlugin" }

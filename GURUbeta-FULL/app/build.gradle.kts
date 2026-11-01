@@ -152,12 +152,19 @@ android {
     // unadulterated. The python3.14 binary is also bundled as an asset.
     aaptOptions {
         noCompress += listOf(
-            "zip",      // python-stdlib-arm64.zip
+            "zip",      // python-stdlib-arm64.zip, git-termux.zip, re-toolchain.zip
             "so",       // re-tools shared libraries
             "jar",      // apktool.jar, jadx.jar
             "arm64",    // toybox and standalone Unix tool binaries (curl, git, sqlite3, etc.)
             "traineddata" // tesseract language models
         )
+        // The toolchain archive is 72 MB and already compressed internally, and
+        // TermuxProvider reads it with ZipFile after copying it to app storage.
+        // Letting AGP deflate it a second time costs build time, buys nothing,
+        // and would make the copy in app storage differ from the asset — which
+        // is exactly the kind of silent mismatch that produced issue 200's
+        // "asset present but nothing in it" confusion in the first place.
+        noCompress += "re-toolchain.zip"
     }
     androidResources {
         @Suppress("UnstableApiUsage")
