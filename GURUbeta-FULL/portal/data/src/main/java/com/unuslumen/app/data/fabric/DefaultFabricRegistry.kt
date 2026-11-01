@@ -6,6 +6,9 @@ package com.unuslumen.app.data.fabric
 import android.content.Context
 import com.unuslumen.app.data.fabric.ir.IrTransport
 import com.unuslumen.app.data.fabric.ir.IrWiring
+import com.unuslumen.app.data.fabric.tv.TvDeviceStore
+import com.unuslumen.app.data.fabric.tv.TvDiscovery
+import com.unuslumen.app.data.fabric.tv.TvTransport
 
 /**
  * The registry every transport is installed into, built from a Context. Issue #187.
@@ -37,6 +40,20 @@ object DefaultFabricRegistry {
         val registry = DeviceTransportRegistry()
         val ir = IrWiring.forContext(context)
         registry.register(IrTransport(ir.transmitters, ir.store))
+        return registry
+    }
+
+    /**
+     * The registry with every transport this build installs, including the one that
+     * actually reaches a modern television.
+     *
+     * NETWORK FIRST AND IR SECOND, because that is the order that matches reality: a set
+     * made in the last decade is on the wifi and needs no emitter, and the phone in his
+     * hand has no emitter at all. IR is kept for the sets that have no network at all.
+     */
+    fun buildWithNetwork(context: Context, tvStore: TvDeviceStore): DeviceTransportRegistry {
+        val registry = build(context)
+        registry.register(TvTransport(TvDiscovery(), tvStore))
         return registry
     }
 }

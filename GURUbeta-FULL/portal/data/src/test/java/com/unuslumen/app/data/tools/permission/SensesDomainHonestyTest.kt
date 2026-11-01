@@ -94,6 +94,9 @@ class SensesDomainHonestyTest {
                 "privileged_capture",
                 "sensors",
                 "smart_home",
+                // Network television control: the transport that actually drives a modern
+                // set, because it needs no emitter and speaks each maker's own protocol.
+                "tv",
             ),
             ids,
         )

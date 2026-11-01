@@ -52,7 +52,10 @@ object SmartHomeDomainModule : DomainToolModule {
         // The registry is a single because a second one would be a second set of
         // transports: a device registered in one would be invisible to the other
         // while the tools reported an empty house.
-        single { DefaultFabricRegistry.build(get()) }
+        // Built with the network television transport installed, because that is the one
+        // which reaches a modern set from a phone with no emitter. A registry without it
+        // would report every television missing on the device that has to prove this.
+        single { DefaultFabricRegistry.buildWithNetwork(get(), get()) }
 
         // The DAO comes from the database module, the registry from above. DeviceFabric
         // owns the rules and decides nothing about which protocols exist.

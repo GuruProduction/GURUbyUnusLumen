@@ -8,6 +8,7 @@ import com.unuslumen.app.data.tools.registry.ToolExecutor
 import com.unuslumen.app.data.tools.registry.ToolSetRegistration
 import com.unuslumen.app.data.fabric.ir.IrDomainModule
 import com.unuslumen.app.data.fabric.smart.SmartHomeDomainModule
+import com.unuslumen.app.data.fabric.tv.TvDomainModule
 import com.unuslumen.app.data.tools.phone.PhoneDomainModule
 import com.unuslumen.app.data.tools.senses.BluetoothDomainModule
 import com.unuslumen.app.data.tools.senses.CameraAudioDomainModule
@@ -58,6 +59,9 @@ object TeamThreeToolDomains {
         // until it appears in this list.
         SmartHomeDomainModule,
         IrDomainModule,
+        // Network television control: the transport that actually drives a modern set,
+        // because it needs no emitter and speaks each maker's own remote protocol.
+        TvDomainModule,
         LocationDomainModule,
         PhoneDomainModule,
         PrivilegedCaptureDomainModule,
