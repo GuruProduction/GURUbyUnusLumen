@@ -157,6 +157,9 @@ import com.unuslumen.app.data.toLLMProvider
 import com.unuslumen.app.preferences.domain.use_case.GetPreferenceUseCase
 import com.unuslumen.app.preferences.domain.use_case.SavePreferenceUseCase
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -1344,7 +1347,53 @@ class AiRepositoryImpl(
                             }
 
                             val toolCallMessages = collectedToolCalls.map { toolCallFrame ->
-                                val toolCallMessageResult = executeToolCallFromFrame(toolCallFrame, resolvedConversationId)
+                                // ONE CHANNEL PER TOOL CALL.
+                                //
+                                // The tool reports from whatever thread its work runs on and
+                                // the callback cannot suspend, so each report is queued here.
+                                // The tool itself runs in an async, and THIS coroutine —
+                                // the one that owns the flow — drains the channel and emits,
+                                // which is the only way emit is allowed to be called. Closing
+                                // the channel inside the async, in a finally, is what ends the
+                                // drain loop. Ordering is preserved: every progress line is
+                                // emitted before the tool's final result.
+                                val progressChannel = Channel<AiMessage>(capacity = Channel.UNLIMITED)
+                                val toolWork = coroutineScope { async {
+                                    try {
+                                        executeToolCallFromFrame(
+                                            toolCallFrame,
+                                            resolvedConversationId,
+                                            // Live progress. A tool that reports while it runs
+                                            // queues a StreamingToolCall per report; this flow's
+                                            // own coroutine drains and emits them, so the canvas
+                                            // replaces one running pill in place by uuid instead
+                                            // of piling up lines. When the tool finishes, its
+                                            // real ToolCall replaces that same uuid. That is what
+                                            // lets a long scan show its findings as it makes them
+                                            // rather than needing a cap (issue #234).
+                                            onProgress = { event ->
+                                                progressChannel.trySend(
+                                                    AiMessage.StreamingToolCall(
+                                                        uuid = toolCallFrame.id ?: toolCallFrame.name,
+                                                        toolName = toolCallFrame.name,
+                                                        partialContent = event.message,
+                                                        time = event.time,
+                                                    )
+                                                )
+                                            },
+                                        )
+                                    } finally {
+                                        progressChannel.close()
+                                    }
+                                } }
+
+                                // Drain on THIS coroutine, which owns the flow. Every progress
+                                // line is therefore emitted before the final result below.
+                                for (progressMessage in progressChannel) {
+                                    emit(progressMessage)
+                                }
+
+                                val toolCallMessageResult = toolWork.await()
                                 toolCallMessageResult.getOrNull()?.also {
                                     emit(it)
                                     HookEventBus.fire(
@@ -1578,7 +1627,15 @@ class AiRepositoryImpl(
 
     private suspend fun executeToolCallFromFrame(
         frame: StreamFrame.ToolCallComplete,
-        conversationId: String? = null
+        conversationId: String? = null,
+        /**
+         * Called for every progress report a tool makes while it runs.
+         *
+         * The default does nothing, so every existing caller is unchanged. The
+         * streaming send path passes a callback that emits onto the conversation
+         * flow, which is how a long tool's findings reach the canvas live.
+         */
+        onProgress: (com.unuslumen.app.data.tools.registry.ToolProgressEvent) -> Unit = {},
     ): Result<AiMessage.ToolCall> = runCatching {
         if (frame.name.isBlank()) {
             throw IllegalArgumentException("Tool call received with empty tool name. Content: ${frame.content.take(200)}")
@@ -1616,7 +1673,12 @@ class AiRepositoryImpl(
         } else if (toolRegistry.hasTool(frame.name)) {
             // New registry dispatch path
             android.util.Log.d("guru", "Dispatching '${frame.name}' through new ToolDispatcher")
-            val dispatchResult = toolDispatcher.dispatch(frame.name, frame.contentJson, conversationId)
+            val dispatchResult = toolDispatcher.dispatchStreaming(
+                frame.name,
+                frame.contentJson,
+                conversationId,
+                com.unuslumen.app.data.tools.registry.ToolProgressSink { event -> onProgress(event) },
+            )
             if (dispatchResult.success) {
                 val resultObject = extractResultObject(frame.name, dispatchResult.rawJson)
                 AiMessage.ToolCall(
@@ -1642,7 +1704,12 @@ class AiRepositoryImpl(
             }
         } else {
             // Try ToolDispatcher's name resolution and security checks
-            val dispatchResult = toolDispatcher.dispatch(frame.name, frame.contentJson, conversationId)
+            val dispatchResult = toolDispatcher.dispatchStreaming(
+                frame.name,
+                frame.contentJson,
+                conversationId,
+                com.unuslumen.app.data.tools.registry.ToolProgressSink { event -> onProgress(event) },
+            )
             if (dispatchResult.success) {
                 val resultObject = extractResultObject(dispatchResult.resolvedName ?: frame.name, dispatchResult.rawJson)
                 AiMessage.ToolCall(

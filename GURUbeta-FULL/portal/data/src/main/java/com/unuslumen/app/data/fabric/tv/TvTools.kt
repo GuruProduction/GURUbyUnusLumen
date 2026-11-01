@@ -12,6 +12,8 @@ import com.unuslumen.app.data.tools.registry.ToolParameterType
 import com.unuslumen.app.data.tools.registry.ToolResultData
 import com.unuslumen.app.data.tools.registry.ToolResultExtractor
 import com.unuslumen.app.data.tools.registry.ToolSetRegistration
+import com.unuslumen.app.data.tools.registry.ToolProgressEvent
+import com.unuslumen.app.data.tools.registry.ToolProgressSink
 import com.unuslumen.app.data.tools.registry.permission.DomainToolModule
 import com.unuslumen.app.data.tools.senses.emitPayload
 import kotlinx.serialization.Serializable
@@ -313,8 +315,34 @@ class TvToolExecutor(
      * reason, because a person needs to know their telly was found and why nothing
      * happens, rather than seeing an empty list and going looking at the television.
      */
-    private suspend fun discover(): ToolExecutionResult {
-        val report = discovery.discover()
+    /**
+     * Run the scan and report what it finds while it runs.
+     *
+     * THE CHANNEL GOES ALL THE WAY THROUGH. The dispatcher hands this executor a progress
+     * sink, the scan calls it for every device it identifies and at each stage, and the
+     * send path turns each report into a StreamingToolCall the canvas already knows how to
+     * render as a running pill. That is why the scan needs no time cap to be bearable: a
+     * person watching sees hosts appear as they are found rather than a spinner and then
+     * a verdict.
+     */
+    override suspend fun executeWithProgress(
+        toolName: String,
+        args: Map<String, Any?>,
+        progress: ToolProgressSink,
+    ): ToolExecutionResult = when (toolName) {
+        TvToolDefinitions.TV_DISCOVER -> discover(progress)
+        else -> execute(toolName, args)
+    }
+
+    private suspend fun discover(progress: ToolProgressSink = ToolProgressSink.NONE): ToolExecutionResult {
+        val report = discovery.discover { line ->
+            progress.report(
+                ToolProgressEvent(
+                    toolName = TvToolDefinitions.TV_DISCOVER,
+                    message = line,
+                )
+            )
+        }
         val found = mutableListOf<TvFound>()
         for (tv in report.devices) {
             val result = TvRemoteFactory.remoteFor(tv)
