@@ -93,9 +93,13 @@ fun FloatingGuruIcon(
             },
     ) {
         val restingSpot = position ?: Offset(
-            // First run: bottom right, clear of the bottom bar.
-            containerSize.x - iconSizePx - with(density) { 16.dp.toPx() },
-            containerSize.y - iconSizePx - with(density) { 96.dp.toPx() },
+            // First run: the right edge, ABOVE the chat bar's own control row.
+            //
+            // The bar carries a GURU button of its own, so parking the floating
+            // icon at the very bottom put two GURU marks on top of each other.
+            // This sits clear of the bar and of the gesture area.
+            containerSize.x - iconSizePx - with(density) { 12.dp.toPx() },
+            containerSize.y - iconSizePx - with(density) { 190.dp.toPx() },
         )
 
         Box(

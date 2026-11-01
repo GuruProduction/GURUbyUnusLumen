@@ -5,6 +5,7 @@ package com.unuslumen.app.presentation
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,14 +52,24 @@ fun PortalChatBarHost(
     modifier: Modifier = Modifier,
     onSentToPortal: (String) -> Unit = {},
     onOpenChat: () -> Unit = {},
+    /**
+     * When true, interacting with the bar opens the portal instead of typing
+     * into it in place.
+     *
+     * The lobby uses this. Its bar is a door, not a second composer: the
+     * conversation is rendered in the portal, so typing in the lobby would put
+     * words into a chat you cannot see. The human's instruction was that tapping
+     * the lobby bar should take you to the portal, which is exactly this.
+     */
+    opensPortalOnTap: Boolean = false,
 ) {
     val activityOwner = LocalContextOwner()
     if (activityOwner != null) {
         CompositionLocalProvider(LocalViewModelStoreOwner provides activityOwner) {
-            PortalChatBarHostScoped(modifier, onSentToPortal, onOpenChat)
+            PortalChatBarHostScoped(modifier, onSentToPortal, onOpenChat, opensPortalOnTap)
         }
     } else {
-        PortalChatBarHostScoped(modifier, onSentToPortal, onOpenChat)
+        PortalChatBarHostScoped(modifier, onSentToPortal, onOpenChat, opensPortalOnTap)
     }
 }
 
@@ -73,6 +84,7 @@ private fun PortalChatBarHostScoped(
     modifier: Modifier,
     onSentToPortal: (String) -> Unit,
     onOpenChat: () -> Unit,
+    opensPortalOnTap: Boolean,
     viewModel: PortalViewModel = koinViewModel(),
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
@@ -88,13 +100,34 @@ private fun PortalChatBarHostScoped(
     // two screens never show different text for the same conversation.
     var text by remember { mutableStateOf("") }
 
-    Column(modifier = modifier) {
+    // THE KEYBOARD INSET GOES OUTSIDE THE BAR.
+    //
+    // PortalChatBar asks for the navigation-bar inset only, because in the portal
+    // the surrounding Scaffold already lifts for the keyboard. Hosted here there
+    // is no such Scaffold, so the bar sat under the keyboard when it opened. The
+    // imePadding is applied here, on the host, rather than inside the shared bar,
+    // so the portal's own layout is left exactly as it was.
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .imePadding()
+    ) {
         PortalChatBar(
             text = text,
             mediaProcessing = mediaProcessing,
             enabled = aiEnabled && (text.isNotBlank() || attachments.isNotEmpty()) && !mediaProcessing,
             attachments = attachments,
-            onTextChange = { text = it },
+            onTextChange = { entered ->
+                // In door mode the field must never hold focus: a tap is a
+                // request to open the chat, not to type into a bar whose
+                // conversation is not on screen. Anything typed before focus is
+                // lost is carried across instead of dropped.
+                if (opensPortalOnTap) {
+                    if (entered.isNotBlank()) onSentToPortal(entered)
+                } else {
+                    text = entered
+                }
+            },
             // Attachment picking is a portal-screen concern: it opens sheets and
             // a file picker that live there. Opening the chat is the honest
             // behaviour rather than a button that does nothing.
@@ -103,21 +136,26 @@ private fun PortalChatBarHostScoped(
             loading = uiState.loading,
             onSend = {
                 val sentence = text
-                val resolved = GuruSlashCommandRegistry.resolve(sentence)
-                when {
-                    // A slash command with screen effects belongs where those
-                    // effects can run, which is the portal.
-                    resolved != null -> onSentToPortal(sentence)
-                    // Anything with attachments needs the chat surface to show
-                    // what was attached before it is sent.
-                    attachments.isNotEmpty() -> onSentToPortal(sentence)
-                    else -> {
-                        viewModel.onEvent(
-                            PortalEvent.SendMessage(
-                                content = sentence,
-                                attachments = emptyList<AiMessageAttachment>(),
+                if (opensPortalOnTap) {
+                    // Door mode: sending is also just opening the chat.
+                    onOpenChat()
+                } else {
+                    val resolved = GuruSlashCommandRegistry.resolve(sentence)
+                    when {
+                        // A slash command with screen effects belongs where those
+                        // effects can run, which is the portal.
+                        resolved != null -> onSentToPortal(sentence)
+                        // Anything with attachments needs the chat surface to show
+                        // what was attached before it is sent.
+                        attachments.isNotEmpty() -> onSentToPortal(sentence)
+                        else -> {
+                            viewModel.onEvent(
+                                PortalEvent.SendMessage(
+                                    content = sentence,
+                                    attachments = emptyList<AiMessageAttachment>(),
+                                )
                             )
-                        )
+                        }
                     }
                 }
                 text = ""

@@ -618,28 +618,13 @@ fun PortalScreenContent(
         modifier = Modifier.fillMaxSize().imePadding()
     ) { paddingValues ->
         Box(modifier = Modifier.fillMaxSize()) {
-            // Full-bleed art background (trial) — sits beneath logo and overlay.
-            Image(
-                painter = painterResource(id = R.drawable.portal_bg_art),
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-            )
-
-            // Warm paper overlay — aged cream fading to warm bone at the bottom.
-            // Replaces the old cool purple gradient with something that reads as ink-on-page.
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        brush = Brush.verticalGradient(
-                            colors = listOf(
-                                Color(0xFFF0E8DA).copy(alpha = 0.75f),
-                                Color(0xFFE4D9C6).copy(alpha = 0.55f),
-                            )
-                        )
-                    )
-            )
+            // THE PAGE BACKDROP IS NOT DRAWN HERE ANY MORE.
+            //
+            // The app root paints the house background once, and it is this
+            // portal's exact treatment: the doodle under the same cream-to-bone
+            // wash. Drawing it again here stacked it on itself, which is why the
+            // portal came out darker and muddy against its own chat messages.
+            // The portal is transparent and inherits, like every other page.
 
             // Centre fold GURU logo — background watermark, everything renders on top.
             // Sits ABOVE the art and overlay so the branding reads over the busy texture.
