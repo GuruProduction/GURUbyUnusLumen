@@ -183,14 +183,15 @@ object AdapterCatalogue {
         Adapter(
             id = "xbox-smartglass",
             target = "Xbox One and Series consoles",
-            mechanism = "SmartGlass on UDP 5050: plain-text discovery, encrypted everything else",
+            mechanism = "SmartGlass on UDP 5050: discovery, the 0xDD02 power-on, then ECDH + AES",
             requirement = 0,
-            built = false,
-            detail = "Discovery and wake work and are built. Power off and media control need the " +
-                "encrypted channel, whose crypto context comes from the console's certificate and " +
-                "is not published, so those refuse with the real reason rather than sending a " +
-                "packet the console drops. Power on is Wake-on-LAN, not SmartGlass, because the " +
-                "protocol has no power-on message at all.",
+            built = true,
+            detail = "Discovery, power on over message 0xDD02 with the Live ID, and Wake-on-LAN " +
+                "are real and built. The crypto channel is built too: an ephemeral P-384 key, the " +
+                "salted SHA-512 derivation, AES-128-CBC payloads and HMAC-SHA-256 signatures. The " +
+                "Connect Request exchange a console requires before accepting a signed message is " +
+                "the one step not proven against hardware, and it reports that rather than " +
+                "claiming the command landed.",
         ),
         Adapter(
             id = "vizio-smartcast",

@@ -9,7 +9,7 @@ import java.nio.ByteOrder
 
 /**
  * The SmartGlass packet format: a header, an unprotected payload, a protected payload and a
- * signature. Requirement for Dylan's Xbox.
+ * signature.
  *
  * EVERY NUMBER IN THIS PROTOCOL IS BIG-ENDIAN, which is why the header is written explicitly
  * rather than through a ByteBuffer with a default order. A packet assembled little-endian is

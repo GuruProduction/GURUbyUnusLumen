@@ -18,7 +18,7 @@ import javax.crypto.spec.SecretKeySpec
 
 /**
  * The SmartGlass crypto context: how an Xbox and a client agree on a key and sign what they
- * send. Requirement for Dylan's console.
+ * send.
  *
  * THE PROTOCOL, from the published documentation:
  *

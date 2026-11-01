@@ -260,8 +260,8 @@ class NetworkControlTest {
             gaps.contains("vizio-smartcast") && gaps.contains("chromecast") && gaps.contains("airplay"),
         )
         assertTrue(
-            "Xbox power off and media are a real gap and must say so",
-            gaps.contains("xbox-smartglass"),
+            "Xbox discovery, power on and the crypto channel are built",
+            built.contains("xbox-smartglass"),
         )
 
         val sentence = AdapterCatalogue.gapSentence()

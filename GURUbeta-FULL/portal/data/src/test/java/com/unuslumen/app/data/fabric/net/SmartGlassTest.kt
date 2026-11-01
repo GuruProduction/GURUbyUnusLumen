@@ -14,7 +14,7 @@ import java.security.KeyPairGenerator
 import java.security.spec.ECGenParameterSpec
 
 /**
- * SmartGlass's wire format and crypto, proved on the JVM. Dylan's Xbox.
+ * SmartGlass's wire format and crypto, proved on the JVM.
  *
  * WHY EVERY NUMBER IS ASSERTED. A console rejects a malformed packet silently, so a wrong
  * endianness, a missing null byte on a string or a skipped key-derivation step all produce
