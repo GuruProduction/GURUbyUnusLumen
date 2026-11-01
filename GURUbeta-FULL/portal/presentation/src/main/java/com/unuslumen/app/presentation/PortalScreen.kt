@@ -107,6 +107,7 @@ import com.unuslumen.app.preferences.domain.model.GuruTheme
 import com.unuslumen.app.preferences.permission.PermissionGateController
 import com.unuslumen.app.preferences.domain.repository.GuruThemeRepository
 import com.unuslumen.app.presentation.findHostActivity
+import com.unuslumen.app.presentation.PendingPortalPrompt
 import com.unuslumen.app.ui.navigation.Screen
 import com.unuslumen.app.ui.R
 import io.github.fletchmckee.liquid.rememberLiquidState
@@ -164,6 +165,29 @@ private fun PortalScreenScoped(
         if (latestAssistant != null) {
             interviewViewModel.handleGuruResponse(latestAssistant.content)
         }
+    }
+
+    /**
+     * Take a sentence started on another screen.
+     *
+     * Every screen in the app carries the ask bar, so a human can type in the
+     * middle of Notes and expect it to arrive in the chat. The bar hands the
+     * text over and navigates here; this is the other end of that handoff.
+     *
+     * It fires on entry, and again if a new prompt arrives while the portal is
+     * already open, which happens when the bar is used on a screen stacked over
+     * the portal. Reading and clearing is one call so a recomposition can never
+     * send the same sentence twice.
+     */
+    val arrivingPrompt by PendingPortalPrompt.prompt.collectAsStateWithLifecycle()
+    LaunchedEffect(arrivingPrompt) {
+        // One effect, not two. A separate "consume on entry" plus a flow watcher
+        // both ran on first composition and could send the same sentence twice;
+        // the flow alone covers entry, because the value is still held across
+        // the navigation that brought us here.
+        val handedOver = arrivingPrompt ?: return@LaunchedEffect
+        PendingPortalPrompt.consume()
+        viewModel.onEvent(PortalEvent.SendMessage(content = handedOver, attachments = emptyList()))
     }
 
     PortalScreenContent(
