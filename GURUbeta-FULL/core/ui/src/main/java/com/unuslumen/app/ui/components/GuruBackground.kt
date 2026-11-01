@@ -3,58 +3,31 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.ui.components
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
-import com.unuslumen.app.ui.R
 
 /**
- * The house background: the doodle, washed back so text stays readable.
+ * The app background. A flat colour, and nothing else.
  *
- * THE WASH IS THE PORTAL'S, EXACTLY. These are the same two colours at the same
- * two alphas the portal has used since it was built, because the human asked for
- * the lobby and every room to look like the portal. Changing either number here
- * changes every page at once, which is the point: a background that differs
- * screen to screen is what made the app look assembled rather than designed.
- *
- * A LIGHT WASH, NOT A DARK ONE. An earlier version of this component used a
- * heavier, warmer wash that read almost grey and fought the chat messages on top
- * of it. The portal's lighter treatment is the reference.
+ * EVERY BACKGROUND IMAGE AND EVERY OVERLAY IS DELETED. No artwork, no wash, no
+ * gradient, no tint, on any screen. The house colour is one flat value in one
+ * place, so no page can differ from another and no page can reintroduce one.
  */
 @Composable
 fun GuruBackground(
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit = {},
 ) {
-    Box(modifier.fillMaxSize()) {
-        Image(
-            painter = painterResource(id = R.drawable.portal_bg_art),
-            contentDescription = null,
-            modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.Crop,
-        )
-        // The portal's own wash, unchanged: aged cream at 0.75 falling to warm
-        // bone at 0.55. Copied rather than approximated.
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color(0xFFF0E8DA).copy(alpha = 0.75f),
-                            Color(0xFFE4D9C6).copy(alpha = 0.55f),
-                        )
-                    )
-                )
-        )
+    Box(
+        modifier
+            .fillMaxSize()
+            .background(Color(0xFFFFFBF0)),
+    ) {
         content()
     }
 }
