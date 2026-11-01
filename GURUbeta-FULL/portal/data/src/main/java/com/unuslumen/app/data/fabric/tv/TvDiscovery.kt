@@ -306,7 +306,14 @@ class TvDiscovery(
         }
 
         // A web port may still name the set in a banner or a device description.
-        for (port in ports) {
+        //
+        // ONLY WEB PORTS ARE ASKED. This used to try every open port on the host,
+        // and once discovery swept all 65535 that meant an HTTP GET and a full
+        // description read against every one of them: the single biggest cost in
+        // the pass, and the thing that made an unbounded body read fatal. A device
+        // that names itself does it over HTTP, so the list below is where a name can
+        // actually be found, and it is filtered before any connection is opened.
+        for (port in ports.filter { it in IDENTIFYING_WEB_PORTS }) {
             val banner = readBanner(host, port) ?: continue
             val vendor = TvScanPlan.vendorFromBanner(banner) ?: continue
             return Ranked(
@@ -323,9 +330,10 @@ class TvDiscovery(
             )
         }
 
-        // A UPnP description on any open port can still name a set, which is how a Virgin
-        // Media box that advertises EOSSTB is identified.
-        for (port in ports) {
+        // A UPnP description on a web port can still name a set, which is how a Virgin
+        // Media box that advertises EOSSTB is identified. Same filter as the banner
+        // pass, for the same reason.
+        for (port in ports.filter { it in IDENTIFYING_WEB_PORTS }) {
             val description = fetchDeviceDescription(host, port) ?: continue
             val vendor = TvScanPlan.vendorFromDescription(description) ?: continue
             return Ranked(
@@ -419,9 +427,11 @@ class TvDiscovery(
                     flush()
                 }
             }
+            // BOUNDED. A slow-drip response can deliver a large body inside the
+            // socket timeout, so the ceiling is enforced on bytes as well as time.
             val buffer = ByteArray(4096)
             val read = socket.getInputStream().read(buffer)
-            if (read <= 0) null else String(buffer, 0, read, Charsets.ISO_8859_1)
+            if (read <= 0) null else String(buffer, 0, minOf(read, buffer.size), Charsets.ISO_8859_1)
         }
     }.getOrNull()
 
@@ -482,16 +492,48 @@ class TvDiscovery(
      * socket, which needs no proxy, then fetched its device-info over HTTP, which went
      * through Tor and died. The set was found and then silently discarded.
      */
+    /**
+     * Fetch a local document, reading a BOUNDED amount of it.
+     *
+     * THE OUT OF MEMORY ERROR THIS FIXES. This used to call `readText()`, which
+     * allocates the whole response body into one String with no ceiling. That was
+     * survivable when discovery only asked a handful of known television ports.
+     * It became fatal when the sweep started asking every open port on every live
+     * host: one local port that streams a large body, which on a home network
+     * includes a media server or a NAS, filled the 256 MB heap and killed the
+     * process mid-scan. The crash reported a 288-byte allocation failing with
+     * under 3 MB free, the signature of an earlier unbounded read having eaten it.
+     *
+     * A UPnP description and a banner are a few kilobytes. This reads at most
+     * [MAX_LOCAL_DOCUMENT_BYTES] and stops, which is both cheaper and correct:
+     * nothing in this file needs more of a document than that to identify a set.
+     */
     private fun fetch(url: String): String {
         val connection = com.unuslumen.app.data.fabric.net.LocalRoute.open(url)
             ?: throw IllegalStateException("no connection could be built to $url")
         return try {
             connection.connectTimeout = connectTimeoutMillis
             connection.readTimeout = bannerTimeoutMillis
-            connection.inputStream.bufferedReader().use { it.readText() }
+            connection.inputStream.use { stream ->
+                com.unuslumen.app.data.fabric.net.readTextBounded(stream, MAX_LOCAL_DOCUMENT_BYTES)
+            }
         } finally {
             connection.disconnect()
         }
+    }
+
+    /**
+     * Ask a port for its banner with a bounded read.
+     *
+     * The socket read already had a soTimeout, but a slow-drip response can still
+     * deliver a large body inside that window, so the ceiling is enforced on bytes
+     * as well as on time. Both are needed: the timeout stops a hang, the limit
+     * stops the heap.
+     */
+    private fun readBannerBounded(socket: Socket): String? {
+        val buffer = ByteArray(4096)
+        val read = socket.getInputStream().read(buffer)
+        return if (read <= 0) null else String(buffer, 0, minOf(read, 4096), Charsets.ISO_8859_1)
     }
 
     private fun tag(xml: String, name: String): String? =
@@ -615,6 +657,27 @@ class TvDiscovery(
 
         /** How many port probes are assembled per batch before they are awaited. */
         private const val PORT_CHUNK = 2048
+
+        /**
+         * The ports worth asking to identify themselves, once a host has answered.
+         *
+         * A television that names itself does it over HTTP. Asking every open port
+         * for a banner and a description meant one GET per open port across the
+         * whole 65535 sweep, which is the most expensive thing this file did and
+         * the path an unbounded body read took the process down on.
+         */
+        private val IDENTIFYING_WEB_PORTS = setOf(
+            80, 443, 8008, 8080, 8081, 8443, 9080, 49152, 5000, 1900, 8060, 8001, 8002,
+            3000, 3001, 6466, 6467, 8009, 1925, 1926, 9000, 7345,
+        )
+
+        /**
+         * The most of a local document this file will read.
+         *
+         * A device description is kilobytes. This ceiling is generous for that and
+         * small enough that no single response can threaten the heap.
+         */
+        private const val MAX_LOCAL_DOCUMENT_BYTES = 64 * 1024
 
         /**
          * The ports probed to decide whether a host exists at all.
