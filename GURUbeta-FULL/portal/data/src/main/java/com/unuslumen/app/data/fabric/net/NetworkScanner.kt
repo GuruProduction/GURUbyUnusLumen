@@ -479,7 +479,8 @@ class NetworkScanner(
     }.getOrNull()
 
     private fun fetch(url: String, post: Boolean = false): String {
-        val connection = URL(url).openConnection() as HttpURLConnection
+        val connection = com.unuslumen.app.data.fabric.net.LocalRoute.open(url)
+                ?: throw IllegalStateException("no connection could be built to $url")
         return try {
             connection.connectTimeout = identityTimeoutMillis
             connection.readTimeout = identityTimeoutMillis
