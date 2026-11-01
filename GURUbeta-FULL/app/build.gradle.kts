@@ -61,8 +61,8 @@ android {
         applicationId = "com.unuslumen.app.gurubeta"
         minSdk = 26
         targetSdk = 35
-        versionCode = 47
-        versionName = "3.22"
+        versionCode = 48
+        versionName = "3.23"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -94,6 +94,24 @@ android {
                 storePassword = guruStorePassword
                 keyAlias = guruKeyAlias
                 keyPassword = guruKeyPassword
+
+                // EVERY SIGNATURE SCHEME, EXPLICITLY.
+                //
+                // These were left at their defaults, which produced a v2-only APK.
+                // v2 alone is valid on modern Android, but it leaves nothing to fall
+                // back on: an installer that rejects the v2 block for any reason has
+                // no v1 JAR signature or v3 block to try, and reports the package as
+                // invalid. v3 is also what carries key-rotation proof, so a future
+                // key change can be authorised rather than refused.
+                //
+                // v1 is deliberately on even though minSdk is 26: it costs a few
+                // hundred KB of digests and it is the scheme every installer on every
+                // version understands. v4 is produced as a separate .idsig beside the
+                // APK for adb incremental installs and is harmless to have.
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = true
             }
         }
     }
