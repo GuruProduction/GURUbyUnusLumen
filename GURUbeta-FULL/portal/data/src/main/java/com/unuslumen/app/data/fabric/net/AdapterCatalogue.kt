@@ -171,12 +171,26 @@ object AdapterCatalogue {
         // ---- Still gaps, named rather than hidden ----
         Adapter(
             id = "android-tv-remote",
-            target = "Android TV and Google TV, including Fire TV's Android side",
-            mechanism = "The Remote v2 pairing protocol on 6466, with an on-screen code",
+            target = "Android TV, Google TV, Fire TV, Nvidia Shield and Chromecast with Google TV",
+            mechanism = "Remote v2 over TLS: pairing on 6467, remote on 6466",
+            requirement = 0,
+            built = true,
+            detail = "Hand-written protobuf because the module declares no protobuf runtime: " +
+                "varints, field tags and the two-field outer frame, all asserted by a JVM test. " +
+                "Keycodes are Android's own, so the mapping cannot drift. Pairing takes the " +
+                "six-digit code the set shows and keeps the certificate it issues.",
+        ),
+        Adapter(
+            id = "xbox-smartglass",
+            target = "Xbox One and Series consoles",
+            mechanism = "SmartGlass on UDP 5050: plain-text discovery, encrypted everything else",
             requirement = 0,
             built = false,
-            detail = "Needs a protobuf implementation and the pairing exchange. His own scan found " +
-                "an Amazon Fire TV at 192.168.0.71, so this is a live gap on his network.",
+            detail = "Discovery and wake work and are built. Power off and media control need the " +
+                "encrypted channel, whose crypto context comes from the console's certificate and " +
+                "is not published, so those refuse with the real reason rather than sending a " +
+                "packet the console drops. Power on is Wake-on-LAN, not SmartGlass, because the " +
+                "protocol has no power-on message at all.",
         ),
         Adapter(
             id = "vizio-smartcast",

@@ -252,10 +252,16 @@ class NetworkControlTest {
         assertTrue("the SOAP caller must be built", "upnp-soap" in built)
         assertTrue("DIAL must be built", "dial-launch" in built)
 
+        assertTrue("Android TV must be built, it covers his Fire TV", "android-tv-remote" in built)
+
         val gaps = AdapterCatalogue.gaps.map { it.id }
         assertTrue(
             "the gaps must name the real remaining work, and got $gaps",
-            gaps.contains("android-tv-remote") && gaps.contains("vizio-smartcast"),
+            gaps.contains("vizio-smartcast") && gaps.contains("chromecast") && gaps.contains("airplay"),
+        )
+        assertTrue(
+            "Xbox power off and media are a real gap and must say so",
+            gaps.contains("xbox-smartglass"),
         )
 
         val sentence = AdapterCatalogue.gapSentence()
