@@ -7,18 +7,35 @@ import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.ProxySelector
+import java.net.ProtocolException
 import java.net.SocketAddress
 import java.net.URI
 
 /**
  * The single egress policy for every outbound HTTP connection the app makes:
- * LLM streaming, model executors, webhook tools. Loopback and private LAN
- * traffic (the user's own Ollama, LM Studio) goes direct — it never leaves
- * the device or LAN, and Tor cannot reach loopback targets. Everything else
- * MUST ride Tor's SOCKS proxy. If Tor is not ready, the request FAILS CLOSED:
- * an IOException is raised and no packet ever touches clearnet. This mirrors
- * the posture the web tools already enforce — Tor down means no egress, never
- * a silent direct fallback.
+ * LLM streaming, model executors, webhook tools, and the named HTTP tools.
+ *
+ * Two rules, both owned here so no caller has to remember a flag:
+ *
+ * 1. Loopback, the local network, link-local, carrier-grade NAT and mDNS names
+ *    go DIRECT. Tor cannot reach them, and asking it to was issue #215: every
+ *    LAN tool failed with an empty result that read like a dead device.
+ *
+ * 2. Everything else MUST ride Tor's SOCKS proxy, and if Tor is not ready the
+ *    request FAILS CLOSED with an exception rather than a direct connection.
+ *
+ * The routing decision itself lives in [EgressClassifier], which is pure and
+ * unit tested. This object is only the OkHttp plumbing around it.
+ *
+ * WHY THE FAIL-CLOSED PATH THROWS. The previous version returned an empty
+ * proxy list when Tor was down, under a comment claiming that refused clearnet.
+ * It did the opposite: OkHttp's own RouteSelector treats a null or empty
+ * selector result as PROXY.NO_PROXY (okhttp3/internal/connection/
+ * RouteSelector.kt, resetNextProxy), so "fail closed" was a direct connection
+ * to the public internet with no proxy at all. Throwing a ProtocolException is
+ * what actually stops it, because RetryAndFollowUpInterceptor treats a
+ * ProtocolException as unrecoverable, so the call fails instead of retrying
+ * around the policy.
  */
 object TorEgress {
 
@@ -38,21 +55,23 @@ object TorEgress {
      * Local and LAN endpoints never do. Exposed so the send path can wait for
      * Tor instead of firing a request that the policy will refuse.
      */
-    fun needsTorFor(host: String?): Boolean = !isLoopbackOrPrivate(host)
+    fun needsTorFor(host: String?): Boolean =
+        EgressClassifier.routeForHost(host) == EgressClassifier.Route.TOR
 
-    /** Hosts allowed to bypass Tor: the device itself and private LAN ranges. */
-    private fun isLoopbackOrPrivate(host: String?): Boolean {
-        if (host == null) return false
-        val h = host.lowercase()
-        if (h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "[::1]") return true
-        if (h.startsWith("10.")) return true
-        if (h.startsWith("192.168.")) return true
-        if (h.startsWith("172.")) {
-            val second = h.substringAfter("172.").substringBefore('.').toIntOrNull()
-            if (second != null && second in 16..31) return true
+    /** The route this host will take, for reporting and for tests. */
+    fun routeFor(host: String?): EgressClassifier.Route = EgressClassifier.routeForHost(host)
+
+    /**
+     * The route for a URL, deciding on the host exactly as the selector will.
+     * Convenience for callers that hold a URL string rather than a host.
+     */
+    fun routeForUrl(url: String?): EgressClassifier.Route {
+        val host = try {
+            url?.let { URI(it).host }
+        } catch (_: Exception) {
+            null
         }
-        if (h == "host.docker.internal" || h.endsWith(".local")) return true
-        return false
+        return EgressClassifier.routeForHost(host)
     }
 
     /**
@@ -62,21 +81,32 @@ object TorEgress {
     fun selector(): ProxySelector = object : ProxySelector() {
         override fun select(uri: URI?): List<Proxy> {
             val host = uri?.host
-            if (isLoopbackOrPrivate(host)) return listOf(Proxy.NO_PROXY)
+            when (EgressClassifier.routeForHost(host)) {
+                EgressClassifier.Route.DIRECT -> return listOf(Proxy.NO_PROXY)
+                EgressClassifier.Route.TOR -> Unit
+            }
 
             val manager = torManager
             if (manager == null || !manager.isReady.value) {
-                // Fail closed: refuse to dial clearnet. OkHttp surfaces this as a
-                // request failure; the UI shows an error instead of leaking.
-                return emptyList()
+                // Fail closed and mean it. See the class comment: an empty list
+                // here would be read by OkHttp as NO_PROXY and would dial
+                // clearnet, which is the exact leak this replaced.
+                throw ProtocolException(
+                    "Tor is not ready, so ${host ?: "this host"} was not contacted. " +
+                        "Public requests ride Tor and will not fall back to a direct connection. " +
+                        "Local and private addresses are not affected by this."
+                )
             }
             val addr = manager.getSocksProxy().address() as? InetSocketAddress
-                ?: return emptyList()
+                ?: throw ProtocolException(
+                    "Tor reported ready but its SOCKS listener has no address, so ${host ?: "this host"} " +
+                        "was not contacted rather than being sent direct."
+                )
             val port = if (addr.port > 0) addr.port else 9050
             return listOf(Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port)))
         }
 
-        override fun connectFailed(uri: URI?, sa: SocketAddress?, ioe: java.io.IOException?) {
+        override fun connectFailed(uri: URI?, sa: SocketAddress?, ioe: IOException?) {
             // Route failure information only; Tor circuit recovery handles retries.
         }
     }
