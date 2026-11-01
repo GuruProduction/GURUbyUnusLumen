@@ -90,6 +90,8 @@ class SensesDomainHonestyTest {
                 "camera_audio",
                 "ir",
                 "location",
+                // Seeing and reaching every host on the wifi, not only televisions.
+                "network",
                 "phone",
                 "privileged_capture",
                 "sensors",
