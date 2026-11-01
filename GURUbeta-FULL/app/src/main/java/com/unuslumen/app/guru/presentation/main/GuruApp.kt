@@ -128,11 +128,9 @@ fun guruApp(
 
     when (onboardingComplete.value) {
         null -> {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color(0xFFF0E8DA))
-            )
+            // Still loading the profile: one frame of the house colour, not a
+            // wash of its own.
+            Box(modifier = Modifier.fillMaxSize())
             return
         }
         false -> {
