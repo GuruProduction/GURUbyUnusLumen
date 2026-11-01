@@ -7,6 +7,7 @@ import com.unuslumen.app.data.tools.registry.ToolDefinition
 import com.unuslumen.app.data.tools.registry.ToolExecutor
 import com.unuslumen.app.data.tools.registry.ToolSetRegistration
 import com.unuslumen.app.data.fabric.ir.IrDomainModule
+import com.unuslumen.app.data.fabric.net.NetworkDomainModule
 import com.unuslumen.app.data.fabric.smart.SmartHomeDomainModule
 import com.unuslumen.app.data.fabric.tv.TvDomainModule
 import com.unuslumen.app.data.tools.phone.PhoneDomainModule
@@ -62,6 +63,10 @@ object TeamThreeToolDomains {
         // Network television control: the transport that actually drives a modern set,
         // because it needs no emitter and speaks each maker's own remote protocol.
         TvDomainModule,
+        // Seeing and reaching everything else on the network. Steven's requirement is an
+        // inventory of every host on the wifi, not a television list, so this is its own
+        // domain with its own names.
+        NetworkDomainModule,
         LocationDomainModule,
         PhoneDomainModule,
         PrivilegedCaptureDomainModule,
