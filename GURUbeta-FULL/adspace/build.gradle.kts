@@ -43,6 +43,16 @@ android {
     buildFeatures {
         compose = true
     }
+    // The boot-and-fetch sequence decides whether the ad space shows a cached
+    // pack or renders nothing, and that decision is pure Kotlin. Returning
+    // default values for the untouched android.* stubs (Log) lets it be proven
+    // on the JVM in seconds instead of by launching the app and waiting for a
+    // Tor circuit.
+    testOptions {
+        unitTests {
+            isReturnDefaultValues = true
+        }
+    }
     lint {
         disable += "NullSafeMutableLiveData"
     }
@@ -54,7 +64,14 @@ dependencies {
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    // JVM tests for the boot-and-fetch sequence and the cache contract.
+    // ktor-client-mock lets the real HttpClient stack run against a scripted
+    // transport, so the test exercises the actual request, parsing and cache
+    // write path rather than a hand-written stand-in for it.
     testImplementation(libs.junit)
+    testImplementation(libs.ktor.mock)
+    testImplementation(libs.ktor.serialization)
+    testImplementation(libs.ktor.content.negotiation)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 

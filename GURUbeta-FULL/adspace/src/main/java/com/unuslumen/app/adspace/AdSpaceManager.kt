@@ -3,7 +3,6 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.adspace
 
-import android.content.Context
 import android.util.Log
 import com.unuslumen.app.data.tor.TorEgress
 import io.ktor.client.HttpClient
@@ -23,30 +22,30 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
-import org.koin.core.component.KoinComponent
-import org.koin.core.component.inject
+
+/**
+ * Sovereign egress: the ad-pack client rides [TorEgress] like every other
+ * outbound call, so the user's IP never leaks to the API host over clearnet.
+ * The ad poll stays on its exact 30-second cadence, but anonymous.
+ *
+ * Built once here and injected into [AdSpaceManager] rather than constructed
+ * inside it, so the boot-and-fetch sequence can be run against a controlled
+ * transport. A manager that owns its sockets can only be observed by launching
+ * the app and watching a Tor circuit come up.
+ */
+private fun defaultAdPackClient(): HttpClient = HttpClient(TorEgress.newEngine()) {
+    install(ContentNegotiation) {
+        json(Json { ignoreUnknownKeys = true })
+    }
+}
 
 class AdSpaceManager(
-    private val context: Context,
     private val cache: AdPackCache,
-) : KoinComponent {
-
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val httpClient: HttpClient = defaultAdPackClient(),
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+) {
 
     private val json = Json { ignoreUnknownKeys = true }
-
-    /**
-     * Sovereign egress: the ad-pack client rides TorEgress like every other
-     * outbound call, so the user's IP never leaks to the API host over
-     * clearnet — the ad poll stays on its exact 30-second cadence, but now
-     * anonymous. Fail-closed when Tor is down: the existing AdPackCache keeps
-     * the ad space showing content until the next successful fetch.
-     */
-    private val httpClient = HttpClient(TorEgress.newEngine()) {
-        install(ContentNegotiation) {
-            json(Json { ignoreUnknownKeys = true })
-        }
-    }
 
     private val _currentEntry = MutableStateFlow<AdEntry?>(null)
     val currentEntry: StateFlow<AdEntry?> = _currentEntry.asStateFlow()
@@ -109,38 +108,43 @@ class AdSpaceManager(
         }
     }
 
-    fun fetchAdPack(baseUrl: String = "https://api.unuslumen.com") {
-        scope.launch {
-            try {
-                Log.d("AdSpaceManager", "fetchAdPack: url=$baseUrl/api/adpack")
-                val response = httpClient.get("$baseUrl/api/adpack")
-                Log.d("AdSpaceManager", "fetchAdPack: HTTP ${response.status.value}")
-                if (!response.status.isSuccess()) {
-                    val body = response.bodyAsText()
-                    Log.e("AdSpaceManager", "fetchAdPack: non-success response: $body")
-                    loadFromCache()
-                    return@launch
-                }
-                val bodyText = response.bodyAsText()
-                Log.d("AdSpaceManager", "fetchAdPack: response body length=${bodyText.length}")
-                val parsed = json.decodeFromString(AdPackResponse.serializer(), bodyText)
-                Log.d("AdSpaceManager", "fetchAdPack: parsed pack id=${parsed.id}, entries=${parsed.entries.size}")
-
-                val pack = parsed.toDomain()
-
-                // Download all media files before activating the pack
-                downloadMediaFiles(pack, baseUrl)
-
-                currentPack = pack
-                cache.savePack(pack)
-                entryIndex = 0
-                if (_isActive.value) startRotation()
-
-                Log.d("AdSpaceManager", "fetchAdPack: success. pack=${pack.entries.size} entries, first entry animationConfig=${pack.entries.firstOrNull()?.animationConfig != null}")
-            } catch (e: Exception) {
-                Log.e("AdSpaceManager", "fetchAdPack: exception", e)
+    fun fetchAdPack(baseUrl: String = "https://api.unuslumen.com"): Job = scope.launch {
+        try {
+            Log.d("AdSpaceManager", "fetchAdPack: url=$baseUrl/api/adpack")
+            val response = httpClient.get("$baseUrl/api/adpack")
+            Log.d("AdSpaceManager", "fetchAdPack: HTTP ${response.status.value}")
+            if (!response.status.isSuccess()) {
+                val body = response.bodyAsText()
+                Log.e("AdSpaceManager", "fetchAdPack: non-success response: $body")
                 loadFromCache()
+                return@launch
             }
+            val bodyText = response.bodyAsText()
+            Log.d("AdSpaceManager", "fetchAdPack: response body length=${bodyText.length}")
+            val parsed = json.decodeFromString(AdPackResponse.serializer(), bodyText)
+            Log.d("AdSpaceManager", "fetchAdPack: parsed pack id=${parsed.id}, entries=${parsed.entries.size}")
+
+            val pack = parsed.toDomain()
+
+            // Download all media files before activating the pack
+            downloadMediaFiles(pack, baseUrl)
+
+            currentPack = pack
+            cache.savePack(pack)
+            entryIndex = 0
+            if (_isActive.value) startRotation()
+
+            // The new pack is now the authority on which media is still
+            // referenced, so anything it does not name is dead weight. This is
+            // the job the boot-time cache wipe used to do, moved to the one
+            // moment it cannot cost us the fallback.
+            val pruned = cache.pruneUnreferencedMedia(pack)
+            if (pruned > 0) Log.d("AdSpaceManager", "fetchAdPack: pruned $pruned unreferenced media file(s)")
+
+            Log.d("AdSpaceManager", "fetchAdPack: success. pack=${pack.entries.size} entries, first entry animationConfig=${pack.entries.firstOrNull()?.animationConfig != null}")
+        } catch (e: Exception) {
+            Log.e("AdSpaceManager", "fetchAdPack: exception", e)
+            loadFromCache()
         }
     }
 
@@ -215,12 +219,28 @@ class AdSpaceManager(
         }
     }
 
-    fun initialize(baseUrl: String = "https://api.unuslumen.com") {
-        Log.d("AdSpaceManager", "initialize: baseUrl=$baseUrl, hasCache=${cache.hasCache()}")
+    /**
+     * Boot: show what is on disk, then fetch and replace it on success.
+     *
+     * The cache is deliberately NOT cleared here. Tor is only started on the
+     * first activity resume, so the boot fetch is refused by the egress policy
+     * on every cold start, which is the documented fail-closed path. Clearing
+     * the cache before fetching deleted the only thing that path can fall back
+     * to, so the ad space rendered nothing until a later poll happened to
+     * succeed. `clearCache()` stays available for an explicit user action or a
+     * version-mismatch purge, which is all it was ever right for.
+     *
+     * Returns the fetch job so a caller can await the first attempt.
+     */
+    fun initialize(baseUrl: String = "https://api.unuslumen.com"): Job {
         lastBaseUrl = baseUrl
-        cache.clearCache()
-        fetchAdPack(baseUrl)
+        loadFromCache()
+        Log.d(
+            "AdSpaceManager",
+            "initialize: baseUrl=$baseUrl, hasCache=${cache.hasCache()}, loaded=${currentPack?.id}"
+        )
         startPolling()
+        return fetchAdPack(baseUrl)
     }
 
     private fun startPolling() {

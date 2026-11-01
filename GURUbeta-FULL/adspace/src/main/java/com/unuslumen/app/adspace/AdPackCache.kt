@@ -7,11 +7,21 @@ import android.content.Context
 import java.io.File
 import kotlinx.serialization.json.Json
 
-class AdPackCache(private val context: Context) {
+class AdPackCache(
+    /**
+     * Root the cache lives under. Production passes the app's private files
+     * directory; a test passes a temporary directory, which is what lets the
+     * boot-and-fetch sequence be proven on the JVM instead of by watching a
+     * handset at launch.
+     */
+    private val rootDir: File,
+) {
+
+    constructor(context: Context) : this(File(context.filesDir, "adspace"))
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    private val cacheDir: File get() = File(context.filesDir, "adspace").apply { mkdirs() }
+    private val cacheDir: File get() = rootDir.apply { mkdirs() }
     private val lottieDir: File get() = File(cacheDir, "lottie").apply { mkdirs() }
     private val videoDir: File get() = File(cacheDir, "video").apply { mkdirs() }
     private val imageDir: File get() = File(cacheDir, "image").apply { mkdirs() }
@@ -91,5 +101,48 @@ class AdPackCache(private val context: Context) {
         cacheDir.mkdirs()
     }
 
+    /**
+     * Deletes media the current pack no longer references and returns how many
+     * files went.
+     *
+     * This replaces the boot-time `clearCache()` that used to be the only thing
+     * pruning this directory. That wipe was wrong (it deleted the fallback
+     * before the fallback could be used, issue 38) but removing it without a
+     * replacement would leak every superseded entry's lottie, image and video
+     * forever. Pruning to the live pack does the same job at the right moment:
+     * after a successful fetch, when the new pack is the authority on what is
+     * still referenced.
+     *
+     * Files are matched by the names the render path looks up, so a file is kept
+     * only when something in the pack can still ask for it.
+     */
+    fun pruneUnreferencedMedia(pack: AdPack): Int {
+        val entryIds = pack.entries.map { it.id }.toSet()
+        val elementIds = pack.entries.flatMap { it.elements }.map { it.id }.toSet()
+
+        return pruneDir(lottieDir) { name ->
+            val bare = name.removeSuffix(".json")
+            if (bare.startsWith(ELEMENT_PREFIX)) {
+                bare.removePrefix(ELEMENT_PREFIX) in elementIds
+            } else {
+                bare in entryIds
+            }
+        } + pruneDir(imageDir) { name -> name.removeSuffix(".bin") in elementIds } +
+            pruneDir(videoDir) { name -> name.removeSuffix(".mp4") in elementIds }
+    }
+
+    private inline fun pruneDir(dir: File, keep: (String) -> Boolean): Int {
+        val files = dir.listFiles() ?: return 0
+        var removed = 0
+        for (file in files) {
+            if (file.isFile && !keep(file.name) && file.delete()) removed++
+        }
+        return removed
+    }
+
     fun hasCache(): Boolean = configFile.exists()
+
+    private companion object {
+        const val ELEMENT_PREFIX = "element_"
+    }
 }
