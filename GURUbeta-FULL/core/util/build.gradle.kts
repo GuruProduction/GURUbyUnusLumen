@@ -6,6 +6,12 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.compose.compiler)
+    // The toolchain manifest inside the bundled archive is JSON, and reading it
+    // with a hand-written regex would break the moment the file is reformatted.
+    // This module had no serialization before; the plugin is what makes the
+    // generated serializer exist, so it belongs here rather than in a
+    // hand-rolled parser.
+    alias(libs.plugins.kotlinx.serialization)
 }
 
 android {
@@ -48,6 +54,15 @@ android {
     lint {
         disable += "NullSafeMutableLiveData"
     }
+
+    // Robolectric reads the merged manifest and resources, so the Android it
+    // emulates is this module's own rather than a generic platform.
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 dependencies {
@@ -64,6 +79,14 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 
+    // Robolectric, for the toolchain manifest reader test. The reader takes a
+    // Context to reach assets, so it needs an Android runtime to construct; the
+    // logic under test is file IO, so running it on the JVM is honest and costs
+    // seconds rather than an emulator session. Same versions as portal:data,
+    // where this pattern is already established.
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test:core:1.6.1")
+
     api(libs.kotlinx.datetime)
 
     // Shizuku. `api` for the api module because ShizukuBridge exposes
@@ -75,4 +98,8 @@ dependencies {
     // it is `api` here too and the app module inherits it rather than repeating it.
     api(libs.shizuku.api)
     api(libs.shizuku.provider)
+
+    // Reading the toolchain manifest. `implementation` rather than `api`:
+    // nothing outside this module needs the JSON types, only the parsed model.
+    implementation(libs.kotlinx.serialization.json)
 }

@@ -12,87 +12,74 @@ import java.io.FileOutputStream
 import java.util.zip.ZipFile
 
 /**
- * Manages bundled reverse engineering tool binaries.
+ * Reports the reverse-engineering toolchain's real state, and nothing else.
  *
- * Follows the same pattern as BusyboxProvider and PythonProvider:
- * architecture-specific binaries stored in assets, extracted to app storage
- * on first use, set executable, cached for subsequent calls.
+ * WHAT THIS CLASS USED TO BE, and why that was a lie (issue 200). It built a
+ * parallel toolset out of `assets/re-tools/`, naming aapt-arm64, aapt2-arm64,
+ * apktool.jar, jadx.jar, dex2jar.zip, android.jar and android.jar's support
+ * libraries. NONE of those files were ever in the APK. Extraction logged "asset
+ * not bundled" for each and moved on, and every availability flag was then set
+ * from a boolean that had never reflected a working binary.
  *
- * Tools bundled:
- * - aapt  — Android Asset Packaging Tool (native ARM64 binary)
- * - aapt2 — Android Asset Packaging Tool v2 (native ARM64 binary)
- * - apktool — APK decompiler/recompiler (Java JAR)
- * - jadx — DEX to Java decompiler (Java JAR via shell wrapper)
- * - dex2jar — DEX to JAR converter (Java tool suite, zipped)
- * - zipalign — APK alignment tool (native ARM64 binary)
+ * The visible result on a handset running build 3.11 was:
+ *
+ *   RE tools: aapt=false aapt2=false apktool=false jadx=true
+ *
+ * with `jadx=true` true because a 5751-byte Gradle start script named
+ * `jadx-arm64` existed, and that script's first act is to look for `java`, which
+ * was absent from the entire APK. The flag reported a filename, not a tool.
+ *
+ * WHAT IT IS NOW. The tools live in the Termux prefix, installed from the pinned
+ * archive by TermuxProvider.installReToolchain(), and every question about them
+ * is answered by RUNNING them through the same three-state probe the rest of the
+ * prefix uses. ABSENT, WILL_NOT_LOAD and RUNS are the only answers, each with the
+ * real output attached, so a caller can tell "not installed" from "installed and
+ * broken" without guessing.
+ *
+ * adb is the one thing that stays in `re-tools`, because it is a power-user
+ * route rather than part of the toolchain: it is copied to /data/local/tmp and
+ * run there, which is why its handling does not resemble the prefix tools.
  */
 class ReToolingProvider(private val context: Context) {
 
     companion object {
         private const val TAG = "guru"
 
-        // Asset paths
-        private const val ASSET_AAPT_ARM64 = "re-tools/aapt-arm64"
-        private const val ASSET_AAPT2_ARM64 = "re-tools/aapt2-arm64"
-        private const val ASSET_AAPT2_X86_64 = "re-tools/aapt2-x86_64"
-        private const val ASSET_APKTOOL = "re-tools/apktool.jar"
-        private const val ASSET_JADX_ARM64 = "re-tools/jadx-arm64"
-        private const val ASSET_JADX_X86_64 = "re-tools/jadx-x86_64"
-        private const val ASSET_JADX_JAR = "re-tools/jadx.jar"
-        private const val ASSET_DEX2JAR = "re-tools/dex2jar.zip"
-        private const val ASSET_ANDROID_JAR = "re-tools/android.jar"
-        private const val ASSET_ZIPALIGN_ARM64 = "re-tools/zipalign-arm64"
-
-        // ADB binary and its shared libraries
+        // adb is the only binary this provider extracts for itself. Everything
+        // else comes from the prefix.
         private const val ASSET_ADB_ARM64 = "re-tools/adb-arm64"
+        private const val ASSET_ADB_X86_64 = "re-tools/adb-x86_64"
         private const val ADB_FILENAME = "adb"
         private const val ADB_LIBS_DIR_ARM64 = "re-tools/adb-libs-arm64"
         private const val ADB_LIBS_DIR_X86_64 = "re-tools/adb-libs-x86_64"
 
-        // Shared library assets (needed by aapt)
-        private val AAPT_LIBS = listOf(
-            "libandroid-ziparchive.so",
-            "libandroid-utils.so",
-            "libandroid-fw.so",
-            "libandroid-cutils.so",
-            "libandroid-base.so"
+        /**
+         * The tool names as the rest of the app refers to them, each with the
+         * argument it genuinely accepts.
+         *
+         * A single blanket `--version` is wrong here: aapt, aapt2 and zipalign
+         * are native tools with their own subcommand vocabulary, apktool prints
+         * and exits 1 on an unknown flag, and only the JVM tools use `-version`.
+         * Probing them all with the same argument is how a working tool gets
+         * reported broken.
+         */
+        private val TOOL_PROBES: List<Pair<String, List<String>>> = listOf(
+            "java" to listOf("-version"),
+            "aapt" to listOf("version"),
+            "aapt2" to listOf("version"),
+            "zipalign" to emptyList(),
+            "apktool" to listOf("--version"),
         )
 
-        // Binary filenames
-        private const val AAPT_FILENAME = "aapt"
-        private const val AAPT2_FILENAME = "aapt2"
-        private const val ZIPALIGN_FILENAME = "zipalign"
-        private const val APKTOOL_FILENAME = "apktool.jar"
-        private const val JADX_FILENAME = "jadx"
-        private const val ANDROID_JAR_FILENAME = "android.jar"
-        private const val DEX2JAR_DIRNAME = "dex2jar"
-        private const val D2J_DEX2JAR_SCRIPT = "d2j-dex2jar.sh"
-        private const val D2J_DEX2JAR_BAT = "d2j-dex2jar.bat"
+        /** Tools that decompile DEX to Java. All three are JVM applications. */
+        private val DECOMPILER_PROBES: List<Pair<String, List<String>>> = listOf(
+            "jadx" to listOf("--version"),
+            "dex2jar" to listOf("--version"),
+        )
     }
 
     private val toolsDir: File
         get() = File(context.filesDir, "re-tools")
-
-    private val libsDir: File
-        get() = File(toolsDir, "lib")
-
-    private val aaptPath: File
-        get() = File(toolsDir, AAPT_FILENAME)
-
-    private val aapt2Path: File
-        get() = File(toolsDir, AAPT2_FILENAME)
-
-    private val zipalignPath: File
-        get() = File(toolsDir, ZIPALIGN_FILENAME)
-
-    private val androidJarPath: File
-        get() = File(toolsDir, ANDROID_JAR_FILENAME)
-
-    private val apktoolPath: File
-        get() = File(toolsDir, APKTOOL_FILENAME)
-
-    private val jadxPath: File
-        get() = File(toolsDir, JADX_FILENAME)
 
     private val adbPath: File
         get() = File(toolsDir, ADB_FILENAME)
@@ -100,98 +87,108 @@ class ReToolingProvider(private val context: Context) {
     private val adbLibsDir: File
         get() = File(toolsDir, "adb-libs")
 
-    private val dex2jarDir: File
-        get() = File(toolsDir, DEX2JAR_DIRNAME)
+    /** The Termux prefix this provider asks about. Constructed lazily, not held. */
+    private val termux by lazy { TermuxProvider(context) }
 
     private var initialized = false
-    private var aaptAvailable = false
-    private var aapt2Available = false
-    private var zipalignAvailable = false
-    private var apktoolAvailable = false
-    private var jadxAvailable = false
-    private var dex2jarAvailable = false
     private var adbAvailable = false
 
+    /**
+     * Read the toolchain's state. Installs the prefix if it is not there.
+     *
+     * Deliberately does NOT invent an availability flag for the prefix tools:
+     * those are answered on demand by [toolState], because a cached boolean is
+     * exactly the mechanism that let `jadx=true` survive a handset with no JVM.
+     * The only latch held here is adb, whose extraction this class owns.
+     */
     suspend fun initialize(): Boolean = withContext(Dispatchers.IO) {
         if (initialized) return@withContext anyAvailable()
 
         try {
             toolsDir.mkdirs()
-            libsDir.mkdirs()
-
-            // 1. Extract aapt and its shared library deps
-            aaptAvailable = extractAaptWithLibs()
-
-            // 2. Extract aapt2
-            aapt2Available = extractArchBinary(
-                arm64Asset = ASSET_AAPT2_ARM64,
-                x8664Asset = ASSET_AAPT2_X86_64,
-                destFile = aapt2Path
-            )
-
-            // 3. Extract zipalign
-            zipalignAvailable = extractArchBinary(
-                arm64Asset = ASSET_ZIPALIGN_ARM64,
-                x8664Asset = "re-tools/zipalign-x86_64",
-                destFile = zipalignPath
-            )
-
-            // 4. Extract android.jar (needed by aapt for resource resolution)
-            extractAssetFile(ASSET_ANDROID_JAR, androidJarPath)
-
-            // 5. Extract apktool.jar
-            apktoolAvailable = extractAssetFile(ASSET_APKTOOL, apktoolPath)
-
-            // 6. Extract jadx shell wrapper and jar
-            jadxAvailable = extractArchBinary(
-                arm64Asset = ASSET_JADX_ARM64,
-                x8664Asset = ASSET_JADX_X86_64,
-                destFile = jadxPath
-            )
-            val jadxJarPath = File(toolsDir, "jadx.jar")
-            if (!jadxJarPath.exists()) {
-                extractAssetFile(ASSET_JADX_JAR, jadxJarPath)
-            }
-            if (!jadxAvailable && jadxJarPath.exists()) {
-                jadxAvailable = true
-            }
-
-            // 7. Extract dex2jar (zipped tool suite)
-            dex2jarAvailable = extractDex2jar()
-
-            // 8. Extract adb binary and its shared libraries
             adbAvailable = extractAdbWithLibs()
-
-            initialized = true
-            Log.d(TAG, "ReToolingProvider: initialized — aapt=$aaptAvailable aapt2=$aapt2Available zipalign=$zipalignAvailable apktool=$apktoolAvailable jadx=$jadxAvailable dex2jar=$dex2jarAvailable adb=$adbAvailable")
         } catch (e: Exception) {
-            Log.e(TAG, "ReToolingProvider: initialization failed", e)
-            initialized = true
+            Log.e(TAG, "ReToolingProvider: adb preparation failed", e)
+            adbAvailable = false
         }
 
+        // Bring the prefix up so the toolchain exists to be asked about. This is
+        // the install path, not a status read: the prefix carries the JVM and the
+        // tools, and a status question must not be able to claim the app cannot
+        // do something it can install itself.
+        runCatching { termux.initialize() }
+            .onFailure { Log.w(TAG, "ReToolingProvider: prefix initialise failed: ${it.message}") }
+
+        initialized = true
+        Log.d(TAG, "ReToolingProvider: prepared — ${describeToolchain()}")
         anyAvailable()
     }
 
-    fun isAaptAvailable(): Boolean = aaptAvailable
-    fun isAapt2Available(): Boolean = aapt2Available
-    fun isZipalignAvailable(): Boolean = zipalignAvailable
-    fun isApktoolAvailable(): Boolean = apktoolAvailable
-    fun isJadxAvailable(): Boolean = jadxAvailable
-    fun isDex2jarAvailable(): Boolean = dex2jarAvailable
+    /**
+     * The three-state answer for one tool, by running it.
+     *
+     * This is the only honest way to answer the question, and it is what issue
+     * 200 asks for when it says the status must state the real state of each
+     * tool rather than a subset.
+     */
+    fun toolState(name: String): TermuxProvider.CommandProbeResult {
+        val args = TOOL_PROBES.firstOrNull { it.first == name }?.second
+            ?: DECOMPILER_PROBES.firstOrNull { it.first == name }?.second
+            ?: listOf("--version")
+        return termux.probeTool(name, args)
+    }
+
+    /** True only when the tool actually ran. */
+    fun isToolAvailable(name: String): Boolean =
+        toolState(name).state == TermuxProvider.CommandProbe.RUNS
+
+    fun isAaptAvailable(): Boolean = isToolAvailable("aapt")
+    fun isAapt2Available(): Boolean = isToolAvailable("aapt2")
+    fun isZipalignAvailable(): Boolean = isToolAvailable("zipalign")
+    fun isApktoolAvailable(): Boolean = isToolAvailable("apktool")
+    fun isJadxAvailable(): Boolean = isToolAvailable("jadx")
+    fun isDex2jarAvailable(): Boolean = isToolAvailable("dex2jar")
+
+    /**
+     * Whether the JVM is present and runs. Everything that is a `java -jar`
+     * depends on this, so it is asked separately rather than inferred from a
+     * decompiler's presence.
+     */
+    fun isJavaAvailable(): Boolean = isToolAvailable("java")
+
     fun isAdbAvailable(): Boolean = adbAvailable
 
-    fun anyAvailable(): Boolean = aaptAvailable || aapt2Available || apktoolAvailable || jadxAvailable || dex2jarAvailable || adbAvailable
+    fun anyAvailable(): Boolean =
+        adbAvailable || TOOL_PROBES.any { isToolAvailable(it.first) }
 
     val isInitialized: Boolean get() = initialized
 
-    fun getAaptPath(): String = aaptPath.absolutePath
-    fun getAapt2Path(): String = aapt2Path.absolutePath
-    fun getZipalignPath(): String = zipalignPath.absolutePath
-    fun getAndroidJarPath(): String = androidJarPath.absolutePath
-    fun getApktoolPath(): String = apktoolPath.absolutePath
-    fun getJadxPath(): String = jadxPath.absolutePath
-    fun getDex2jarDir(): String = dex2jarDir.absolutePath
-    fun getLibsPath(): String = libsDir.absolutePath
+    /**
+     * One line stating the real state of every tool, for termuxInit's report.
+     *
+     * Issue 200's complaint was a status line that said `jadx=true` while jadx
+     * could not run. This builds the line from the probes, so the text and the
+     * behaviour cannot disagree.
+     */
+    fun describeToolchain(): String {
+        val names = TOOL_PROBES.map { it.first } + DECOMPILER_PROBES.map { it.first }
+        return names.joinToString(" ") { name ->
+            val probe = toolState(name)
+            "${name}=${probe.state == TermuxProvider.CommandProbe.RUNS}"
+        }
+    }
+
+    /**
+     * Detailed state for every tool, for a caller that wants the reason rather
+     * than a boolean. Each entry carries ABSENT / WILL_NOT_LOAD / RUNS and the
+     * real output, so "not installed" is never confused with "installed and
+     * broken".
+     */
+    fun toolchainReport(): Map<String, TermuxProvider.CommandProbeResult> {
+        val names = TOOL_PROBES.map { it.first } + DECOMPILER_PROBES.map { it.first }
+        return names.associateWith { toolState(it) }
+    }
+
     fun getAdbPath(): String = adbPath.absolutePath
     fun getAdbLibsPath(): String = adbLibsDir.absolutePath
 
@@ -231,89 +228,6 @@ class ReToolingProvider(private val context: Context) {
     }
 
     /**
-     * Wrap aapt dump badging — the most common RE operation.
-     * Sets up ANDROID_DATA and LD_LIBRARY_PATH so aapt can find its deps.
-     */
-    fun wrapAapt(args: String): String {
-        return "ANDROID_DATA=${toolsDir.absolutePath} LD_LIBRARY_PATH=${libsDir.absolutePath} ${aaptPath.absolutePath} $args"
-    }
-
-    /**
-     * Wrap aapt2 for binary XML dump — aapt2 dump badging works the same as aapt.
-     */
-    fun wrapAapt2(args: String): String {
-        return "${aapt2Path.absolutePath} $args"
-    }
-
-    fun wrapZipalign(args: String): String {
-        return "${zipalignPath.absolutePath} $args"
-    }
-
-    fun wrapApktool(args: String): String {
-        return "java -jar ${apktoolPath.absolutePath} $args"
-    }
-
-    fun wrapJadx(args: String): String {
-        val jarPath = File(toolsDir, "jadx.jar")
-        if (jarPath.exists()) {
-            return "java -jar ${jarPath.absolutePath} $args"
-        }
-        return "${jadxPath.absolutePath} $args"
-    }
-
-    fun wrapDex2jar(apkPath: String, outputJar: String): String {
-        val scriptPath = File(dex2jarDir, D2J_DEX2JAR_SCRIPT)
-        val batPath = File(dex2jarDir, D2J_DEX2JAR_BAT)
-        return if (scriptPath.exists()) {
-            "bash ${scriptPath.absolutePath} -f -o \"$outputJar\" \"$apkPath\""
-        } else if (batPath.exists()) {
-            "java -cp \"${dex2jarDir.absolutePath}/lib/*\" com.googlecode.dex2jar.tools.Dex2jarCmd -f -o \"$outputJar\" \"$apkPath\""
-        } else {
-            "java -cp \"${dex2jarDir.absolutePath}/lib/*\" com.googlecode.dex2jar.tools.Dex2jarCmd -f -o \"$outputJar\" \"$apkPath\""
-        }
-    }
-
-    // --- Private extraction helpers ---
-
-    /**
-     * Extract aapt binary and all its shared library dependencies.
-     * aapt needs android.jar and several .so files to function.
-     */
-    private fun extractAaptWithLibs(): Boolean {
-        val aaptOk = extractArchBinary(
-            arm64Asset = ASSET_AAPT_ARM64,
-            x8664Asset = "re-tools/aapt-x86_64",
-            destFile = aaptPath
-        )
-        if (!aaptOk) return false
-
-        // Extract all shared libraries aapt needs
-        var allLibsOk = true
-        for (libName in AAPT_LIBS) {
-            val libFile = File(libsDir, libName)
-            if (!libFile.exists()) {
-                val ok = extractAssetFile("re-tools/$libName", libFile)
-                if (!ok) {
-                    // Lib files are nice to have but aapt may still work on some devices without them
-                    Log.w(TAG, "ReToolingProvider: aapt library $libName not bundled, aapt may fail on some devices")
-                }
-                allLibsOk = allLibsOk && ok
-            }
-        }
-
-        // Android.jar is essential — aapt won't resolve resource IDs without it
-        if (!androidJarPath.exists()) {
-            val jarOk = extractAssetFile(ASSET_ANDROID_JAR, androidJarPath)
-            if (!jarOk) {
-                Log.w(TAG, "ReToolingProvider: android.jar not bundled — aapt will be limited")
-                // Still mark as available, just warn
-            }
-        }
-
-        return true
-    }
-
-    /**
      * Extract the adb binary and all its shared libraries from assets.
      * adb needs abseil-cpp, protobuf, zstd, zlib, and utf8 libraries.
      * The libs are in re-tools/adb-libs-arm64/ or re-tools/adb-libs-x86_64/
@@ -324,10 +238,9 @@ class ReToolingProvider(private val context: Context) {
      * ships libz.so.1.3.2.
      */
     private fun extractAdbWithLibs(): Boolean {
-        // Extract the adb binary
         val adbOk = extractArchBinary(
             arm64Asset = ASSET_ADB_ARM64,
-            x8664Asset = "re-tools/adb-x86_64",
+            x8664Asset = ASSET_ADB_X86_64,
             destFile = adbPath
         )
         if (!adbOk) return false
@@ -346,9 +259,6 @@ class ReToolingProvider(private val context: Context) {
         }
 
         // Extract all shared libraries from the arch-specific directory.
-        // We list the directory contents directly and extract each file,
-        // bypassing the broken extractAssetFile() existence check that
-        // only works for one level of nesting.
         adbLibsDir.mkdirs()
         try {
             val libAssets = context.assets.list(libsAssetDir) ?: emptyArray()
@@ -435,67 +345,4 @@ class ReToolingProvider(private val context: Context) {
             false
         }
     }
-
-    private fun extractDex2jar(): Boolean {
-        if (dex2jarDir.exists() && dex2jarDir.listFiles()?.isNotEmpty() == true) return true
-
-        return try {
-            val assetExists = context.assets.list("re-tools")
-                ?.contains("dex2jar.zip") ?: false
-
-            if (!assetExists) {
-                Log.w(TAG, "ReToolingProvider: dex2jar.zip not bundled")
-                return false
-            }
-
-            Log.d(TAG, "ReToolingProvider: extracting dex2jar.zip to ${dex2jarDir.absolutePath}")
-            dex2jarDir.mkdirs()
-
-            val tempZip = File(toolsDir, "dex2jar_temp.zip")
-            try {
-                context.assets.open(ASSET_DEX2JAR).use { input ->
-                    FileOutputStream(tempZip).use { output ->
-                        input.copyTo(output)
-                    }
-                }
-
-                ZipFile(tempZip).use { zip ->
-                    val entries = zip.entries()
-                    while (entries.hasMoreElements()) {
-                        val entry = entries.nextElement()
-                        val entryFile = File(dex2jarDir, entry.name)
-                        if (entry.isDirectory) {
-                            entryFile.mkdirs()
-                        } else {
-                            entryFile.parentFile?.mkdirs()
-                            zip.getInputStream(entry).use { entryInput ->
-                                FileOutputStream(entryFile).use { entryOutput ->
-                                    entryInput.copyTo(entryOutput)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                dex2jarDir.walkTopDown().forEach { file ->
-                    if (file.name.endsWith(".sh")) {
-                        file.setExecutable(true, false)
-                    }
-                }
-
-                Log.d(TAG, "ReToolingProvider: dex2jar extracted to ${dex2jarDir.absolutePath}")
-                true
-            } finally {
-                tempZip.delete()
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "ReToolingProvider: failed to extract dex2jar: ${e.message}")
-            false
-        }
-    }
 }
-
-
- 
- 
-// force re-read

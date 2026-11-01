@@ -58,6 +58,45 @@ class TermuxProvider(private val context: Context) {
         private const val GIT_RUNTIME_MARKER = ".git-runtime-ok"
 
         /**
+         * The bundled Java and reverse-engineering toolchain, packaged by
+         * fetch_re_toolchain.sh from pinned Termux packages.
+         *
+         * WHY IT EXISTS (issue 200). GURU advertises a complete on-device
+         * reverse-engineering chain and shipped without a Java runtime, so
+         * apktool, jadx, dex2jar, apksigner and every `java -jar` in the app
+         * could not run, and `signApk` could only report that no signing tool
+         * existed. The archive carries a trimmed openjdk-21, aapt, aapt2,
+         * zipalign and apktool with the exact shared-library closure their ELF
+         * dynamic sections name.
+         */
+        private const val ASSET_RE_TOOLCHAIN = "re-toolchain/re-toolchain.zip"
+
+        /**
+         * The manifest inside that archive. java.util.zip cannot report a ZIP
+         * entry's unix mode, so a symlink packed by `zip -y` arrives as a small
+         * regular file whose CONTENT is the link target — a 32-byte "java" the
+         * linker refuses. The manifest names every symlink so this class can
+         * recreate them properly instead of guessing from file size.
+         */
+        private const val RE_TOOLCHAIN_MANIFEST = "re-toolchain-manifest.json"
+
+        /**
+         * Done-marker for the toolchain install, and its version.
+         *
+         * Written ONLY after java, aapt, aapt2, zipalign and apktool have each
+         * genuinely executed, because issue 200's whole complaint is a surface
+         * that reports tools present when they are not. Bumping the version
+         * forces a reinstall over a tree left by an older build, which is what
+         * makes a corrected archive actually replace a broken one on a handset
+         * that already holds the old extract.
+         */
+        private const val RE_TOOLCHAIN_MARKER = ".re-toolchain-ok"
+        private const val RE_TOOLCHAIN_VERSION = 1
+
+        /** Where the JVM lands, relative to the prefix. Matches the archive. */
+        private const val JVM_HOME_RELATIVE = "lib/jvm/java-21-openjdk"
+
+        /**
          * Version of the prefix-relocation pass. Bump it whenever the rewrite
          * rules change, so a tree installed by an older build re-runs the pass
          * rather than keeping the old, broken result forever.
@@ -201,6 +240,23 @@ class TermuxProvider(private val context: Context) {
             // running, so a tree half-extracted by a killed process retries.
             installGitRuntime()
 
+            /*
+             * The Java and reverse-engineering toolchain (issue 200).
+             *
+             * It runs AFTER installGitRuntime for two reasons. patchelf, which
+             * the JVM's libjvm and the JVM launchers need their RUNPATH repointed
+             * by, arrives with copyBundledLibs above. And the prefix has to be
+             * complete before this pass because it verifies by EXECUTION: a
+             * missing shared library shows up as a non-zero `java -version`, and
+             * a partial tree would be measured as a broken install.
+             *
+             * Before relocatePrefixPaths on purpose. apktool's wrapper is a text
+             * file carrying the absolute com.termux prefix in its libdir, and the
+             * relocation pass rewrites exactly that, so the toolchain must be on
+             * disk before it runs rather than being skipped until the next init.
+             */
+            installReToolchain()
+
             // Relocate every text file in the prefix onto the real prefix path. The
             // payload records /data/data/com.termux/files in script shebangs, dpkg's
             // status and .list rows, and apt's helper scripts. Left alone, apt-key's
@@ -343,6 +399,72 @@ class TermuxProvider(private val context: Context) {
     fun getLibPath(): String = libDir.absolutePath
     fun getLinkerPath(): String = linker
 
+    /** Absolute path of the bundled JVM home, whether or not it exists yet. */
+    fun getJvmHomePath(): String = File(usrPrefix, JVM_HOME_RELATIVE).absolutePath
+
+    /**
+     * Absolute path of one of the toolchain's binaries in this prefix.
+     *
+     * Exists so callers never build a path from a guess: the JVM's launchers
+     * live under lib/jvm, while aapt, aapt2, zipalign and apktool live in bin/,
+     * and a caller that assumes one location reports the other missing.
+     */
+    fun getToolPath(name: String): String = File(binDir, name).absolutePath
+
+    /** True once the toolchain has been installed and every tool has run. */
+    fun isReToolchainInstalled(): Boolean {
+        val marker = File(usrPrefix, RE_TOOLCHAIN_MARKER)
+        val recorded = runCatching { marker.readText() }.getOrNull() ?: return false
+        return recorded.contains("version=$RE_TOOLCHAIN_VERSION")
+    }
+
+    /**
+     * The one honest answer to "is this tool usable", for the reverse-engineering
+     * surface.
+     *
+     * WHY THIS IS A RUN AND NOT A FILE CHECK (issue 200). The shipped status was
+     * built from `File.exists()`, so it reported jadx present because a 5751-byte
+     * Gradle start script named `jadx-arm64` was on disk, while the JVM that
+     * script's first act is to look for did not exist anywhere in the APK. A
+     * status field that answers from existence is not reporting on the tool, it
+     * is reporting on the filename.
+     *
+     * So the answer comes from the same three-state probe the rest of the prefix
+     * uses, with the argument each tool actually accepts rather than a blanket
+     * --version that apktool and zipalign do not take.
+     */
+    fun probeTool(name: String, args: List<String> = listOf("--version")): CommandProbeResult {
+        val resolved = resolveBinary(name)
+            ?: return CommandProbeResult(
+                CommandProbe.ABSENT,
+                "$name is not present in ${searchPath.joinToString(":") { it.absolutePath }}",
+                -1,
+                null,
+            )
+        val result = execWithEnv(listOf(linker, resolved) + args)
+        val combined = (result.stdout + "\n" + result.stderr).trim()
+        val loadFailureMarkers = listOf(
+            "CANNOT LINK EXECUTABLE",
+            "not found: needed by main executable",
+            "Permission denied",
+            "Exec format error",
+            "No such file or directory",
+            "command not found",
+        )
+        val refusedToLoad = result.exitCode < 0 ||
+            loadFailureMarkers.any { combined.contains(it, ignoreCase = true) }
+        return when {
+            refusedToLoad -> CommandProbeResult(CommandProbe.WILL_NOT_LOAD, combined, result.exitCode, resolved)
+            combined.isNotEmpty() -> CommandProbeResult(CommandProbe.RUNS, combined, result.exitCode, resolved)
+            else -> CommandProbeResult(
+                CommandProbe.WILL_NOT_LOAD,
+                "$name produced no output and exited ${result.exitCode}",
+                result.exitCode,
+                resolved,
+            )
+        }
+    }
+
     // RE tools directory — same level as termux root
     private val reToolsDir: File
         get() = File(context.filesDir, "re-tools")
@@ -440,6 +562,37 @@ class TermuxProvider(private val context: Context) {
      * Uses /system/bin/linker64 for binaries on noexec filesystems (/data),
      * direct execution for binaries on /system.
      */
+    /**
+     * Run one binary from this prefix with an explicit argument list.
+     *
+     * WHY THIS EXISTS, alongside execInTermux. execInTermux takes a command
+     * STRING, parses it on whitespace and re-quotes by hand, which is fine for a
+     * command a person typed and wrong for a path a caller built: an argument
+     * containing a space or a quote silently becomes two arguments or none. The
+     * reverse-engineering tools take file paths, and a path with a space in it is
+     * ordinary on Android.
+     *
+     * Resolution and the linker64 launch are the same as execInTermux, so this is
+     * the same execution model with the quoting hazard removed rather than a
+     * second mechanism.
+     */
+    fun execBinary(name: String, args: List<String>): ShellResult {
+        val resolved = resolveBinary(name)
+            ?: return ShellResult(
+                exitCode = -1,
+                stdout = "",
+                stderr = "command not found: $name (searched ${searchPath.joinToString(": ") { it.absolutePath }})",
+                success = false,
+                tier = ShellTier.APP_UID,
+            )
+        val processArgs = if (resolved.startsWith("/system/")) {
+            listOf(resolved) + args
+        } else {
+            listOf(linker, resolved) + args
+        }
+        return execWithEnv(processArgs)
+    }
+
     fun execInTermux(command: String): ShellResult {
         // Auto-detect shell syntax — semicolons, pipes, redirects, conditionals
         if (shellMetaChars.containsMatchIn(command)) {
@@ -1388,6 +1541,421 @@ class TermuxProvider(private val context: Context) {
         } finally {
             tempZip.delete()
         }
+    }
+
+    /**
+     * Install the bundled Java and reverse-engineering toolchain (issue 200).
+     *
+     * WHAT IS INSTALLED, and why each part is where it is:
+     *
+     *  - `bin/java`, `bin/javac`, `bin/jar`, `bin/jarsigner`, `bin/keytool` are
+     *    SYMLINKS into `lib/jvm/java-21-openjdk/bin/`. The Termux package makes
+     *    them with update-alternatives from its postinst, and a postinst never
+     *    runs here, so the archive carries the links explicitly in its manifest.
+     *
+     *  - `bin/aapt`, `bin/aapt2`, `bin/zipalign` are the real static-ish Termux
+     *    binaries. Their DT_RUNPATH is the upstream com.termux lib path, which
+     *    cannot exist inside this sandbox, so they are repointed at this
+     *    prefix's lib/ through patchelf exactly like the git runtime.
+     *
+     *  - `share/java/apktool.jar` plus `bin/apktool`, whose wrapper carries the
+     *    upstream libdir in plain text. relocatePrefixPaths rewrites that on the
+     *    same pass, which is why this install runs before it.
+     *
+     * VERIFICATION IS EXECUTION, because that is the entire complaint in issue
+     * 200: the old surface reported `jadx=true` from a wrapper file's existence
+     * while the JVM behind it was absent. Nothing here is reported as present
+     * until it has run, and the marker is withheld otherwise so the next init
+     * tries again.
+     *
+     * Idempotent: extraction skips any file already present with content, so an
+     * interrupted pass resumes rather than restarting.
+     */
+    private fun installReToolchain() {
+        val marker = File(usrPrefix, RE_TOOLCHAIN_MARKER)
+        val recorded = runCatching { marker.readText() }.getOrNull()
+        if (recorded != null && recorded.contains("version=$RE_TOOLCHAIN_VERSION")) {
+            Log.d(TAG, "TermuxProvider: toolchain v$RE_TOOLCHAIN_VERSION already installed; skipping")
+            return
+        }
+
+        val assetPresent = try {
+            context.assets.list("re-toolchain")?.contains("re-toolchain.zip") == true
+        } catch (e: Exception) {
+            Log.w(TAG, "TermuxProvider: re-toolchain asset listing failed: ${e.message}")
+            false
+        }
+        if (!assetPresent) {
+            Log.w(TAG, "TermuxProvider: $ASSET_RE_TOOLCHAIN not bundled; the Java toolchain is absent")
+            return
+        }
+
+        val tempZip = File(usrPrefix, "re-toolchain-temp.zip")
+        try {
+            Log.d(TAG, "TermuxProvider: installing the Java toolchain from $ASSET_RE_TOOLCHAIN")
+            context.assets.open(ASSET_RE_TOOLCHAIN).use { input ->
+                FileOutputStream(tempZip).use { output -> input.copyTo(output) }
+            }
+
+            /*
+             * The symlinks are created FIRST and the extraction then skips any
+             * path they occupy. Doing it the other way round writes a 32-byte
+             * regular file named `java` whose content is the target path, and
+             * os.symlink then fails with EEXIST, so the JVM is permanently
+             * unreachable while the file looks present. That is precisely the
+             * class of defect issue 200 is about.
+             */
+            val declaredLinks = readToolchainSymlinks(tempZip)
+            var linked = 0
+            for ((path, target) in declaredLinks) {
+                val linkFile = File(usrPrefix, path)
+                linkFile.parentFile?.mkdirs()
+                // A stale regular file at the link path is removed rather than
+                // left, because it is the broken artefact described above.
+                if (linkFile.exists() && !java.nio.file.Files.isSymbolicLink(linkFile.toPath())) {
+                    linkFile.delete()
+                }
+                if (java.nio.file.Files.isSymbolicLink(linkFile.toPath())) continue
+                try {
+                    android.system.Os.symlink(target, linkFile.absolutePath)
+                    linked++
+                } catch (e: Exception) {
+                    Log.w(TAG, "TermuxProvider: toolchain symlink $path -> $target failed: ${e.message}")
+                }
+            }
+            if (declaredLinks.isNotEmpty()) {
+                Log.d(TAG, "TermuxProvider: toolchain symlinks created ($linked of ${declaredLinks.size})")
+            }
+
+            var extracted = 0
+            var skippedBecauseLinked = 0
+            ZipFile(tempZip).use { zip ->
+                val entries = zip.entries()
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    val cleanName = entry.name.removePrefix("./")
+                    if (cleanName.isEmpty()) continue
+                    if (cleanName == RE_TOOLCHAIN_MANIFEST) continue
+
+                    val entryFile = File(usrPrefix, cleanName)
+
+                    // Defend the prefix boundary: a crafted entry name must never
+                    // escape usr/. installGitRuntime does the same and for the
+                    // same reason.
+                    val canonicalTarget = entryFile.canonicalFile
+                    val canonicalPrefix = usrPrefix.canonicalFile
+                    if (!canonicalTarget.path.startsWith(canonicalPrefix.path + File.separator) &&
+                        canonicalTarget.path != canonicalPrefix.path
+                    ) {
+                        Log.w(TAG, "TermuxProvider: refusing toolchain entry outside prefix: $cleanName")
+                        continue
+                    }
+
+                    if (entry.isDirectory) {
+                        entryFile.mkdirs()
+                        continue
+                    }
+
+                    // A declared symlink is already correct on disk, so its zip
+                    // entry — which is a regular file holding the target text —
+                    // must not overwrite it.
+                    if (declaredLinks.containsKey(cleanName)) {
+                        skippedBecauseLinked++
+                        continue
+                    }
+
+                    if (entryFile.isFile && entryFile.length() > 0) continue
+
+                    entryFile.parentFile?.mkdirs()
+                    zip.getInputStream(entry).use { entryInput ->
+                        FileOutputStream(entryFile).use { entryOutput ->
+                            entryInput.copyTo(entryOutput)
+                        }
+                    }
+                    extracted++
+                }
+            }
+            Log.d(
+                TAG,
+                "TermuxProvider: toolchain extracted $extracted files " +
+                    "($skippedBecauseLinked declared symlinks left alone)",
+            )
+
+            // The packaged binaries carry the upstream Termux RUNPATH, which is
+            // a dead path inside this app. Repoint them at this prefix's lib/ so
+            // they resolve without LD_LIBRARY_PATH, exactly as the git runtime is
+            // repointed.
+            repointToolchainRpaths()
+
+            // apktool's own wrapper records the upstream libdir in text; without
+            // this it looks in a directory that cannot exist. relocatePrefixPaths
+            // would do it on the next init anyway, but doing it here means the
+            // verification below measures the tool as a user would actually run
+            // it rather than a half-relocated one.
+            relocateToolchainWrapperText()
+
+            // THE GATE: every tool must RUN. A version string on stdout is the
+            // only thing that may write the marker.
+            val report = verifyToolchain()
+            val allRan = report.values.all { it.first }
+            if (allRan) {
+                marker.writeText(
+                    "version=$RE_TOOLCHAIN_VERSION;" +
+                        report.entries.joinToString(";") { "${it.key}=${it.value.second}" } + "\n"
+                )
+                Log.d(TAG, "TermuxProvider: toolchain installed and verified — $report")
+            } else {
+                val failures = report.filterValues { !it.first }.keys
+                Log.w(
+                    TAG,
+                    "TermuxProvider: toolchain present but $failures did not run; marker withheld " +
+                        "so the next init retries",
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "TermuxProvider: toolchain install failed: ${e.message}")
+        } finally {
+            tempZip.delete()
+        }
+    }
+
+    /**
+     * Read the symlink map from the archive's manifest.
+     *
+     * Parsed with kotlinx.serialization rather than org.json: org.json is part of
+     * the Android framework but its stub throws in a JVM unit test, and this
+     * function is covered by one. The schema is fixed and local to this archive,
+     * so a typed model is the honest description of it rather than a bag of
+     * optString calls.
+     *
+     * Returns an empty map when the manifest is absent or unreadable, and says so
+     * in the log, because silently installing without the links would put a JVM
+     * on disk that nothing can launch and then report it as present.
+     */
+    /**
+     * The archive's manifest, as a typed model.
+     *
+     * Internal rather than private so a JVM test can hold it against the
+     * archive's real entries: the failure this guards is a launcher that arrives
+     * as a 32-byte text file, and only a test comparing the two catches that
+     * before a handset does.
+     */
+    @kotlinx.serialization.Serializable
+    internal data class ToolchainManifest(
+        val schema: Int = 0,
+        val jvmHome: String = "",
+        val symlinks: List<ToolchainSymlink> = emptyList(),
+        val tools: List<ToolchainTool> = emptyList(),
+    )
+
+    @kotlinx.serialization.Serializable
+    internal data class ToolchainSymlink(val path: String = "", val target: String = "")
+
+    @kotlinx.serialization.Serializable
+    internal data class ToolchainTool(
+        val name: String = "",
+        val probe: List<String> = emptyList(),
+        val kind: String = "",
+    )
+
+    /**
+     * The parsed manifest, or null when it cannot be read.
+     *
+     * Returns null rather than a partial result so the caller withholds the
+     * install marker instead of installing a JVM that nothing can launch. A
+     * manifest with no symlinks is that case as well: the launchers would arrive
+     * as text files and `java` would resolve to something unexecutable.
+     */
+    internal fun readToolchainManifest(zip: File): ToolchainManifest? {
+        return try {
+            val text = ZipFile(zip).use { z ->
+                val entry = z.getEntry(RE_TOOLCHAIN_MANIFEST) ?: return null
+                z.getInputStream(entry).bufferedReader().use { it.readText() }
+            }
+            val manifest = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+                .decodeFromString<ToolchainManifest>(text)
+            if (manifest.symlinks.isEmpty()) {
+                Log.w(TAG, "TermuxProvider: the toolchain manifest declares no symlinks")
+                null
+            } else {
+                manifest
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "TermuxProvider: could not read the toolchain manifest: ${e.message}")
+            null
+        }
+    }
+
+    private fun readToolchainSymlinks(zip: File): Map<String, String> {
+        val manifest = readToolchainManifest(zip) ?: return emptyMap()
+        val links = LinkedHashMap<String, String>()
+        for (item in manifest.symlinks) {
+            if (item.path.isNotEmpty() && item.target.isNotEmpty()) links[item.path] = item.target
+        }
+        return links
+    }
+
+    /**
+     * Repoint the toolchain's ELFs at this prefix's lib/.
+     *
+     * aapt, aapt2, zipalign, the JVM launchers and every JVM .so carry
+     * DT_RUNPATH=/data/data/com.termux/files/usr/lib, the upstream path, which
+     * cannot exist here. Without this they fail with CANNOT LINK EXECUTABLE the
+     * moment the linker looks for a NEEDED library.
+     *
+     * Only files that are ELF are touched, checked by magic, because patchelf on
+     * a text file is a wasted process and on a symlink would follow the link.
+     */
+    private fun repointToolchainRpaths() {
+        val patchelfBin = File(binDir, "patchelf")
+        if (!patchelfBin.exists() || !patchelfBin.canExecute()) {
+            Log.w(TAG, "TermuxProvider: patchelf unavailable; toolchain RPATH left unpatched")
+            return
+        }
+        val rpath = libDir.absolutePath
+        var patched = 0
+        var failed = 0
+
+        val roots = listOf(binDir, File(usrPrefix, "lib"))
+        for (root in roots) {
+            if (!root.isDirectory) continue
+            root.walkTopDown().forEach { entry ->
+                if (!entry.isFile) return@forEach
+                if (java.nio.file.Files.isSymbolicLink(entry.toPath())) return@forEach
+                if (entry == patchelfBin) return@forEach
+                val isElf = runCatching {
+                    entry.inputStream().use { input ->
+                        val magic = ByteArray(4)
+                        input.read(magic) == 4 && magic[0] == 0x7F.toByte() &&
+                            magic[1] == 'E'.code.toByte() &&
+                            magic[2] == 'L'.code.toByte() &&
+                            magic[3] == 'F'.code.toByte()
+                    }
+                }.getOrDefault(false)
+                if (!isElf) return@forEach
+
+                // The archive's own .so files are already covered by the rpath
+                // being this prefix's lib; rewriting several hundred of them
+                // costs a process each and changes nothing. Only the executables
+                // and the JVM's own objects need it, and an existing correct
+                // rpath is indistinguishable from an absent one to patchelf, so
+                // the sweep is bounded to bin/ plus the JVM tree.
+                val inJvm = entry.absolutePath.contains("/lib/jvm/")
+                if (root == File(usrPrefix, "lib") && !inJvm) return@forEach
+
+                when (val outcome = runPatchelf(patchelfBin, rpath, entry)) {
+                    PatchelfOutcome.PATCHED -> patched++
+                    PatchelfOutcome.NOT_ELF -> {}
+                    is PatchelfOutcome.REFUSED -> {
+                        failed++
+                        if (failed <= 5) {
+                            Log.w(TAG, "TermuxProvider: toolchain RPATH skipped ${entry.name}: ${outcome.detail}")
+                        }
+                    }
+                }
+            }
+        }
+        Log.d(TAG, "TermuxProvider: toolchain RPATH sweep -> $rpath ($patched patched, $failed skipped)")
+    }
+
+    /**
+     * Rewrite the plain-text upstream paths inside the toolchain's wrappers.
+     *
+     * apktool's `bin/apktool` is a shell script whose libdir is written as
+     * /data/data/com.termux/files/usr/share/java. relocatePrefixPaths covers the
+     * whole prefix on the same init, but this install runs first and then
+     * verifies apktool by running it, so the wrapper has to be correct before
+     * that probe rather than after it.
+     */
+    private fun relocateToolchainWrapperText() {
+        val realRoot = termuxRoot.absolutePath
+        val candidates = listOf(
+            File(binDir, "apktool"),
+            File(usrPrefix, "bin/libpng-config"),
+            File(usrPrefix, "bin/libpng16-config"),
+        )
+        for (file in candidates) {
+            if (!file.isFile) continue
+            if (file.length() > 4L * 1024 * 1024) continue
+            val head = runCatching {
+                file.inputStream().use { input ->
+                    val buf = ByteArray(4)
+                    if (input.read(buf) == 4) String(buf, Charsets.ISO_8859_1) else ""
+                }
+            }.getOrNull() ?: continue
+            if (head == "\u007fELF") continue
+            val text = runCatching { file.readText() }.getOrNull() ?: continue
+            if (!text.contains(UPSTREAM_FILES_ROOT)) continue
+            val updated = text.replace(UPSTREAM_FILES_ROOT, realRoot)
+            if (runCatching { file.writeText(updated) }.isSuccess && updated.startsWith("#!")) {
+                file.setExecutable(true, false)
+            }
+        }
+    }
+
+    /**
+     * Run every tool in the manifest and report what actually happened.
+     *
+     * Returns the tool name to a pair of (ran, one-line detail). "Ran" means the
+     * process started and printed something that is not one of the linker or
+     * kernel refusal shapes the issues measured — the same rule probeCommand
+     * uses, so this cannot call a working tool broken or a broken tool working.
+     *
+     * java is probed FIRST and the rest are skipped when it fails, because aapt
+     * does not need the JVM and reporting five failures when the JVM alone is at
+     * fault hides which one is the cause.
+     */
+    private fun verifyToolchain(): Map<String, Pair<Boolean, String>> {
+        val results = LinkedHashMap<String, Pair<Boolean, String>>()
+
+        val probes = linkedMapOf(
+            "java" to listOf("-version"),
+            "aapt" to listOf("version"),
+            "aapt2" to listOf("version"),
+            "zipalign" to emptyList(),
+            "apktool" to listOf("--version"),
+        )
+
+        val refusalMarkers = listOf(
+            "CANNOT LINK EXECUTABLE",
+            "not found: needed by main executable",
+            "Permission denied",
+            "Exec format error",
+            "No such file or directory",
+            "command not found",
+        )
+
+        for ((name, args) in probes) {
+            val file = File(binDir, name)
+            val exists = file.exists() && file.canRead()
+            if (!exists) {
+                results[name] = false to "not present at ${file.absolutePath}"
+                continue
+            }
+            val outcome = runCatching { execWithEnv(listOf(linker, file.absolutePath) + args) }
+                .getOrElse { e ->
+                    ShellResult(
+                        exitCode = -1,
+                        stdout = "",
+                        stderr = "Failed to execute: ${e.message}",
+                        success = false,
+                        tier = ShellTier.APP_UID,
+                    )
+                }
+            val combined = (outcome.stdout + "\n" + outcome.stderr).trim()
+            val refused = outcome.exitCode < 0 ||
+                refusalMarkers.any { combined.contains(it, ignoreCase = true) }
+            val ran = !refused && combined.isNotEmpty()
+            // One line, always the real output: a caller reading the marker or
+            // the log never has to invent a reason.
+            val firstLine = combined.lineSequence()
+                .firstOrNull { it.isNotBlank() }
+                ?.trim()
+                ?.take(160)
+                ?: "no output, exit ${outcome.exitCode}"
+            results[name] = ran to firstLine
+        }
+        return results
     }
 
     /**
