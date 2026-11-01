@@ -70,6 +70,8 @@ object TvToolDefinitions : ToolSetRegistration {
 
     const val TV_DISCOVER = "tvDiscover"
     const val TV_PRESS = "tvPress"
+    const val TV_LAUNCH = "tvLaunch"
+    const val TV_TYPE = "tvType"
 
     override val definitions = listOf(
         ToolDefinition(
@@ -103,11 +105,58 @@ object TvToolDefinitions : ToolSetRegistration {
             ),
             permissions = emptyList(),
         ),
+        ToolDefinition(
+            name = TV_LAUNCH,
+            description = "Open an app on a television by the name a person says: netflix, youtube, " +
+                "prime video, bbc iplayer, itvx, channel 4, disney plus, spotify, plex, apple tv, " +
+                "now or britbox. This is what makes 'put Netflix on the living room telly' work, " +
+                "because it goes straight to the app rather than walking the app grid with the " +
+                "direction buttons. An unknown name is refused with the names the set does accept.",
+            category = "smart_home",
+            parameters = listOf(
+                ToolParameter(
+                    "television", ToolParameterType.String, true,
+                    "Television name, make or id, as tvDiscover reported it.",
+                ),
+                ToolParameter(
+                    "app", ToolParameterType.String, true,
+                    "App name, e.g. netflix, youtube, prime video, bbc iplayer.",
+                ),
+            ),
+            permissions = emptyList(),
+        ),
+        ToolDefinition(
+            name = TV_TYPE,
+            description = "Type text into a television, for a search box that is already focused. " +
+                "Use it after opening an app to search inside it, so a person can say 'search for " +
+                "christmas films' and have it land in the box. A set with nothing focused has " +
+                "nowhere to put the text, and the result says so rather than claiming it worked.",
+            category = "smart_home",
+            parameters = listOf(
+                ToolParameter(
+                    "television", ToolParameterType.String, true,
+                    "Television name, make or id, as tvDiscover reported it.",
+                ),
+                ToolParameter("text", ToolParameterType.String, true, "The text to type."),
+            ),
+            permissions = emptyList(),
+        ),
     )
 
     override fun executorClass(): KClass<out ToolExecutor> = TvToolExecutor::class
     override fun extractorClass(): KClass<out ToolResultExtractor>? = null
 }
+
+/** The result of an app launch or a text entry. */
+@Serializable
+data class TvActionResult(
+    val success: Boolean,
+    val television: String = "",
+    val action: String = "",
+    val detail: String? = null,
+    val needsPairing: Boolean = false,
+    val error: String? = null,
+) : ToolResultData
 
 class TvToolExecutor(
     private val discovery: TvDiscovery,
@@ -123,8 +172,137 @@ class TvToolExecutor(
         when (toolName) {
             TvToolDefinitions.TV_DISCOVER -> discover()
             TvToolDefinitions.TV_PRESS -> press(args)
+            TvToolDefinitions.TV_LAUNCH -> launch(args)
+            TvToolDefinitions.TV_TYPE -> type(args)
             else -> ToolExecutionResult.error("Unknown tool: $toolName")
         }
+
+    /**
+     * Resolve a spoken television name to the one set it means.
+     *
+     * ONE PLACE, THREE CALLERS. The press, launch and type tools all need the same rule, and
+     * three copies would drift the moment one was edited. Ambiguity is refused rather than
+     * guessed, because pressing a button on the wrong set in a house with two of them is worse
+     * than asking again.
+     */
+    private fun resolve(query: String): Resolved {
+        val matches = store.all().filter { entry ->
+            entry.tv.name.contains(query, ignoreCase = true) ||
+                entry.tv.vendor.name.contains(query, ignoreCase = true) ||
+                entry.tv.id.contains(query, ignoreCase = true) ||
+                entry.tv.host == query
+        }
+        return when {
+            matches.isEmpty() -> Resolved.None(
+                "No television matches '$query'. Run tvDiscover first to find the sets on this network.",
+            )
+            matches.size > 1 -> Resolved.Ambiguous(
+                "'$query' matches ${matches.size} televisions: " +
+                    matches.joinToString(", ") { it.tv.name } + ". Name one exactly.",
+            )
+            else -> Resolved.One(matches.first())
+        }
+    }
+
+    private sealed interface Resolved {
+        data class One(val entry: TvDeviceStore.Entry) : Resolved
+        data class Ambiguous(val reason: String) : Resolved
+        data class None(val reason: String) : Resolved
+    }
+
+    /** Open an app by the name a person says. */
+    private suspend fun launch(args: Map<String, Any?>): ToolExecutionResult {
+        val query = (args["television"] as? String)?.trim()?.ifBlank { null }
+            ?: return ToolExecutionResult.error("Missing 'television'")
+        val app = (args["app"] as? String)?.trim()?.ifBlank { null }
+            ?: return ToolExecutionResult.error("Missing 'app'")
+
+        val entry = when (val resolved = resolve(query)) {
+            is Resolved.One -> resolved.entry
+            is Resolved.Ambiguous -> return actionFailure(query, "launch $app", resolved.reason)
+            is Resolved.None -> return actionFailure(query, "launch $app", resolved.reason)
+        }
+
+        val remote = entry.remote
+            ?: return actionFailure(
+                entry.tv.name,
+                "launch $app",
+                entry.unsupportedReason ?: "No adapter is installed for this television.",
+            )
+
+        return when (val outcome = remote.launchApp(app)) {
+            is TvCommandOutcome.Failed -> actionFailure(
+                entry.tv.name,
+                "launch $app",
+                outcome.reason,
+                outcome.needsPairing,
+            )
+            is TvCommandOutcome.Sent -> {
+                val r = TvActionResult(
+                    success = true,
+                    television = entry.tv.name,
+                    action = "launch $app",
+                    detail = outcome.note,
+                )
+                emitPayload(json, json.encodeToString(TvActionResult.serializer(), r), r, true, null)
+            }
+        }
+    }
+
+    /** Type text into whatever field the set currently has focused. */
+    private suspend fun type(args: Map<String, Any?>): ToolExecutionResult {
+        val query = (args["television"] as? String)?.trim()?.ifBlank { null }
+            ?: return ToolExecutionResult.error("Missing 'television'")
+        val text = (args["text"] as? String)?.ifBlank { null }
+            ?: return ToolExecutionResult.error("Missing 'text'")
+
+        val entry = when (val resolved = resolve(query)) {
+            is Resolved.One -> resolved.entry
+            is Resolved.Ambiguous -> return actionFailure(query, "type text", resolved.reason)
+            is Resolved.None -> return actionFailure(query, "type text", resolved.reason)
+        }
+
+        val remote = entry.remote
+            ?: return actionFailure(
+                entry.tv.name,
+                "type text",
+                entry.unsupportedReason ?: "No adapter is installed for this television.",
+            )
+
+        return when (val outcome = remote.typeText(text)) {
+            is TvCommandOutcome.Failed -> actionFailure(
+                entry.tv.name,
+                "type text",
+                outcome.reason,
+                outcome.needsPairing,
+            )
+            is TvCommandOutcome.Sent -> {
+                val r = TvActionResult(
+                    success = true,
+                    television = entry.tv.name,
+                    action = "type text",
+                    detail = outcome.note,
+                )
+                emitPayload(json, json.encodeToString(TvActionResult.serializer(), r), r, true, null)
+            }
+        }
+    }
+
+    private fun actionFailure(
+        television: String,
+        action: String,
+        reason: String,
+        needsPairing: Boolean = false,
+    ): ToolExecutionResult {
+        val r = TvActionResult(
+            success = false,
+            television = television,
+            action = action,
+            needsPairing = needsPairing,
+            error = reason,
+        )
+        return emitPayload(json, json.encodeToString(TvActionResult.serializer(), r), r, false, reason)
+    }
 
     /**
      * Scan the network and report every set found.

@@ -106,6 +106,89 @@ class RokuRemote(
         if (state.isEmpty()) null else state
     }
 
+    /**
+     * Launch a channel by name.
+     *
+     * THE WHOLE POINT OF THIS ADAPTER GETTING BIGGER. Pressing buttons means walking a grid of
+     * tiles with the D-pad. Launching means the set goes straight there, which is what a person
+     * means by "put Netflix on".
+     *
+     * The endpoint is `/launch/<channelId>`, and Roku's channel ids are stable published numbers
+     * rather than names, which is why [TvApps] holds the mapping.
+     */
+    override suspend fun launchApp(app: String): TvCommandOutcome = withContext(Dispatchers.IO) {
+        val id = TvApps.rokuId(app)
+            ?: return@withContext TvCommandOutcome.Failed(
+                TvApps.refusal("The Roku at $host", TvVendor.ROKU, app),
+            )
+
+        runCatching { request("POST", "/launch/$id") }.fold(
+            onSuccess = {
+                TvCommandOutcome.Sent(
+                    "The Roku at $host launched '$app' (channel $id). Whether a person can see it " +
+                        "depends on that channel being installed on the set.",
+                )
+            },
+            onFailure = { error ->
+                TvCommandOutcome.Failed(
+                    "The Roku at $host:$port refused to launch '$app': " +
+                        "${error.message ?: error.javaClass.simpleName}. A channel that is not " +
+                        "installed answers HTTP 404, which is a real answer rather than a fault.",
+                )
+            },
+        )
+    }
+
+    /**
+     * Type text into a focused Roku search or keyboard field.
+     *
+     * Roku accepts a string through `/keypress/Lit_<urlencoded>`, which is the same mechanism its
+     * own remote app uses. The text must already have somewhere to go, so this requires a search
+     * box or keyboard on screen, and the refusal says that rather than pretending the text landed.
+     */
+    override suspend fun typeText(text: String): TvCommandOutcome = withContext(Dispatchers.IO) {
+        if (text.isEmpty()) {
+            return@withContext TvCommandOutcome.Failed("There is no text to type.")
+        }
+        // Roku wants each character as its own literal keypress string, which is what the
+        // Lit_ prefix means. Sending one path per character is the documented shape.
+        val encoded = java.net.URLEncoder.encode(text, "UTF-8")
+        runCatching { request("POST", "/keypress/Lit_$encoded") }.fold(
+            onSuccess = {
+                TvCommandOutcome.Sent(
+                    "The Roku at $host accepted '$text'. It lands only if a search box or keyboard " +
+                        "is already on screen, because a set with the home screen showing has " +
+                        "nowhere to put it.",
+                )
+            },
+            onFailure = { error ->
+                TvCommandOutcome.Failed(
+                    "The Roku at $host:$port did not accept the text: " +
+                        "${error.message ?: error.javaClass.simpleName}. Open a search box first.",
+                )
+            },
+        )
+    }
+
+    /**
+     * Push a stream onto a Roku.
+     *
+     * Roku's ECP does not accept an arbitrary media URL, so this refuses rather than sending
+     * something the set will ignore. The honest route to a pushed stream on Roku is a channel
+     * that accepts a content id, which is a different protocol from the remote.
+     */
+    override suspend fun castMedia(
+        url: String,
+        title: String?,
+        mimeType: String?,
+    ): TvCommandOutcome = withContext(Dispatchers.IO) {
+        TvCommandOutcome.Failed(
+            "A Roku's remote protocol does not accept a media URL, so nothing was sent. To play " +
+                "something on demand, launch a channel with launchApp and search inside it with " +
+                "typeText, which this adapter does support.",
+        )
+    }
+
     /** Roku's own key names, which are not the vendor-neutral tokens. */
     private fun keyFor(button: TvButton): String? = when (button) {
         TvButton.POWER, TvButton.POWER_OFF -> "PowerOff"

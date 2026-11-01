@@ -108,6 +108,144 @@ interface TvRemote {
             "${vendor.name} sets ${key.name.lowercase()} by stepping only, so it cannot be set " +
                 "to an exact value.",
         )
+
+    /**
+     * Launch an app by its name.
+     *
+     * THIS IS THE FIRST OF THE THREE CAPABILITIES THAT TURN A REMOTE INTO REAL CONTROL. Pressing
+     * buttons means navigating a menu by hand. Launching means saying "put Netflix on" and having
+     * it happen, which is the thing a person actually wants.
+     *
+     * [app] is a common name a person would say, such as netflix, youtube, prime video or bbc
+     * iplayer, and the adapter maps it to whatever identifier its protocol wants. An unknown name
+     * is refused with the names the set does accept, because a failure that lists the alternatives
+     * is a usable answer.
+     */
+    suspend fun launchApp(app: String): TvCommandOutcome =
+        TvCommandOutcome.Failed(
+            "${vendor.name} cannot launch apps over the network from this build.",
+        )
+
+    /**
+     * Type text into the set, for a search box that is already focused.
+     *
+     * The second capability. A search box is where a person types "christmas film", and being able
+     * to type it is the difference between driving the set and merely clicking around it.
+     */
+    suspend fun typeText(text: String): TvCommandOutcome =
+        TvCommandOutcome.Failed(
+            "${vendor.name} cannot accept text over the network from this build.",
+        )
+
+    /**
+     * Push a stream onto the set.
+     *
+     * The third capability, and the one that makes "play this on the telly" real rather than a
+     * sequence of menu presses. [url] is the media itself, and [title] is what the set shows while
+     * it plays.
+     */
+    suspend fun castMedia(url: String, title: String? = null, mimeType: String? = null): TvCommandOutcome =
+        TvCommandOutcome.Failed(
+            "${vendor.name} cannot accept a pushed stream over the network from this build.",
+        )
+}
+
+/**
+ * The app names a person says, mapped per vendor.
+ *
+ * WHY A SHARED TABLE. "Netflix" is one word to a person and a different identifier on every
+ * platform: a channel id on Roku, an app id on Samsung, a launch URI on LG, and a package name on
+ * Android TV. One table here means every adapter answers to the same spoken names, so the model
+ * never has to know which set it is talking to.
+ */
+object TvApps {
+
+    /** The names a person uses, and what each platform calls them. */
+    val spoken: List<String> = listOf(
+        "netflix", "youtube", "prime video", "amazon", "bbc iplayer", "itvx", "channel 4",
+        "disney plus", "spotify", "plex", "apple tv", "now", "britbox",
+    )
+
+    /** Fold a spoken name onto one token, so "Prime Video" and "prime video" are the same. */
+    fun normalise(raw: String): String = raw.trim().lowercase()
+        .replace("+", " plus")
+        .replace("-", " ")
+        .replace(Regex("\\s+"), " ")
+
+    /** The Roku channel id for a spoken name, or null when Roku has no such channel. */
+    fun rokuId(app: String): String? = when (normalise(app)) {
+        "netflix" -> "12"
+        "youtube" -> "837"
+        "prime video", "amazon" -> "13"
+        "bbc iplayer" -> "11636"
+        "itvx" -> "59325"
+        "channel 4" -> "15874"
+        "disney plus" -> "291097"
+        "spotify" -> "22297"
+        "plex" -> "41417"
+        "apple tv" -> "551012"
+        "now" -> "51924"
+        "britbox" -> "151908"
+        else -> null
+    }
+
+    /** The Samsung app id for a spoken name, or null when Samsung has no such app. */
+    fun samsungId(app: String): String? = when (normalise(app)) {
+        "netflix" -> "11101200001"
+        "youtube" -> "111299001912"
+        "prime video", "amazon" -> "3201512006785"
+        "bbc iplayer" -> "3201601007230"
+        "itvx", "itv hub" -> "1212990000891"
+        "channel 4" -> "111299002148"
+        "disney plus" -> "3201901017640"
+        "spotify" -> "3201606009684"
+        "plex" -> "3201512006963"
+        "apple tv" -> "3201807016597"
+        "now" -> "3201706012478"
+        else -> null
+    }
+
+    /**
+     * The LG webOS app id for a spoken name.
+     *
+     * webOS wants a reverse-domain application id rather than a number, which is why this table
+     * looks different from the others.
+     */
+    fun lgId(app: String): String? = when (normalise(app)) {
+        "netflix" -> "netflix"
+        "youtube" -> "youtube.leanback.v4"
+        "prime video", "amazon" -> "amazon"
+        "bbc iplayer" -> "bbc.iplayer"
+        "itvx", "itv hub" -> "itvhub"
+        "channel 4" -> "com.channel4.ott"
+        "disney plus" -> "com.disney.disneyplus"
+        "spotify" -> "spotify-app"
+        "plex" -> "cdp-30"
+        "apple tv" -> "com.apple.appletv"
+        "now" -> "com.sky.nowtv"
+        "britbox" -> "com.britbox.ott"
+        else -> null
+    }
+
+    /** The Android TV package for a spoken name, used through a deep link. */
+    fun androidTvPackage(app: String): String? = when (normalise(app)) {
+        "netflix" -> "com.netflix.ninja"
+        "youtube" -> "com.google.android.youtube.tv"
+        "prime video", "amazon" -> "com.amazon.amazonvideo.livingroom"
+        "bbc iplayer" -> "bbc.iplayer.android"
+        "itvx", "itv hub" -> "air.ITVMobilePlayer"
+        "channel 4" -> "com.channel4.ott"
+        "disney plus" -> "com.disney.disneyplus"
+        "spotify" -> "com.spotify.tv.android"
+        "plex" -> "com.plexapp.android"
+        "apple tv" -> "com.apple.atve.androidtv.appletv"
+        else -> null
+    }
+
+    /** A sentence naming what a set does accept, for a refusal that is usable. */
+    fun refusal(setName: String, vendor: TvVendor, spokenName: String): String =
+        "$setName does not have an app called '$spokenName' that this build knows. " +
+            "$vendor accepts these names: ${spoken.joinToString(", ")}."
 }
 
 /** The buttons the fabric can ask for, vendor-neutral. */
