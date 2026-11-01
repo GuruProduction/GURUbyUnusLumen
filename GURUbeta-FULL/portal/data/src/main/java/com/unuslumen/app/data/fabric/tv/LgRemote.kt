@@ -54,7 +54,10 @@ class LgRemote(
         // which is enough to confirm the set is there without a pairing prompt.
         runCatching {
             val url = java.net.URL("http://$host:$port/")
-            val connection = url.openConnection() as java.net.HttpURLConnection
+            // Direct, never through the Tor proxy: a private address cannot route over a circuit,
+            // and the failure looks exactly like a television that is switched off.
+            val connection = com.unuslumen.app.data.fabric.net.LocalRoute.open(url.toString())
+                ?: return@runCatching null
             try {
                 connection.connectTimeout = timeoutMillis
                 connection.readTimeout = timeoutMillis

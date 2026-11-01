@@ -228,7 +228,8 @@ class UpnpSoapClient(
     }
 
     private fun fetch(url: String): String {
-        val connection = URL(url).openConnection() as HttpURLConnection
+        val connection = com.unuslumen.app.data.fabric.net.LocalRoute.open(url)
+                ?: throw IllegalStateException("no connection could be built to $url")
         return try {
             connection.connectTimeout = timeoutMillis
             connection.readTimeout = timeoutMillis

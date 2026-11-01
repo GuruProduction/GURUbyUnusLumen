@@ -52,8 +52,11 @@ class SamsungRemote(
         // The REST endpoint on the same port answers without a WebSocket handshake, so
         // it is the cheapest way to say whether a Samsung set is there at all.
         runCatching {
-            val url = java.net.URL("http://$host:$port/api/v2/")
-            val connection = url.openConnection() as java.net.HttpURLConnection
+            // Direct, not through the Tor proxy: a private address cannot be routed over a
+            // Tor circuit, so the probe would fail and the set would look absent.
+            val connection = com.unuslumen.app.data.fabric.net.LocalRoute
+                .open("http://$host:$port/api/v2/")
+                ?: return@runCatching null
             try {
                 connection.connectTimeout = timeoutMillis
                 connection.readTimeout = timeoutMillis
