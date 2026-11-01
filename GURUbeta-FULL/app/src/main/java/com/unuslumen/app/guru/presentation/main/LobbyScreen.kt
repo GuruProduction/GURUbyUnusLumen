@@ -56,6 +56,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.rememberNavController
 import com.unuslumen.app.guru.presentation.main.LobbyTilesViewModel.LobbyTile
+import com.unuslumen.app.presentation.PendingPortalPrompt
 import com.unuslumen.app.presentation.PortalChatBarHost
 import com.unuslumen.app.ui.R
 import com.unuslumen.app.ui.navigation.Screen
@@ -237,7 +238,15 @@ fun LobbyScreen(
             // real one.
             PortalChatBarHost(
                 modifier = Modifier.fillMaxWidth(),
+                // DOOR MODE. The lobby shows no conversation, so typing here
+                // would put words into a chat nobody can see. A tap or a send
+                // opens the portal instead, which is what was asked for.
+                opensPortalOnTap = true,
                 onOpenChat = {
+                    navController.navigate(Screen.PortalScreen) { launchSingleTop = true }
+                },
+                onSentToPortal = { sentence ->
+                    PendingPortalPrompt.set(sentence)
                     navController.navigate(Screen.PortalScreen) { launchSingleTop = true }
                 },
             )

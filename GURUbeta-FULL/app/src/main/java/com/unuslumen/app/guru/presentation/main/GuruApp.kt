@@ -223,12 +223,6 @@ fun guruApp(
             viewModel.defaultStartUpScreen.map { it.toStartUpScreen().rootRoute() }
         }.collectAsStateWithLifecycle(initialValue = Screen.LobbyScreen)
 
-        // Where we are, so the floating icon can keep itself off the two screens
-        // that already have a chat bar and a way home of their own.
-        val currentRoute by navController.currentBackStackEntryAsState()
-        val onPortalScreen = currentRoute?.destination?.hasRoute<Screen.PortalScreen>() == true
-        val onLobbyScreen = currentRoute?.destination?.hasRoute<Screen.LobbyScreen>() == true
-
         Scaffold(
             modifier = modifier.fillMaxSize(),
             // Transparent so the root background is the page, not a surface

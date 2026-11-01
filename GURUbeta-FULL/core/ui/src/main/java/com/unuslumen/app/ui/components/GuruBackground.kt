@@ -17,52 +17,40 @@ import androidx.compose.ui.res.painterResource
 import com.unuslumen.app.ui.R
 
 /**
- * The app's background, on every page.
+ * The house background: the doodle, washed back so text stays readable.
  *
- * ONE PLACE, DRAWN AT THE ROOT. The human's rule is that every single page comes
- * with this backdrop as standard, and "standard" has to mean structural: if each
- * screen opted in by drawing its own copy, every new screen, including the rooms
- * GURU builds for itself, would be the one that forgot.
+ * THE WASH IS THE PORTAL'S, EXACTLY. These are the same two colours at the same
+ * two alphas the portal has used since it was built, because the human asked for
+ * the lobby and every room to look like the portal. Changing either number here
+ * changes every page at once, which is the point: a background that differs
+ * screen to screen is what made the app look assembled rather than designed.
  *
- * So this is drawn once behind the whole app. A screen that wants a different
- * backdrop can paint over it; a screen that says nothing inherits it, which is
- * the correct default.
- *
- * THE WASH IS PART OF THE COMPONENT. The artwork is a dense black line drawing,
- * and black text over unbroken black ink is unreadable. The paper wash is baked
- * in here rather than left to each screen to remember, so a page cannot be
- * accidentally unreadable by forgetting it.
- *
- * The drawable is bundled, so a missing one is a build fault rather than a
- * runtime condition; the wash below still keeps the page readable either way.
+ * A LIGHT WASH, NOT A DARK ONE. An earlier version of this component used a
+ * heavier, warmer wash that read almost grey and fought the chat messages on top
+ * of it. The portal's lighter treatment is the reference.
  */
 @Composable
 fun GuruBackground(
     modifier: Modifier = Modifier,
-    artAlpha: Float = 0.34f,
-    washAlpha: Float = 0.78f,
     content: @Composable BoxScope.() -> Unit = {},
 ) {
     Box(modifier.fillMaxSize()) {
-        // painterResource is a composable, so it cannot sit inside runCatching.
-        // The resource is a bundled drawable, so its failure is a build fault
-        // rather than a runtime condition, and the app drawing it directly is
-        // the honest behaviour.
         Image(
             painter = painterResource(id = R.drawable.portal_bg_art),
             contentDescription = null,
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop,
-            alpha = artAlpha,
         )
+        // The portal's own wash, unchanged: aged cream at 0.75 falling to warm
+        // bone at 0.55. Copied rather than approximated.
         Box(
             Modifier
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
                         colors = listOf(
-                            Color(0xFFFFFBF0).copy(alpha = washAlpha * 0.72f),
-                            Color(0xFFFFFBF0).copy(alpha = washAlpha),
+                            Color(0xFFF0E8DA).copy(alpha = 0.75f),
+                            Color(0xFFE4D9C6).copy(alpha = 0.55f),
                         )
                     )
                 )
