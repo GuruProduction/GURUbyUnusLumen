@@ -247,7 +247,15 @@ async fn merge_of_real_duplicates_leaves_a_findable_replacement() {
         merged >= 1,
         "identical content must produce a merged record, report said {report}"
     );
-    assert!(removed >= 2, "both duplicates must be removed, report said {report}");
+    // A merge folds two rows into ONE. Exactly one of the two source rows is
+    // absorbed; the other survives as the merged record and keeps its identity.
+    // This assertion used to require BOTH rows to leave the tree, which was the
+    // identity churn itself: the fact the caller held disappeared and a
+    // stranger appeared in its place.
+    assert_eq!(
+        removed, 1,
+        "a merge of two rows absorbs exactly one of them, report said {report}"
+    );
 
     let (tree_len, dwm_len, sig_len) = {
         let locked = state.lock().await;
@@ -269,15 +277,44 @@ async fn merge_of_real_duplicates_leaves_a_findable_replacement() {
         hits.len()
     );
 
-    // And the original ids are gone from the tree, not orphaned in it.
-    let (has_a, has_b) = {
+    // Identity: one of the two ids the caller could be holding still resolves,
+    // and it resolves to the merged content. The other was absorbed.
+    let (survivor, absorbed) = {
         let locked = state.lock().await;
-        (
-            locked.context_tree.find(id_a).is_some(),
-            locked.context_tree.find(id_b).is_some(),
-        )
+        let survivor_entry = locked
+            .context_tree
+            .find(id_a)
+            .map(|entry| entry.content.clone())
+            .or_else(|| locked.context_tree.find(id_b).map(|entry| entry.content.clone()));
+        let survived_a = locked.context_tree.find(id_a).is_some();
+        let survived_b = locked.context_tree.find(id_b).is_some();
+        ((survived_a, survived_b), survivor_entry)
     };
-    assert!(!has_a && !has_b, "consumed source rows must leave the tree");
+    let (survived_a, survived_b) = survivor;
+    assert!(
+        survived_a ^ survived_b,
+        "exactly one of the two source ids must survive a merge \
+         (a={survived_a} b={survived_b}); a merge must not retire both"
+    );
+    assert!(
+        absorbed.is_some(),
+        "the surviving id must still resolve to the merged content"
+    );
+
+    // A caller holding the surviving id can still act on it: it resolves
+    // through RETRIEVE, which is the lookup delete and update are built on.
+    let survivor_id = if survived_a { id_a } else { id_b };
+    let retrieve_payload = serde_json::to_vec(&serde_json::json!({
+        "memory_id": survivor_id.0.to_vec(),
+        "level": "Shallow"
+    }))
+    .unwrap();
+    let retrieve_bytes = call_frame(&state, frame_types::RETRIEVE, &retrieve_payload).await;
+    let retrieved: serde_json::Value = serde_json::from_slice(&retrieve_bytes).unwrap_or_default();
+    assert!(
+        retrieved.get("memory_id").is_some(),
+        "the surviving id must resolve through RETRIEVE after a merge; got {retrieved}"
+    );
 }
 
 /// A second pass with no new writes must not keep re-consuming the same

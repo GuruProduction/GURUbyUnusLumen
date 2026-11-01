@@ -571,6 +571,8 @@ pub enum Frame {
     Consolidate,
     /// Prefetch likely-needed memories.
     Prefetch(PrefetchHint),
+    /// Enumerate every live memory regardless of its wording.
+    List,
 }
 
 /// Frame type byte constants for the binary protocol.
@@ -593,22 +595,30 @@ pub mod frame_types {
     pub const CONSOLIDATE: u8 = 0x06;
     /// Prefetch frame type byte.
     pub const PREFETCH: u8 = 0x07;
+    /// List frame type byte: enumerate live memories with their metadata.
+    ///
+    /// This is the counterpart to Search, and it exists because Search answers
+    /// "which memories relate to these words" while a caller that needs to know
+    /// what the brain actually holds cannot get that answer from a relevance
+    /// query. Filtering a relevance query was how a listing silently omitted
+    /// every memory that did not share a word with the query string.
+    pub const LIST: u8 = 0x08;
     /// Response frame type byte (server-to-client).
     pub const RESPONSE: u8 = 0x80;
     /// Error frame type byte (server-to-client).
     pub const ERROR: u8 = 0x81;
 
     /// All valid request frame type bytes.
-    pub const ALL_REQUEST: [u8; 7] = [
-        QUERY, CURATE, RETRIEVE, SEARCH, GRAPH_TRAVERSE, CONSOLIDATE, PREFETCH,
+    pub const ALL_REQUEST: [u8; 8] = [
+        QUERY, CURATE, RETRIEVE, SEARCH, GRAPH_TRAVERSE, CONSOLIDATE, PREFETCH, LIST,
     ];
 
     /// All valid response frame type bytes.
     pub const ALL_RESPONSE: [u8; 2] = [RESPONSE, ERROR];
 
     /// All valid frame type bytes (requests + responses).
-    pub const ALL: [u8; 9] = [
-        QUERY, CURATE, RETRIEVE, SEARCH, GRAPH_TRAVERSE, CONSOLIDATE, PREFETCH,
+    pub const ALL: [u8; 10] = [
+        QUERY, CURATE, RETRIEVE, SEARCH, GRAPH_TRAVERSE, CONSOLIDATE, PREFETCH, LIST,
         RESPONSE, ERROR,
     ];
 }
@@ -647,6 +657,8 @@ pub enum FrameTag {
     Consolidate,
     /// Prefetch frame — warm the hot cache for anticipated queries.
     Prefetch,
+    /// List frame — enumerate live memories and their metadata, no query text.
+    List,
     /// Response frame — server-to-client response carrying query results.
     Response,
     /// Error frame — server-to-client error indicating a failed operation.
@@ -663,6 +675,7 @@ impl From<&Frame> for u8 {
             Frame::GraphTraverse { .. } => frame_types::GRAPH_TRAVERSE,
             Frame::Consolidate => frame_types::CONSOLIDATE,
             Frame::Prefetch(_) => frame_types::PREFETCH,
+            Frame::List => frame_types::LIST,
         }
     }
 }
@@ -677,6 +690,7 @@ impl From<FrameTag> for u8 {
             FrameTag::GraphTraverse => frame_types::GRAPH_TRAVERSE,
             FrameTag::Consolidate => frame_types::CONSOLIDATE,
             FrameTag::Prefetch => frame_types::PREFETCH,
+            FrameTag::List => frame_types::LIST,
             FrameTag::Response => frame_types::RESPONSE,
             FrameTag::ErrorFrame => frame_types::ERROR,
         }
@@ -707,6 +721,7 @@ impl TryFrom<u8> for FrameTag {
             frame_types::GRAPH_TRAVERSE => Ok(FrameTag::GraphTraverse),
             frame_types::CONSOLIDATE => Ok(FrameTag::Consolidate),
             frame_types::PREFETCH => Ok(FrameTag::Prefetch),
+            frame_types::LIST => Ok(FrameTag::List),
             frame_types::RESPONSE => Ok(FrameTag::Response),
             frame_types::ERROR => Ok(FrameTag::ErrorFrame),
             _ => Err(UnknownFrameTypeError { frame_type: byte }),
@@ -1780,8 +1795,22 @@ mod tests {
         assert_eq!(FrameTag::try_from(frame_types::GRAPH_TRAVERSE).unwrap(), FrameTag::GraphTraverse);
         assert_eq!(FrameTag::try_from(frame_types::CONSOLIDATE).unwrap(), FrameTag::Consolidate);
         assert_eq!(FrameTag::try_from(frame_types::PREFETCH).unwrap(), FrameTag::Prefetch);
+        assert_eq!(FrameTag::try_from(frame_types::LIST).unwrap(), FrameTag::List);
         assert_eq!(FrameTag::try_from(frame_types::RESPONSE).unwrap(), FrameTag::Response);
         assert_eq!(FrameTag::try_from(frame_types::ERROR).unwrap(), FrameTag::ErrorFrame);
+    }
+
+    /// The list frame must be a distinct request byte and round-trip through
+    /// FrameTag like every other request type.
+    #[test]
+    fn test_list_frame_is_a_distinct_request_type() {
+        assert!(frame_types::ALL_REQUEST.contains(&frame_types::LIST));
+        let tag = FrameTag::try_from(frame_types::LIST).unwrap();
+        assert_eq!(tag, FrameTag::List);
+        let back: u8 = tag.into();
+        assert_eq!(back, frame_types::LIST);
+        let frame = Frame::List;
+        assert_eq!(u8::from(&frame), frame_types::LIST);
     }
 
     #[test]

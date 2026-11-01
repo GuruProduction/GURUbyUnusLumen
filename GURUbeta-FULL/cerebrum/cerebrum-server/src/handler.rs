@@ -93,11 +93,32 @@ pub async fn handle_frame(
         frame_types::GRAPH_TRAVERSE => handle_graph_traverse(&payload, state).await,
         frame_types::CONSOLIDATE => handle_consolidate(state).await,
         frame_types::PREFETCH => handle_prefetch(&payload, state).await,
+        frame_types::LIST => handle_list(&payload, state).await,
         _ => Err(ErrorResponse::new(format!(
             "unknown frame type: 0x{:02x}",
             frame_type
         ))),
     }
+}
+
+// ============================================================================
+// visibility: what the brain will admit to holding
+// ============================================================================
+
+/// Whether an id is retired.
+///
+/// The No-Delete doctrine means a deletion archives the row instead of erasing
+/// it, so the row survives in the tree with the Archived lifecycle. Archived
+/// rows must be invisible to every read surface: a caller that deleted a memory
+/// and then saw it in a listing or a search would have been told the deletion
+/// failed. This one predicate is the single place that decides it, so search,
+/// list and retrieve cannot drift apart on the question.
+fn is_retired(state: &CerebrumState, id: &MemoryId) -> bool {
+    state
+        .context_tree
+        .find(*id)
+        .map(|entry| entry.lifecycle == cerebrum_curate::EntryLifecycle::Archived)
+        .unwrap_or(true)
 }
 
 // ============================================================================
@@ -316,18 +337,72 @@ async fn handle_curate(
 // CURATE pipeline helpers
 // ============================================================================
 
+/// Split a caller's provenance label into its source text and its confidence.
+///
+/// The wire carries provenance as one string, because the core `ContextEntry`
+/// has a string where the curate layer has a typed `Provenance`. Rather than
+/// throw the confidence away at the boundary — which is what made a caller's
+/// confidence come back as zero and made a memory look unestablished — the
+/// convention is: `"<source>|confidence=<f32>"`, and the source alone when the
+/// caller has no confidence to give. An absent confidence defaults to 1.0,
+/// which matches the domain model's default, so a row written by an older
+/// caller is treated as fully believed rather than as worthless.
+fn split_provenance(raw: &str) -> (String, f32, Option<chrono::DateTime<Utc>>) {
+    // Two accepted spellings, because the label arrives from two kinds of
+    // caller: `source|confidence=0.42` (the delimited form) and the older
+    // descriptive `guru.confidence=0.42` (the plain key form). Accepting both
+    // means an already-stored row and a freshly written one read the same way,
+    // rather than one of them silently reporting full confidence for a fact the
+    // caller had marked as doubtful.
+    let marker_positions: [&str; 2] = ["|confidence=", "confidence="];
+    for marker in marker_positions {
+        if let Some(start) = raw.find(marker) {
+            let source_text = raw[..start].trim_end_matches('|').trim().to_string();
+            let confidence_text = raw[start + marker.len()..].trim();
+            let confidence = confidence_text
+                .parse::<f32>()
+                .map(|value| value.clamp(0.0, 1.0))
+                .unwrap_or(1.0);
+            return (source_text, confidence, None);
+        }
+    }
+    (raw.to_string(), 1.0, None)
+}
+
+/// Build the curate-layer entry from the wire entry, carrying provenance and
+/// rationale across.
+///
+/// Provenance and rationale are the ONLY carriers of a caller's category and
+/// confidence, because the brain's own hierarchy has no slot for either. A
+/// conversion that used `ContextEntry::new` and left them at their defaults
+/// silently erased the caller's metadata on the way in, which is why a
+/// round trip read back an empty rationale and confidence zero.
+fn curate_entry_from_core(entry: &cerebrum_core::ContextEntry) -> ContextEntry {
+    let mut curated = ContextEntry::new(
+        entry.memory_id,
+        entry.domain.clone(),
+        entry.topic.clone(),
+        entry.subtopic.clone(),
+        entry.content.clone(),
+    );
+    let (source_text, confidence, _) = split_provenance(&entry.provenance);
+    curated.provenance = Provenance {
+        source: source_text,
+        confidence,
+        timestamp: entry.created_at,
+    };
+    curated.rationale = entry.rationale.clone();
+    curated.created_at = entry.created_at;
+    curated.updated_at = entry.modified_at;
+    curated
+}
+
 fn core_op_to_curate_op(op: CurateOp) -> Result<CurateOperation, ErrorResponse> {
     // The ContextEntry conversion is exact for Add and Upsert; for Update
     // the PartialEntry's domain/topic fields fill the entry template.
     match op {
         CurateOp::Add { entry, reason } => {
-            let curated = ContextEntry::new(
-                entry.memory_id,
-                entry.domain.clone(),
-                entry.topic.clone(),
-                entry.subtopic.clone(),
-                entry.content.clone(),
-            );
+            let curated = curate_entry_from_core(&entry);
             Ok(CurateOperation::add(curated, reason))
         }
         CurateOp::Update {
@@ -335,23 +410,31 @@ fn core_op_to_curate_op(op: CurateOp) -> Result<CurateOperation, ErrorResponse> 
             changes,
             reason,
         } => {
-            let curated = ContextEntry::new(
+            let mut curated = ContextEntry::new(
                 memory_id,
                 changes.domain.clone().unwrap_or_default(),
                 changes.topic.clone().unwrap_or_default(),
                 changes.subtopic.clone().unwrap_or_default(),
                 changes.content.clone().unwrap_or_default(),
             );
+            // A partial update may carry a new provenance or rationale; both are
+            // optional, and an absent one keeps the existing row's value because
+            // the update pipeline only overwrites what it is given.
+            if let Some(provenance_text) = &changes.provenance {
+                let (source_text, confidence, _) = split_provenance(provenance_text);
+                curated.provenance = Provenance {
+                    source: source_text,
+                    confidence,
+                    timestamp: Utc::now(),
+                };
+            }
+            if let Some(rationale_text) = &changes.rationale {
+                curated.rationale = rationale_text.clone();
+            }
             Ok(CurateOperation::update(memory_id, curated, reason))
         }
         CurateOp::Upsert { entry, reason } => {
-            let curated = ContextEntry::new(
-                entry.memory_id,
-                entry.domain.clone(),
-                entry.topic.clone(),
-                entry.subtopic.clone(),
-                entry.content.clone(),
-            );
+            let curated = curate_entry_from_core(&entry);
             Ok(CurateOperation::upsert(curated, reason))
         }
         CurateOp::Merge {
@@ -568,6 +651,17 @@ fn run_full_update_pipeline(
     summary: &mut CurateSideEffectsSummary,
 ) {
     let new_content = entry.content.clone();
+
+    // Metadata is applied before the index work so a caller that reads the row
+    // back sees the same values the write carried, not the previous ones.
+    if let Some(existing) = state.context_tree.find_mut(id) {
+        if !entry.provenance.source.is_empty() || entry.provenance.confidence > 0.0 {
+            existing.provenance = entry.provenance.clone();
+        }
+        if !entry.rationale.is_empty() {
+            existing.rationale = entry.rationale.clone();
+        }
+    }
 
     let old_sig = current_signature_for_id(state, id);
 
@@ -940,6 +1034,54 @@ fn write_merged_record(
     state.hot_cache.insert(id, content.as_bytes().to_vec());
 }
 
+/// Refresh a memory that survives a consolidation pass, IN PLACE.
+///
+/// The row keeps its id, its domain/topic/subtopic and its lifecycle; only the
+/// content and the indexes derived from it change. This is the difference
+/// between folding a duplicate into the memory the caller already holds a
+/// handle for, and replacing that memory with a stranger under a new id.
+///
+/// The decay entry is refreshed rather than recreated: recreating it would reset
+/// the strength of a memory that was established enough to survive, and would
+/// make a merge look like a brand new fact on the next decay pass.
+fn update_consolidated_record(state: &mut CerebrumState, id: MemoryId, content: &str) {
+    if let Some(entry) = state.context_tree.find_mut(id) {
+        entry.content = content.to_string();
+        entry.updated_at = Utc::now();
+    }
+
+    let tokens: Vec<u32> = state.signature_engine.tokenizer().tokenize(content);
+    let signature = state.signature_engine.generate(content);
+    let _ = state.dwm.remove_memory(id);
+    let _ = state
+        .dwm
+        .insert_memory(id, signature, TokenSequence::from_tokens(&tokens));
+    state.signature_engine.remove_from_index(id);
+    state.signature_engine.add_to_index(id, signature);
+    state.lexical.upsert(id, content);
+
+    if let Some(decay_entry) = state.decay_engine.entries.get_mut(&id) {
+        decay_entry.content = content.to_string();
+    }
+
+    state.event_store.append(
+        "memory.consolidated",
+        id,
+        serde_json::json!({ "content_updated": true }),
+    );
+
+    let summary_text: String = content.chars().take(POLICY_SUMMARY_MAX).collect();
+    let _ = state
+        .experience_store
+        .update_index(id, Some(summary_text), None);
+
+    state.graph_store.add_label(id, content);
+    state.prefetch_engine.register(id, content.to_string());
+    state.embedding_engine.embed(content);
+    state.query_engine.hot_cache.insert(id, content.to_string());
+    state.hot_cache.insert(id, content.as_bytes().to_vec());
+}
+
 fn summarize_final_counts(state: &mut CerebrumState, summary: &mut CurateSideEffectsSummary) {
     summary.dwm_count = state.dwm.count();
     summary.hamming_count = state
@@ -993,9 +1135,16 @@ async fn handle_retrieve(
 
     // 1. Main body in the ContextTree, and the full lifecycle metadata from
     // decay (with strengthening on retrieval per the plan contract).
+    //
+    // A retired row answers "not found". The No-Delete doctrine keeps the bytes
+    // in the vault, but every caller-facing read treats a deleted memory as
+    // gone, and this is the lookup a delete or an update uses to decide whether
+    // the id resolves at all. Returning the archived body here would tell a
+    // second delete that the memory is still there.
     let entry: ContextEntry = state
         .context_tree
         .find(req.memory_id)
+        .filter(|found| found.lifecycle != cerebrum_curate::EntryLifecycle::Archived)
         .cloned()
         .ok_or_else(|| {
             ErrorResponse::new(format!("memory not found: {:?}", req.memory_id))
@@ -1024,6 +1173,17 @@ async fn handle_retrieve(
     let referencing = state.cross_ref.referenced_by(req.memory_id);
     let referenced_by = state.cross_ref.references_to(req.memory_id);
 
+    // Provenance and rationale ride every level. They are the only place a
+    // caller's category and confidence survive a round trip, because the brain
+    // stores content under domain/topic/subtopic and has no other slot for
+    // them. A write path that dropped them would be a write path that lost the
+    // caller's metadata, so they are read back here rather than guessed.
+    let provenance_json = serde_json::json!({
+        "source": entry.provenance.source,
+        "confidence": entry.provenance.confidence,
+    });
+    let rationale_text = entry.rationale.clone();
+
     // Build per-level body bytes.
     let data = match &req.level {
         DereferenceLevel::Shallow => serde_json::to_vec(&serde_json::json!({
@@ -1031,6 +1191,8 @@ async fn handle_retrieve(
             "domain": entry.domain,
             "topic": entry.topic,
             "subtopic": entry.subtopic,
+            "provenance": provenance_json,
+            "rationale": rationale_text,
             "decay": decay_metadata,
         }))
         .unwrap_or_default(),
@@ -1040,6 +1202,8 @@ async fn handle_retrieve(
             "topic": entry.topic,
             "subtopic": entry.subtopic,
             "content": entry.content,
+            "provenance": provenance_json,
+            "rationale": rationale_text,
             "decay": decay_metadata,
             "episode": episode_json,
             "referencing_this": referencing,
@@ -1209,8 +1373,13 @@ async fn handle_search(
 
     // Build results from real tree bodies. A fused id with no row in the tree is
     // skipped: the index must never return a memory the tree cannot produce.
+    // A retired row is skipped for the same reason in the other direction: a
+    // caller who deleted a memory must never see it come back out of search.
     let mut results: Vec<SearchResult> = Vec::new();
     for (memory_id, fused_score) in ordered.iter().take(limit) {
+        if is_retired(&state, memory_id) {
+            continue;
+        }
         let Some(content) = state
             .context_tree
             .find(*memory_id)
@@ -1234,6 +1403,9 @@ async fn handle_search(
     if results.is_empty() {
         let query_lower = req.query.to_lowercase();
         for entry in state.context_tree.entries() {
+            if entry.lifecycle == cerebrum_curate::EntryLifecycle::Archived {
+                continue;
+            }
             if entry.content.to_lowercase().contains(&query_lower) {
                 results.push(SearchResult {
                     memory_id: entry.id,
@@ -1429,25 +1601,43 @@ async fn handle_consolidate(
                     continue;
                 }
 
-                // Where the merged record belongs: inherit the hierarchy from
-                // the first source, read before anything is removed.
-                let (domain, topic, subtopic) = consumed
-                    .first()
-                    .and_then(|id| state.context_tree.find(*id))
-                    .map(|entry| {
-                        (
-                            entry.domain.clone(),
-                            entry.topic.clone(),
-                            entry.subtopic.clone(),
-                        )
-                    })
-                    .unwrap_or_else(|| ("memory".into(), "consolidated".into(), "merged".into()));
-
+                // A replacement that IS one of the consumed sources is not a new
+                // row: it is the same memory, refreshed. Writing it as a new
+                // entry and then deleting the original would leave the brain
+                // with a fresh row and a corpse, and every held id for the
+                // original would resolve to the corpse. So the two cases are
+                // separated here rather than papered over downstream.
                 let mut written: Vec<MemoryId> = Vec::new();
                 for replacement_id in &replacements {
                     let Some(dream_memory) = state.dream_engine.get(*replacement_id).cloned() else {
                         continue;
                     };
+                    if state.context_tree.find(*replacement_id).is_some() {
+                        // The replacement is an EXISTING memory, which is the
+                        // survivor case: refresh its body and re-index it in
+                        // place so its id, hierarchy and metadata all stand.
+                        update_consolidated_record(&mut state, *replacement_id, &dream_memory.content);
+                        written.push(*replacement_id);
+                        continue;
+                    }
+
+                    // A genuinely new identity (only reachable for a merge whose
+                    // target was not one of its sources). Inherit the hierarchy
+                    // from the first consumed row, read before anything moves.
+                    let (domain, topic, subtopic) = consumed
+                        .first()
+                        .and_then(|id| state.context_tree.find(*id))
+                        .map(|entry| {
+                            (
+                                entry.domain.clone(),
+                                entry.topic.clone(),
+                                entry.subtopic.clone(),
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            ("memory".into(), "consolidated".into(), "merged".into())
+                        });
+
                     write_merged_record(
                         &mut state,
                         *replacement_id,
@@ -1479,7 +1669,12 @@ async fn handle_consolidate(
                     continue;
                 }
 
+                // Retire only the rows that were absorbed BY a row that
+                // survived. A source that is itself a survivor keeps its row.
                 for consumed_id in &consumed {
+                    if written.contains(consumed_id) {
+                        continue;
+                    }
                     // Remove the row as well as the index entries, so the tree
                     // and the indexes agree on what exists.
                     state.context_tree.remove(*consumed_id);
@@ -1511,6 +1706,118 @@ async fn handle_consolidate(
 
     // 8. Summary report is returned to the caller.
     serde_json::to_vec(&report).map_err(|e| ErrorResponse::new(e.to_string()))
+}
+
+// ============================================================================
+// LIST
+// ============================================================================
+
+/// One listed memory: everything a caller needs to show a row and act on it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListedMemory {
+    pub memory_id: MemoryId,
+    pub domain: String,
+    pub topic: String,
+    pub subtopic: String,
+    pub content: String,
+    pub confidence: f32,
+    pub provenance: String,
+    pub rationale: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct ListRequest {
+    /// Optional domain filter. Ignored when blank.
+    #[serde(default)]
+    domain: String,
+    #[serde(default)]
+    limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListResponse {
+    /// The rows this response carries, newest first.
+    pub memories: Vec<ListedMemory>,
+    /// How many live memories the requested filter matched, ignoring `limit`.
+    ///
+    /// Separate from `memories.len()` on purpose. A capped list that reported
+    /// its own length as the total would be a listing that quietly claims the
+    /// brain holds less than it does, which is exactly the class of lie this
+    /// frame exists to remove.
+    pub total_matching: usize,
+    /// How many live memories the brain holds in total, before any filter.
+    pub total_live: usize,
+}
+
+/// Enumerate live memories with their metadata, newest first.
+///
+/// This is the honest answer to "what do you hold". Search answers a relevance
+/// question and cannot: a caller listing its memory by searching for a keyword
+/// only ever sees the rows that share a word with that keyword, which silently
+/// omits every other memory and made both the listing tool and the delete
+/// tool's existence check unreliable.
+async fn handle_list(
+    payload: &[u8],
+    state: Arc<Mutex<CerebrumState>>,
+) -> Result<Vec<u8>, ErrorResponse> {
+    // An empty payload is a legitimate "list everything" request, so a decode
+    // failure falls back to the unfiltered shape rather than refusing.
+    let req: ListRequest = if payload.is_empty() {
+        ListRequest { domain: String::new(), limit: 0 }
+    } else {
+        serde_json::from_slice(payload).unwrap_or(ListRequest { domain: String::new(), limit: 0 })
+    };
+
+    let state = state.lock().await;
+    let domain_filter = req.domain.trim();
+    let limit = if req.limit == 0 { usize::MAX } else { req.limit };
+
+    let mut live: Vec<ListedMemory> = state
+        .context_tree
+        .entries()
+        .filter(|entry| entry.lifecycle != cerebrum_curate::EntryLifecycle::Archived)
+        .filter(|entry| {
+            domain_filter.is_empty() || entry.domain.eq_ignore_ascii_case(domain_filter)
+        })
+        .map(|entry| ListedMemory {
+            memory_id: entry.id,
+            domain: entry.domain.clone(),
+            topic: entry.topic.clone(),
+            subtopic: entry.subtopic.clone(),
+            content: entry.content.clone(),
+            confidence: entry.provenance.confidence,
+            provenance: entry.provenance.source.clone(),
+            rationale: entry.rationale.clone(),
+            created_at: entry.created_at.to_rfc3339(),
+            updated_at: entry.updated_at.to_rfc3339(),
+        })
+        .collect();
+
+    // Newest first. The tie-break on the id keeps the order total, so two rows
+    // written in the same millisecond never swap between calls.
+    live.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| a.memory_id.0.cmp(&b.memory_id.0))
+    });
+
+    let total_matching = live.len();
+    live.truncate(limit);
+
+    let total_live = state
+        .context_tree
+        .entries()
+        .filter(|entry| entry.lifecycle != cerebrum_curate::EntryLifecycle::Archived)
+        .count();
+
+    let response = ListResponse {
+        memories: live,
+        total_matching,
+        total_live,
+    };
+    serde_json::to_vec(&response).map_err(|e| ErrorResponse::new(e.to_string()))
 }
 
 // ============================================================================

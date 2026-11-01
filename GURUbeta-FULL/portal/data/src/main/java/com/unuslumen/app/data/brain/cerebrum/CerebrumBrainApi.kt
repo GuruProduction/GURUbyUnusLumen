@@ -25,9 +25,10 @@ import kotlinx.serialization.json.jsonPrimitive
  * - storeFact: CURATE (Upsert with a deterministic 32-byte id from content)
  * - searchFacts(search query): SEARCH (signature-space; the engine's rank)
  * - retrieveFact(id): RETRIEVE deep (full body) or shallow (index-only)
- * - listFacts / listByDomain / listByCategory: RETRIEVE-backed via store's
- *   own memory map through SEARCH (query = the domain text) with limit high
- *   enough to round-trip small batches fast enough on-device.
+ * - listFacts: LIST, a real enumeration of every live memory. This replaced a
+ *   SEARCH for the literal word "memory": a relevance query can only answer
+ *   "which memories relate to these words", so using it as a listing silently
+ *   omitted every fact whose wording did not contain that word.
  * - recallFact: decay strengthening on the brain happens during search or
  *   explicit RETRIEVE; recall = RETRIEVE shallow for real strengthening.
  * - dream: CONSOLIDATE frame real dispatch on the brain's dream engine
@@ -147,7 +148,15 @@ object CerebrumBrainApi {
     /** one search hit from the SEARCH frame; id is 64-hex lower, score 0..1f real. */
     data class BrainHit(val idHex: String, val score: Float, val content: String)
 
-    /** deep retrieve body's real full shape from the RETRIEVE wire. */
+    /**
+     * One retrieved memory's real shape from the RETRIEVE wire.
+     *
+     * `rationale` and `provenanceSource` carry the caller's category and the
+     * write that stored it; `confidence` is the value the write carried, parsed
+     * back out of the provenance label. They exist because the brain's own
+     * hierarchy has no slot for a caller's confidence, so without them a read
+     * back could only ever guess.
+     */
     data class RetrievedBody(
         val idHex: String,
         val domain: String,
@@ -159,9 +168,37 @@ object CerebrumBrainApi {
         val decayAccesses: Long,
         val archived: Boolean,
         val episodePresent: Boolean,
+        val rationale: String = "",
+        val provenanceSource: String = "",
+        val confidence: Float = 1.0f,
     ) {
         val isArchived get() = archived
     }
+
+    /** One memory as the LIST frame reports it. */
+    data class ListedMemory(
+        val idHex: String,
+        val domain: String,
+        val topic: String,
+        val subtopic: String,
+        val content: String,
+        val confidence: Float,
+        val rationale: String,
+        val updatedAt: String,
+    )
+
+    /**
+     * One LIST reply: the page of rows plus the true totals.
+     *
+     * `totalMatching` and `totalLive` are separate from `memories.size` on
+     * purpose, so a capped listing can never present its own page length as the
+     * number of memories the brain holds.
+     */
+    data class ListResult(
+        val memories: List<ListedMemory>,
+        val totalMatching: Int,
+        val totalLive: Int,
+    )
 
     // --------------------------------------------------------------------
     // frame pushers
@@ -218,6 +255,18 @@ object CerebrumBrainApi {
 
     private fun isStructuredMarkerRow(body: String): Boolean =
         markerPrefixes.any { markerPrefix -> body.trim().startsWith(markerPrefix) }
+
+    /**
+     * Encode the caller's provenance plus their confidence into the one string
+     * the wire carries.
+     *
+     * The core `ContextEntry` has a string where the curate layer has a typed
+     * `Provenance`, so confidence has to ride inside the label or it is lost.
+     * The delimiter is chosen so the source text stays readable on its own and
+     * the server splits it back out with the same rule.
+     */
+    fun provenanceLabelFor(sourceLabel: String, confidence: Float): String =
+        "${sourceLabel.trim().ifEmpty { "guru" }}|confidence=${"%.4f".format(confidence.coerceIn(0f, 1f))}"
 
     fun storeFact(
         factText: String,
@@ -396,6 +445,9 @@ object CerebrumBrainApi {
         var decayAccesses = 0L
         var archived = false
         var episodePresent = false
+        var parsedRationale = ""
+        var parsedProvenanceSource = ""
+        var parsedConfidence = 1.0f
 
         for ((eachKey, eachValue) in bodyObject) {
             when (eachKey) {
@@ -404,6 +456,16 @@ object CerebrumBrainApi {
                 "topic" -> { parsedTopic = eachValue.jsonPrimitive.content }
                 "subtopic" -> { parsedSubtopic = eachValue.jsonPrimitive.content }
                 "content" -> { /* shallow carries no content key */ parsedContent = runCatching { eachValue.jsonPrimitive.content }.getOrDefault("") }
+                "rationale" -> { parsedRationale = runCatching { eachValue.jsonPrimitive.content }.getOrDefault("") }
+                "provenance" -> {
+                    val provenanceObject = runCatching { eachValue.jsonObject }.getOrNull()
+                    if (provenanceObject != null) {
+                        parsedProvenanceSource = provenanceObject["source"]
+                            ?.jsonPrimitive?.content ?: ""
+                        parsedConfidence = provenanceObject["confidence"]
+                            ?.jsonPrimitive?.content?.toFloatOrNull() ?: 1.0f
+                    }
+                }
                 "decay" -> { // the tuple [layer,strength,accesses,archived]
                     val decayArray = runCatching { eachValue.jsonArray }.getOrNull()
                     if (decayArray != null) {
@@ -431,6 +493,56 @@ object CerebrumBrainApi {
             decayAccesses,
             archived,
             episodePresent,
+            parsedRationale,
+            parsedProvenanceSource,
+            parsedConfidence,
+        )
+    }
+
+    /**
+     * Enumerate live memories from the brain, newest first.
+     *
+     * `domainFilter` blank means everything. `limit` of zero means the brain's
+     * own unbounded listing, which the tool lane uses because a caller asking
+     * what it remembers must be shown all of it.
+     *
+     * Returns null when the brain is down, so a caller can report "the brain is
+     * not running" rather than an empty memory that looks like a real zero.
+     */
+    fun listFacts(domainFilter: String = "", limit: Int = 0): ListResult? {
+        if (brainDown()) return null
+        val requestJson = "{\"domain\":\"" + jsonEscape(domainFilter) + "\",\"limit\":" + limit + "}"
+        val responseText = dispatchOrNull(FRAME_LIST, requestJson) ?: return null
+        val responseRoot = runCatching { wire.parseToJsonElement(responseText).jsonObject }
+            .getOrNull() ?: return null
+        val memoryArray = responseRoot["memories"]?.jsonArray ?: return null
+        val parsedRows = mutableListOf<ListedMemory>()
+        for (rowElement in memoryArray) {
+            val rowObject = runCatching { rowElement.jsonObject }.getOrNull() ?: continue
+            val idArray = rowObject["memory_id"]?.jsonArray ?: continue
+            if (idArray.size != 32) continue
+            val hexBuilder = StringBuilder(64)
+            for (byteValueElement in idArray) {
+                val byteValueIn = byteValueElement.jsonPrimitive.content.toIntOrNull() ?: continue
+                hexBuilder.append("%02x".format(byteValueIn and 0xFF))
+            }
+            parsedRows.add(
+                ListedMemory(
+                    idHex = hexBuilder.toString(),
+                    domain = rowObject["domain"]?.jsonPrimitive?.content ?: "",
+                    topic = rowObject["topic"]?.jsonPrimitive?.content ?: "",
+                    subtopic = rowObject["subtopic"]?.jsonPrimitive?.content ?: "",
+                    content = rowObject["content"]?.jsonPrimitive?.content ?: "",
+                    confidence = rowObject["confidence"]?.jsonPrimitive?.content?.toFloatOrNull() ?: 1.0f,
+                    rationale = rowObject["rationale"]?.jsonPrimitive?.content ?: "",
+                    updatedAt = rowObject["updated_at"]?.jsonPrimitive?.content ?: "",
+                )
+            )
+        }
+        return ListResult(
+            memories = parsedRows,
+            totalMatching = responseRoot["total_matching"]?.jsonPrimitive?.content?.toIntOrNull() ?: parsedRows.size,
+            totalLive = responseRoot["total_live"]?.jsonPrimitive?.content?.toIntOrNull() ?: parsedRows.size,
         )
     }
 
@@ -492,6 +604,7 @@ object CerebrumBrainApi {
     internal const val FRAME_SEARCH = 4
     internal const val FRAME_GRAPH_TRAVERSE = 5
     internal const val FRAME_CONSOLIDATE = 6
+    internal const val FRAME_LIST = 8
 
     fun lastErrorOrNull(): String? = runCatching { CerebrumHost.lastError() }.getOrNull()?.let { text ->
         if (text.isBlank()) null else text
