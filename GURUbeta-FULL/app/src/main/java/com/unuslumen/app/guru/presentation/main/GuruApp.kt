@@ -34,9 +34,13 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navDeepLink
 import androidx.navigation.toRoute
+import androidx.navigation.NavDestination.Companion.hasRoute
+import com.unuslumen.app.guru.presentation.main.components.FloatingGuruIcon
+import com.unuslumen.app.ui.components.GuruBackground
 import com.unuslumen.app.adspace.AdSpaceManager
 import com.unuslumen.app.guru.presentation.app_lock.AppLockManager
 import com.unuslumen.app.guru.presentation.app_lock.AuthScreen
@@ -202,7 +206,13 @@ fun guruApp(
             }
         }
 
-        Box(modifier = Modifier.fillMaxSize()) {
+        // THE BACKGROUND, ONCE, FOR THE WHOLE APP.
+        //
+        // Every page inherits this by existing, rather than by remembering to
+        // draw it. A screen that wants something else paints over it inside its
+        // own bounds; a screen that says nothing gets the house style, which is
+        // what "standard" has to mean if it is going to hold as GURU adds rooms.
+        GuruBackground {
         val navController = rememberNavController()
 
         // Startup screen preference, resolved before the NavHost is built so its
@@ -213,11 +223,31 @@ fun guruApp(
             viewModel.defaultStartUpScreen.map { it.toStartUpScreen().rootRoute() }
         }.collectAsStateWithLifecycle(initialValue = Screen.LobbyScreen)
 
+        // Where we are, so the floating icon can keep itself off the two screens
+        // that already have a chat bar and a way home of their own.
+        val currentRoute by navController.currentBackStackEntryAsState()
+        val onPortalScreen = currentRoute?.destination?.hasRoute<Screen.PortalScreen>() == true
+        val onLobbyScreen = currentRoute?.destination?.hasRoute<Screen.LobbyScreen>() == true
+
         Scaffold(
             modifier = modifier.fillMaxSize(),
-            containerColor = MaterialTheme.colorScheme.background,
-            snackbarHost = { LocalisedSnackbarHost(snackbarHostState) }
+            // Transparent so the root background is the page, not a surface
+            // painted over it. A screen that wants its own backdrop still can;
+            // the default must not hide the house one.
+            containerColor = Color.Transparent,
+            snackbarHost = { LocalisedSnackbarHost(snackbarHostState) },
         ) { paddingValues ->
+            // THE FLOATING ICON IS DRAWN HERE, ONCE, FOR EVERY SCREEN.
+            //
+            // Not the chat bar: the bar lives in the portal and the lobby only,
+            // where there is room for it and a conversation to show. Everywhere
+            // else the way back to those two is this icon, which a human can drag
+            // out of the way of whatever they are reading.
+            //
+            // Drawn in the host rather than in each screen so a room GURU builds
+            // for itself inherits it the moment its route exists, with nothing
+            // for anyone to remember.
+            Box(Modifier.fillMaxSize()) {
             NavHost(
                 startDestination = startDestination,
                 navController = navController,
@@ -493,6 +523,14 @@ fun guruApp(
                 AuthScreen {
                     appLockManager.showAuthPrompt()
                 }
+            }
+
+                // The floating icon is ALWAYS present, on every screen this
+                // graph can reach, including the portal and the lobby. It is a
+                // resident tool rather than a fallback for screens without a
+                // chat bar: a human can always find their way home, and can drag
+                // it out of the way of whatever they are reading.
+                FloatingGuruIcon(navController = navController)
             }
         }
 
