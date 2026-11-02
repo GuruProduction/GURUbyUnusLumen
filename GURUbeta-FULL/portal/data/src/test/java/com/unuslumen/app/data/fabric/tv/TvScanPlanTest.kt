@@ -75,11 +75,25 @@ class TvScanPlanTest {
      * makes it identifiable: Cast plus the Android debug bridge is a streaming box, and
      * nothing else on a home network has both.
      */
+    /**
+     * Cast plus ADB proves an Android-based box, and NOT which make. Issue #243.
+     *
+     * This test used to assert ANDROID_TV, and its own message admitted the ambiguity:
+     * "an Android or Fire TV box". A Fire TV runs Android underneath and opens exactly this
+     * pair, so the ports cannot choose between them, and choosing sent a Fire TV down the
+     * Android TV control path when its description document had already said `manufacturer:
+     * Amazon` on the same host.
+     *
+     * UNKNOWN is the honest answer and a usable one: the device is still reported as found,
+     * with its ports as evidence, rather than being given a make it never claimed. Naming
+     * the make is the description read's job, and it runs before this.
+     */
     @Test
-    fun castPlusAdbIsAStreamingBox() {
+    fun castPlusAdbNamesNoMake() {
         assertEquals(
-            "5555 and 8009 together is an Android or Fire TV box, which is what was at .71",
-            TvVendor.ANDROID_TV,
+            "5555 and 8009 prove an Android-based streaming box, not which make it is; a Fire " +
+                "TV opens exactly this pair, so naming it here is the defect #243 filed",
+            TvVendor.UNKNOWN,
             TvScanPlan.vendorFromPorts(listOf(5555, 8009)),
         )
     }
