@@ -7,6 +7,7 @@ import android.content.Context
 import android.util.Base64
 import com.unuslumen.app.data.security.CredentialVault
 import com.unuslumen.app.data.tools.github.GitHubClient
+import com.unuslumen.app.data.tools.github.GitHubSearchQuery
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
 import com.unuslumen.app.data.tools.registry.ToolResultData
@@ -1591,16 +1592,27 @@ class GitHubToolExecutor(
         val query = (args["query"] as? String)?.trim()?.takeIf { it.isNotBlank() } ?: return ToolExecutionResult.error("Missing 'query'")
         val limit = ((args["limit"] as? Number)?.toInt() ?: 10).coerceIn(1, 30)
 
-        val searchType = when (type) { "repos" -> "repositories"; else -> type }
-        val encoded = encQuery(query.replace(" ", "+"))
-        val (status, body, transportError) = withAuthRetry {
-            client.apiRequest("/search/$searchType?q=$encoded&per_page=$limit", "GET")
-        }
+        // THE QUERY IS BUILT IN ONE PLACE, SO IT CAN BE PROVEN. Issue #235: this used to
+        // run `query.replace(" ", "+")` and then URL-encode the result, and the encoder
+        // correctly emitted `%2B` for that plus, so `repo:owner/repo+bug` went out as
+        // `repo:owner/repo%2Bbug` and GitHub rejected the whole query as malformed.
+        // GitHubSearchQuery encodes first and converts encoded spaces to separators.
+        val path = GitHubSearchQuery.pathFor(type, query, limit)
+        val (status, body, transportError) = withAuthRetry { client.apiRequest(path, "GET") }
         if (transportError != null) return serialized(GitHubSearchResult.serializer(), GitHubSearchResult(false, 0, emptyList(), transportError))
         if (status !in 200..299) return serialized(GitHubSearchResult.serializer(), GitHubSearchResult(false, 0, emptyList(),
-            "HTTP $status: ${githubErrorMessage(body, "no body")}"))
+            "HTTP $status from $path: ${githubErrorMessage(body, "no body")}"))
+
+        // A BODY THAT IS NOT A SEARCH RESULT IS A FAILURE, NOT AN EMPTY SUCCESS.
+        // The second half of #235: several queries answered `{"success":true}` with no
+        // total and no items, which a caller reads as "nothing matched".
+        val interpreted = GitHubSearchQuery.interpret(body)
+        if (interpreted is GitHubSearchQuery.Response.Malformed) {
+            return serialized(GitHubSearchResult.serializer(), GitHubSearchResult(false, 0, emptyList(), interpreted.reason))
+        }
+        val searchBody = (interpreted as GitHubSearchQuery.Response.Results).body
         return try {
-            val o = JSONObject(body)
+            val o = JSONObject(searchBody)
             val total = o.optInt("total_count", 0)
             val itemsArray = o.optJSONArray("items") ?: org.json.JSONArray()
             val items = mutableListOf<GitHubSearchItem>()
@@ -1631,7 +1643,8 @@ class GitHubToolExecutor(
             }
             serialized(GitHubSearchResult.serializer(), GitHubSearchResult(true, total, items, null))
         } catch (e: Exception) {
-            serialized(GitHubSearchResult.serializer(), GitHubSearchResult(false, 0, emptyList(), "Unparseable JSON: ${body.take(200)}"))
+            serialized(GitHubSearchResult.serializer(), GitHubSearchResult(false, 0, emptyList(),
+                "GitHub's search answer could not be parsed: ${e.message}. Body began: ${searchBody.take(200)}"))
         }
     }
 

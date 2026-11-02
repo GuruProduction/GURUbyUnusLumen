@@ -17,8 +17,19 @@ package com.unuslumen.app.data.fabric.tv
  */
 object TvRemoteFactory {
 
-    /** The remotes this build can actually drive. */
-    val supportedVendors: Set<TvVendor> = setOf(TvVendor.ROKU, TvVendor.SAMSUNG, TvVendor.LG)
+    /**
+     * The remotes this build can actually drive.
+     *
+     * Amazon Fire TV joined this set with issue #243. What the adapter can do is narrower
+     * than the others: DIAL app launches work, button presses do not. It is still a real
+     * adapter, because "put Netflix on" is the thing a person actually asks for.
+     */
+    val supportedVendors: Set<TvVendor> = setOf(
+        TvVendor.ROKU,
+        TvVendor.SAMSUNG,
+        TvVendor.LG,
+        TvVendor.AMAZON_FIRE_TV,
+    )
 
     /**
      * The adapter for a set, or the reason there is none.
@@ -35,6 +46,13 @@ object TvRemoteFactory {
             TvVendor.ROKU -> Result(RokuRemote(tv.host, tv.port), null)
             TvVendor.SAMSUNG -> Result(SamsungRemote(tv.host, tv.port, token = token), null)
             TvVendor.LG -> Result(LgRemote(tv.host, tv.port, clientKey = clientKey), null)
+
+            // A FIRE TV IS DRIVABLE, JUST NOT BY BUTTONS. Issue #243: the old shape had no
+            // Amazon branch at all, so a Fire TV fell through to a sentence claiming the whole
+            // device could not be driven. DIAL app launches work today over plain HTTP, which is
+            // what this adapter does; its button protocol is a separate pairing channel and the
+            // adapter says so rather than refusing everything.
+            TvVendor.AMAZON_FIRE_TV -> Result(FireTvRemote(tv.host, tv.port), null)
 
             TvVendor.VIZIO -> Result(
                 null,

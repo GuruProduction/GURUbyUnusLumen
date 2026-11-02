@@ -37,6 +37,20 @@ enum class TvVendor {
     VIZIO,
     ANDROID_TV,
     PHILIPS,
+
+    /**
+     * An Amazon Fire TV, identified from its own manufacturer and model fields.
+     *
+     * IT IS ITS OWN VENDOR BECAUSE IT IS NOT AN ANDROID TV. Issue #243: a Fire TV was
+     * reported as ANDROID_TV because port 8009 was open, and 8009 is the DIAL
+     * App-Launch endpoint that Fire TV, Chromecast, Android TV and Virgin boxes all
+     * expose. The set's own document says `manufacturer: Amazon`, `modelName: AFTKM`,
+     * which no Android TV ever does. Naming it correctly matters because the control
+     * story is different: a Fire TV accepts DIAL app launches over plain HTTP now,
+     * where an Android TV wants its own pairing protocol.
+     */
+    AMAZON_FIRE_TV,
+
     /** Reachable on the network and identifiable as something, but no adapter exists. */
     UNKNOWN,
 }

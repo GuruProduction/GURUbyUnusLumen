@@ -56,6 +56,54 @@ data class TvFound(
     val note: String? = null,
 )
 
+/**
+ * Building the tvDiscover result from what the scan found. Issue #242.
+ *
+ * WHY THIS IS A PURE FUNCTION AND NOT INLINE IN THE EXECUTOR. The defect was a SHAPE
+ * decision, not a scanning one: a found-but-undrivable device was collapsed into an
+ * `error` string, so the caller received prose where it should have received data. A
+ * shape rule is exactly the kind of thing a JVM test must pin, and it cannot be pinned
+ * while it lives behind a call that opens sockets. So the decision is here, with no
+ * network and no Android, and the executor calls it.
+ */
+object TvDiscoveryResultBuilder {
+
+    /**
+     * Build the envelope from the devices the scan found.
+     *
+     * THE RULE, stated once: a device that answered is ALWAYS returned in `televisions`.
+     * Whether this build can drive it is a property of that device (`controllable` and
+     * `note`), never a reason to drop it or to replace the whole answer with a sentence.
+     *
+     * `error` is reserved for the case where there is no device list to report at all,
+     * which is a scan that found nothing.
+     */
+    fun build(found: List<TvFound>, scanProblems: List<String>): TvDiscoveryResult {
+        // The per-device reason is repeated in `problems`, because that is where a reader
+        // looks for what was seen and not used, and because a problem list is cheap and a
+        // dropped device is not recoverable.
+        val undrivable = found.filter { !it.controllable }
+        val problems = scanProblems + undrivable.map { device ->
+            "${device.name} at ${device.host} was found and identified as ${device.vendor}, " +
+                "but no adapter in this build can drive it: " +
+                (device.note ?: "no reason was recorded")
+        }
+
+        return TvDiscoveryResult(
+            success = found.any { it.controllable },
+            televisions = found,
+            count = found.size,
+            problems = problems,
+            error = if (found.isEmpty()) {
+                problems.firstOrNull() ?: "No television answered on this network."
+            } else {
+                // Something was found. The answer is the device list, not a sentence.
+                null
+            },
+        )
+    }
+}
+
 @Serializable
 data class TvPressResult(
     val success: Boolean,
@@ -115,7 +163,9 @@ object TvToolDefinitions : ToolSetRegistration {
                 "prime video, bbc iplayer, itvx, channel 4, disney plus, spotify, plex, apple tv, " +
                 "now or britbox. This is what makes 'put Netflix on the living room telly' work, " +
                 "because it goes straight to the app rather than walking the app grid with the " +
-                "direction buttons. An unknown name is refused with the names the set does accept.",
+                "direction buttons. An unknown name is refused with the names the set does accept. " +
+                "Works on Roku, Samsung, LG and Amazon Fire TV; on a Fire TV this is the one control " +
+                "that works, because its buttons need a separate pairing channel.",
             category = "smart_home",
             parameters = listOf(
                 ToolParameter(
@@ -361,20 +411,9 @@ class TvToolExecutor(
             )
         }
 
-        val r = TvDiscoveryResult(
-            success = found.any { it.controllable },
-            televisions = found,
-            count = found.size,
-            problems = report.problems,
-            error = when {
-                found.isEmpty() -> report.problems.firstOrNull()
-                    ?: "No television answered on this network."
-                found.none { it.controllable } ->
-                    "Televisions were found but none of them can be driven by this build yet: " +
-                        found.mapNotNull { it.note }.joinToString(" ")
-                else -> null
-            },
-        )
+        // THE SHAPE RULE LIVES IN ONE PLACE, so the executor cannot drift from the test.
+        // See [TvDiscoveryResultBuilder] for why a found device is never reduced to prose.
+        val r = TvDiscoveryResultBuilder.build(found, report.problems)
         return emitPayload(json, json.encodeToString(TvDiscoveryResult.serializer(), r), r, r.success, r.error)
     }
 
