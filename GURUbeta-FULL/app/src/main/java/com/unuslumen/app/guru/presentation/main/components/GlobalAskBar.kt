@@ -4,13 +4,18 @@
 package com.unuslumen.app.guru.presentation.main.components
 
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -19,41 +24,47 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
-import com.unuslumen.app.ui.theme.Memphis
 import com.unuslumen.app.ui.R
 import com.unuslumen.app.ui.navigation.Screen
-import com.unuslumen.app.ui.theme.Fraunces
 import kotlin.math.roundToInt
 
 /**
  * The GURU icon, floating over every screen that is not the portal or the lobby.
  *
- * WHAT IT IS: the way home, and nothing else. The lobby and the portal carry the
- * real chat bar; everywhere else gets this instead, because a full input bar on
- * every surface was the wrong shape for the job. Tapping the icon opens the
- * lobby, where the bar lives and the rooms are.
+ * WHAT IT IS: the way home. The lobby and the portal carry the real chat bar;
+ * everywhere else gets this instead. Tapping it opens the lobby.
  *
- * IT CAN BE DRAGGED. The icon sits where it was last put, anywhere on screen,
- * because a fixed corner collides with real content: the notes list, the
- * calendar grid, the media shelf. The position is remembered for the session so
- * a human who parks it somewhere out of the way does not have to move it again
- * every time they open a screen.
+ * WHERE IT LIVES. It used to be parked in the bottom-right and stayed wherever it
+ * was last dropped, for the session. That made it a piece of furniture competing
+ * with the content underneath it. It now has a home: top centre of the fold, just
+ * under the status bar, which is a spot nothing else in the app uses and which
+ * reads as a fixed resident mark rather than a button that wandered in.
  *
- * IT IS SMALL AND IT IS FAINT when idle. An always-present control that sits on
- * top of content has to earn its place: this one is half the size of a normal
- * button and dimmed, so it reads as a resident tool rather than a call to
- * action.
+ * DRAGGING STILL WORKS, AND IT SPRINGS BACK. A person can pull it anywhere to get
+ * it out of the way of what they are reading, and the moment they let go it snaps
+ * straight home. He asked for a snap rather than a glide: the drag is the play,
+ * the return is not a performance.
+ *
+ * IT CAN BE PINCHED, LIKE A STRETCH ARMSTRONG. Two fingers scale it live so it can
+ * be squashed small or pulled long, and letting go restores its original shape. The
+ * size is deliberately not remembered: the toy is the interaction, not a setting,
+ * and an icon that stayed stretched would be a bug the next time it was looked at.
+ *
+ * ONE GESTURE HANDLER, AND WHY IT IS HAND-WRITTEN. Composition offers
+ * detectTransformGestures, which handles pan and zoom but has no end callback, and
+ * an icon that cannot notice the end of a gesture cannot snap back. This loops the
+ * pointer events itself so the release is a real moment: movement only starts once
+ * the finger has travelled past touch slop, nothing is consumed before that, which
+ * is what keeps a plain tap arriving at the tap detector below.
  */
 @Composable
 fun FloatingGuruIcon(
@@ -69,22 +80,19 @@ fun FloatingGuruIcon(
     val iconSize = 52.dp
     val iconSizePx = with(density) { iconSize.toPx() }
 
-    // Where the icon has been put, in pixels, relative to its container.
-    var position by remember { mutableStateOf<Offset?>(null) }
+    // How far the finger has pulled it from home, in pixels. Zero is home.
+    var pull by remember { mutableStateOf(Offset.Zero) }
+    // Live pinch scale. One is the original shape.
+    var scale by remember { mutableStateOf(1f) }
     var containerSize by remember { mutableStateOf(Offset.Zero) }
-    var dragging by remember { mutableStateOf(false) }
+    var interacting by remember { mutableStateOf(false) }
 
-    // Travel is tracked so a drag never fires the tap. Without this, moving the
-    // icon opens the lobby on the way, which makes it feel broken.
-    val dragThresholdPx = with(density) { 8.dp.toPx() }
-
-    // The container MUST fill the screen. Without a size of its own it measured
-    // as a 52dp square, so the resting spot computed as 52 - 52 - 16, which is
-    // negative, and the icon drew itself off the top-left corner where nobody
-    // could see it.
+    // Status-bar inset, so "top" means the top of the visible fold rather than the
+    // top of the glass, where the clock and the notch already are.
     Box(
         modifier = modifier
             .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.statusBars)
             .onGloballyPositioned { coords ->
                 containerSize = Offset(
                     coords.size.width.toFloat(),
@@ -92,42 +100,77 @@ fun FloatingGuruIcon(
                 )
             },
     ) {
-        val restingSpot = position ?: Offset(
-            // First run: the right edge, ABOVE the chat bar's own control row.
-            //
-            // The bar carries a GURU button of its own, so parking the floating
-            // icon at the very bottom put two GURU marks on top of each other.
-            // This sits clear of the bar and of the gesture area.
-            containerSize.x - iconSizePx - with(density) { 12.dp.toPx() },
-            containerSize.y - iconSizePx - with(density) { 190.dp.toPx() },
+        // HOME: horizontally centred, flush to the top of the visible area.
+        val home = Offset(
+            x = (containerSize.x - iconSizePx) / 2f,
+            y = with(density) { 6.dp.toPx() },
+        )
+
+        // The pull is clamped so the icon can never be dragged off the glass and
+        // lost; it can reach any edge but never past it.
+        val drawn = Offset(
+            (home.x + pull.x).coerceIn(0f, (containerSize.x - iconSizePx).coerceAtLeast(0f)),
+            (home.y + pull.y).coerceIn(0f, (containerSize.y - iconSizePx).coerceAtLeast(0f)),
         )
 
         Box(
             Modifier
-                .offset {
-                    IntOffset(restingSpot.x.roundToInt(), restingSpot.y.roundToInt())
-                }
+                .offset { IntOffset(drawn.x.roundToInt(), drawn.y.roundToInt()) }
                 .size(iconSize)
-                .alpha(if (dragging) 1f else 0.82f)
-                .pointerInput(Unit) {
-                    detectDragGestures(
-                        onDragStart = { dragging = true },
-                        onDrag = { change, dragAmount ->
-                            change.consume()
-                            val base = position ?: restingSpot
-                            val moved = Offset(
-                                (base.x + dragAmount.x).coerceIn(0f, (containerSize.x - iconSizePx).coerceAtLeast(0f)),
-                                (base.y + dragAmount.y).coerceIn(0f, (containerSize.y - iconSizePx).coerceAtLeast(0f)),
-                            )
-                            position = moved
-                        },
-                        onDragEnd = { dragging = false },
-                        onDragCancel = { dragging = false },
-                    )
+                .alpha(if (interacting) 1f else 0.82f)
+                // The pinch is drawn, never stored: scaleX and scaleY move together
+                // so it reads as one rubber object rather than a distorted image.
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
                 }
-                .pointerInput(dragThresholdPx) {
-                    // A tap opens the lobby. The drag detector above consumes
-                    // movement, so this only ever sees a genuine press.
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        var pastSlop = false
+                        var travelled = Offset.Zero
+
+                        do {
+                            val event = awaitPointerEvent()
+                            val pan = event.calculatePan()
+                            val zoom = event.calculateZoom()
+
+                            if (!pastSlop) {
+                                travelled += pan
+                                // Touch slop is what separates a tap from a drag. Below
+                                // it nothing is consumed, so the tap detector still gets
+                                // a clean press and tapping opens the lobby.
+                                if (travelled.getDistance() > viewConfiguration.touchSlop) {
+                                    pastSlop = true
+                                    interacting = true
+                                }
+                            }
+
+                            if (pastSlop) {
+                                if (zoom != 1f) {
+                                    scale = (scale * zoom).coerceIn(MIN_SCALE, MAX_SCALE)
+                                }
+                                if (pan != Offset.Zero) {
+                                    pull += pan
+                                }
+                                event.changes.forEach { change ->
+                                    if (change.positionChange() != Offset.Zero) change.consume()
+                                }
+                            }
+                        } while (event.changes.any { it.pressed })
+
+                        // THE RELEASE. Back to home and back to shape, in one frame,
+                        // because he asked for a snap rather than a glide.
+                        if (pastSlop) {
+                            pull = Offset.Zero
+                            scale = 1f
+                            interacting = false
+                        }
+                    }
+                }
+                .pointerInput(Unit) {
+                    // A plain tap opens the lobby. The handler above only consumes
+                    // after slop, so a press that never moves arrives here intact.
                     detectTapGestures(onTap = { onHome() })
                 },
         ) {
@@ -139,3 +182,9 @@ fun FloatingGuruIcon(
         }
     }
 }
+
+/** How small a pinch may squash it before the icon stops being tappable. */
+private const val MIN_SCALE = 0.55f
+
+/** How far a pinch may stretch it, which is well past the point of being useful. */
+private const val MAX_SCALE = 1.9f
