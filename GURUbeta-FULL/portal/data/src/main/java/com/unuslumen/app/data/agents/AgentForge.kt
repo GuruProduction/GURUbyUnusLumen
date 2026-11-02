@@ -7,6 +7,10 @@ import android.content.Context
 import android.util.Log
 import com.unuslumen.app.data.skills.SkillForge
 import com.unuslumen.app.data.tor.TorEgress
+import com.unuslumen.app.domain.repository.AgentReview
+import com.unuslumen.app.domain.repository.AgentStats
+import com.unuslumen.app.domain.repository.CataloguePublisher
+import com.unuslumen.app.domain.repository.PublisherPage
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.get
@@ -25,6 +29,7 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
 /**
@@ -231,6 +236,227 @@ object AgentForge {
             )
         }
     }
+
+    // ------------------------------------------------------------------
+    // The market: publishers, real numbers, ownership
+    // ------------------------------------------------------------------
+
+    /**
+     * A pseudonym for this install.
+     *
+     * IT IS RANDOM AND HASHED AGAIN BEFORE IT LEAVES. The server has no accounts
+     * by design, so a rating or an entitlement still has to attach to something
+     * that survives a reinstall of the app but identifies nobody. This is a UUID
+     * generated once, kept in local preferences, and SHA-256 hashed on the way
+     * out. The wire and the database both see a string with no person behind it.
+     */
+    fun subjectHash(context: Context): String {
+        val prefs = context.getSharedPreferences("guru_market", Context.MODE_PRIVATE)
+        val id = prefs.getString("subject_id", null)
+            ?: java.util.UUID.randomUUID().toString().also {
+                prefs.edit().putString("subject_id", it).apply()
+            }
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(id.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    /** One maker's page, or null when the handle is unknown or the market is unreachable. */
+    suspend fun fetchPublisher(context: Context, handle: String): PublisherPage? =
+        withContext(Dispatchers.IO) {
+            val base = baseUrl(context)
+            try {
+                val http = client()
+                try {
+                    val response = http.get("$base/v1/publishers/$handle")
+                    if (!response.status.isSuccess()) return@withContext null
+                    val body = json.parseToJsonElement(response.bodyAsText()) as? JsonObject
+                        ?: return@withContext null
+                    val publisher = body["publisher"] as? JsonObject ?: return@withContext null
+                    // THE WIRE TYPE IS CONVERTED HERE, NOT LEAKED OUT.
+                    //
+                    // AgentForge's own CatalogueAgent is the JSON shape; the domain
+                    // CatalogueAgent is what a screen is allowed to see. Returning the
+                    // wire type compiled into a type mismatch because the two share a
+                    // name but not a package, and the honest fix is to map at the
+                    // boundary rather than widen the return type.
+                    val agents = (body["agents"] as? JsonArray).orEmpty().mapNotNull { entry ->
+                        runCatching {
+                            json.decodeFromString(CatalogueAgent.serializer(), entry.toString())
+                        }.getOrNull()
+                    }.map { it.toDomain() }
+                    PublisherPage(publisher = publisher.toPublisher(), agents = agents)
+                } finally {
+                    http.close()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Publisher '$handle' unreachable: ${e.message}")
+                null
+            }
+        }
+
+    /** The real numbers for one agent. Null when the market cannot be reached. */
+    suspend fun fetchStats(context: Context, slug: String): AgentStats? =
+        withContext(Dispatchers.IO) {
+            val base = baseUrl(context)
+            try {
+                val http = client()
+                try {
+                    val response = http.get("$base/v1/agents/$slug/stats")
+                    if (!response.status.isSuccess()) return@withContext null
+                    json.decodeFromString(AgentStats.serializer(), response.bodyAsText())
+                } finally {
+                    http.close()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Stats for '$slug' unreachable: ${e.message}")
+                null
+            }
+        }
+
+    /** Reviews for one agent, newest first. Empty when there is no answer. */
+    suspend fun fetchReviews(context: Context, slug: String): List<AgentReview> =
+        withContext(Dispatchers.IO) {
+            val base = baseUrl(context)
+            try {
+                val http = client()
+                try {
+                    val response = http.get("$base/v1/agents/$slug/reviews")
+                    if (!response.status.isSuccess()) return@withContext emptyList()
+                    json.decodeFromString(
+                        ListSerializer(AgentReview.serializer()),
+                        response.bodyAsText(),
+                    )
+                } finally {
+                    http.close()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Reviews for '$slug' unreachable: ${e.message}")
+                emptyList()
+            }
+        }
+
+    /**
+     * Record an install, returning whether it counted.
+     *
+     * A failure returns false rather than throwing. The install is what the
+     * person asked for; the count is bookkeeping, and bookkeeping must never be
+     * the reason an install fails.
+     */
+    suspend fun recordInstall(context: Context, slug: String): Boolean = withContext(Dispatchers.IO) {
+        val base = baseUrl(context)
+        try {
+            val http = client()
+            try {
+                val response = http.post("$base/v1/agents/$slug/install") {
+                    contentType(ContentType.Application.Json)
+                    setBody("{\"subject_hash\":${jsonString(subjectHash(context))}}")
+                }
+                if (!response.status.isSuccess()) return@withContext false
+                val body = runCatching {
+                    json.parseToJsonElement(response.bodyAsText()) as? JsonObject
+                }.getOrNull() ?: return@withContext false
+                body["counted"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: false
+            } finally {
+                http.close()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Install for '$slug' not recorded: ${e.message}")
+            false
+        }
+    }
+
+    /** Leave or change a rating. Returns whether it replaced a previous one. */
+    suspend fun submitRating(
+        context: Context,
+        slug: String,
+        stars: Int,
+        comment: String?,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val base = baseUrl(context)
+        val payload = buildString {
+            append("{\"subject_hash\":").append(jsonString(subjectHash(context)))
+            append(",\"stars\":").append(stars.coerceIn(1, 5))
+            if (!comment.isNullOrBlank()) {
+                append(",\"comment\":").append(jsonString(comment))
+            }
+            append("}")
+        }
+        try {
+            val http = client()
+            try {
+                val response = http.post("$base/v1/agents/$slug/rating") {
+                    contentType(ContentType.Application.Json)
+                    setBody(payload)
+                }
+                if (!response.status.isSuccess()) return@withContext false
+                val body = runCatching {
+                    json.parseToJsonElement(response.bodyAsText()) as? JsonObject
+                }.getOrNull() ?: return@withContext false
+                body["replaced"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: false
+            } finally {
+                http.close()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Rating for '$slug' not recorded: ${e.message}")
+            false
+        }
+    }
+
+    /** The slugs this pseudonym owns. Empty when the market cannot be reached. */
+    suspend fun ownedSlugs(context: Context): Set<String> = withContext(Dispatchers.IO) {
+        val base = baseUrl(context)
+        try {
+            val http = client()
+            try {
+                val subject = java.net.URLEncoder.encode(subjectHash(context), "UTF-8")
+                val response = http.get("$base/v1/entitlements?subject_hash=$subject")
+                if (!response.status.isSuccess()) return@withContext emptySet()
+                val body = json.parseToJsonElement(response.bodyAsText()) as? JsonObject
+                    ?: return@withContext emptySet()
+                (body["owned"] as? JsonArray).orEmpty().mapNotNull { entry ->
+                    entry.jsonPrimitive.content.takeIf { it.isNotBlank() }
+                }.toSet()
+            } finally {
+                http.close()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Entitlements unreachable: ${e.message}")
+            emptySet()
+        }
+    }
+
+    /**
+     * The wire shape as the domain shape.
+     *
+     * Kept here, beside the parser, so the mapping lives with the type it maps and
+     * cannot drift from a second copy written elsewhere.
+     */
+    private fun CatalogueAgent.toDomain() = com.unuslumen.app.domain.repository.CatalogueAgent(
+        slug = slug,
+        name = name,
+        roleDescription = roleDescription,
+        systemPrompt = systemPrompt,
+        toolPermissions = toolPermissions,
+        isBuiltin = isBuiltin,
+        source = source,
+        authorLabel = authorLabel,
+        priceCents = priceCents,
+        isActive = isActive,
+    )
+
+    /** Read a publisher off the wire, tolerating a server that omits optional fields. */
+    private fun JsonObject.toPublisher() = CataloguePublisher(
+        handle = this["handle"]?.jsonPrimitive?.content.orEmpty(),
+        displayName = this["display_name"]?.jsonPrimitive?.content.orEmpty(),
+        bio = this["bio"]?.jsonPrimitive?.content.orEmpty(),
+        location = this["location"]?.jsonPrimitive?.contentOrNull,
+        website = this["website"]?.jsonPrimitive?.contentOrNull,
+        isVerified = this["is_verified"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: false,
+        isOfficial = this["is_official"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: false,
+        agentCount = this["agent_count"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0,
+        since = this["since"]?.jsonPrimitive?.contentOrNull,
+    )
 
     /** Minimal JSON string escaping, so a prompt containing quotes survives the wire intact. */
     private fun jsonString(value: String): String = buildString {

@@ -4,8 +4,11 @@
 package com.unuslumen.app.data.agents
 
 import com.unuslumen.app.domain.repository.AgentCatalogue
+import com.unuslumen.app.domain.repository.AgentReview
+import com.unuslumen.app.domain.repository.AgentStats
 import com.unuslumen.app.domain.repository.CatalogueAgent
 import com.unuslumen.app.domain.repository.PublishOutcome
+import com.unuslumen.app.domain.repository.PublisherPage
 import org.koin.core.annotation.Single
 
 /**
@@ -54,6 +57,27 @@ class AgentCatalogueImpl(
             submissionId = outcome.submissionId
         )
     }
+
+    // ------------------------------------------------------------------
+    // The market
+    // ------------------------------------------------------------------
+
+    override suspend fun fetchPublisher(handle: String): PublisherPage? =
+        AgentForge.fetchPublisher(context, handle)
+
+    override suspend fun fetchStats(slug: String): AgentStats? =
+        AgentForge.fetchStats(context, slug)
+
+    override suspend fun fetchReviews(slug: String): List<AgentReview> =
+        AgentForge.fetchReviews(context, slug)
+
+    override suspend fun recordInstall(slug: String): Boolean =
+        AgentForge.recordInstall(context, slug)
+
+    override suspend fun submitRating(slug: String, stars: Int, comment: String?): Boolean =
+        AgentForge.submitRating(context, slug, stars, comment)
+
+    override suspend fun ownedSlugs(): Set<String> = AgentForge.ownedSlugs(context)
 
     private fun AgentForge.CatalogueAgent.toDomain() = CatalogueAgent(
         slug = slug,
