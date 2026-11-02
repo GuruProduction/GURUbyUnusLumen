@@ -79,6 +79,13 @@ fun AgentsScreen(
                     // The marketplace lives one tap from the list rather than in
                     // the lobby, because browsing agents is something you do
                     // while looking at your own.
+                    // THE WAY BACK TO THE EXPLANATION. It opens by itself once, and a
+                    // person who dismissed it and later wondered what an agent is should
+                    // not have to clear app data to find out.
+                    OutlinedButton(
+                        onClick = { viewModel.onEvent(AgentsEvent.ShowIntro) }
+                    ) { Text("What is an agent?") }
+                    Spacer(Modifier.height(8.dp))
                     OutlinedButton(
                         onClick = { navController.navigate(Screen.AgentMarketScreen) }
                     ) { Text("Browse marketplace") }
@@ -138,6 +145,12 @@ fun AgentsScreen(
                 }
             }
         }
+    }
+
+    // The intro sits over everything, including the creator, because it is an
+    // explanation rather than a step in a flow.
+    if (state.showIntro) {
+        AgentsIntroPanel(onDismiss = { viewModel.onEvent(AgentsEvent.DismissIntro) })
     }
 
     agentToDelete?.let { agent ->

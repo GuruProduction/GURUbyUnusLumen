@@ -12,9 +12,14 @@ import com.unuslumen.app.domain.model.SaveAgentRequest
 import com.unuslumen.app.domain.repository.AgentCatalogue
 import com.unuslumen.app.domain.repository.GrantableTool
 import com.unuslumen.app.domain.repository.GuruAgentRepository
+import com.unuslumen.app.preferences.PrefsConstants
+import com.unuslumen.app.preferences.domain.model.booleanPreferencesKey
+import com.unuslumen.app.preferences.domain.use_case.GetPreferenceUseCase
+import com.unuslumen.app.preferences.domain.use_case.SavePreferenceUseCase
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.koin.android.annotation.KoinViewModel
@@ -29,7 +34,15 @@ data class AgentsState(
     /** The tools an agent may be granted, loaded once with the list. */
     val availableTools: List<GrantableTool> = emptyList(),
     val saving: Boolean = false,
-    val notice: String? = null
+    val notice: String? = null,
+    /**
+     * Whether the "what is an agent" panel is open right now.
+     *
+     * Deliberately separate from the stored "has been read" flag. This is what is
+     * on screen; the flag is whether it should ever open by itself again. A person
+     * can reopen it from the room at any time without the stored flag mattering.
+     */
+    val showIntro: Boolean = false
 )
 
 /**
@@ -57,12 +70,23 @@ sealed interface AgentsEvent {
     data class Delete(val agent: GuruAgent) : AgentsEvent
     data class Publish(val agent: GuruAgent) : AgentsEvent
     data object ClearNotice : AgentsEvent
+    /** Open the intro panel by hand, for somebody who wants to read it again. */
+    data object ShowIntro : AgentsEvent
+    /** Close it, and remember that it has been read so it stops opening by itself. */
+    data object DismissIntro : AgentsEvent
 }
 
 @KoinViewModel
 class AgentsViewModel(
     private val agentRepository: GuruAgentRepository,
-    private val agentCatalogue: AgentCatalogue
+    private val agentCatalogue: AgentCatalogue,
+    /**
+     * The app's own preference lane, which is how every other screen remembers a
+     * one-time thing. The intro flag is one of those, so it uses that lane rather
+     * than inventing storage inside the agent table.
+     */
+    private val getPreference: GetPreferenceUseCase,
+    private val savePreference: SavePreferenceUseCase
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AgentsState())
@@ -110,6 +134,18 @@ class AgentsViewModel(
             is AgentsEvent.Delete -> delete(event.agent)
             is AgentsEvent.Publish -> publish(event.agent)
             AgentsEvent.ClearNotice -> _state.update { it.copy(notice = null) }
+            AgentsEvent.ShowIntro -> _state.update { it.copy(showIntro = true) }
+            AgentsEvent.DismissIntro -> {
+                _state.update { it.copy(showIntro = false) }
+                viewModelScope.launch {
+                    // Recording the read is what stops it opening by itself. It is
+                    // written on dismiss rather than on open, so a person who sees
+                    // the panel and kills the app before reading it still gets it.
+                    runCatching {
+                        savePreference(booleanPreferencesKey(PrefsConstants.AGENTS_INTRO_SEEN_KEY), true)
+                    }
+                }
+            }
         }
     }
 
@@ -122,12 +158,28 @@ class AgentsViewModel(
                 // Read once here rather than on every keystroke in the creator:
                 // the registry does not change while a form is open.
                 val tools = runCatching { agentRepository.grantableTools() }.getOrDefault(emptyList())
+
+                // THE PANEL OPENS ITSELF ONCE, AND ONLY ONCE.
+                //
+                // A fresh install has no flag, so the explanation appears the first
+                // time the room is opened. After the person dismisses it the flag is
+                // set and it never interrupts again; they can still reopen it from the
+                // room whenever they want the reminder.
+                //
+                // A read failure is treated as "not seen", because showing the
+                // explanation twice is a small annoyance and hiding it from a first-time
+                // user is a person staring at a screen with no idea what it is for.
+                val seenIntro = runCatching {
+                    getPreference(booleanPreferencesKey(PrefsConstants.AGENTS_INTRO_SEEN_KEY), false).first()
+                }.getOrDefault(false)
+
                 _state.update {
                     it.copy(
                         isLoading = false,
                         agents = agents,
                         summary = summary,
-                        availableTools = tools
+                        availableTools = tools,
+                        showIntro = !seenIntro && agents.isEmpty()
                     )
                 }
             } catch (e: Exception) {

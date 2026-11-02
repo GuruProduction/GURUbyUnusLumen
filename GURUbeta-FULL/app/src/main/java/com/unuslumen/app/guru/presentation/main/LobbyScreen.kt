@@ -60,6 +60,12 @@ import com.unuslumen.app.presentation.PendingPortalPrompt
 import com.unuslumen.app.presentation.PortalChatBarHost
 import com.unuslumen.app.ui.R
 import com.unuslumen.app.ui.navigation.Screen
+import com.unuslumen.app.ui.theme.Memphis
+import com.unuslumen.app.ui.theme.MemphisConfetti
+import com.unuslumen.app.ui.theme.MemphisSurface
+import com.unuslumen.app.ui.theme.captionStyle
+import com.unuslumen.app.ui.theme.hardShadow
+import com.unuslumen.app.ui.theme.posterStyle
 import com.unuslumen.app.ui.theme.guruTheme
 import org.koin.androidx.compose.koinViewModel
 import java.text.SimpleDateFormat
