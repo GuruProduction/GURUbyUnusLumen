@@ -76,11 +76,33 @@ class FireTvRemote(
         }
 
         dial.launch(list.applicationUrl, target).fold(
-            onSuccess = {
-                TvCommandOutcome.Sent(
-                    "Asked the Fire TV to open $app over DIAL. An awake set opens it within a " +
-                        "second or two.",
-                )
+            onSuccess = { report ->
+                // ONLY 201 IS A LAUNCH. A 200 means the set accepted the request without
+                // starting the app, which is the defect issue #251 was filed over: both were
+                // reported as success, so a launch that did nothing read as a launch.
+                when {
+                    report.started -> TvCommandOutcome.Sent(
+                        "The Fire TV started $app: POST ${report.url} answered HTTP ${report.status}. " +
+                            "An awake set shows it within a second or two.",
+                    )
+                    report.outcome == com.unuslumen.app.data.fabric.net.DialEndpoints.LaunchOutcome.ACCEPTED_NOT_STARTED ->
+                        TvCommandOutcome.Failed(
+                            "The Fire TV accepted the request for $app with HTTP 200 but did not start " +
+                                "it. DIAL answers 201 only when an app actually launches, so nothing " +
+                                "was opened. Check $app is installed on the set.",
+                        )
+                    report.outcome == com.unuslumen.app.data.fabric.net.DialEndpoints.LaunchOutcome.OTHER_SUCCESS ->
+                        TvCommandOutcome.Failed(
+                            "The Fire TV answered HTTP ${report.status} for $app, which is neither " +
+                                "201 (launched) nor 200 (accepted without launching), so this build " +
+                                "cannot say the app opened.",
+                        )
+                    else -> TvCommandOutcome.Failed(
+                        "The Fire TV refused the launch of $app: HTTP ${report.status}" +
+                            report.body.trim().takeIf { it.isNotEmpty() }?.let { ", body: ${it.take(200)}" }
+                                .orEmpty() + ".",
+                    )
+                }
             },
             onFailure = { error ->
                 TvCommandOutcome.Failed(

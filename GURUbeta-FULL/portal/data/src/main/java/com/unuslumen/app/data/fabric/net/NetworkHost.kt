@@ -47,6 +47,17 @@ data class NetworkHost(
     val services: List<String> = emptyList(),
     /** Whatever the device said about itself, one line per source. */
     val evidence: List<String> = emptyList(),
+    /**
+     * The SSDP `LOCATION` this host published, when it answered over SSDP.
+     *
+     * WHY IT IS KEPT RATHER THAN FOLDED INTO EVIDENCE. It is the device's own absolute URL for
+     * its description document, and it is the only field that can say the description lives on
+     * a different port from everything else: the Fire TV publishes its description on 60000
+     * and its app endpoint on 8009. Issue #251 was a DIAL client that ignored this and guessed
+     * a path instead, so every call was a 404 and the device was blamed for it. A tool that
+     * needs to describe a host now has the device's own answer to hand.
+     */
+    val location: String? = null,
     val kind: HostKind = HostKind.UNKNOWN,
     /** Present when the host is a television this build can actually drive. */
     val tvVendorName: String? = null,

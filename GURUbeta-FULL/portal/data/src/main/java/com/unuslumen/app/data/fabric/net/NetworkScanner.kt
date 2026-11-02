@@ -150,6 +150,8 @@ class NetworkScanner(
             hosts.getOrPut(address) { MutableHost(address) }.apply {
                 if (found.name != null && hostname == null) hostname = found.name
                 if (found.kind != null) ssdpKind = found.kind
+                // The description URL the device published, kept for the tools that need it.
+                if (found.location != null && location == null) location = found.location
                 reachable = true
                 evidence.add("answered UPnP as ${found.evidence}")
             }
@@ -310,7 +312,13 @@ class NetworkScanner(
     // SSDP
     // ------------------------------------------------------------------
 
-    private data class SsdpHit(val name: String?, val kind: HostKind?, val evidence: String)
+    private data class SsdpHit(
+        val name: String?,
+        val kind: HostKind?,
+        val evidence: String,
+        /** The device's own description URL, which is the one field DIAL needs. */
+        val location: String? = null,
+    )
 
     /**
      * Ask every UPnP device to identify itself.
@@ -381,6 +389,12 @@ class NetworkScanner(
             name = friendly ?: manufacturer,
             kind = kind,
             evidence = (server.ifBlank { "UPnP" }) + if (manufacturer != null) ", $manufacturer" else "",
+            // KEPT RATHER THAN DISCARDED. This URL is the device's own statement of where its
+            // description lives, and it is the only field that can put the description on a
+            // different port from everything else: a Fire TV publishes it on 60000 and its
+            // app endpoint on 8009. Issue #251 was a DIAL client that guessed a path instead
+            // of using this, so every call was a 404 and the set was blamed for it.
+            location = location?.takeIf { it.isNotBlank() },
         )
     }
 
@@ -418,6 +432,8 @@ class NetworkScanner(
         var kind: HostKind = HostKind.UNKNOWN
         var ssdpKind: HostKind? = null
         var tvVendorName: String? = null
+        /** The SSDP LOCATION this host published, when it answered UPnP. */
+        var location: String? = null
         val openPorts: MutableList<Int> = mutableListOf()
         val services: MutableList<String> = mutableListOf()
         val evidence: MutableList<String> = mutableListOf()
@@ -431,6 +447,7 @@ class NetworkScanner(
                 openPorts = openPorts.sorted(),
                 services = services.distinct(),
                 evidence = evidence.distinct(),
+                location = location,
                 kind = inferred,
                 tvVendorName = tvVendorName,
             )
