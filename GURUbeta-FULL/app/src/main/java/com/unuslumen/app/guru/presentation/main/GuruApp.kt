@@ -65,7 +65,7 @@ import com.unuslumen.app.presentation.JournalScreen
 import com.unuslumen.app.presentation.JournalSearchScreen
 import com.unuslumen.app.presentation.MemoryScreen
 import com.unuslumen.app.presentation.luxify.SkillsScreen
-import com.unuslumen.app.presentation.agents.AgentsScreen
+import com.unuslumen.app.agents.AgentsScreen
 import com.unuslumen.app.ottio.OttioScreen
 import com.unuslumen.app.presentation.NoteDetailsScreen
 import com.unuslumen.app.presentation.NoteFolderDetailsScreen
