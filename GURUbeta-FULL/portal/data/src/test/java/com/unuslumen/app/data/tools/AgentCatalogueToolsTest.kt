@@ -11,10 +11,13 @@ import com.unuslumen.app.domain.model.AgentSummary
 import com.unuslumen.app.domain.model.GuruAgent
 import com.unuslumen.app.domain.model.SaveAgentRequest
 import com.unuslumen.app.domain.repository.AgentCatalogue
+import com.unuslumen.app.domain.repository.AgentReview
+import com.unuslumen.app.domain.repository.AgentStats
 import com.unuslumen.app.domain.repository.CatalogueAgent
 import com.unuslumen.app.domain.repository.GrantableTool
 import com.unuslumen.app.domain.repository.GuruAgentRepository
 import com.unuslumen.app.domain.repository.PublishOutcome
+import com.unuslumen.app.domain.repository.PublisherPage
 import io.mockk.mockk
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
@@ -86,6 +89,16 @@ class AgentCatalogueToolsTest {
             slug: String, name: String, roleDescription: String,
             systemPrompt: String, toolPermissions: List<String>, authorLabel: String?,
         ): PublishOutcome = PublishOutcome(true, "ok")
+
+        // THE MARKET SIDE. These tools do not read any of it, so each answers with the
+        // honest nothing rather than a mock that pretends a server exists. The market
+        // screens have their own tests for the parts that matter.
+        override suspend fun fetchPublisher(handle: String): PublisherPage? = null
+        override suspend fun fetchStats(slug: String): AgentStats? = null
+        override suspend fun fetchReviews(slug: String): List<AgentReview> = emptyList()
+        override suspend fun recordInstall(slug: String): Boolean = false
+        override suspend fun submitRating(slug: String, stars: Int, comment: String?): Boolean = false
+        override suspend fun ownedSlugs(): Set<String> = emptySet()
     }
 
     private fun repository(dao: GuruAgentDao): GuruAgentRepository =
