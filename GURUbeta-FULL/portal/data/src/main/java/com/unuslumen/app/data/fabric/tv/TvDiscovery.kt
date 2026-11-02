@@ -80,7 +80,10 @@ class TvDiscovery(
         9000 to TvVendor.PHILIPS,
         6466 to TvVendor.ANDROID_TV,
         6467 to TvVendor.ANDROID_TV,
-        8009 to TvVendor.ANDROID_TV,
+        // 8009 IS DELIBERATELY ABSENT. Issue #243: it is DIAL, the App-Launch endpoint, and
+        // Fire TV, Chromecast, Android TV and Virgin boxes all open it. Mapping it to any one
+        // make is what reported a Fire TV as an Android TV. A set that speaks DIAL is asked
+        // for its description document instead, which names the manufacturer.
         9080 to TvVendor.UNKNOWN,
     )
 
@@ -294,25 +297,44 @@ class TvDiscovery(
      * same confidence as a named self-announcement.
      */
     private fun identifyHost(host: String, ports: List<Int>, hints: Map<Int, TvVendor>): Ranked? {
-        // Most specific first, so a host exposing both 8060 and 80 is named by 8060.
-        val ordered = ports.sortedBy { port -> hints[port]?.let { confidenceOf(it) } ?: 99 }
-
-        for (port in ordered) {
-            val hint = hints[port] ?: continue
-            if (hint == TvVendor.UNKNOWN) continue
-            identify(host, port, hint)?.let { device ->
-                return Ranked(device, if (hint == TvVendor.ROKU) RANK_NAMED else RANK_PORT)
+        // WHAT THE DEVICE SAYS ABOUT ITSELF BEATS ANY GUESS ABOUT IT. Issue #243.
+        //
+        // THIS ORDER IS THE WHOLE FIX. The port hints used to run FIRST, so a host with 8009
+        // open was named ANDROID_TV before anything read the description document that said
+        // `manufacturer: Amazon`. The set had already answered the question and was not being
+        // asked. A declared manufacturer or model is authoritative, a port is not, so the
+        // document is read first and the ports are only consulted when it names nothing.
+        //
+        // The cost is unchanged: this is the same filtered list of ports the banner pass
+        // already used, not a new sweep.
+        for (port in ports.filter { it in IDENTIFYING_WEB_PORTS }) {
+            val description = fetchDeviceDescription(host, port) ?: continue
+            val vendor = TvScanPlan.vendorFromDescription(description) ?: continue
+            // The port a command goes to is the vendor's remote port, not necessarily the
+            // one the description was served from: a Fire TV serves it on 60000 and accepts
+            // DIAL on 8009.
+            val controlPort = if (vendor == TvVendor.AMAZON_FIRE_TV || vendor == TvVendor.ANDROID_TV) {
+                TvScanPlan.defaultPortFor(vendor).takeIf { it in ports } ?: port
+            } else {
+                port
             }
+            return Ranked(
+                DiscoveredTv(
+                    vendor = vendor,
+                    name = nameFromDescription(description)
+                        ?: "${vendor.name.lowercase().replaceFirstChar { it.uppercase() }} on $host",
+                    host = host,
+                    port = controlPort,
+                    evidence = "port $port served a UPnP description naming " +
+                        (TvScanPlan.manufacturerOf(description) ?: vendor.name),
+                    needsPairing = vendor != TvVendor.ROKU && vendor != TvVendor.ANDROID_TV &&
+                        vendor != TvVendor.AMAZON_FIRE_TV,
+                ),
+                RANK_NAMED,
+            )
         }
 
-        // A web port may still name the set in a banner or a device description.
-        //
-        // ONLY WEB PORTS ARE ASKED. This used to try every open port on the host,
-        // and once discovery swept all 65535 that meant an HTTP GET and a full
-        // description read against every one of them: the single biggest cost in
-        // the pass, and the thing that made an unbounded body read fatal. A device
-        // that names itself does it over HTTP, so the list below is where a name can
-        // actually be found, and it is filtered before any connection is opened.
+        // A banner may also name the make, which is the same kind of evidence.
         for (port in ports.filter { it in IDENTIFYING_WEB_PORTS }) {
             val banner = readBanner(host, port) ?: continue
             val vendor = TvScanPlan.vendorFromBanner(banner) ?: continue
@@ -324,41 +346,45 @@ class TvDiscovery(
                     host = host,
                     port = port,
                     evidence = "port $port answered with ${banner.lineSequence().first().take(80)}",
-                    needsPairing = vendor != TvVendor.ROKU,
+                    needsPairing = vendor != TvVendor.ROKU && vendor != TvVendor.AMAZON_FIRE_TV,
                 ),
                 RANK_NAMED,
             )
         }
 
-        // A UPnP description on a web port can still name a set, which is how a Virgin
-        // Media box that advertises EOSSTB is identified. Same filter as the banner
-        // pass, for the same reason.
-        for (port in ports.filter { it in IDENTIFYING_WEB_PORTS }) {
-            val description = fetchDeviceDescription(host, port) ?: continue
-            val vendor = TvScanPlan.vendorFromDescription(description) ?: continue
-            return Ranked(
-                DiscoveredTv(
-                    vendor = vendor,
-                    name = nameFromDescription(description)
-                        ?: "${vendor.name.lowercase().replaceFirstChar { it.uppercase() }} on $host",
-                    host = host,
-                    port = port,
-                    evidence = "port $port served a UPnP description naming " +
-                        (TvScanPlan.manufacturerOf(description) ?: vendor.name),
-                    needsPairing = vendor != TvVendor.ROKU && vendor != TvVendor.ANDROID_TV,
-                ),
-                RANK_NAMED,
-            )
+        // A VENDOR REMOTE PORT IS DECISIVE ONLY WHERE IT IS EXCLUSIVE, which is why this
+        // runs after the device has had its say. Most specific first, so a host exposing
+        // both 8060 and 80 is named by 8060.
+        val ordered = ports.sortedBy { port -> hints[port]?.let { confidenceOf(it) } ?: 99 }
+
+        for (port in ordered) {
+            val hint = hints[port] ?: continue
+            if (hint == TvVendor.UNKNOWN) continue
+            identify(host, port, hint)?.let { device ->
+                return Ranked(device, if (hint == TvVendor.ROKU) RANK_NAMED else RANK_PORT)
+            }
         }
 
         // Ports alone, and only where the combination is one this build can name.
         val inferred = TvScanPlan.vendorFromPorts(ports) ?: return null
+
+        // A BOX THE PORTS CANNOT NAME IS STILL A BOX THAT ANSWERED.
+        //
+        // Issue #243: 8009 plus 5555 proves an Android-based streaming device and not which
+        // make, so [TvScanPlan.vendorFromPorts] answers UNKNOWN rather than picking one. That
+        // answer must not become a device with port 0: a port of 0 is not a control port, and
+        // reporting one is the same class of fault as reporting a make the device never
+        // claimed. The port used is one that was actually observed to be open.
+        val controlPort = TvScanPlan.defaultPortFor(inferred).let { chosen ->
+            if (chosen > 0 && chosen in ports) chosen else ports.firstOrNull() ?: 0
+        }
+
         return Ranked(
             DiscoveredTv(
                 vendor = inferred,
                 name = "${inferred.name.lowercase().replaceFirstChar { it.uppercase() }} on $host",
                 host = host,
-                port = TvScanPlan.defaultPortFor(inferred),
+                port = controlPort,
                 // Says plainly that this is a port inference and not an observation, so a
                 // person reading it knows the difference.
                 evidence = "no identifying reply, so this is INFERRED from open ports " +
@@ -393,7 +419,10 @@ class TvDiscovery(
             host = host,
             port = port,
             evidence = "port $port is open, which is ${hint.name}'s remote port",
-            needsPairing = hint != TvVendor.ANDROID_TV,
+            // A Fire TV takes DIAL app launches with no pairing at all, so it must not be
+            // listed as needing one. Its button channel does need a pairing code, and that
+            // belongs in the refusal for a press rather than as a flag on the whole set.
+            needsPairing = hint != TvVendor.ANDROID_TV && hint != TvVendor.AMAZON_FIRE_TV,
         )
     }
 
@@ -401,9 +430,10 @@ class TvDiscovery(
         TvVendor.ROKU -> 0
         TvVendor.SAMSUNG -> 1
         TvVendor.LG -> 2
-        TvVendor.ANDROID_TV -> 3
-        TvVendor.VIZIO -> 4
-        TvVendor.PHILIPS -> 5
+        TvVendor.AMAZON_FIRE_TV -> 3
+        TvVendor.ANDROID_TV -> 4
+        TvVendor.VIZIO -> 5
+        TvVendor.PHILIPS -> 6
         TvVendor.UNKNOWN -> 9
     }
 

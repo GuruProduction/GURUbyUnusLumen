@@ -26,6 +26,9 @@ object TvScanPlan {
         TvVendor.VIZIO -> 7345
         TvVendor.PHILIPS -> 1925
         TvVendor.ANDROID_TV -> 6466
+        // DIAL, which is where a Fire TV accepts an app launch. Its description document
+        // is on 60000, but that is where the make is read from, not where commands go.
+        TvVendor.AMAZON_FIRE_TV -> 8009
         TvVendor.UNKNOWN -> 0
     }
 
@@ -68,6 +71,16 @@ object TvScanPlan {
     fun vendorFromDescription(description: String): TvVendor? {
         val haystack = description.lowercase()
         return when {
+            // AMAZON FIRST, BECAUSE ITS DOCUMENT IS UNAMBIGUOUS AND A PORT IS NOT.
+            //
+            // Issue #243: `manufacturer: Amazon` and a `modelName` beginning AFT are what a
+            // Fire TV publishes, and no other make does. The field the device declared about
+            // itself must beat any guess made from an open port, so this is checked before
+            // everything else, and `androidtv` is checked after it — a Fire TV's description
+            // mentions Android nowhere, but a document that mentions both is still an Amazon
+            // device when Amazon is the manufacturer.
+            haystack.contains("amazon") || Regex("""\baft[a-z0-9]*""").containsMatchIn(haystack) ->
+                TvVendor.AMAZON_FIRE_TV
             haystack.contains("roku") -> TvVendor.ROKU
             haystack.contains("samsung") || haystack.contains("tizen") -> TvVendor.SAMSUNG
             haystack.contains("webos") || haystack.contains("lg electronics") -> TvVendor.LG
@@ -102,8 +115,19 @@ object TvScanPlan {
     fun vendorFromPorts(ports: List<Int>): TvVendor? {
         val has = ports.toSet()
         return when {
-            // A cast port plus the Android debug bridge is a streaming box, not a telly.
-            8009 in has && 5555 in has -> TvVendor.ANDROID_TV
+            // 8009 PLUS 5555 IS DELIBERATELY AMBIGUOUS AND THEREFORE ABSENT. Issue #243.
+            //
+            // 8009 is DIAL, which Fire TV, Chromecast, Android TV and Virgin boxes all open,
+            // and 5555 is the Android debug bridge. The pair proves the host is an Android-
+            // based streaming device; it does NOT prove which make, and a make is what decides
+            // the adapter and the control story. Naming Amazon here would be exactly the
+            // defect #243 filed, one guess further along: the set had already declared
+            // `manufacturer: Amazon` and was being overruled by a port count.
+            //
+            // A host in this state has no vendor this build can name, so it is reported as
+            // UNKNOWN with the ports it exposes as evidence, and the description read in
+            // [TvDiscovery.identifyHost] has already had first refusal on naming it.
+            8009 in has && 5555 in has -> TvVendor.UNKNOWN
             // Roku's own port is already decisive elsewhere; included for completeness.
             8060 in has -> TvVendor.ROKU
             // Samsung, LG, Vizio and Philips all answer on their own remote port.
