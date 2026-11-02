@@ -5,13 +5,12 @@ package com.unuslumen.app.data.fabric.net
 
 /**
  * Proving an endpoint actually said something, before anything is claimed about it.
- * Requirement 7 of the network control spec, from Steven's own live test.
+ * Requirement 7 of the network control spec, from a live test.
  *
- * THE DEFECT THIS EXISTS TO REMOVE, found on his network on 2026-11-01: the Virgin TV
- * boxes at 192.168.0.50 and 192.168.0.154 answer HTTP 200 with the body "status=ok" to
- * EVERY path asked of them, including invented gibberish like /zzzznotreal. So a
- * capability check that treats a 200 as proof would report control of a device that
- * answers everything and does nothing.
+ * THE DEFECT THIS EXISTS TO REMOVE, found on a real network on 2026-11-01: the Virgin TV
+ * set-top boxes answer HTTP 200 with the body "status=ok" to EVERY path asked of them,
+ * including invented gibberish like /zzzznotreal. So a capability check that treats a 200
+ * as proof would report control of a device that answers everything and does nothing.
  *
  * THE METHOD. Ask a nonsense path first and keep the answer as a baseline. Then ask the
  * real path and only trust the answer if it differs from that baseline. A device that
@@ -19,7 +18,7 @@ package com.unuslumen.app.data.fabric.net
  * is reported as exactly that rather than worked around.
  *
  * WHY THIS IS PURE AND SEPARATE. It is a comparison of two responses, so a JVM test can
- * prove the rule against the real strings his boxes returned, without a network and
+ * prove the rule against the real strings those boxes returned, without a network and
  * without a device.
  */
 object EndpointFingerprint {
