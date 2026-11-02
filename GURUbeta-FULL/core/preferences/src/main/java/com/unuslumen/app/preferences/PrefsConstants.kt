@@ -86,6 +86,18 @@ object PrefsConstants {
     /* Heartbeat grid: exact AlarmManager booking chain 2026-10-03 */
     const val HEARTBEAT_NEXT_BOOKED_AT_KEY = "heartbeat_next_booked_at"
 
+    /* The last fire on the wall clock, so the room can say when the chain last moved.
+       A booking alone proves nothing: an alarm can be booked and never delivered, and
+       a beat can be delivered and end before it reaches a model. This is written by
+       the receiver at the moment the alarm arrives, which is the only evidence that
+       the chain is alive rather than merely scheduled. */
+    const val HEARTBEAT_LAST_FIRED_AT_KEY = "heartbeat_last_fired_at"
+
+    /* Why the last beat ended without reaching a model, or empty when it ran.
+       Written by the run service at every early return. Without it a beat that ends
+       on an empty conversation and a beat that never fired look identical on screen. */
+    const val HEARTBEAT_LAST_OUTCOME_KEY = "heartbeat_last_outcome"
+
     /* The Agents intro panel has been read. False on a fresh install, so the
        explanation of what an agent is appears once and then stays out of the way. */
     const val AGENTS_INTRO_SEEN_KEY = "agents_intro_seen"

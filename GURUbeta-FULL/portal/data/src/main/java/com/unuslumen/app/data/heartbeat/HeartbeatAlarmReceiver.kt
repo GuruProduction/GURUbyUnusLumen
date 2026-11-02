@@ -84,6 +84,18 @@ class HeartbeatAlarmReceiver : BroadcastReceiver() {
                 val carried = intent.getLongExtra(
                     HeartbeatScheduler.HEARTBEAT_EXTRA_BOOKED_AT, -1L
                 )
+
+                // THE FIRE IS RECORDED BEFORE ANYTHING CAN FAIL.
+                //
+                // A booking proves only that an alarm was written; this proves one
+                // arrived. Without it, "booked" and "firing" are indistinguishable from
+                // the room, which is exactly why a dead heartbeat can look scheduled
+                // while nothing happens. Written here, first, so a refused start below
+                // still leaves the evidence that the alarm itself is healthy.
+                runCatching {
+                    HeartbeatScheduler.recordFired(appContext, System.currentTimeMillis())
+                }.onFailure { Log.w(TAG, "Fire record failed: ${it.message}") }
+
                 runCatching {
                     appContext.startForegroundService(
                         Intent(appContext, HeartbeatRunService::class.java).apply {
@@ -92,8 +104,15 @@ class HeartbeatAlarmReceiver : BroadcastReceiver() {
                     )
                 }.onFailure { e ->
                     // OneUI FGS start refusals keep the grid alive
-                    // (already rebooked in (a)); the next fire re-kicks.
+                    // (already rebooked in (a)); the next fire re-kicks. The reason is
+                    // recorded as an outcome so the room can name it rather than leave
+                    // a fire that produced nothing with no explanation.
                     Log.w(TAG, "Run service start failed this fire: ${e.message}")
+                    HeartbeatScheduler.recordOutcome(
+                        appContext,
+                        "Alarm fired but the run service was refused: ${e.javaClass.simpleName}. " +
+                            "Usually a background-start restriction; the next fire tries again.",
+                    )
                 }
             } finally {
                 pendingResult.finish()
