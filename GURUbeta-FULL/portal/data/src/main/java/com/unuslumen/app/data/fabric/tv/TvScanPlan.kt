@@ -64,12 +64,6 @@ object TvScanPlan {
      * classifier had no rule for it, so the reply fell through to a refusal and the set
      * vanished while `netHosts` listed it. EOSSTB is the Liberty Global set-top-box platform
      * the Virgin boxes run, so it is matched directly rather than only through the brand.
-     *
-     * AN AMAZON DEVICE IS FOUND THE SAME WAY. A Fire TV serves a DIAL description with
-     * `manufacturer: Amazon` and a model beginning `AFT`. Neither string matched any rule
-     * here, so the reply fell through to [vendorFromPorts], which saw the Cast port and the
-     * adb port and called a Fire TV an Android TV. The manufacturer is the authority and is
-     * read before any port is guessed.
      */
     fun vendorFromDescription(description: String): TvVendor? {
         val haystack = description.lowercase()
@@ -79,9 +73,6 @@ object TvScanPlan {
             haystack.contains("webos") || haystack.contains("lg electronics") -> TvVendor.LG
             haystack.contains("vizio") || haystack.contains("smartcast") -> TvVendor.VIZIO
             haystack.contains("philips") || haystack.contains("jointspace") -> TvVendor.PHILIPS
-            // Amazon, matched on the manufacturer or on the Fire TV model prefix.
-            haystack.contains("amazon") || haystack.contains("<modelname>aft") ||
-                haystack.contains("fire tv") -> TvVendor.AMAZON_FIRE_TV
             haystack.contains("androidtv") || haystack.contains("android tv") ||
                 haystack.contains("google tv") -> TvVendor.ANDROID_TV
             // Recognised as a set, with no adapter in this build. Reported as found and not
@@ -104,11 +95,6 @@ object TvScanPlan {
      * streaming box answering on 5555 (adb) and 8009 (Cast v2) that published no service
      * description and served no banner. That combination is an Android or Fire TV device and
      * nothing else on a home network.
-     *
-     * THIS IS A LAST RESORT AND MUST NEVER OVERRIDE A DECLARED MANUFACTURER. A Fire TV also
-     * serves a DIAL description naming Amazon, so this rule only applies once
-     * [vendorFromDescription] has returned null. Called first, it mislabels every Amazon
-     * device as an Android TV and tells a person their set needs a pairing code it does not.
      *
      * A single ambiguous port decides nothing: 8009 alone is a Chromecast that this build
      * cannot drive, so it is not called a television on that basis.
