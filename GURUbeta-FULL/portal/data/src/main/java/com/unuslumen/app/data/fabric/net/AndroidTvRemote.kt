@@ -18,11 +18,10 @@ import java.security.cert.X509Certificate
 /**
  * Android TV and Google TV, over the Remote v2 protocol. Requirement for his Fire TV.
  *
- * WHY THIS IS WORTH THE COMPLEXITY. His own scan found an Amazon Fire TV at 192.168.0.71
- * that answered SSDP and nothing else, and a Fire TV speaks this protocol on 6466 with its
- * pairing on 6467. So this is a live gap on his own network rather than a theoretical one,
- * and it covers every Android TV box, every Google TV, every Nvidia Shield and every
- * Chromecast with Google TV as well.
+ * WHY THIS IS WORTH THE COMPLEXITY. A Fire TV on a home network answered SSDP and nothing
+ * else, and a Fire TV speaks this protocol on 6466 with its pairing on 6467. So this is a
+ * live gap on a real network rather than a theoretical one, and it covers every Android TV
+ * box, every Google TV, every Nvidia Shield and every Chromecast with Google TV as well.
  *
  * THE PROTOCOL, which is protobuf over TLS:
  *
