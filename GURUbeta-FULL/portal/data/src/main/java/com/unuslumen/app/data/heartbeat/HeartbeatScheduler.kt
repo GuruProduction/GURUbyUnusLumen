@@ -8,6 +8,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import androidx.core.content.ContextCompat
 import androidx.core.app.AlarmManagerCompat
 import androidx.work.WorkManager
 import com.unuslumen.app.preferences.PrefsConstants
@@ -119,6 +120,88 @@ object HeartbeatScheduler : KoinComponent {
     fun readBookedAt(): Flow<String> = getPreference(
         stringPreferencesKey(PrefsConstants.HEARTBEAT_NEXT_BOOKED_AT_KEY), ""
     )
+
+    /** When an alarm last actually arrived, or empty when none has. */
+    fun readLastFiredAt(): Flow<String> = getPreference(
+        stringPreferencesKey(PrefsConstants.HEARTBEAT_LAST_FIRED_AT_KEY), ""
+    )
+
+    /** Why the last beat ended without reaching a model, or empty when it ran. */
+    fun readLastOutcome(): Flow<String> = getPreference(
+        stringPreferencesKey(PrefsConstants.HEARTBEAT_LAST_OUTCOME_KEY), ""
+    )
+
+    /**
+     * Record that an alarm actually arrived.
+     *
+     * THE DIFFERENCE THIS MAKES. [schedule] writes when the next beat is due, and a
+     * booked alarm that Android later drops, or that fires into a refused service,
+     * leaves that booking sitting in the future looking healthy. This timestamp is
+     * written by the receiver at the moment of delivery, so the room can say "last
+     * fired" and a person can tell a live chain from a scheduled one at a glance.
+     */
+    fun recordFired(context: Context, whenMillis: Long) {
+        applicationScope.launch {
+            runCatching {
+                savePreference(
+                    stringPreferencesKey(PrefsConstants.HEARTBEAT_LAST_FIRED_AT_KEY),
+                    whenMillis.toString(),
+                )
+            }.onFailure { Log.w(TAG, "Fire-state write failed: ${it.message}") }
+            // An arrival clears the previous outcome: whatever went wrong last time
+            // has been answered by the chain moving again.
+            runCatching {
+                savePreference(
+                    stringPreferencesKey(PrefsConstants.HEARTBEAT_LAST_OUTCOME_KEY),
+                    "",
+                )
+            }
+        }
+    }
+
+    /**
+     * Record why a beat ended without reaching a model.
+     *
+     * Every early return in the run service calls this. A beat that ends on an empty
+     * conversation and a beat that never fired are different faults with the same
+     * symptom, and this is the only thing that tells them apart after the fact.
+     */
+    fun recordOutcome(context: Context, reason: String) {
+        applicationScope.launch {
+            runCatching {
+                savePreference(
+                    stringPreferencesKey(PrefsConstants.HEARTBEAT_LAST_OUTCOME_KEY),
+                    reason,
+                )
+            }.onFailure { Log.w(TAG, "Outcome write failed: ${it.message}") }
+        }
+    }
+
+    /**
+     * Fire a beat now, by hand.
+     *
+     * The service is started directly rather than through the alarm, so this answers
+     * the question the alarm cannot: is the beat itself broken, or is the chain that
+     * delivers it broken? A person pressing this on a phone where nothing has fired
+     * for hours gets their answer either way, because the outcome is recorded.
+     */
+    fun fireNow(context: Context): Boolean = runCatching {
+        androidx.core.content.ContextCompat.startForegroundService(
+            context,
+            Intent(context, HeartbeatRunService::class.java).apply {
+                putExtra(HEARTBEAT_EXTRA_BOOKED_AT, System.currentTimeMillis())
+            },
+        )
+        Log.d(TAG, "Manual fire requested")
+        true
+    }.getOrElse { error ->
+        Log.w(TAG, "Manual fire refused: ${error.message}")
+        recordOutcome(
+            context,
+            "Manual fire was refused by Android: ${error.javaClass.simpleName}.",
+        )
+        false
+    }
 
     fun cancel(context: Context) {
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager

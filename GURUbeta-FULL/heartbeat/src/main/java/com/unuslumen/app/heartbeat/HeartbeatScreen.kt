@@ -27,6 +27,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -43,6 +44,9 @@ import com.unuslumen.app.ui.theme.MemphisSurface
 import com.unuslumen.app.ui.theme.captionStyle
 import com.unuslumen.app.ui.theme.posterStyle
 import org.koin.androidx.compose.koinViewModel
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * The heartbeat room: the prompt GURU beats with, in its owner's hands.
@@ -97,6 +101,17 @@ fun HeartbeatScreen(
                                 style = bodyText(),
                             )
                         }
+
+                        // THE CHAIN'S PULSE, BEFORE THE PROMPT.
+                        //
+                        // A heartbeat that has stopped is the fault a person notices,
+                        // and until this block existed the room could only show the
+                        // prompt, which looked perfectly healthy whether or not anything
+                        // ever fired. Both numbers are printed because neither is enough
+                        // alone: a next booking with no last fire is a chain written and
+                        // never delivered, which is exactly what a dead heartbeat looks
+                        // like from the inside.
+                        item(key = "chain") { ChainState(state, viewModel) }
 
                         state.notice?.let { notice ->
                             item(key = "notice") { Notice(notice, Memphis.Teal) }
@@ -190,6 +205,96 @@ fun HeartbeatScreen(
                 }
             }
         }
+    }
+}
+
+/**
+ * Whether the chain is alive, said in plain numbers and one plain sentence.
+ *
+ * WHY THIS IS ON THE SCREEN AT ALL. The beat is silent by design, which means its
+ * failure is silent too. A person can only tell that something stopped from outside:
+ * GURU stops saying anything unprompted. That is a bad way to learn the chain is
+ * dead, and it is unfixable by reading code, so the room states the two facts that
+ * distinguish the cases and offers the one action that separates them.
+ */
+@Composable
+private fun ChainState(state: HeartbeatState, viewModel: HeartbeatViewModel) {
+    val clock = remember { SimpleDateFormat("HH:mm", Locale.UK) }
+    val day = remember { SimpleDateFormat("d MMM", Locale.UK) }
+
+    fun stamp(millis: Long): String {
+        if (millis <= 0L) return "never"
+        val at = Date(millis)
+        return "${day.format(at)} ${clock.format(at)}"
+    }
+
+    Band("The chain", if (state.neverFired) "no beat yet" else "alive")
+
+    MemphisSurface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Memphis.Paper,
+        borderWidth = 2.5.dp,
+        shadowOffset = 4.dp,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+            ChainLine("LAST FIRED", stamp(state.lastFiredAt))
+            Spacer(Modifier.height(6.dp))
+            ChainLine("NEXT DUE", stamp(state.nextBookedAt))
+
+            if (state.lastOutcome.isNotBlank()) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    state.lastOutcome,
+                    style = captionStyle(8.5f, Memphis.Coral),
+                )
+            }
+
+            Spacer(Modifier.height(11.dp))
+            MemphisSurface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(
+                        if (state.firing) Modifier
+                        else Modifier.clickable { viewModel.onEvent(HeartbeatEvent.FireNow) }
+                    ),
+                color = if (state.firing) Memphis.Paper else Memphis.Ink,
+                borderWidth = 2.5.dp,
+                shadowOffset = 3.dp,
+            ) {
+                Box(
+                    Modifier.fillMaxWidth().padding(vertical = 11.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        when {
+                            state.firing -> "STARTING A BEAT…"
+                            else -> "FIRE ONE NOW"
+                        },
+                        style = captionStyle(9f, if (state.firing) Memphis.Ink.copy(alpha = 0.4f) else Memphis.Paper),
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "If that beat reaches the model, the chain above is the fault rather than the beat. " +
+                    "If it reports an outcome instead, that sentence is the fault.",
+                style = captionStyle(8f, Memphis.Ink.copy(alpha = 0.55f)),
+            )
+        }
+    }
+}
+
+/** One label and its value, printed as a line rather than a card. */
+@Composable
+private fun ChainLine(label: String, value: String) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.55f)))
+        Text(value.uppercase(), style = posterStyle(13f))
     }
 }
 
