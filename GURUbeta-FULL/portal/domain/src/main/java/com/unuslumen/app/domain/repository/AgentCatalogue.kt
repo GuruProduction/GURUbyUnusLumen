@@ -23,6 +23,16 @@ data class CatalogueAgent(
     val source: String = "community",
     val authorLabel: String? = null,
     val priceCents: Long = 0,
+    /**
+     * What the agent is for, as the market browses by: code, memory, planning, life,
+     * creative or other.
+     *
+     * SEPARATE FROM [source] ON PURPOSE. `source` says whose content this is, which is
+     * the trust boundary the sync worker relies on. The market was reading it as the
+     * category, so its aisle strip showed "builtin" and "community" instead of what
+     * any agent actually does.
+     */
+    val category: String = "other",
     val isActive: Boolean = true
 )
 
@@ -121,7 +131,18 @@ interface AgentCatalogue {
         roleDescription: String,
         systemPrompt: String,
         toolPermissions: List<String>,
-        authorLabel: String?
+        authorLabel: String?,
+        /**
+         * What the agent sells for, in pence. Zero is free.
+         *
+         * IT TRAVELS WITH THE SUBMISSION because the catalogue publishes it. An author
+         * sets a price in the creator and that number has to survive review; a paid
+         * agent that quietly promotes as free is worse than a refusal, because the
+         * person finds out from a buyer.
+         */
+        priceCents: Long = 0,
+        /** What it is for, as the market browses: code, memory, planning, life, creative or other. */
+        category: String = "other",
     ): PublishOutcome
 
     // ------------------------------------------------------------------

@@ -5,6 +5,7 @@ package com.unuslumen.app.guru.presentation.main
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.unuslumen.app.domain.model.CreateModuleRequest
 import com.unuslumen.app.domain.model.ModuleStatus
 import com.unuslumen.app.domain.model.TileOrder
 import com.unuslumen.app.domain.repository.ModuleRepository
@@ -37,7 +38,16 @@ class LobbyTilesViewModel(
         SETTINGS("settings", "Settings"),
         THOUGHTS("thoughts", "Thoughts"),
         SKILLS("skills", "Skills"),
-        AGENTS("agents", "Agents");
+        AGENTS("agents", "Agents"),
+        /**
+         * Ottio: the marketplace, as a room of its own.
+         *
+         * IT USED TO BE A DOOR INSIDE AGENTS, which made the shop a sub-screen of the
+         * thing it sells. A market is where you go to find work somebody else did, and
+         * an agent is what you make for yourself; they are different errands, so they
+         * are different rooms.
+         */
+        OTTIO("ottio", "Ottio");
 
         companion object {
             fun fromKey(key: String): StaticTile? = entries.find { it.key == key.substringAfter("static:") }
@@ -112,6 +122,41 @@ class LobbyTilesViewModel(
             if (seen.add(t.key)) result.add(t)
         }
         return result
+    }
+
+    /**
+     * Make a blank room with a name.
+     *
+     * A VESSEL, NOT A FINISHED ROOM. The name is all this creates; the composition
+     * inside is written afterwards through conversation, which is exactly how the
+     * module-forge doctrine already builds rooms. Creating it here means it appears
+     * in the lobby immediately, which is what a person expects after pressing Create
+     * on the front door.
+     *
+     * THE NAME BECOMES BOTH THE SLUG AND THE DISPLAY NAME. A person does not know
+     * what a slug is and should never be asked for one; the slug is derived, and a
+     * clash is resolved by the same unique rule the repository applies to modules.
+     */
+    fun createRoom(name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch {
+            runCatching {
+                moduleRepository.createModule(
+                    CreateModuleRequest(
+                        name = trimmed.lowercase()
+                            .map { if (it.isLetterOrDigit() && it.code < 128) it else ' ' }
+                            .joinToString("")
+                            .trim()
+                            .replace(Regex("\\s+"), "_")
+                            .ifBlank { "room" },
+                        displayName = trimmed,
+                        description = "",
+                        category = "home",
+                    )
+                )
+            }
+        }
     }
 
     /**

@@ -1,7 +1,7 @@
 // GURU by Unus Lumen - an AI framework that gives a language model real hands on an Android phone.
 // Copyright (C) 2026 Steven Newman, Founder and Developer, Unus Lumen Ltd, Bristol UK.
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
-package com.unuslumen.app.presentation.agents
+package com.unuslumen.app.ottio
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -62,7 +62,7 @@ import org.koin.androidx.compose.koinViewModel
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AgentMarketScreen(
+fun OttioScreen(
     navController: NavHostController,
     viewModel: MarketViewModel = koinViewModel()
 ) {
@@ -74,7 +74,10 @@ fun AgentMarketScreen(
         containerColor = Color.Transparent,
         topBar = {
             guruAppBar(
-                title = "Market",
+                // THE ROOM IS CALLED OTTIO. Not Market, not Marketplace: the name is
+                // the product, and a room that calls itself something else in its
+                // masthead is a room with two names.
+                title = "Ottio",
                 stamp = if (state.ownedCount > 0) "${state.ownedCount} owned" else null,
                 stampColor = Memphis.Yellow,
             )
@@ -194,7 +197,7 @@ fun AgentMarketScreen(
     // The detail sheet, over the page rather than a second route, so going back
     // from a detail returns to where the person was in the list.
     state.detail?.let { detail ->
-        AgentDetailSheet(
+        OttioDetailSheet(
             detail = detail,
             onDismiss = { viewModel.onEvent(MarketEvent.CloseDetail) },
             onInstall = { viewModel.onEvent(MarketEvent.Install(detail.entry.slug)) },
@@ -225,13 +228,13 @@ private fun MarketSearch(value: String, onChange: (String) -> Unit) {
             Spacer(Modifier.width(9.dp))
             Box(Modifier.weight(1f)) {
                 if (value.isEmpty()) {
-                    Text("Search agents", style = bodyStyle().copy(color = Memphis.Ink.copy(alpha = 0.40f)))
+                    Text("Search Ottio", style = ottioBodyStyle().copy(color = Memphis.Ink.copy(alpha = 0.40f)))
                 }
                 BasicTextField(
                     value = value,
                     onValueChange = onChange,
                     singleLine = true,
-                    textStyle = bodyStyle(),
+                    textStyle = ottioBodyStyle(),
                     cursorBrush = SolidColor(Memphis.Ink),
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -299,7 +302,7 @@ private fun ProductBlock(
                 if (entry.roleDescription.isNotBlank()) {
                     Text(
                         text = entry.roleDescription,
-                        style = bodyStyle().copy(fontSize = 11.5.sp, lineHeight = 16.sp),
+                        style = ottioBodyStyle().copy(fontSize = 11.5.sp, lineHeight = 16.sp),
                         maxLines = 3,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(top = 7.dp),
@@ -448,12 +451,12 @@ private fun CantReach(message: String?, onRetry: () -> Unit) {
             shadowOffset = 6.dp,
         ) {
             Column(Modifier.padding(16.dp)) {
-                Text("CANNOT REACH THE MARKET", style = posterStyle(21f))
+                Text("CANNOT REACH OTTIO", style = posterStyle(21f))
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    message ?: "GURU could not ask, so this is not the market being empty. " +
+                    message ?: "GURU could not ask, so this is not Ottio being empty. " +
                         "Everything you already own still works and nothing has been removed.",
-                    style = bodyStyle().copy(fontSize = 11.5.sp, lineHeight = 16.sp),
+                    style = ottioBodyStyle().copy(fontSize = 11.5.sp, lineHeight = 16.sp),
                 )
                 Spacer(Modifier.height(13.dp))
                 Box(
@@ -486,9 +489,9 @@ private fun NothingMatched(query: String, answered: Boolean) {
             if (!answered) {
                 "GURU could not ask, so this says nothing about what exists."
             } else if (query.isBlank()) {
-                "The market answered and has nothing published."
+                "Ottio answered and has nothing published."
             } else {
-                "The market answered and none of it is for that."
+                "Ottio answered and none of it is for that."
             },
             style = captionStyle(9f, Memphis.Ink.copy(alpha = 0.6f)),
             textAlign = TextAlign.Center,
@@ -528,7 +531,7 @@ private fun PageNote(message: String) {
 }
 
 /** The body face at a readable size, in the house voice. */
-internal fun bodyStyle(): TextStyle = TextStyle(
+internal fun ottioBodyStyle(): TextStyle = TextStyle(
     fontFamily = MemphisBody,
     fontSize = 12.5.sp,
     lineHeight = 17.sp,

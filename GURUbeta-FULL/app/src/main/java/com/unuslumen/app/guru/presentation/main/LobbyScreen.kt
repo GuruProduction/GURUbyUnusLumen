@@ -110,6 +110,9 @@ fun LobbyScreen(
     // drop is the commit, exactly as the previous surface behaved, so an
     // interrupted drag cannot leave the saved order half-moved.
     var tileList by remember { mutableStateOf<List<LobbyTile>>(emptyList()) }
+    // Add room is a page-level action from the front door, so the sheet that asks
+    // for the name lives above the scroll rather than inside it.
+    var showAddRoom by remember { mutableStateOf(false) }
     var dragInFlight by remember { mutableStateOf(false) }
     var draggingKey by remember { mutableStateOf<String?>(null) }
     val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
@@ -119,11 +122,30 @@ fun LobbyScreen(
         if (tileList.isEmpty() || !dragInFlight) tileList = tiles
     }
 
+    // THE PAGE IS FIXED AT THE TOP AND LIVE BELOW IT.
+    //
+    // The hero is the Portal and the three chips are Add room, Settings and Ottio,
+    // because those are the four things a person reaches for by hand rather than by
+    // whatever happens to have the highest count today. Everything that is ranked
+    // and dragged lives under the ALL ROOMS band, where a long list cannot push the
+    // front door off the page.
+    //
+    // Ranked-by-count was the previous rule and it failed in a specific way: a busy
+    // Skills count promoted Skills to the hero and the Portal, which is home, slid
+    // down the page or off it entirely.
     val liveCounts = tileCounts(tiles = tileList, counts = counts)
     val ranked = rankRooms(tileList, liveCounts)
-    val hero = ranked.firstOrNull()
-    val chips = ranked.drop(1).take(3)
-    val rest = ranked.drop(4)
+
+    // Fixed chips, in the order the page shows them, resolved by key so a rename or
+    // a reorder in the tile store cannot leave a blank block on the front door.
+    val chipKeys = listOf("static:settings", "static:ottio")
+    val chips = ranked.filter { it.tile.key in chipKeys }
+        .sortedBy { chipKeys.indexOf(it.tile.key) }
+
+    // Everything else in the ruled list, in the saved drag order, without the four
+    // that the top of the page already shows.
+    val pinned = chipKeys + "static:portal"
+    val rest = ranked.filter { it.tile.key !in pinned }
 
     // THE LOBBY DRAWS NO BACKDROP OF ITS OWN.
     //
@@ -141,34 +163,45 @@ fun LobbyScreen(
                     .weight(1f),
                 contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = 20.dp),
             ) {
-                hero?.let { heroRoom ->
-                    item(key = "hero") {
-                        LobbyHero(
-                            title = heroRoom.label,
-                            count = heroRoom.count,
-                            ink = Memphis.inkFor(0),
-                            onOpen = { openRoom(navController, heroRoom.tile) },
-                        )
-                    }
+                item(key = "hero") {
+                    LobbyHero(
+                        // The Portal is the conversation, so it is the room the page
+                        // leads with. Home is the first thing a person wants, not the
+                        // busiest queue.
+                        title = "Portal",
+                        // A conversation has no count worth printing, so the hero shows
+                        // its door and nothing else rather than a dash pretending to be
+                        // a measurement.
+                        count = null,
+                        ink = Memphis.inkFor(0),
+                        onOpen = { navController.navigate(Screen.PortalScreen) { launchSingleTop = true } },
+                    )
                 }
 
-                if (chips.isNotEmpty()) {
-                    item(key = "chips") {
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(top = 14.dp),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            chips.forEachIndexed { chipIndex, room ->
-                                LobbyChip(
-                                    modifier = Modifier.weight(1f),
-                                    label = room.label,
-                                    count = room.count,
-                                    ink = Memphis.inkFor(chipIndex + 1),
-                                    onOpen = { openRoom(navController, room.tile) },
-                                )
-                            }
+                item(key = "chips") {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        // ADD ROOM leads the chips because making a room is the thing a
+                        // person does at the front door rather than inside one.
+                        LobbyChip(
+                            modifier = Modifier.weight(1f),
+                            label = "Add room",
+                            count = null,
+                            ink = Memphis.inkFor(1),
+                            onOpen = { showAddRoom = true },
+                        )
+                        chips.forEachIndexed { chipIndex, room ->
+                            LobbyChip(
+                                modifier = Modifier.weight(1f),
+                                label = room.label,
+                                count = room.count,
+                                ink = Memphis.inkFor(chipIndex + 2),
+                                onOpen = { openRoom(navController, room.tile) },
+                            )
                         }
                     }
                 }
@@ -254,6 +287,22 @@ fun LobbyScreen(
                 onSentToPortal = { sentence ->
                     PendingPortalPrompt.set(sentence)
                     navController.navigate(Screen.PortalScreen) { launchSingleTop = true }
+                },
+            )
+        }
+
+        // ADD ROOM. A blank vessel is created here so the room exists and appears in
+        // the lobby immediately; what goes inside it is written afterwards through
+        // conversation, which is how the module-forge doctrine already works.
+        if (showAddRoom) {
+            AddRoomSheet(
+                onDismiss = { showAddRoom = false },
+                onCreate = { name ->
+                    showAddRoom = false
+                    // The tiles view model owns the module repository, so it is the
+                    // one that can actually make a room. The counts view model only
+                    // reads numbers.
+                    tilesViewModel.createRoom(name)
                 },
             )
         }
@@ -344,6 +393,7 @@ private fun openRoom(navController: NavHostController, tile: LobbyTile) {
         tile.key == "static:thoughts" -> navController.navigate(Screen.ThoughtCyclesScreen)
         tile.key == "static:skills" -> navController.navigate(Screen.SkillsScreen)
         tile.key == "static:agents" -> navController.navigate(Screen.AgentsScreen)
+        tile.key == "static:ottio" -> navController.navigate(Screen.AgentMarketScreen)
         // journal and projects are built but closed: tapping does nothing,
         // which is the honest behaviour rather than a dead screen.
         else -> Unit
@@ -418,7 +468,8 @@ private fun LobbyMasthead(roomTotal: Int) {
 @Composable
 private fun LobbyHero(
     title: String,
-    count: Int,
+    /** Null when the room has no number worth printing, which is the Portal. */
+    count: Int?,
     ink: Color,
     onOpen: () -> Unit,
 ) {
@@ -453,13 +504,15 @@ private fun LobbyHero(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),
                 )
-                Text(
-                    text = if (count > 0) "$count" else "—",
-                    style = posterStyle(64f),
-                    modifier = Modifier
-                        .padding(start = 10.dp)
-                        .offset(y = 2.dp),
-                )
+                if (count != null) {
+                    Text(
+                        text = if (count > 0) "$count" else "—",
+                        style = posterStyle(64f),
+                        modifier = Modifier
+                            .padding(start = 10.dp)
+                            .offset(y = 2.dp),
+                    )
+                }
             }
             Row(
                 Modifier
@@ -486,7 +539,8 @@ private fun LobbyHero(
 private fun LobbyChip(
     modifier: Modifier = Modifier,
     label: String,
-    count: Int,
+    /** Null for a chip that is an action rather than a room with a total. */
+    count: Int?,
     ink: Color,
     onOpen: () -> Unit,
 ) {
@@ -505,7 +559,11 @@ private fun LobbyChip(
             verticalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(
-                text = if (count > 0) "$count" else "—",
+                text = when {
+                    count == null -> "+"
+                    count > 0 -> "$count"
+                    else -> "—"
+                },
                 style = posterStyle(26f),
                 maxLines = 1,
             )
@@ -610,6 +668,138 @@ private fun LobbyRoomRow(
                 style = posterStyle(15f),
                 modifier = Modifier.padding(start = 7.dp),
             )
+        }
+    }
+}
+
+/**
+ * Name a new room.
+ *
+ * WHY IT ASKS FOR ONE THING. A room is a vessel: it has a name and, for now, nothing
+ * in it. The composition inside is written later through conversation, which is how
+ * module-forge already works. Asking for a description, a category and a colour here
+ * would be asking a person to fill in a form for a room they cannot see yet.
+ *
+ * The sheet sits on the same paper as everything else: fixed head, one field, fixed
+ * foot, so the Create button cannot scroll off the bottom of a short phone.
+ */
+@Composable
+private fun AddRoomSheet(
+    onDismiss: () -> Unit,
+    onCreate: (String) -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Memphis.Ink.copy(alpha = 0.45f))
+            .clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+                onClick = onDismiss,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        MemphisSurface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp)
+                .clickable(
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = null,
+                    onClick = {},
+                ),
+            color = Memphis.Paper,
+            borderWidth = 3.dp,
+            shadowOffset = 8.dp,
+        ) {
+            Column(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
+                    Text("ADD A ROOM", style = posterStyle(28f))
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 6.dp)
+                            .height(3.dp)
+                            .background(Memphis.Ink),
+                    )
+                }
+
+                Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 4.dp)) {
+                    Text(
+                        "WHAT IT IS CALLED",
+                        style = captionStyle(9f, Memphis.Ink.copy(alpha = 0.6f)),
+                    )
+                    Spacer(Modifier.height(7.dp))
+                    MemphisSurface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Memphis.Paper,
+                        borderWidth = 2.5.dp,
+                        shadowOffset = 3.dp,
+                    ) {
+                        Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp)) {
+                            if (name.isEmpty()) {
+                                Text(
+                                    "Home, Money, The Betting Room",
+                                    style = captionStyle(9.5f, Memphis.Ink.copy(alpha = 0.4f)),
+                                )
+                            }
+                            androidx.compose.foundation.text.BasicTextField(
+                                value = name,
+                                // A room name is one line. A newline in a tile would
+                                // break the row that has to hold it.
+                                onValueChange = { typed -> name = typed.replace("\n", "") },
+                                singleLine = true,
+                                textStyle = posterStyle(20f),
+                                cursorBrush = androidx.compose.ui.graphics.SolidColor(Memphis.Ink),
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(9.dp))
+                    Text(
+                        "You will be able to fill it in by talking to GURU once it exists.",
+                        style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.55f)),
+                    )
+                }
+
+                Box(Modifier.fillMaxWidth().padding(top = 14.dp).height(3.dp).background(Memphis.Ink))
+                Row(
+                    Modifier.fillMaxWidth().padding(14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    MemphisSurface(
+                        modifier = Modifier.weight(1f).clickable { onDismiss() },
+                        color = Memphis.Paper,
+                        borderWidth = 2.5.dp,
+                        shadowOffset = 4.dp,
+                    ) {
+                        Box(Modifier.fillMaxWidth().padding(vertical = 12.dp), contentAlignment = Alignment.Center) {
+                            Text("CANCEL", style = captionStyle(9.5f))
+                        }
+                    }
+                    // The button is drawn as unavailable while the field is empty rather
+                    // than refusing after the press: a person can see there is nothing
+                    // to make yet.
+                    val ready = name.trim().isNotEmpty()
+                    MemphisSurface(
+                        modifier = Modifier
+                            .weight(1f)
+                            .then(if (ready) Modifier.clickable { onCreate(name.trim()) } else Modifier),
+                        color = if (ready) Memphis.Ink else Memphis.Paper,
+                        borderWidth = 2.5.dp,
+                        shadowOffset = 4.dp,
+                    ) {
+                        Box(Modifier.fillMaxWidth().padding(vertical = 12.dp), contentAlignment = Alignment.Center) {
+                            Text(
+                                "CREATE",
+                                style = captionStyle(9.5f, if (ready) Memphis.Paper else Memphis.Ink.copy(alpha = 0.4f)),
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }

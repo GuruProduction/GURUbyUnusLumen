@@ -68,6 +68,15 @@ object AgentForge {
         val source: String = "community",
         @SerialName("author_label") val authorLabel: String? = null,
         @SerialName("price_cents") val priceCents: Long = 0,
+        /**
+         * What the agent is for, as the market browses by.
+         *
+         * THE SERVER'S OWN COLUMN, NOT THE SOURCE FIELD. `source` says whose content
+         * it is and is a trust boundary; using it as a category made the market's
+         * aisle strip read "builtin" and "community", which is a fact about
+         * provenance rather than about what the agent does.
+         */
+        val category: String = "other",
         @SerialName("is_active") val isActive: Boolean = true
     )
 
@@ -184,7 +193,9 @@ object AgentForge {
         roleDescription: String,
         systemPrompt: String,
         toolPermissions: List<String>,
-        authorLabel: String?
+        authorLabel: String?,
+        priceCents: Long = 0,
+        category: String = "other",
     ): SubmitOutcome = withContext(Dispatchers.IO) {
         val base = baseUrl(context)
         val payload = buildString {
@@ -195,6 +206,12 @@ object AgentForge {
             append(",\"tool_permissions\":[").append(
                 toolPermissions.joinToString(",") { jsonString(it) }
             ).append("]")
+            // PRICE AND CATEGORY TRAVEL WITH THE SUBMISSION. Both are written into
+            // the catalogue by the promotion path, so leaving them out here would
+            // mean an author could set a price in the creator and the approved agent
+            // would still land free, in the wrong aisle.
+            append(",\"price_cents\":").append(priceCents.coerceAtLeast(0))
+            append(",\"category\":").append(jsonString(category))
             if (!authorLabel.isNullOrBlank()) {
                 append(",\"author_label\":").append(jsonString(authorLabel))
             }
@@ -442,6 +459,7 @@ object AgentForge {
         source = source,
         authorLabel = authorLabel,
         priceCents = priceCents,
+        category = category,
         isActive = isActive,
     )
 
