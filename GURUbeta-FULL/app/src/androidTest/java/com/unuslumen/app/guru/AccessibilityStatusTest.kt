@@ -15,7 +15,7 @@ import java.io.File
 /**
  * Holds the accessibility status to one honest answer.
  *
- * WHY THIS EXISTS. Issue 36: `checkAdbStatus` reported `accessibilityRunning:
+ * WHY THIS EXISTS. Issue 36: the status tool reported `accessibilityRunning:
  * false` while UI automation worked. The cause was two signals for one question:
  * the status read one flag, every automation path read `GuruAccessibilityService
  * .instance`, so a status field could report a failure the automation path did
