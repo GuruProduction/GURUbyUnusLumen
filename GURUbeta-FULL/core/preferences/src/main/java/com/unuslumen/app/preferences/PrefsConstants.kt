@@ -86,6 +86,10 @@ object PrefsConstants {
     /* Heartbeat grid: exact AlarmManager booking chain 2026-10-03 */
     const val HEARTBEAT_NEXT_BOOKED_AT_KEY = "heartbeat_next_booked_at"
 
+    /* The Agents intro panel has been read. False on a fresh install, so the
+       explanation of what an agent is appears once and then stays out of the way. */
+    const val AGENTS_INTRO_SEEN_KEY = "agents_intro_seen"
+
     /* One-shot system battery dialog the owner allows: ONE tap total. */
     const val HEARTBEAT_BATTERY_ASK_SHOWN_KEY = "heartbeat_battery_ask_shown"
 

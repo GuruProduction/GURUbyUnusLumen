@@ -30,7 +30,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
-import com.unuslumen.app.guru.presentation.main.Memphis
+import com.unuslumen.app.ui.theme.Memphis
 import com.unuslumen.app.ui.R
 import com.unuslumen.app.ui.navigation.Screen
 import com.unuslumen.app.ui.theme.Fraunces
