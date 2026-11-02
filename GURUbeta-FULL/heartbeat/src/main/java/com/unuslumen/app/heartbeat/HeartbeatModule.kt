@@ -3,6 +3,7 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.heartbeat
 
+import android.content.Context
 import com.unuslumen.app.domain.repository.HeartbeatPromptRepository
 import com.unuslumen.app.preferences.domain.use_case.GetPreferenceUseCase
 import org.koin.core.module.dsl.viewModel
@@ -24,6 +25,20 @@ val heartbeatModule = module {
         HeartbeatViewModel(
             promptRepository = get<HeartbeatPromptRepository>(),
             getPreference = get<GetPreferenceUseCase>(),
+            // THE DOOR TO THE CHAIN, FOR ONE PURPOSE: firing a beat by hand.
+            //
+            // A dead heartbeat and a dead alarm chain have the same symptom, and
+            // nothing on screen could tell them apart. This callback is resolved lazily
+            // at the moment the button is pressed, so the view model never holds an
+            // AlarmManager authority and the room never depends on the chain existing
+            // until somebody asks it to fire.
+            fireNow = {
+                runCatching {
+                    com.unuslumen.app.data.heartbeat.HeartbeatScheduler.fireNow(
+                        get<Context>(),
+                    )
+                }.getOrDefault(false)
+            },
         )
     }
 }

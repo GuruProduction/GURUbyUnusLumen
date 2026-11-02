@@ -148,6 +148,10 @@ class HeartbeatRunService : Service(), KoinComponent {
 
         if (fireBookedAt <= 0L) {
             Log.w(TAG, "HeartbeatRunService start without a real booked-at: drop, no beat runs")
+            HeartbeatScheduler.recordOutcome(
+                applicationContext,
+                "The run service was started by the system with no booking, so no beat ran.",
+            )
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
@@ -192,6 +196,11 @@ class HeartbeatRunService : Service(), KoinComponent {
                     }
                     if (prompt.isNullOrBlank()) {
                         Log.w(TAG, "Prompt unavailable: beat ends, next fire runs it")
+                        HeartbeatScheduler.recordOutcome(
+                            applicationContext,
+                            "The beat fired but there was no prompt to send: neither a saved one " +
+                                "nor a readable bundled one.",
+                        )
                         return@withTimeoutOrNull
                     }
 
@@ -201,6 +210,11 @@ class HeartbeatRunService : Service(), KoinComponent {
                     }.getOrNull()
                     if (conversation == null) {
                         Log.d(TAG, "No conversation exists yet: nothing to wake into")
+                        HeartbeatScheduler.recordOutcome(
+                            applicationContext,
+                            "The beat fired but there is no conversation to wake into yet, so " +
+                                "nothing was sent. Talk to GURU once and the next beat has a home.",
+                        )
                         return@withTimeoutOrNull
                     }
 
@@ -225,6 +239,11 @@ class HeartbeatRunService : Service(), KoinComponent {
                     }
                     if (history.isEmpty()) {
                         Log.d(TAG, "Conversation has no user/assistant history: nothing to wake into")
+                        HeartbeatScheduler.recordOutcome(
+                            applicationContext,
+                            "The beat fired but the newest conversation holds no user or " +
+                                "assistant messages, so there was no history to continue.",
+                        )
                         return@withTimeoutOrNull
                     }
 
@@ -252,11 +271,27 @@ class HeartbeatRunService : Service(), KoinComponent {
                         }
                     }
                     Log.d(TAG, "Beat complete: ${conversation.id}")
+                    // A beat that reached the model clears the previous failure, so the
+                    // room reports the current state of the chain rather than its worst
+                    // moment. Written inside the timed block, so only a real completion
+                    // clears it.
+                    HeartbeatScheduler.recordOutcome(applicationContext, "")
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 Log.w(TAG, "Beat cancelled: ${cancelled.message}")
+                HeartbeatScheduler.recordOutcome(
+                    applicationContext,
+                    "The beat was cancelled before it finished: ${cancelled.message ?: "no reason given"}.",
+                )
             } catch (failure: Exception) {
                 Log.e(TAG, "Beat failed: ${failure.message}")
+                // THE SENTENCE A PERSON NEEDS. A thrown beat used to leave only a log
+                // line under a tag nobody reads, which on screen is identical to a beat
+                // that never fired. This names the fault in the room.
+                HeartbeatScheduler.recordOutcome(
+                    applicationContext,
+                    "The beat started and then failed: ${failure.message ?: failure.javaClass.simpleName}.",
+                )
             } finally {
                 // The UNCONDITIONAL END block. withContext(NonCancellable) is a
                 // guarantee: wake release, real next-book from the REAL run end,

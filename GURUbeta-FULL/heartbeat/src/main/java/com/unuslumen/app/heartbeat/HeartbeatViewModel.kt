@@ -28,9 +28,33 @@ data class HeartbeatState(
     val saving: Boolean = false,
     val notice: String? = null,
     val error: String? = null,
+    /**
+     * When an alarm last actually arrived, as epoch millis, or 0 when none has.
+     *
+     * THIS IS THE CHAIN'S PULSE. A booking in the future proves only that an alarm
+     * was written; this proves one was delivered. Without both numbers on screen,
+     * "scheduled and dead" and "scheduled and working" look the same to the person
+     * holding the phone.
+     */
+    val lastFiredAt: Long = 0L,
+    /** When the next beat is booked for, as epoch millis, or 0 when unknown. */
+    val nextBookedAt: Long = 0L,
+    /**
+     * Why the last beat ended without reaching a model, or empty when it ran.
+     *
+     * The distinction this carries: a beat that fires and ends on an empty
+     * conversation, a beat whose prompt is unavailable, and a beat that never fired
+     * at all are three different faults that all look like "nothing happened".
+     */
+    val lastOutcome: String = "",
+    /** True while a manual fire has been requested and not yet reported back. */
+    val firing: Boolean = false,
 ) {
     /** A save is worth offering only when the text has actually moved. */
     val canSave: Boolean get() = draft.isNotBlank()
+
+    /** True when the chain has never been seen to deliver an alarm. */
+    val neverFired: Boolean get() = lastFiredAt <= 0L
 }
 
 sealed interface HeartbeatEvent {
@@ -39,6 +63,10 @@ sealed interface HeartbeatEvent {
     data object Save : HeartbeatEvent
     data object Reset : HeartbeatEvent
     data object ClearNotice : HeartbeatEvent
+    /** Fire one beat now, so a dead chain can be told apart from a dead beat. */
+    data object FireNow : HeartbeatEvent
+    /** Re-read the chain's own state, after a fire or when the room is reopened. */
+    data object RefreshChain : HeartbeatEvent
 }
 
 /**
@@ -58,6 +86,14 @@ sealed interface HeartbeatEvent {
 class HeartbeatViewModel(
     private val promptRepository: HeartbeatPromptRepository,
     private val getPreference: GetPreferenceUseCase,
+    /**
+     * The chain itself, so the room can report whether it is alive.
+     *
+     * Passed as a narrow callback rather than the scheduler object, because the
+     * scheduler is an Android AlarmManager authority and a view model has no business
+     * holding one. This is only ever "fire once, now".
+     */
+    private val fireNow: () -> Boolean = { false },
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(HeartbeatState())
@@ -76,7 +112,79 @@ class HeartbeatViewModel(
             HeartbeatEvent.Save -> save()
             HeartbeatEvent.Reset -> reset()
             HeartbeatEvent.ClearNotice -> _state.update { it.copy(notice = null, error = null) }
+            HeartbeatEvent.FireNow -> fireOneNow()
+            HeartbeatEvent.RefreshChain -> refreshChain()
         }
+    }
+
+    /**
+     * Read the chain's own pulse.
+     *
+     * Called on load and after a manual fire. Both numbers matter and neither is
+     * enough alone: a next booking with no last fire is a chain that has been written
+     * but never delivered, which is the exact state a dead heartbeat sits in.
+     */
+    private fun refreshChain() {
+        viewModelScope.launch {
+            val fired = runCatching {
+                getPreference(
+                    stringPreferencesKey(PrefsConstants.HEARTBEAT_LAST_FIRED_AT_KEY), ""
+                ).first().toLongOrNull() ?: 0L
+            }.getOrDefault(0L)
+
+            val booked = runCatching {
+                getPreference(
+                    stringPreferencesKey(PrefsConstants.HEARTBEAT_NEXT_BOOKED_AT_KEY), ""
+                ).first().toLongOrNull() ?: 0L
+            }.getOrDefault(0L)
+
+            val outcome = runCatching {
+                getPreference(
+                    stringPreferencesKey(PrefsConstants.HEARTBEAT_LAST_OUTCOME_KEY), ""
+                ).first()
+            }.getOrDefault("")
+
+            _state.update {
+                it.copy(
+                    lastFiredAt = fired,
+                    nextBookedAt = booked,
+                    lastOutcome = outcome,
+                )
+            }
+        }
+    }
+
+    /**
+     * Fire one beat by hand.
+     *
+     * THE DIAGNOSTIC THIS ANSWERS. If nothing has fired for hours there are two
+     * possibilities with the same symptom: the alarm chain is dead, or the beat itself
+     * dies when it runs. Pressing this goes straight to the run service, past the
+     * alarm entirely, so a beat that works here and nowhere else names the chain as
+     * the fault and clears the beat itself.
+     */
+    private fun fireOneNow() {
+        _state.update { it.copy(firing = true, notice = null, error = null) }
+        val accepted = runCatching { fireNow() }.getOrDefault(false)
+        if (!accepted) {
+            _state.update {
+                it.copy(
+                    firing = false,
+                    error = "Android refused to start a beat from here. The reason is recorded " +
+                        "in the chain state below.",
+                )
+            }
+            refreshChain()
+            return
+        }
+        _state.update {
+            it.copy(
+                firing = false,
+                notice = "A beat was started by hand. Open the portal in a moment to see what " +
+                    "GURU said, and the chain state below will report how it ended.",
+            )
+        }
+        refreshChain()
     }
 
     /**
@@ -107,6 +215,7 @@ class HeartbeatViewModel(
                         edited = edited,
                     )
                 }
+                refreshChain()
             } catch (e: Exception) {
                 _state.update {
                     it.copy(isLoading = false, error = e.message ?: "Could not read the heartbeat prompt")
