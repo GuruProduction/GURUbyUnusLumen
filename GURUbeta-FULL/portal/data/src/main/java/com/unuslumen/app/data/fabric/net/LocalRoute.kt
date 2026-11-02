@@ -183,8 +183,13 @@ object LocalRoute {
                         "asked to reach private space or the port is closed",
                 )
             }
+            // BOUNDED WHILE READING, NOT AFTERWARDS. `readText().take(n)` allocates the whole body
+            // into one String and truncates the copy afterwards, so a device that streams a large
+            // payload still fills the heap before the truncation runs. That is exactly the
+            // OutOfMemoryError this app has crashed from, down to the 288-byte allocation that
+            // failed once the heap was already gone.
             val body = runCatching {
-                connection.inputStream.bufferedReader().use { it.readText().take(400_000) }
+                connection.inputStream.use { stream -> readTextBounded(stream, 400_000) }
             }.getOrDefault("")
             Fetch(body, null, null)
         } finally {

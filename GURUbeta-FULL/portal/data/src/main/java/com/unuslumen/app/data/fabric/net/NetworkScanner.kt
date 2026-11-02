@@ -491,7 +491,7 @@ class NetworkScanner(
                 connection.setFixedLengthStreamingMode(0)
                 connection.outputStream.close()
             }
-            connection.inputStream.bufferedReader().use { it.readText().take(200_000) }
+            connection.inputStream.use { stream -> readTextBounded(stream, 200_000) }
         } finally {
             connection.disconnect()
         }

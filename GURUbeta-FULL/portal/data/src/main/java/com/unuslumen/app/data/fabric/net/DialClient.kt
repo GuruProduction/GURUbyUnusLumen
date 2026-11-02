@@ -80,7 +80,11 @@ class DialClient(
                     ),
                 )
             }
-            val body = connection.inputStream.bufferedReader().use { it.readText().take(200_000) }
+            // Bounded while reading, not afterwards. `readText().take(n)` allocates the entire
+            // body into one String and truncates it afterwards, so a device that streams a
+            // large description still fills the heap before the truncation runs. That is the
+            // crash signature BoundedRead was written for.
+            val body = connection.inputStream.use { stream -> readTextBounded(stream, 200_000) }
             val applicationUrl = connection.getHeaderField("Application-URL")
                 ?: connection.getHeaderField("application-url")
 

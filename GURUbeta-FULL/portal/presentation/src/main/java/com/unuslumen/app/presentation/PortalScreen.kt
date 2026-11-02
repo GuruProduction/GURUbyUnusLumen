@@ -628,8 +628,21 @@ fun PortalScreenContent(
 
             // Centre fold GURU logo — background watermark, everything renders on top.
             // Sits ABOVE the art and overlay so the branding reads over the busy texture.
-            Image(
-                painter = painterResource(id = R.drawable.guru_logo),
+            //
+            // DECODED TO THE BOX, NOT TO THE FILE. The source artwork is 4224x2304, which is
+            // 37 MB of ARGB_8888 held in the heap to draw a faint watermark 400dp wide at 15%
+            // alpha. `painterResource` decodes at intrinsic size and scales afterwards, so the
+            // app paid the full 37 MB for every screen that showed it. Once that is spent on a
+            // 256 MB heap, the next allocation fails whatever its size, which is exactly the
+            // crash that was reported: a 288-byte allocation failing with 263 KB left.
+            //
+            // BoundedDrawable decodes to the display size, so the cost is the box on screen and
+            // not the size of the artwork. It falls back to painterResource if the decoder
+            // cannot read the resource, so this cannot make the logo disappear.
+            com.unuslumen.app.ui.components.BoundedDrawable(
+                drawableId = R.drawable.guru_logo,
+                targetWidthDp = 400,
+                targetHeightDp = 218,
                 contentDescription = "GURU",
                 modifier = Modifier
                     .align(Alignment.Center)
