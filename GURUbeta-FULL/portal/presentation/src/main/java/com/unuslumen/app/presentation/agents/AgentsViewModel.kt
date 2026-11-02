@@ -5,6 +5,7 @@ package com.unuslumen.app.presentation.agents
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.unuslumen.app.domain.model.AgentSlug
 import com.unuslumen.app.domain.model.AgentSummary
 import com.unuslumen.app.domain.model.GuruAgent
 import com.unuslumen.app.domain.model.SaveAgentRequest
@@ -221,7 +222,17 @@ class AgentsViewModel(
         }
         _state.update { it.copy(saving = true, error = null) }
         viewModelScope.launch {
-            val slug = slugify(agent.name)
+            // THE AGENT'S OWN SLUG, NOT A FRESH ONE DERIVED HERE.
+            //
+            // Issue #233: the local row and the publish path each derived their own, which
+            // is how one could be empty while the other was correct. Publishing under the
+            // slug the agent already carries means the identity a person sees on this phone
+            // is the identity the catalogue knows it by, and a rename does not silently
+            // publish a second copy under a new slug.
+            //
+            // The fallback covers an agent created before slugs were derived, whose stored
+            // slug is empty: it is slugified on the way out rather than refused.
+            val slug = agent.slug.ifBlank { AgentSlug.from(agent.name) }
             val outcome = agentCatalogue.submitForReview(
                 slug = slug,
                 name = agent.name,
@@ -241,19 +252,11 @@ class AgentsViewModel(
     }
 
     /**
-     * The catalogue's slug rule, matched here rather than discovered by a 400:
-     * lowercase ascii words joined by single dashes, no leading or trailing
-     * dash, no doubled dash.
+     * The slug for a name.
+     *
+     * DELEGATED, NOT DUPLICATED. This used to hold its own copy of the rule, and a second
+     * copy is how it drifted from the one the save path used. [AgentSlug] is the single
+     * definition, kept where the domain can reach it and tested on its own.
      */
-    fun slugify(name: String): String {
-        val base = name.lowercase()
-            .map { c -> if (c.isLetterOrDigit() && c.code < 128) c else ' ' }
-            .joinToString("")
-            .trim()
-            .replace(Regex("\\s+"), "-")
-            .replace(Regex("-+"), "-")
-            .trim('-')
-            .take(64)
-        return base.ifBlank { "agent" }
-    }
+    fun slugify(name: String): String = AgentSlug.from(name)
 }
