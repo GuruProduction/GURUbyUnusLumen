@@ -75,4 +75,64 @@ class BoundedDrawableTest {
         assertTrue(DecodeBudget.sampleFactorFor(logoWidth, logoHeight, -5, -5) >= 1)
     }
 
+    /**
+     * THE BUDGET BINDS EVEN WHEN THE BOX DOES NOT.
+     *
+     * This is the case that a box-only rule got wrong. A 400dp watermark on a 3x screen is
+     * 1200 px wide, and the largest power of two that fits a 4224 px source into that is a
+     * half, leaving a 2112 px decode at 9.3 MB for artwork drawn at 15% alpha. Nine
+     * megabytes is survivable and still wrong, so the cap exists and this pins it.
+     */
+    @Test
+    fun aBoxThatFitsTheBudgetCannotExceedIt() {
+        val sample = DecodeBudget.sampleFactorFor(
+            logoWidth,
+            logoHeight,
+            targetWidth = 1200,
+            targetHeight = 654,
+        )
+        val bytes = DecodeBudget.decodedBytes(logoWidth, logoHeight, sample)
+        assertTrue(
+            "a decorative decode must stay inside the budget, and was ${bytes / 1024 / 1024} MB",
+            bytes <= DecodeBudget.MAX_DECORATIVE_BYTES,
+        )
+    }
+
+    /**
+     * THE HEADLINE NUMBER. Every size this app draws the logo at must now be small.
+     *
+     * Before the fix each of these allocated the whole 37.1 MB.
+     */
+    @Test
+    fun everyRealDrawSizeStaysInsideTheBudget() {
+        val realBoxes = listOf(
+            "portal watermark 400x218dp at 3x" to (1200 to 654),
+            "onboarding ghost 380x208dp at 3x" to (1140 to 624),
+            "onboarding top bar 160x18dp at 3x" to (480 to 54),
+        )
+        for ((name, box) in realBoxes) {
+            val sample = DecodeBudget.sampleFactorFor(logoWidth, logoHeight, box.first, box.second)
+            val bytes = DecodeBudget.decodedBytes(logoWidth, logoHeight, sample)
+            assertTrue(
+                "$name must stay inside the budget, and was ${bytes / 1024} KB at 1/$sample",
+                bytes <= DecodeBudget.MAX_DECORATIVE_BYTES,
+            )
+            assertTrue(
+                "$name must be a large saving on 37 MB, and was ${bytes / 1024} KB",
+                bytes < 37L * 1024 * 1024 / 8,
+            )
+        }
+    }
+
+    /**
+     * A budget that cannot be met still terminates with a valid sample.
+     *
+     * The loop runs on the UI thread, so an unreachable budget must break out rather than
+     * spin. A tiny source with a zero budget is the worst case and must return.
+     */
+    @Test
+    fun anImpossibleBudgetStillReturnsAValidSample() {
+        val sample = DecodeBudget.sampleFactorFor(8, 8, 8, 8, maxBytes = 0)
+        assertTrue("must terminate with a usable sample, got $sample", sample >= 1)
+    }
 }
