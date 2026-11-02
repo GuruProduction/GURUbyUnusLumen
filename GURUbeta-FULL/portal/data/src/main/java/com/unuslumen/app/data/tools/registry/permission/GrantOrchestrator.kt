@@ -198,7 +198,7 @@ object GrantOrchestrator {
             GrantRoute.APP_OP_SETTINGS -> openSettings(context, spec)
             GrantRoute.SERVICE_SETTINGS -> openSettings(context, spec)
             GrantRoute.ROLE -> GrantRouteReport.RoleNotAttempted
-            GrantRoute.SHIZUKU -> GrantRouteReport.ShizukuNotAttempted
+            GrantRoute.SHIZUKU -> GrantRouteReport.ShellUidNotAttempted
             GrantRoute.SELF_GUARD -> GrantRouteReport.NothingToDo
             null -> GrantRouteReport.NothingToDo
         }
@@ -232,8 +232,16 @@ object GrantOrchestrator {
         /** The role path needs a component this build does not declare. */
         data object RoleNotAttempted : GrantRouteReport
 
-        /** Shizuku ships in #173; this build has no shell channel. */
-        data object ShizukuNotAttempted : GrantRouteReport
+        /**
+         * This build has no shell-UID channel, and a normal install never does.
+         *
+         * NAMED FOR THE CHANNEL, NOT FOR SHIZUKU. The route constant keeps its platform
+         * name because it is shared type surface, but the sentence a person or a model
+         * reads describes the capability rather than a power-user product they were never
+         * offered. ADB and Shizuku are power-user surfaces; a normal install must never
+         * be told one of them is the thing standing in its way.
+         */
+        data object ShellUidNotAttempted : GrantRouteReport
 
         /** Nothing needed doing, which is a real answer for the self-guard tier. */
         data object NothingToDo : GrantRouteReport
@@ -247,7 +255,7 @@ object GrantOrchestrator {
             DialogRequested -> "opened the ${spec.label} permission dialog"
             is SettingsOpened -> "opened $screen and left the toggle to you"
             RoleNotAttempted -> "did not request the ${spec.label} role, because this build declares no component for it"
-            ShizukuNotAttempted -> "did not use Shizuku, because the shell-UID channel is not in this build yet"
+            ShellUidNotAttempted -> "found no shell-UID channel, which a normal install does not have"
             NothingToDo -> "took no action for ${spec.label}, because nothing needs granting"
         }
     }

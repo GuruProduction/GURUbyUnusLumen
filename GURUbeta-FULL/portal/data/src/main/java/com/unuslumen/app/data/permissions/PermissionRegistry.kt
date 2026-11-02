@@ -9,7 +9,7 @@ package com.unuslumen.app.data.permissions
  * WHY THIS EXISTS. Issue 46 measured the manifest at 166 declarations, 50 of them
  * referenced in Kotlin. The reason that gap could grow unnoticed is that nothing
  * owned the list: each tool guessed its own answer, so `termuxDiagnose` reported a
- * false "not installed" and `checkAdbStatus` invented a status field, both from the
+ * false "not installed" and `checkAccessibilityStatus` invented a status field, both from the
  * same missing table. This is that table.
  *
  * The contract this file keeps with the rest of the app:
@@ -60,7 +60,7 @@ object PermissionRegistry {
     /** Signature or privileged: reachable only at shell UID or as Device Owner. */
     private fun privileged(
         name: String,
-        mechanism: GrantMechanism = GrantMechanism.SHIZUKU,
+        mechanism: GrantMechanism = GrantMechanism.SHELL_UID,
         tool: String? = null,
         skill: String? = null,
         unlocks: String
@@ -100,7 +100,7 @@ object PermissionRegistry {
         normal("INTERNET", null, null, "Open network connections at all."),
         normal("ACCESS_NETWORK_STATE", "networkState", "network", "Read whether the device is online and what kind of connection it has."),
         normal("ACCESS_WIFI_STATE", "wifiInfo", "wifi", "Read the Wi-Fi connection state, SSID and link speed."),
-        normal("CHANGE_WIFI_STATE", "wifiSetEnabled", "wifi", "Turn Wi-Fi on or off. Android refuses this at app UID, so a Shizuku path is required in practice."),
+        normal("CHANGE_WIFI_STATE", "wifiSetEnabled", "wifi", "Turn Wi-Fi on or off. Android refuses this at app UID on modern versions, so the answer names that limit rather than a route that does not exist."),
         normal("CHANGE_WIFI_MULTICAST_STATE", null, "network_discovery", "Hold a multicast lock so mDNS and SSDP discovery can receive replies."),
         normal("CHANGE_NETWORK_STATE", "networkSetEnabled", "network", "Request a change to the device's data connection, which Android blocks for apps."),
         runtime("NEARBY_WIFI_DEVICES", "wifiNearby", "wifi", "Scan for and connect to nearby Wi-Fi devices without needing location."),

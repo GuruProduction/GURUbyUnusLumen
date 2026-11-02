@@ -174,19 +174,26 @@ class PermissionRegistryManifestParityTest {
     }
 
     @Test
-    fun noPermissionClaimsAShizukuPathItCannotWalkYet() {
-        // #173 builds the shell-UID tier. Until it lands, anything marked SHIZUKU is a
-        // known gap and must not be counted as reachable. This test records the exact
-        // count so #173 has a number to drive to zero or to replace with a working tier.
-        val shizuku = PermissionRegistry.byMechanism(GrantMechanism.SHIZUKU)
+    fun noPermissionClaimsAShellUidPathItCannotWalkYet() {
+        // The shell-UID tier is a power-user surface. Anything marked SHELL_UID is a
+        // known gap on a normal install and must not be counted as reachable. This test
+        // records the exact count so the transport work has a number to drive to zero or
+        // to replace with a working tier.
+        //
+        // IT IS NAMED FOR THE CHANNEL, NOT FOR SHIZUKU. The mechanism is a shell UID;
+        // Shizuku is one product that can provide it. A normal install has neither, and
+        // a test named after the product would read as though the product were the
+        // requirement.
+        val shellUid = PermissionRegistry.byMechanism(GrantMechanism.SHELL_UID)
         assertTrue(
-            "Permissions marked SHIZUKU: ${shizuku.size}. This is the privileged set #173 opens.",
-            shizuku.isNotEmpty()
+            "Permissions marked SHELL_UID: ${shellUid.size}. This is the privileged set that " +
+                "a shell-UID transport would open, and it is a power-user surface only.",
+            shellUid.isNotEmpty()
         )
         assertTrue(
-            "Every SHIZUKU entry must be PRIVILEGED tier: " +
-                "${shizuku.filter { it.tier != PermissionTier.PRIVILEGED }.map { it.permission }}",
-            shizuku.all { it.tier == PermissionTier.PRIVILEGED }
+            "Every SHELL_UID entry must be PRIVILEGED tier: " +
+                "${shellUid.filter { it.tier != PermissionTier.PRIVILEGED }.map { it.permission }}",
+            shellUid.all { it.tier == PermissionTier.PRIVILEGED }
         )
     }
 }

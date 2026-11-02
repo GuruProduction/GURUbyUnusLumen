@@ -65,7 +65,7 @@ class ShellToolExecutor(
             ShellToolDefinitions.LIST_DIRECTORY -> listDirectory(args)
             ShellToolDefinitions.GET_DEVICE_INFO -> getDeviceInfo()
             ShellToolDefinitions.PAIR_ADB -> pairAdb(args)
-            ShellToolDefinitions.CHECK_ADB_STATUS -> checkAdbStatus()
+            ShellToolDefinitions.CHECK_ACCESSIBILITY_STATUS -> checkAccessibilityStatus()
             ShellToolDefinitions.GET_BUSYBOX_HELP -> getBusyboxHelp()
             ShellToolDefinitions.BUSYBOX_EXEC -> busyboxExec(args)
             ShellToolDefinitions.PYTHON_EXEC -> executePython(args)
@@ -145,7 +145,7 @@ class ShellToolExecutor(
      * and the Settings enabled flag is read fresh here so a human who has just
      * toggled it sees the truth immediately rather than after a restart.
      */
-    private suspend fun checkAdbStatus(): ToolExecutionResult = withContext(Dispatchers.IO) {
+    private suspend fun checkAccessibilityStatus(): ToolExecutionResult = withContext(Dispatchers.IO) {
         // Read the system's own view of "is it enabled", because a service cannot
         // see this about itself. Written back so state() can distinguish DISABLED
         // from ENABLED_NOT_BOUND.

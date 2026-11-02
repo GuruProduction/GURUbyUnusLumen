@@ -23,8 +23,8 @@ enum class GrantMechanism {
     /** RoleManager: the user picks GURU for a system role. */
     ROLE,
 
-    /** Shell UID 2000 via Shizuku. Implemented in #173, reported honestly until then. */
-    SHIZUKU,
+    /** A shell-UID transport. Never selected for a normal install; kept for the power-user surface. */
+    SHELL_UID,
 
     /** DevicePolicyManager.setPermissionGrantState, requires Device Owner. */
     DEVICE_OWNER,
