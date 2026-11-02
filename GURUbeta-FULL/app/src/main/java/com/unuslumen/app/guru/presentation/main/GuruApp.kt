@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,6 +42,8 @@ import androidx.navigation.toRoute
 import androidx.navigation.NavDestination.Companion.hasRoute
 import com.unuslumen.app.guru.presentation.main.components.FloatingGuruIcon
 import com.unuslumen.app.ui.components.GuruBackground
+import com.unuslumen.app.ui.components.common.LocalRoomNavigation
+import com.unuslumen.app.ui.components.common.RoomNavigation
 import com.unuslumen.app.adspace.AdSpaceManager
 import com.unuslumen.app.guru.presentation.app_lock.AppLockManager
 import com.unuslumen.app.guru.presentation.app_lock.AuthScreen
@@ -239,6 +242,28 @@ fun guruApp(
             // Drawn in the host rather than in each screen so a room GURU builds
             // for itself inherits it the moment its route exists, with nothing
             // for anyone to remember.
+            // THE WAY OUT OF A ROOM, PROVIDED ONCE FOR EVERY SCREEN.
+            //
+            // The app bar reads this to decide whether to draw a door. It is
+            // provided here rather than passed to twenty screens, and it answers
+            // live: canGoBack is a lambda, so it reflects the back stack as it is
+            // at composition rather than as it was when the host was built.
+            //
+            // The lobby and the portal are the two places with no door, because
+            // both are home. Every other route gets one, including any room GURU
+            // builds for itself later, with nothing for its author to remember.
+            val backStack by navController.currentBackStackEntryAsState()
+            val currentRoute = backStack?.destination?.route
+            val atHome = currentRoute == null ||
+                currentRoute.contains("LobbyScreen") ||
+                currentRoute.contains("PortalScreen")
+
+            CompositionLocalProvider(
+                LocalRoomNavigation provides RoomNavigation(
+                    canGoBack = { !atHome && navController.previousBackStackEntry != null },
+                    goBack = { navController.popBackStack() },
+                )
+            ) {
             Box(Modifier.fillMaxSize()) {
             NavHost(
                 startDestination = startDestination,
@@ -523,6 +548,7 @@ fun guruApp(
                 // chat bar: a human can always find their way home, and can drag
                 // it out of the way of whatever they are reading.
                 FloatingGuruIcon(navController = navController)
+            }
             }
         }
 
