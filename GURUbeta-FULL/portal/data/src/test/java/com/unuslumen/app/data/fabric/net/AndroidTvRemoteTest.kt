@@ -16,11 +16,11 @@ import org.junit.Test
  * WHY THE BYTES MATTER MORE THAN THE LOGIC. A television does not reply "your protobuf was
  * malformed". It closes the connection, which looks exactly like a set that is switched off.
  * So the varints, the field tags and the framing are asserted here rather than discovered
- * against his Fire TV.
+ * against a live set.
  */
 class AndroidTvRemoteTest {
 
-    private val remote = AndroidTvRemote(host = "192.168.0.71")
+    private val remote = AndroidTvRemote(host = "192.0.2.10")
 
     // ------------------------------------------------------------------
     // Protobuf primitives
