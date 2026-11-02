@@ -88,6 +88,10 @@ class AgentCatalogueToolsTest {
         override suspend fun submitForReview(
             slug: String, name: String, roleDescription: String,
             systemPrompt: String, toolPermissions: List<String>, authorLabel: String?,
+            // Price and category travel with every submission so an approved agent
+            // lands priced and in the right aisle. These tools do not publish, so
+            // the defaults are what this fake is asked for.
+            priceCents: Long, category: String,
         ): PublishOutcome = PublishOutcome(true, "ok")
 
         // THE MARKET SIDE. These tools do not read any of it, so each answers with the

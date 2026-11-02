@@ -206,6 +206,10 @@ dependencies {
     implementation(project(":thoughts:presentation"))
     implementation(project(":onboarding:presentation"))
     implementation(project(":adspace"))
+    // OTTIO IS A ROOM OF ITS OWN, so it is a module of its own. A room that lives
+    // inside another room's module cannot be moved, tested or replaced on its own,
+    // and every room GURU ever builds follows the same rule.
+    implementation(project(":ottio"))
 
     implementation(project(":notes:data"))
     implementation(project(":tasks:data"))

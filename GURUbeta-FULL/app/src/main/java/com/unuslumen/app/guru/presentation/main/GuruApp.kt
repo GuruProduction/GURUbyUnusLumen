@@ -66,7 +66,7 @@ import com.unuslumen.app.presentation.JournalSearchScreen
 import com.unuslumen.app.presentation.MemoryScreen
 import com.unuslumen.app.presentation.luxify.SkillsScreen
 import com.unuslumen.app.presentation.agents.AgentsScreen
-import com.unuslumen.app.presentation.agents.AgentMarketScreen
+import com.unuslumen.app.ottio.OttioScreen
 import com.unuslumen.app.presentation.NoteDetailsScreen
 import com.unuslumen.app.presentation.NoteFolderDetailsScreen
 import com.unuslumen.app.presentation.NotesScreen
@@ -499,7 +499,7 @@ fun guruApp(
                     enterTransition = { slideInTransition() },
                     exitTransition = { slideOutTransition() },
                 ) {
-                    AgentMarketScreen(navController = navController)
+                    OttioScreen(navController = navController)
                 }
                 composable<Screen.ThoughtCyclesScreen>(
                     enterTransition = { slideInTransition() },

@@ -55,8 +55,40 @@ data class EditableAgent(
     val description: String = "",
     val systemPrompt: String = "",
     val toolPermissions: Set<String> = emptySet(),
-    val source: String = GuruAgent.SOURCE_USER
-)
+    val source: String = GuruAgent.SOURCE_USER,
+    /**
+     * What the agent sells for, as the person typed it.
+     *
+     * HELD AS THE RAW STRING, not a number, because a half-typed "12." has to stay
+     * on screen while it is being typed and a parse on every keystroke would delete
+     * it. It becomes pence once, at publish time, through [penceFromPounds]. An
+     * empty box is free, which is the honest default rather than a hidden minimum.
+     */
+    val price: String = "",
+    /**
+     * What it is for, as the market browses by.
+     *
+     * A closed set of six, because the market has a category strip and a free-text
+     * box would produce forty near-duplicates of "coding". "other" is the sixth and
+     * the honest home for an agent whose purpose fits none of the five.
+     */
+    val category: String = CATEGORY_OTHER
+) {
+    companion object {
+        const val CATEGORY_CODE = "code"
+        const val CATEGORY_MEMORY = "memory"
+        const val CATEGORY_PLANNING = "planning"
+        const val CATEGORY_LIFE = "life"
+        const val CATEGORY_CREATIVE = "creative"
+        const val CATEGORY_OTHER = "other"
+
+        /** The categories a person picks between, in the order the market shows them. */
+        val CATEGORIES: List<String> = listOf(
+            CATEGORY_CODE, CATEGORY_MEMORY, CATEGORY_PLANNING,
+            CATEGORY_LIFE, CATEGORY_CREATIVE, CATEGORY_OTHER,
+        )
+    }
+}
 
 sealed interface AgentsEvent {
     data object Load : AgentsEvent
@@ -65,7 +97,21 @@ sealed interface AgentsEvent {
     data object CancelEdit : AgentsEvent
     data class UpdateDraft(val draft: EditableAgent) : AgentsEvent
     data class ToggleTool(val toolName: String, val selected: Boolean) : AgentsEvent
+    /** Grant every tool the picker offers, in one press. */
+    data object SelectAllTools : AgentsEvent
+    /** Revoke every grant, back to an agent that reasons without touching anything. */
+    data object ClearAllTools : AgentsEvent
     data object Save : AgentsEvent
+    /**
+     * Save and publish in one step.
+     *
+     * Separate from [Save] because they answer different questions. Save means "keep
+     * this on my phone". Publish means "put this in the catalogue", which is a
+     * network call, a review queue and a public listing. Binding them into one button
+     * would publish something on the way past just because the person wanted to save
+     * their work.
+     */
+    data object SaveAndPublish : AgentsEvent
     data class ToggleEnabled(val id: String, val enabled: Boolean) : AgentsEvent
     data class Delete(val agent: GuruAgent) : AgentsEvent
     data class Publish(val agent: GuruAgent) : AgentsEvent
@@ -129,7 +175,24 @@ class AgentsViewModel(
                 }
                 current.copy(editing = draft.copy(toolPermissions = next))
             }
+            AgentsEvent.SelectAllTools -> _state.update { current ->
+                val draft = current.editing ?: return@update current
+                // Every tool the picker was handed, which is already the grantable
+                // set with the agent verbs filtered out. Granting "all" must never
+                // mean all registered tools, because an agent that can spawn another
+                // agent is a recursion nobody asked for.
+                current.copy(
+                    editing = draft.copy(
+                        toolPermissions = current.availableTools.map { it.name }.toSet(),
+                    ),
+                )
+            }
+            AgentsEvent.ClearAllTools -> _state.update { current ->
+                val draft = current.editing ?: return@update current
+                current.copy(editing = draft.copy(toolPermissions = emptySet()))
+            }
             AgentsEvent.Save -> save()
+            AgentsEvent.SaveAndPublish -> saveAndPublish()
             is AgentsEvent.ToggleEnabled -> toggle(event.id, event.enabled)
             is AgentsEvent.Delete -> delete(event.agent)
             is AgentsEvent.Publish -> publish(event.agent)
@@ -190,14 +253,42 @@ class AgentsViewModel(
         }
     }
 
+    /**
+     * The price as pence, or null when the box does not hold a usable number.
+     *
+     * ONE CONVERSION, AT THE EDGE. The box takes pounds because that is what a
+     * person thinks in; the wire takes pence because that is what money is. Doing
+     * the conversion here means no other layer has to know about pounds, and a
+     * rounding mistake can only happen once.
+     *
+     * A null return is a refusal to publish, not a default. Publishing something
+     * with an unreadable price would either charge a stranger the wrong amount or
+     * give away work the author meant to sell, and neither is recoverable.
+     */
+    private fun penceFromPounds(raw: String): Long? {
+        val trimmed = raw.trim().removePrefix("£").trim()
+        if (trimmed.isEmpty()) return 0L
+        val pounds = trimmed.toDoubleOrNull() ?: return null
+        if (pounds < 0.0) return null
+        // Rounded rather than truncated, because 12.999 typed by accident should
+        // cost 1300, which is the nearest real amount, not 1299.
+        return Math.round(pounds * 100.0)
+    }
+
+    /** Validate the draft, returning the human sentence to show when it is not ready. */
+    private fun validate(draft: EditableAgent, requirePrice: Boolean): String? = when {
+        draft.name.isBlank() -> "Give the agent a name."
+        draft.systemPrompt.isBlank() ->
+            "The agent needs instructions, otherwise it has nothing to be."
+        requirePrice && penceFromPounds(draft.price) == null ->
+            "That price is not a number. Write 0 for free, or an amount like 2.50."
+        else -> null
+    }
+
     private fun save() {
         val draft = _state.value.editing ?: return
-        if (draft.name.isBlank()) {
-            _state.update { it.copy(error = "Give the agent a name.") }
-            return
-        }
-        if (draft.systemPrompt.isBlank()) {
-            _state.update { it.copy(error = "The agent needs instructions, otherwise it has nothing to be.") }
+        validate(draft, requirePrice = false)?.let { problem ->
+            _state.update { it.copy(error = problem) }
             return
         }
 
@@ -227,6 +318,72 @@ class AgentsViewModel(
                 }
             } catch (e: Exception) {
                 _state.update { it.copy(saving = false, error = e.message ?: "Could not save the agent") }
+            }
+        }
+    }
+
+    /**
+     * Save the draft, then send it to the catalogue for review.
+     *
+     * SAVE FIRST, THEN PUBLISH. Publishing reads the stored agent, so a create that
+     * only existed in the form would have no slug to publish under and would have to
+     * be derived a second time. Saving first means the row the catalogue is told
+     * about is the row that exists.
+     *
+     * THE PRICE IS THE POINT OF THIS PATH. Without it the creator wrote a local row
+     * and stopped, which is exactly what left a finished agent with nowhere to go and
+     * no way to charge for it.
+     */
+    private fun saveAndPublish() {
+        val draft = _state.value.editing ?: return
+        validate(draft, requirePrice = true)?.let { problem ->
+            _state.update { it.copy(error = problem) }
+            return
+        }
+        val pence = penceFromPounds(draft.price) ?: return
+
+        _state.update { it.copy(saving = true, error = null) }
+        viewModelScope.launch {
+            try {
+                val request = SaveAgentRequest(
+                    name = draft.name,
+                    description = draft.description,
+                    systemPrompt = draft.systemPrompt,
+                    toolPermissions = draft.toolPermissions.toList().sorted()
+                )
+                val stored = if (draft.id == null) {
+                    agentRepository.createAgent(request)
+                } else {
+                    agentRepository.updateAgent(draft.id, request)
+                }
+
+                val outcome = agentCatalogue.submitForReview(
+                    slug = stored.slug.ifBlank { AgentSlug.from(stored.name) },
+                    name = stored.name,
+                    roleDescription = stored.description,
+                    systemPrompt = stored.systemPrompt,
+                    toolPermissions = stored.toolPermissions,
+                    authorLabel = null,
+                    priceCents = pence,
+                    category = draft.category,
+                )
+
+                val agents = agentRepository.getAllAgents()
+                _state.update { current ->
+                    current.copy(
+                        saving = false,
+                        // A refused publish keeps the form open with the draft intact,
+                        // so the person can fix the sentence the server objected to
+                        // rather than retyping a whole agent.
+                        editing = if (outcome.success) null else current.editing,
+                        agents = agents,
+                        summary = agentRepository.getSummary(),
+                        notice = if (outcome.success) outcome.message else null,
+                        error = if (outcome.success) null else outcome.message,
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(saving = false, error = e.message ?: "Could not publish the agent") }
             }
         }
     }
@@ -291,7 +448,13 @@ class AgentsViewModel(
                 roleDescription = agent.description,
                 systemPrompt = agent.systemPrompt,
                 toolPermissions = agent.toolPermissions,
-                authorLabel = null
+                authorLabel = null,
+                // Publishing from the list carries no price and no category, because
+                // the list row has neither. The creator is where those are set, which
+                // is why [SaveAndPublish] exists: this path is for putting an agent
+                // that already exists into the catalogue as it stands.
+                priceCents = 0,
+                category = EditableAgent.CATEGORY_OTHER,
             )
             _state.update {
                 it.copy(

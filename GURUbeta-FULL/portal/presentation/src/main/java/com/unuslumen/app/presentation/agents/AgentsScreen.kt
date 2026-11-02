@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -45,7 +46,6 @@ import androidx.navigation.NavHostController
 import com.unuslumen.app.domain.model.GuruAgent
 import com.unuslumen.app.domain.repository.GrantableTool
 import com.unuslumen.app.ui.components.common.guruAppBar
-import com.unuslumen.app.ui.navigation.Screen
 import com.unuslumen.app.ui.theme.Memphis
 import com.unuslumen.app.ui.theme.MemphisSurface
 import com.unuslumen.app.ui.theme.captionStyle
@@ -102,7 +102,10 @@ fun AgentsScreen(
                     onToggleTool = { name, selected ->
                         viewModel.onEvent(AgentsEvent.ToggleTool(name, selected))
                     },
+                    onSelectAllTools = { viewModel.onEvent(AgentsEvent.SelectAllTools) },
+                    onClearAllTools = { viewModel.onEvent(AgentsEvent.ClearAllTools) },
                     onSave = { viewModel.onEvent(AgentsEvent.Save) },
+                    onSaveAndPublish = { viewModel.onEvent(AgentsEvent.SaveAndPublish) },
                     onCancel = { viewModel.onEvent(AgentsEvent.CancelEdit) }
                 )
 
@@ -111,7 +114,6 @@ fun AgentsScreen(
                 else -> AgentList(
                     state = state,
                     onShowIntro = { viewModel.onEvent(AgentsEvent.ShowIntro) },
-                    onOpenMarket = { navController.navigate(Screen.AgentMarketScreen) },
                     onToggle = { agent, enabled ->
                         viewModel.onEvent(AgentsEvent.ToggleEnabled(agent.id, enabled))
                     },
@@ -162,7 +164,6 @@ fun AgentsScreen(
 private fun AgentList(
     state: AgentsState,
     onShowIntro: () -> Unit,
-    onOpenMarket: () -> Unit,
     onToggle: (GuruAgent, Boolean) -> Unit,
     onOpen: (GuruAgent) -> Unit,
     onNew: () -> Unit,
@@ -172,21 +173,14 @@ private fun AgentList(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 14.dp, bottom = 28.dp),
     ) {
-        // The two doors, as blocks in the page.
+        // One door, not two. Ottio is its own room in the lobby now, so a second
+        // door here would be the same shop reachable twice from different places.
         item(key = "doors") {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                PaperButton(
-                    label = "What is an agent?",
-                    modifier = Modifier.weight(1f),
-                    onClick = onShowIntro,
-                )
-                PaperButton(
-                    label = "Marketplace →",
-                    modifier = Modifier.weight(1f),
-                    onClick = onOpenMarket,
-                    filled = true,
-                )
-            }
+            PaperButton(
+                label = "What is an agent?",
+                modifier = Modifier.fillMaxWidth(),
+                onClick = onShowIntro,
+            )
         }
 
         state.notice?.let { notice ->
@@ -333,6 +327,38 @@ private fun FlatSwitch(checked: Boolean, onChange: (Boolean) -> Unit) {
     }
 }
 
+/**
+ * One category in the creator's row.
+ *
+ * Drawn as a printed block that fills with ink when chosen, because the creator is
+ * a page in the same grammar as everything else. The selected one is the only block
+ * on the row carrying paper text, so which is chosen reads before any word does.
+ */
+@Composable
+private fun RowScope.CategoryChip(
+    label: String,
+    on: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier
+            .weight(1f)
+            .background(if (on) Memphis.Ink else Memphis.Paper)
+            .border(2.5.dp, Memphis.Ink)
+            .clickable { onClick() }
+            .padding(vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label.uppercase(),
+            style = captionStyle(6.5f, if (on) Memphis.Paper else Memphis.Ink),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
 /** A full-width black band that separates one group from the next. */
 @Composable
 private fun SectionBand(label: String, count: Int?, modifier: Modifier = Modifier) {
@@ -433,7 +459,10 @@ private fun AgentCreator(
     availableTools: List<GrantableTool>,
     onDraftChange: (EditableAgent) -> Unit,
     onToggleTool: (String, Boolean) -> Unit,
+    onSelectAllTools: () -> Unit,
+    onClearAllTools: () -> Unit,
     onSave: () -> Unit,
+    onSaveAndPublish: () -> Unit,
     onCancel: () -> Unit
 ) {
     Column(
@@ -474,6 +503,26 @@ private fun AgentCreator(
         )
 
         Spacer(Modifier.height(18.dp))
+        SectionBand(label = "What it is for", count = null)
+        Spacer(Modifier.height(8.dp))
+        // The market browses by category, so the creator asks for one. A closed set
+        // of six rather than a text box, because free text produces forty spellings
+        // of "coding" and an aisle strip nobody can use.
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            EditableAgent.CATEGORIES.forEach { category ->
+                CategoryChip(
+                    modifier = Modifier.weight(1f),
+                    label = category,
+                    on = draft.category == category,
+                    onClick = { onDraftChange(draft.copy(category = category)) },
+                )
+            }
+        }
+
+        Spacer(Modifier.height(18.dp))
         SectionBand(label = "Tools it may use", count = draft.toolPermissions.size)
         Spacer(Modifier.height(6.dp))
         Text(
@@ -483,10 +532,50 @@ private fun AgentCreator(
         )
         Spacer(Modifier.height(8.dp))
 
+        // ALL OR NONE, IN ONE PRESS. Granting forty tools one switch at a time was
+        // the missing control, and "all" means every tool the picker was handed,
+        // which is already stripped of the agent verbs.
+        Row(
+            Modifier.fillMaxWidth().padding(bottom = 9.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            PaperButton(
+                label = "All tools",
+                modifier = Modifier.weight(1f),
+                filled = draft.toolPermissions.size == availableTools.size &&
+                    availableTools.isNotEmpty(),
+                onClick = onSelectAllTools,
+            )
+            PaperButton(
+                label = "None",
+                modifier = Modifier.weight(1f),
+                filled = draft.toolPermissions.isEmpty(),
+                onClick = onClearAllTools,
+            )
+        }
+
         AgentToolPicker(
             tools = availableTools,
             selected = draft.toolPermissions,
             onToggle = onToggleTool
+        )
+
+        Spacer(Modifier.height(18.dp))
+        SectionBand(label = "Price on Ottio", count = null)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = "Leave it empty to give it away. You keep the majority of every sale; " +
+                "Unus Lumen takes a small cut for running the market.",
+            style = captionStyle(9f, Memphis.Ink.copy(alpha = 0.6f)),
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = draft.price,
+            onValueChange = { onDraftChange(draft.copy(price = it)) },
+            label = { Text("Price in pounds") },
+            placeholder = { Text("Free") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
         )
 
         if (error != null) {
@@ -514,6 +603,21 @@ private fun AgentCreator(
                 onClick = onSave,
             )
         }
+        Spacer(Modifier.height(10.dp))
+        // PUBLISH IS ITS OWN PRESS. Saving keeps the agent on this phone; publishing
+        // puts it in Ottio for review, which is a network call and a public listing.
+        // Binding them into one button would publish work on the way past.
+        PaperButton(
+            label = if (saving) "Working…" else "Save and publish to Ottio",
+            modifier = Modifier.fillMaxWidth(),
+            onClick = onSaveAndPublish,
+        )
+        Spacer(Modifier.height(9.dp))
+        Text(
+            text = "Publishing sends it for review. It goes live once it has been checked, " +
+                "and what a buyer downloads is what was checked.",
+            style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.55f)),
+        )
         Spacer(Modifier.height(28.dp))
     }
 }
