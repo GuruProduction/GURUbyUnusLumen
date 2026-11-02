@@ -1,7 +1,7 @@
 // GURU by Unus Lumen - an AI framework that gives a language model real hands on an Android phone.
 // Copyright (C) 2026 Steven Newman, Founder and Developer, Unus Lumen Ltd, Bristol UK.
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
-package com.unuslumen.app.presentation.agents
+package com.unuslumen.app.ottio
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -157,7 +157,14 @@ class MarketViewModel(
                     name = entry.name,
                     roleDescription = entry.roleDescription,
                     tools = entry.toolPermissions,
-                    category = entry.source.takeIf { it.isNotBlank() } ?: "other",
+                    // THE SERVER'S CATEGORY, NOT ITS SOURCE.
+                    //
+                    // This read `entry.source`, which is the trust boundary ("user",
+                    // "synced", "builtin", "community") rather than a subject, so the
+                    // aisle strip showed BUILTIN and COMMUNITY as if they were genres.
+                    // A real column exists now, so this uses it and falls back to
+                    // "other" only when the catalogue genuinely says nothing.
+                    category = entry.category.takeIf { it.isNotBlank() } ?: "other",
                     isBuiltin = entry.isBuiltin,
                     priceCents = entry.priceCents,
                     maker = publisher?.toMaker() ?: entry.authorLabel?.let { labelOnlyMaker(it) },

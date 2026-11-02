@@ -40,7 +40,9 @@ class AgentCatalogueImpl(
         roleDescription: String,
         systemPrompt: String,
         toolPermissions: List<String>,
-        authorLabel: String?
+        authorLabel: String?,
+        priceCents: Long,
+        category: String,
     ): PublishOutcome {
         val outcome = AgentForge.submitForReview(
             context = context,
@@ -49,7 +51,9 @@ class AgentCatalogueImpl(
             roleDescription = roleDescription,
             systemPrompt = systemPrompt,
             toolPermissions = toolPermissions,
-            authorLabel = authorLabel
+            authorLabel = authorLabel,
+            priceCents = priceCents,
+            category = category,
         )
         return PublishOutcome(
             success = outcome.success,
@@ -89,6 +93,7 @@ class AgentCatalogueImpl(
         source = source,
         authorLabel = authorLabel,
         priceCents = priceCents,
+        category = category,
         isActive = isActive
     )
 }
