@@ -331,7 +331,10 @@ val aiDataModule = module {
     // The agent lane. The runtime is a factory because it reads the connected
     // provider on every spawn, so switching model mid-session takes effect on
     // the next job rather than needing a restart.
-    factory { com.unuslumen.app.data.tools.AgentToolExecutor(get(), get()) }
+    // Three arguments since the catalogue tools landed: the executor now reaches the
+    // publisher as well as the local store and the runtime, so GURU can browse and
+    // install an agent rather than only call one already on the phone.
+    factory { com.unuslumen.app.data.tools.AgentToolExecutor(get(), get(), get()) }
     factory {
         com.unuslumen.app.data.agents.AgentRuntime(
             get(),

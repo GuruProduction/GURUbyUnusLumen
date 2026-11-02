@@ -19,11 +19,31 @@ import kotlin.reflect.KClass
  * job, wait for its report, carry on. Creating and editing agents is the
  * person's job in the creator screen, not a tool, so there is no saveAgent
  * here on purpose.
+ *
+ * THE CATALOGUE TOOLS REACH FURTHER THAN THIS PHONE. The three below were added
+ * because GURU could not answer "is there an agent for this?" at all: `listAgents`
+ * reads the local table, so an agent that exists in the catalogue but is not
+ * installed was invisible to it. The person had a marketplace screen; the numen had
+ * nothing. So it could not suggest one, could not fetch it, and could not add it.
+ *
+ * BROWSE, FETCH AND INSTALL ARE DELIBERATELY SEPARATE. They fail differently and a
+ * caller needs to tell them apart: browsing can be offline, a fetch can name a slug
+ * that does not exist, and an install can only happen once both have succeeded. One
+ * merged tool would report all three as one failure.
  */
 object AgentToolDefinitions : ToolSetRegistration {
 
     const val LIST_AGENTS = "listAgents"
     const val SPAWN_AGENT = "spawnAgent"
+
+    /** Browse the publisher's catalogue, including agents not installed here. */
+    const val BROWSE_AGENT_CATALOGUE = "browseAgentCatalogue"
+
+    /** Read one catalogue agent in full, without installing it. */
+    const val FETCH_CATALOGUE_AGENT = "fetchCatalogueAgent"
+
+    /** Add a catalogue agent to this phone. */
+    const val INSTALL_CATALOGUE_AGENT = "installCatalogueAgent"
 
     override val definitions = listOf(
         ToolDefinition(
@@ -49,6 +69,41 @@ object AgentToolDefinitions : ToolSetRegistration {
                     type = ToolParameterType.String,
                     required = true,
                     description = "The complete instruction. State the goal, the constraints, and what a finished result looks like. The agent has no prior context."
+                )
+            ),
+            permissions = emptyList()
+        ),
+        ToolDefinition(
+            name = BROWSE_AGENT_CATALOGUE,
+            description = "Browse the publisher's agent catalogue, which is every agent that exists to download — including ones not on this phone. Use this when someone asks whether there is an agent for a job, or what agents are available. Each entry carries its slug, name, what it is for, the tools it runs with, the author and whether this phone already has it. This reads the catalogue over the network, so it can answer offline; an offline answer is reported as offline rather than as an empty catalogue.",
+            category = "agents",
+            parameters = emptyList(),
+            permissions = emptyList()
+        ),
+        ToolDefinition(
+            name = FETCH_CATALOGUE_AGENT,
+            description = "Read one agent from the catalogue in full by its slug, without adding it to this phone. Use it to show someone exactly what an agent would do — its instructions and the tools it would run with — before they decide to install it. A slug that does not exist and a network that cannot be reached are reported as different failures.",
+            category = "agents",
+            parameters = listOf(
+                ToolParameter(
+                    name = "slug",
+                    type = ToolParameterType.String,
+                    required = true,
+                    description = "The agent's catalogue slug, as browseAgentCatalogue reported it."
+                )
+            ),
+            permissions = emptyList()
+        ),
+        ToolDefinition(
+            name = INSTALL_CATALOGUE_AGENT,
+            description = "Add a catalogue agent to this phone so it can be spawned. It arrives with the exact tools and instructions the publisher shipped, reviewed before it went live; nothing about it is rewritten here. An agent already installed under the same slug is replaced by the newer version rather than duplicated. This changes what is on the device, so use it when someone has asked for that agent, not speculatively.",
+            category = "agents",
+            parameters = listOf(
+                ToolParameter(
+                    name = "slug",
+                    type = ToolParameterType.String,
+                    required = true,
+                    description = "The agent's catalogue slug, as browseAgentCatalogue reported it."
                 )
             ),
             permissions = emptyList()
