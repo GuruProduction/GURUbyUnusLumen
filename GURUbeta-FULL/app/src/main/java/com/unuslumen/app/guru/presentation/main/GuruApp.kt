@@ -501,6 +501,12 @@ fun guruApp(
                 ) {
                     OttioScreen(navController = navController)
                 }
+                composable<Screen.HeartbeatScreen>(
+                    enterTransition = { slideInTransition() },
+                    exitTransition = { slideOutTransition() },
+                ) {
+                    com.unuslumen.app.heartbeat.HeartbeatScreen(navController = navController)
+                }
                 composable<Screen.ThoughtCyclesScreen>(
                     enterTransition = { slideInTransition() },
                     exitTransition = { slideOutTransition() },

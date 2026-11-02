@@ -3,14 +3,12 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.presentation.components
 
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -18,14 +16,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -37,101 +30,90 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
-import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.unuslumen.app.ui.theme.Memphis
+import com.unuslumen.app.ui.theme.MemphisBody
+import com.unuslumen.app.ui.theme.MemphisSurface
+import com.unuslumen.app.ui.theme.captionStyle
+import com.unuslumen.app.ui.theme.posterStyle
 
 /**
- * Portal design language for Settings.
+ * Settings, in the room theme.
  *
- * Brand tokens mirror PortalScreen: warm ink on aged cream paper, gold
- * monospace accents, hairline gold borders. No cyan anywhere, no neon.
- * Every card is warm paper, every label a quiet ink caption, every action
- * gold. This file is the single place the settings look lives.
+ * WHAT THIS REPLACED, AND WHY IT MATTERED. Settings was the last page still wearing
+ * the old language: rounded 20dp cards, a cream vertical gradient, hairline gold
+ * borders and gold monospace accents. Beside the lobby and the rooms it read as a
+ * different product that happened to share a background, which is exactly the thing
+ * the redesign set out to end.
+ *
+ * NOW IT IS THE SAME PRINTED PAGE. Paper ground, hard ink outlines, a solid printed
+ * drop instead of an elevation, poster capitals for section keys, and a switch drawn
+ * as a block that fills with ink rather than a Material capsule. Nothing glows, floats
+ * or rounds.
+ *
+ * THE NAMES ARE KEPT. Every token and composable below keeps the name the rest of the
+ * settings screens already call, so this is a change of appearance rather than a
+ * rewrite of six call sites. [SettingsGold] survives as an alias for the ink because
+ * a stale name in a call site is a smaller problem than a half-converted page.
  */
 
-// ─── Portal brand tokens (same palette PortalScreen paints with) ───
-val SettingsInk = Color(0xFF2B241C)
-val SettingsInkSoft = SettingsInk.copy(alpha = 0.72f)
-val SettingsInkFaint = SettingsInk.copy(alpha = 0.5f)
-val SettingsPaperHigh = Color(0xFFF0E8DA)
-val SettingsPaperLow = Color(0xFFE4D9C6)
-val SettingsPaperField = Color(0xFFFAF5EA)
-val SettingsGold = Color(0xFFDAA520)
-val SettingsGoldDeep = Color(0xFFB8956A)
-val SettingsSlate = Color(0xFF5B7C99) // grey slate-blue — the non-cyan accent
+// ─── Tokens, kept under their old names so call sites do not move ───
+val SettingsInk = Memphis.Ink
+val SettingsInkSoft = Memphis.Ink.copy(alpha = 0.72f)
+val SettingsInkFaint = Memphis.Ink.copy(alpha = 0.5f)
+val SettingsPaperHigh = Memphis.Paper
+val SettingsPaperLow = Memphis.Paper
+val SettingsPaperField = Memphis.Paper
+
+/** Formerly a gold accent. In this language the accent IS the ink. */
+val SettingsGold = Memphis.Ink
+val SettingsGoldDeep = Memphis.Ink
+val SettingsSlate = Memphis.Teal
 
 /**
- * The settings page brush, now fully transparent.
+ * The settings page brush, fully transparent.
  *
- * Settings used to paint its own cream wash over the page, which put it out of
- * step with every other screen once the app had one shared background. The token
- * is kept rather than deleted because settings call sites still reference it,
- * and an alpha of zero is the honest statement: paint nothing.
+ * Settings used to paint its own cream wash, which fought the one shared background
+ * every other screen inherits. The token is kept because call sites still reference
+ * it, and an alpha of zero is the honest statement: paint nothing.
  */
 val SettingsPageBrush = Brush.verticalGradient(
-    colors = listOf(
-        Color.Transparent,
-        Color.Transparent,
-    )
+    colors = listOf(Color.Transparent, Color.Transparent)
 )
 
-/** One rounded warm-paper card with a hairline gold border. */
+/** One printed block: paper, a hard ink edge and a solid offset drop. */
 @Composable
 fun SettingsSectionCard(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
-    val shape = RoundedCornerShape(20.dp)
-    Card(
+    MemphisSurface(
         modifier = modifier.fillMaxWidth(),
-        shape = shape,
-        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-        elevation = CardDefaults.cardElevation(0.dp),
+        color = Memphis.Paper,
+        borderWidth = 2.5.dp,
+        shadowOffset = 4.dp,
     ) {
-        Box {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(
-                        brush = Brush.verticalGradient(
-                            colors = listOf(
-                                SettingsPaperHigh.copy(alpha = 0.92f),
-                                SettingsPaperLow.copy(alpha = 0.88f),
-                            )
-                        )
-                    )
-            ) {
-                content()
-            }
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(1.dp)
-                    .background(SettingsGold.copy(alpha = 0.35f))
-            )
-        }
+        Column(Modifier.fillMaxWidth()) { content() }
     }
 }
 
-/** Gold monospace caption above a block — the Portal slash-menu signature. */
+/** A section key: small, tracked-out capitals, in ink. */
 @Composable
 fun SettingsSectionTitle(text: String, modifier: Modifier = Modifier) {
     Text(
-        text = text,
-        style = MaterialTheme.typography.labelMedium.copy(
-            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-            fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
-            letterSpacing = 0.6.sp,
-        ),
-        color = SettingsInk.copy(alpha = 0.65f),
+        text = text.uppercase(),
+        style = captionStyle(9.5f, Memphis.Ink.copy(alpha = 0.65f)),
         modifier = modifier,
     )
 }
 
 /**
- * One settings row on warm paper. Icon in a soft ink chip on the left,
- * title + optional caption beside it, value/switch trailing.
+ * One settings row. The icon sits in its own square block rather than a soft chip,
+ * because a soft chip is the shape this language removed.
  */
 @Composable
 fun SettingsRow(
@@ -145,42 +127,38 @@ fun SettingsRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .then(
-                if (onClick != null) Modifier.clickable { onClick() } else Modifier
-            )
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
+            .padding(horizontal = 12.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (icon != null) {
             Box(
                 modifier = Modifier
-                    .size(34.dp)
-                    .background(
-                        color = SettingsInk.copy(alpha = 0.06f),
-                        shape = RoundedCornerShape(10.dp)
-                    ),
+                    .size(32.dp)
+                    .background(Memphis.Paper)
+                    .border(2.dp, Memphis.Ink),
                 contentAlignment = Alignment.Center,
             ) {
-                androidx.compose.material3.Icon(
+                Icon(
                     painter = icon,
                     contentDescription = title,
-                    modifier = Modifier.size(20.dp),
-                    tint = SettingsInk.copy(alpha = 0.8f),
+                    modifier = Modifier.size(18.dp),
+                    tint = Memphis.Ink,
                 )
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(11.dp))
         }
         Column(Modifier.weight(1f)) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.bodyMedium,
-                color = SettingsInk,
+                style = rowTitle(),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
             )
             if (caption != null) {
                 Text(
                     text = caption,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = SettingsInkSoft,
+                    style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.55f)),
                 )
             }
         }
@@ -192,8 +170,11 @@ fun SettingsRow(
 }
 
 /**
- * Settings row whose trailing is a dropdown. The whole row opens the menu;
- * the current selection shows in gold monospace with a drop arrow.
+ * A row whose trailing is a dropdown.
+ *
+ * The menu is a printed panel rather than a Material popup: the same paper and ink as
+ * everything behind it, so opening a picker does not drop a different product on top
+ * of the page for one moment.
  */
 @Composable
 fun SettingsDropdownRow(
@@ -213,19 +194,13 @@ fun SettingsDropdownRow(
             trailing = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = selectedLabel,
-                        style = MaterialTheme.typography.labelMedium.copy(
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                        ),
-                        color = SettingsGoldDeep,
+                        text = selectedLabel.uppercase(),
+                        style = captionStyle(8.5f, Memphis.Ink),
                         maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                     Spacer(Modifier.width(6.dp))
-                    Text(
-                        text = "▾",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = SettingsGoldDeep,
-                    )
+                    Text(text = "▾", style = posterStyle(11f))
                 }
             },
             onClick = { expanded = true },
@@ -233,15 +208,17 @@ fun SettingsDropdownRow(
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
-            modifier = Modifier.heightIn(max = 320.dp),
+            modifier = Modifier
+                .heightIn(max = 320.dp)
+                .background(Memphis.Paper)
+                .border(2.5.dp, Memphis.Ink),
         ) {
             options.forEach { (label, action) ->
                 DropdownMenuItem(
                     text = {
                         Text(
-                            text = label,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = SettingsInk,
+                            text = label.uppercase(),
+                            style = captionStyle(9f, Memphis.Ink),
                         )
                     },
                     onClick = {
@@ -254,7 +231,7 @@ fun SettingsDropdownRow(
     }
 }
 
-/** Warm-ink outlined text field used across settings entry forms. */
+/** A printed field: paper, hard ink edge, printed drop. */
 @Composable
 fun SettingsTextField(
     value: String,
@@ -266,64 +243,59 @@ fun SettingsTextField(
 ) {
     Column(modifier.fillMaxWidth()) {
         Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = SettingsInk.copy(alpha = 0.65f),
-            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
+            text = label.uppercase(),
+            style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.6f)),
+            modifier = Modifier.padding(start = 2.dp, bottom = 5.dp),
         )
-        androidx.compose.material3.OutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
-            placeholder = placeholder?.let {
-                { Text(it, color = SettingsInkFaint, style = MaterialTheme.typography.bodyMedium) }
-            },
-            singleLine = singleLine,
-            shape = RoundedCornerShape(12.dp),
-            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = SettingsGold.copy(alpha = 0.8f),
-                unfocusedBorderColor = SettingsGold.copy(alpha = 0.3f),
-                focusedTextColor = SettingsInk,
-                unfocusedTextColor = SettingsInk,
-                cursorColor = SettingsGold,
-            ),
+        MemphisSurface(
             modifier = Modifier.fillMaxWidth(),
-        )
+            color = Memphis.Paper,
+            borderWidth = 2.5.dp,
+            shadowOffset = 3.dp,
+        ) {
+            Box(Modifier.fillMaxWidth().padding(horizontal = 11.dp, vertical = 11.dp)) {
+                if (value.isEmpty() && placeholder != null) {
+                    Text(
+                        text = placeholder,
+                        style = rowTitle().copy(color = Memphis.Ink.copy(alpha = 0.4f)),
+                    )
+                }
+                androidx.compose.foundation.text.BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    singleLine = singleLine,
+                    textStyle = rowTitle(),
+                    cursorBrush = SolidColor(Memphis.Ink),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
     }
 }
 
-/** Full-width ink button with gold border for the primary action of a card. */
+/** The primary action of a block: solid ink, paper text. */
 @Composable
 fun SettingsPrimaryButton(
     text: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(
-                brush = Brush.horizontalGradient(
-                    listOf(SettingsInk, Color(0xFF4A3E2E))
-                ),
-                shape = RoundedCornerShape(12.dp),
-            )
-            .clickable { onClick() }
-            .padding(vertical = 14.dp),
-        contentAlignment = Alignment.Center,
+    MemphisSurface(
+        modifier = modifier.fillMaxWidth().clickable { onClick() },
+        color = Memphis.Ink,
+        borderWidth = 2.5.dp,
+        shadowOffset = 4.dp,
     ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelLarge,
-            color = Color(0xFFF0E8DA),
-        )
+        Box(
+            Modifier.fillMaxWidth().padding(vertical = 13.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(text.uppercase(), style = captionStyle(9.5f, Memphis.Paper))
+        }
     }
 }
 
-/**
- * Tappable nav link row. Icon in a soft ink chip on the left — the same chip
- * every other settings row uses — title beside it. The icon replaces the old
- * gold monospace key letters, which read as clutter instead of design.
- */
+/** A nav link row: icon in a printed square, name beside it. */
 @Composable
 fun SettingsNavLinkRow(
     title: String,
@@ -335,36 +307,42 @@ fun SettingsNavLinkRow(
         modifier = modifier
             .fillMaxWidth()
             .clickable { onClick() }
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+            .padding(horizontal = 12.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
             modifier = Modifier
-                .size(34.dp)
-                .background(
-                    color = SettingsInk.copy(alpha = 0.06f),
-                    shape = RoundedCornerShape(10.dp)
-                ),
+                .size(32.dp)
+                .background(Memphis.Paper)
+                .border(2.dp, Memphis.Ink),
             contentAlignment = Alignment.Center,
         ) {
-            androidx.compose.material3.Icon(
+            Icon(
                 painter = icon,
                 contentDescription = title,
-                modifier = Modifier.size(20.dp),
-                tint = SettingsInk.copy(alpha = 0.8f),
+                modifier = Modifier.size(18.dp),
+                tint = Memphis.Ink,
             )
         }
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(11.dp))
         Text(
             text = title,
-            style = MaterialTheme.typography.bodyMedium,
-            color = SettingsInk.copy(alpha = 0.85f),
+            style = rowTitle(),
             maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
         )
+        Text(text = "›", style = posterStyle(14f))
     }
 }
 
-/** Warm-paper switch row. */
+/**
+ * A switch in the page's grammar.
+ *
+ * A Material switch is a soft grey capsule with a raised thumb, which reads as a
+ * different product beside a hard ink outline. This is a rectangle that fills with ink
+ * when it is on, at the same border weight as every other block on the page.
+ */
 @Composable
 fun SettingsSwitchRow(
     title: String,
@@ -379,30 +357,46 @@ fun SettingsSwitchRow(
         caption = caption,
         icon = icon,
         modifier = modifier,
-        trailing = {
-            Switch(
-                checked = checked,
-                onCheckedChange = { onCheck(it) },
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = SettingsPaperHigh,
-                    checkedTrackColor = SettingsGoldDeep,
-                    uncheckedThumbColor = SettingsPaperHigh,
-                    uncheckedTrackColor = SettingsInk.copy(alpha = 0.25f),
-                ),
-            )
-        },
+        trailing = { PrintedSwitch(checked = checked, onChange = onCheck) },
         onClick = { onCheck(!checked) },
     )
 }
 
-/** Divider between rows inside a section card — faint ink hairline. */
+@Composable
+private fun PrintedSwitch(checked: Boolean, onChange: (Boolean) -> Unit) {
+    Box(
+        Modifier
+            .size(width = 44.dp, height = 25.dp)
+            .background(if (checked) Memphis.Ink else Memphis.Paper)
+            .border(2.5.dp, Memphis.Ink)
+            .clickable { onChange(!checked) },
+        contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart,
+    ) {
+        Box(
+            Modifier
+                .padding(horizontal = 2.dp)
+                .size(17.dp)
+                .background(if (checked) Memphis.Paper else Memphis.Ink),
+        )
+    }
+}
+
+/** The rule between rows: a hard ink hairline, not a soft one. */
 @Composable
 fun SettingsRowDivider() {
     Box(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 14.dp)
-            .height(1.dp)
-            .background(SettingsInk.copy(alpha = 0.1f))
+            .padding(horizontal = 12.dp)
+            .height(1.5.dp)
+            .background(Memphis.Ink.copy(alpha = 0.18f))
     )
 }
+
+/** The working sans at a readable size, in the house voice. */
+private fun rowTitle(): TextStyle = TextStyle(
+    fontFamily = MemphisBody,
+    fontSize = 12.5.sp,
+    lineHeight = 17.sp,
+    color = Memphis.Ink,
+)

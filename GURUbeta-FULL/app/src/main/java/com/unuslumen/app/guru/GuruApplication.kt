@@ -146,6 +146,9 @@ class GuruApplication : Application() {
                 // boundary.
                 ottioModule,
                 agentsModule,
+                // The heartbeat room. Its prompt lives in the database now, so the
+                // beat reads the owner's text rather than a compiled asset.
+                com.unuslumen.app.heartbeat.heartbeatModule,
             )
             workManagerFactory()
         }

@@ -211,6 +211,7 @@ dependencies {
     // and every room GURU ever builds follows the same rule.
     implementation(project(":ottio"))
     implementation(project(":agents"))
+    implementation(project(":heartbeat"))
 
     implementation(project(":notes:data"))
     implementation(project(":tasks:data"))

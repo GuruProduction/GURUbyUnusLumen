@@ -394,6 +394,7 @@ private fun openRoom(navController: NavHostController, tile: LobbyTile) {
         tile.key == "static:skills" -> navController.navigate(Screen.SkillsScreen)
         tile.key == "static:agents" -> navController.navigate(Screen.AgentsScreen)
         tile.key == "static:ottio" -> navController.navigate(Screen.AgentMarketScreen)
+        tile.key == "static:heartbeat" -> navController.navigate(Screen.HeartbeatScreen)
         // journal and projects are built but closed: tapping does nothing,
         // which is the honest behaviour rather than a dead screen.
         else -> Unit

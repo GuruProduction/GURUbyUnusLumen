@@ -87,7 +87,8 @@ fun SettingsScreen(
     val versionName = remember { context.getPackageInfo().versionName ?: BuildConfig.VERSION_NAME }
 
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
+        // Transparent so the house background is the page, as it is everywhere else.
+        containerColor = androidx.compose.ui.graphics.Color.Transparent,
         snackbarHost = { LocalisedSnackbarHost(snackbarHostState) },
         topBar = {
             guruAppBar(stringResource(R.string.settings))
@@ -98,8 +99,8 @@ fun SettingsScreen(
                 .fillMaxWidth()
                 .background(SettingsPageBrush)
                 .padding(paddingValues),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             // ─── Personal — your name, what GURU calls you ───
             item {
