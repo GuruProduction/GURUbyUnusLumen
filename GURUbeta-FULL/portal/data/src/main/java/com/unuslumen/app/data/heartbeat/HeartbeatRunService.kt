@@ -16,6 +16,7 @@ import android.util.Log
 import com.unuslumen.app.domain.memory.MemoryRepository
 import com.unuslumen.app.domain.model.AiMessage
 import com.unuslumen.app.domain.repository.AiRepository
+import com.unuslumen.app.domain.repository.HeartbeatPromptRepository
 import com.unuslumen.app.preferences.PrefsConstants
 import com.unuslumen.app.preferences.domain.model.stringPreferencesKey
 import com.unuslumen.app.preferences.domain.use_case.GetPreferenceUseCase
@@ -61,6 +62,8 @@ class HeartbeatRunService : Service(), KoinComponent {
     private val aiRepository: AiRepository by inject()
     private val memoryRepository: MemoryRepository by inject()
     private val getPreference: GetPreferenceUseCase by inject()
+    /** The prompt in force: the owner's saved one, or the bundled text. */
+    private val promptRepository: HeartbeatPromptRepository by inject()
 
     private val serviceScope = CoroutineScope(Job() + Dispatchers.Default)
     private var runningJob: Job? = null
@@ -171,9 +174,23 @@ class HeartbeatRunService : Service(), KoinComponent {
                         ).first()
                     }.getOrDefault("")
 
-                    // --- 2. Founder prompt load ---
-                    val prompt = HeartbeatPrompts.load(applicationContext, humanName)
-                    if (prompt == null) {
+                    // --- 2. The prompt in force ---
+                    //
+                    // READ FROM THE REPOSITORY, WHICH IS THE WHOLE POINT OF THE
+                    // HEARTBEAT ROOM. It answers with the owner's saved prompt, or the
+                    // bundled text when nothing has been saved, so a fresh install
+                    // behaves exactly as it did when this was a compiled asset.
+                    //
+                    // The tokens are substituted through HeartbeatPrompts.substitute so
+                    // a stored prompt and the bundled one honour the same contract: a
+                    // second substitution rule here would let the two drift apart.
+                    val rawPrompt = promptRepository.current()
+                    val prompt = if (rawPrompt.isBlank()) {
+                        null
+                    } else {
+                        HeartbeatPrompts.substitute(rawPrompt, humanName)
+                    }
+                    if (prompt.isNullOrBlank()) {
                         Log.w(TAG, "Prompt unavailable: beat ends, next fire runs it")
                         return@withTimeoutOrNull
                     }

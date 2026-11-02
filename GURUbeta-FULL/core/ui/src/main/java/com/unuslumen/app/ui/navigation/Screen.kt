@@ -109,6 +109,10 @@ sealed class Screen {
     @Serializable
     data object ThoughtCyclesScreen : Screen()
 
+    // Heartbeat — the prompt GURU beats with, editable by its owner
+    @Serializable
+    data object HeartbeatScreen : Screen()
+
     // Media — the persistent on-device media library every attachment lands in
     @Serializable
     data object MediaScreen : Screen()

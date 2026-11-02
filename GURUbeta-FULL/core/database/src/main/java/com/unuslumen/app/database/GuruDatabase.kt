@@ -90,7 +90,9 @@ import com.unuslumen.app.database.entity.MediaZoomLogEntity
 import com.unuslumen.app.database.entity.MemoryInjectionEntity
 import com.unuslumen.app.database.entity.FabricDeviceEntity
 import com.unuslumen.app.database.entity.FabricSceneEntity
+import com.unuslumen.app.database.entity.HeartbeatPromptEntity
 import com.unuslumen.app.database.dao.FabricDao
+import com.unuslumen.app.database.dao.HeartbeatPromptDao
 
 @Database(
     entities = [
@@ -136,9 +138,11 @@ import com.unuslumen.app.database.dao.FabricDao
         MediaZoomLogEntity::class,
         MemoryInjectionEntity::class,
         FabricDeviceEntity::class,
-        FabricSceneEntity::class
+        FabricSceneEntity::class,
+        // The heartbeat prompt, so it is the owner's to edit rather than a compiled asset.
+        HeartbeatPromptEntity::class
     ],
-    version = 32
+    version = 33
 )
 @TypeConverters(DBConverters::class)
 abstract class guruDatabase: RoomDatabase() {
@@ -184,6 +188,7 @@ abstract class guruDatabase: RoomDatabase() {
     abstract fun seenImageDao(): SeenImageDao
     abstract fun memoryInjectionDao(): MemoryInjectionDao
     abstract fun fabricDao(): FabricDao
+    abstract fun heartbeatPromptDao(): HeartbeatPromptDao
 
     companion object {
         const val DATABASE_NAME = "guru_db"

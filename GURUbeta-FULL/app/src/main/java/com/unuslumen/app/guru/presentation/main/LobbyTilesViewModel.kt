@@ -47,7 +47,12 @@ class LobbyTilesViewModel(
          * an agent is what you make for yourself; they are different errands, so they
          * are different rooms.
          */
-        OTTIO("ottio", "Ottio");
+        OTTIO("ottio", "Ottio"),
+        /**
+         * The heartbeat room: the prompt GURU beats with, which used to be a
+         * compiled asset and is now the owner's to edit.
+         */
+        HEARTBEAT("heartbeat", "Heartbeat");
 
         companion object {
             fun fromKey(key: String): StaticTile? = entries.find { it.key == key.substringAfter("static:") }
