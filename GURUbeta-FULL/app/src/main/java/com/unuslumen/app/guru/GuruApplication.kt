@@ -70,6 +70,8 @@ import com.unuslumen.app.util.shell.ToyboxProvider
 import com.unuslumen.app.widget.di.WidgetModule
 import com.unuslumen.app.adspace.AdSpaceManager
 import com.unuslumen.app.adspace.adSpaceModule
+import com.unuslumen.app.agents.agentsModule
+import com.unuslumen.app.ottio.ottioModule
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -129,7 +131,21 @@ class GuruApplication : Application() {
                 WidgetModule().module,
                 aiDataModule,
                 AiPresentationModule().module,
-                adSpaceModule
+                adSpaceModule,
+                // THE ROOMS' OWN BINDINGS.
+                //
+                // Ottio and Agents are separate Gradle modules, so each declares its
+                // own module and each has to be registered here by hand. Leaving these
+                // out is what crashed both rooms on open with "No definition found for
+                // type": the screens resolved, and the view model behind each one had
+                // never been registered anywhere.
+                //
+                // They are written as explicit `module { viewModel { ... } }` rather
+                // than left to the KSP generator, which put both view models into a
+                // disabled DefaultModule and produced empty modules across the Gradle
+                // boundary.
+                ottioModule,
+                agentsModule,
             )
             workManagerFactory()
         }
