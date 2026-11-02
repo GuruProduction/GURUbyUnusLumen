@@ -5,6 +5,7 @@ package com.unuslumen.app.data.agents
 
 import com.unuslumen.app.database.dao.GuruAgentDao
 import com.unuslumen.app.database.entity.GuruAgentEntity
+import com.unuslumen.app.domain.model.AgentSlug
 import com.unuslumen.app.domain.model.AgentSummary
 import com.unuslumen.app.domain.model.GuruAgent
 import com.unuslumen.app.domain.model.SaveAgentRequest
@@ -79,11 +80,25 @@ class GuruAgentRepositoryImpl(
             ?: guruAgentDao.getAgentByName(key)?.toDomain()
     }
 
+    /**
+     * Create an agent, giving it a real slug. Issue #233.
+     *
+     * THE SLUG IS DERIVED, NEVER ASKED FOR. A person naming their agent "coding agent"
+     * does not know what a slug is and should never be shown one. It is derived from the
+     * name by [AgentSlug], the same rule the publish path uses, so the identity the agent
+     * carries locally is the identity it publishes under.
+     *
+     * IT USED TO BE HARDCODED TO "". That looked harmless because spawn resolves by name
+     * as a fallback, which is why a created agent still ran. But an empty slug is a SHARED
+     * key: anything that stores a slug — an automation step, a deep link, the skill library
+     * installing by slug — either fails or collides with the next agent created. And the
+     * server requires `slug NOT NULL UNIQUE`, so an empty slug could never publish.
+     */
     override suspend fun createAgent(request: SaveAgentRequest): GuruAgent = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         val entity = GuruAgentEntity(
             id = Uuid.random().toString(),
-            slug = "",
+            slug = AgentSlug.unique(request.name, guruAgentDao.getAllAgents().map { it.slug }),
             name = request.name.trim(),
             description = request.description.trim(),
             systemPrompt = request.systemPrompt,
