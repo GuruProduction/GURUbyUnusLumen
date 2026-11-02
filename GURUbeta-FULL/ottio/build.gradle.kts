@@ -46,6 +46,14 @@ android {
     lint {
         disable += "NullSafeMutableLiveData"
     }
+    testOptions {
+        unitTests {
+            // Robolectric reads this module's own merged manifest and resources, so the
+            // container test runs against the real Android framework rather than the
+            // stubs a plain JVM test gets.
+            isIncludeAndroidResources = true
+        }
+    }
 }
 
 dependencies {
@@ -58,6 +66,15 @@ dependencies {
     // arrive in the shared compose bundle, which is why there is no third entry for
     // them here. An invented catalog name fails to resolve at configuration time.
     testImplementation(libs.junit)
+    // The container test builds a real Koin graph and asks it for the view model, and
+    // mockk supplies the two repositories that graph needs. Both are already used by
+    // portal:data's tests, so this adds no new dependency to the project.
+    testImplementation(libs.mockk)
+    // ViewModel's constructor reaches for Android's main looper, so the container test
+    // needs the real framework on the JVM. The same two versions portal:data uses, so
+    // there is one Robolectric in this build rather than two.
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 
