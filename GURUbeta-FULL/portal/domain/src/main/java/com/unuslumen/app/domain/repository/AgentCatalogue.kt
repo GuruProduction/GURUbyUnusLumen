@@ -34,6 +34,59 @@ data class PublishOutcome(
 )
 
 /**
+ * A maker, as the market knows them.
+ *
+ * A market is people, so an agent carries the identity of whoever published it
+ * rather than a loose name string. Every field here is served by the publisher
+ * and is public by definition, like a package maintainer's page.
+ *
+ * [agentCount] and [since] are computed from their published content rather than
+ * stored, so neither can drift from the catalogue it describes. [since] is null
+ * for a maker with nothing published, because inventing today's date would be a
+ * claim about tenure that is not true.
+ */
+@Serializable
+data class CataloguePublisher(
+    val handle: String,
+    val displayName: String,
+    val bio: String = "",
+    val location: String? = null,
+    val website: String? = null,
+    val isVerified: Boolean = false,
+    val isOfficial: Boolean = false,
+    val agentCount: Int = 0,
+    val since: String? = null,
+)
+
+/** What a publisher's page holds: them, and everything they have published. */
+data class PublisherPage(
+    val publisher: CataloguePublisher,
+    val agents: List<CatalogueAgent>,
+)
+
+/**
+ * The real numbers behind one agent.
+ *
+ * [ratingAverage] is deliberately nullable. Null means nobody has rated it, and
+ * that is a different fact from an average of zero stars. Showing a zero would
+ * tell a person an agent was rated badly when it simply has not been rated.
+ */
+@Serializable
+data class AgentStats(
+    val installs: Long = 0,
+    val ratingCount: Long = 0,
+    val ratingAverage: Double? = null,
+)
+
+/** One review, with no identifier of who left it, because a reader has no business knowing. */
+@Serializable
+data class AgentReview(
+    val stars: Int,
+    val comment: String? = null,
+    val createdAt: String = "",
+)
+
+/**
  * The publisher's agent catalogue: read it, and send one back for review.
  *
  * Declared in domain so the presentation layer can browse and publish without
@@ -70,4 +123,37 @@ interface AgentCatalogue {
         toolPermissions: List<String>,
         authorLabel: String?
     ): PublishOutcome
+
+    // ------------------------------------------------------------------
+    // The market: makers, real numbers, ownership
+    // ------------------------------------------------------------------
+
+    /**
+     * One maker's page. Null when the handle is unknown or the market cannot be
+     * reached, which the caller reports as two different things.
+     */
+    suspend fun fetchPublisher(handle: String): PublisherPage?
+
+    /** The real numbers for one agent, or null when the market cannot be reached. */
+    suspend fun fetchStats(slug: String): AgentStats?
+
+    /** Reviews for one agent, newest first. Empty when there is no market answer. */
+    suspend fun fetchReviews(slug: String): List<AgentReview>
+
+    /**
+     * Record that this phone installed an agent.
+     *
+     * Returns whether it counted. False means this pseudonym already had it, so
+     * the published number did not move and the caller must not imply it did.
+     */
+    suspend fun recordInstall(slug: String): Boolean
+
+    /** Leave or change a rating. Returns whether it replaced a previous one. */
+    suspend fun submitRating(slug: String, stars: Int, comment: String?): Boolean
+
+    /**
+     * The slugs this pseudonym owns, so a bought agent can be re-downloaded and
+     * never sold twice to the same buyer.
+     */
+    suspend fun ownedSlugs(): Set<String>
 }

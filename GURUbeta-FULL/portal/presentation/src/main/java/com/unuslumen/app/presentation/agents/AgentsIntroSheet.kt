@@ -14,8 +14,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -61,6 +64,11 @@ fun AgentsIntroPanel(
         modifier = modifier
             .fillMaxSize()
             .background(Memphis.Ink.copy(alpha = 0.55f))
+            // SAFE AREA. Without these the sheet could sit under the status bar or
+            // the navigation gesture strip on a phone with either, which is what
+            // put the head and the way out outside the visible area.
+            .statusBarsPadding()
+            .navigationBarsPadding()
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -72,6 +80,10 @@ fun AgentsIntroPanel(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 18.dp)
+                // A HARD CEILING. The head and the way out are fixed; only the
+                // body between them scrolls, so GOT IT is always on screen no
+                // matter how long the explanation runs or how short the phone is.
+                .heightIn(max = 620.dp)
                 // The tap on the sheet itself must not fall through to the scrim
                 // and dismiss what the person is reading.
                 .clickable(
@@ -83,113 +95,119 @@ fun AgentsIntroPanel(
             borderWidth = 3.dp,
             shadowOffset = 8.dp,
         ) {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 14.dp),
-            ) {
-                // The masthead, in the same grammar as the lobby's own.
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text(
-                        text = "AGENTS",
-                        style = posterStyle(34f),
-                    )
-                    Text(
-                        text = "NEW",
-                        style = captionStyle(9f),
-                        modifier = Modifier
-                            .background(Memphis.Coral)
-                            .padding(horizontal = 7.dp, vertical = 4.dp),
-                    )
-                }
+            Column(Modifier.fillMaxWidth()) {
+                // --- fixed head ---
+                Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
+                    // The masthead, in the same grammar as the lobby's own.
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = "AGENTS",
+                            style = posterStyle(34f),
+                        )
+                        Text(
+                            text = "NEW",
+                            style = captionStyle(9f),
+                            modifier = Modifier
+                                .background(Memphis.Coral)
+                                .padding(horizontal = 7.dp, vertical = 4.dp),
+                        )
+                    }
 
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(top = 6.dp)
-                        .height(3.dp)
-                        .background(Memphis.Ink),
-                )
-
-                Spacer(Modifier.height(14.dp))
-
-                IntroLine(
-                    mark = Memphis.Yellow,
-                    title = "A MINI GURU",
-                    body = "An agent is a mini GURU you send off with written instructions to do a " +
-                        "side job on its own. It does the digging and comes back with a report, so " +
-                        "your main chat stays clean and you carry on with what you were doing.",
-                )
-
-                IntroLine(
-                    mark = Memphis.Cyan,
-                    title = "YOURS AND GURU'S",
-                    body = "You can run one yourself, or GURU can call one mid conversation and manage " +
-                        "it live while it works. They can share the session context they were sent " +
-                        "from, so a job that depends on what you were just talking about still lands " +
-                        "properly. GURU double checks what comes back, because an agent can be wrong.",
-                )
-
-                IntroLine(
-                    mark = Memphis.Purple,
-                    title = "MAKE YOUR OWN",
-                    body = "Say what it is for and what it is allowed to touch. It is yours, it lives " +
-                        "on your phone, and you can change it any time.",
-                )
-
-                IntroLine(
-                    mark = Memphis.Teal,
-                    title = "USE OTHER PEOPLE'S",
-                    body = "Browse what people have built, read exactly what an agent does before you " +
-                        "add it, then download it. A good one turns a job you would have had to " +
-                        "explain from scratch into a job you just hand over.",
-                )
-
-                IntroLine(
-                    mark = Memphis.Pink,
-                    title = "SHARE YOURS",
-                    body = "Publish an agent you have built so anyone can use it, free or at a price " +
-                        "you set. Every one is checked before it goes live, so what you download is " +
-                        "what somebody actually tested.",
-                    last = true,
-                )
-
-                Spacer(Modifier.height(16.dp))
-
-                MemphisSurface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onDismiss() },
-                    color = Memphis.Ink,
-                    borderWidth = 3.dp,
-                    shadowOffset = 5.dp,
-                ) {
                     Box(
                         Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 13.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = "GOT IT",
-                            style = posterStyle(17f, Memphis.Paper),
-                        )
-                    }
+                            .padding(top = 6.dp)
+                            .height(3.dp)
+                            .background(Memphis.Ink),
+                    )
                 }
 
-                Spacer(Modifier.height(12.dp))
+                // --- the body scrolls ---
+                Column(
+                    Modifier
+                        .weight(1f, fill = false)
+                        .verticalScroll(rememberScrollState())
+                        .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 12.dp),
+                ) {
+                    IntroLine(
+                        mark = Memphis.Yellow,
+                        title = "A MINI GURU",
+                        body = "An agent is a mini GURU you send off with written instructions to do a " +
+                            "side job on its own. It does the digging and comes back with a report, so " +
+                            "your main chat stays clean and you carry on with what you were doing.",
+                    )
 
-                Text(
-                    text = "You can read this again from the Agents room any time.",
-                    style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.6f)),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                    IntroLine(
+                        mark = Memphis.Cyan,
+                        title = "YOURS AND GURU'S",
+                        body = "You can run one yourself, or GURU can call one mid conversation and manage " +
+                            "it live while it works. They can share the session context they were sent " +
+                            "from, so a job that depends on what you were just talking about still lands " +
+                            "properly. GURU double checks what comes back, because an agent can be wrong.",
+                    )
+
+                    IntroLine(
+                        mark = Memphis.Purple,
+                        title = "MAKE YOUR OWN",
+                        body = "Say what it is for and what it is allowed to touch. It is yours, it lives " +
+                            "on your phone, and you can change it any time.",
+                    )
+
+                    IntroLine(
+                        mark = Memphis.Teal,
+                        title = "USE OTHER PEOPLE'S",
+                        body = "Browse what people have built, read exactly what an agent does before you " +
+                            "add it, then download it. A good one turns a job you would have had to " +
+                            "explain from scratch into a job you just hand over.",
+                    )
+
+                    IntroLine(
+                        mark = Memphis.Pink,
+                        title = "SHARE YOURS",
+                        body = "Publish an agent you have built so anyone can use it, free or at a price " +
+                            "you set. Every one is checked before it goes live, so what you download is " +
+                            "what somebody actually tested.",
+                        last = true,
+                    )
+                }
+
+                // --- the fixed foot: the way out, always on screen ---
+                Box(Modifier.fillMaxWidth().height(3.dp).background(Memphis.Ink))
+                Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 14.dp)) {
+                    MemphisSurface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onDismiss() },
+                        color = Memphis.Ink,
+                        borderWidth = 3.dp,
+                        shadowOffset = 5.dp,
+                    ) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 13.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "GOT IT",
+                                style = posterStyle(17f, Memphis.Paper),
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(9.dp))
+
+                    Text(
+                        text = "You can read this again from the Agents room any time.",
+                        style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.6f)),
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
         }
     }
