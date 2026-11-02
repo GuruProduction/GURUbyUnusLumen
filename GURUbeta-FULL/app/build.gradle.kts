@@ -212,6 +212,7 @@ dependencies {
     implementation(project(":ottio"))
     implementation(project(":agents"))
     implementation(project(":heartbeat"))
+    implementation(project(":innermind"))
 
     implementation(project(":notes:data"))
     implementation(project(":tasks:data"))

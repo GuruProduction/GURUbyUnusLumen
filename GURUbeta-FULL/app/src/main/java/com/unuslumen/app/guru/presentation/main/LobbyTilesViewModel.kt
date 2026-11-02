@@ -52,7 +52,14 @@ class LobbyTilesViewModel(
          * The heartbeat room: the prompt GURU beats with, which used to be a
          * compiled asset and is now the owner's to edit.
          */
-        HEARTBEAT("heartbeat", "Heartbeat");
+        HEARTBEAT("heartbeat", "Heartbeat"),
+        /**
+         * The inner mind: everything stored, drawn as one interactive graph.
+         *
+         * A room rather than a settings sub-screen, because it is a place you go
+         * to look at the whole thing rather than a control you adjust.
+         */
+        INNER_MIND("innermind", "Inner Mind");
 
         companion object {
             fun fromKey(key: String): StaticTile? = entries.find { it.key == key.substringAfter("static:") }

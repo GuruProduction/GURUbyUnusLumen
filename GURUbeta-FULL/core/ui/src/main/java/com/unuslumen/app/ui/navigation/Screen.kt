@@ -113,6 +113,10 @@ sealed class Screen {
     @Serializable
     data object HeartbeatScreen : Screen()
 
+    // Inner Mind: everything GURU holds, drawn as one interactive graph
+    @Serializable
+    data object InnerMindScreen : Screen()
+
     // Media — the persistent on-device media library every attachment lands in
     @Serializable
     data object MediaScreen : Screen()

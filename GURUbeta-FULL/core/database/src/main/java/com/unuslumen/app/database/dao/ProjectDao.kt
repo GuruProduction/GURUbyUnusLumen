@@ -20,6 +20,10 @@ interface ProjectDao {
     
     @Query("SELECT * FROM projects ORDER BY updated_date DESC")
     fun getAllProjects(): Flow<List<ProjectEntity>>
+
+    /** The same listing as a one-shot, for readers that want a snapshot. */
+    @Query("SELECT * FROM projects ORDER BY updated_date DESC")
+    suspend fun getAllProjectsSnapshot(): List<ProjectEntity>
     
     @Query("SELECT * FROM projects WHERE is_active = 1 ORDER BY updated_date DESC")
     fun getActiveProjects(): Flow<List<ProjectEntity>>

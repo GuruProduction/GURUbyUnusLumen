@@ -21,6 +21,10 @@ interface MemoryCrossReferenceDao {
     @Query("SELECT * FROM memory_cross_references WHERE fact_id_a = :factId OR fact_id_b = :factId")
     suspend fun getCrossReferencesFor(factId: String): List<MemoryCrossReferenceEntity>
 
+    /** Every cross reference, for a reader that draws the whole graph at once. */
+    @Query("SELECT * FROM memory_cross_references")
+    suspend fun getAllCrossReferences(): List<MemoryCrossReferenceEntity>
+
     @Query("SELECT * FROM memory_cross_references WHERE ref_type = :refType")
     suspend fun getByType(refType: String): List<MemoryCrossReferenceEntity>
 

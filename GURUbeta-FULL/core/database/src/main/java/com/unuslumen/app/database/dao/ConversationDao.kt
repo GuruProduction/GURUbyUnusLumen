@@ -34,6 +34,17 @@ interface ConversationDao {
     @Query("SELECT * FROM conversations ORDER BY updated_date DESC")
     fun getAllConversations(): Flow<List<ConversationEntity>>
 
+    /**
+     * The same listing as a one-shot.
+     *
+     * A Flow is right for the screens that watch conversations live. A snapshot
+     * reader, such as a graph that lays itself out once, wants one answer and no
+     * subscription: collecting a Flow to take its first value and then cancelling
+     * is more machinery than the read deserves.
+     */
+    @Query("SELECT * FROM conversations ORDER BY updated_date DESC")
+    suspend fun getAllConversationsSnapshot(): List<ConversationEntity>
+
     @Query("SELECT * FROM conversations WHERE id = :conversationId")
     suspend fun getConversation(conversationId: String): ConversationEntity?
 

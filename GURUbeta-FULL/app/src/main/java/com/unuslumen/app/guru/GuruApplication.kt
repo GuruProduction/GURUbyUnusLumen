@@ -149,6 +149,10 @@ class GuruApplication : Application() {
                 // The heartbeat room. Its prompt lives in the database now, so the
                 // beat reads the owner's text rather than a compiled asset.
                 com.unuslumen.app.heartbeat.heartbeatModule,
+                // The inner mind: the map of everything stored, and the reader it
+                // is built from. Registered here for the same reason as the two
+                // rooms above, since it is its own Gradle module.
+                com.unuslumen.app.innermind.innermindModule,
             )
             workManagerFactory()
         }
