@@ -14,7 +14,18 @@ import kotlin.reflect.KClass
 object ShellToolDefinitions : ToolSetRegistration {
     const val EXECUTE_SHELL = "executeShellCommand"; const val READ_FILE = "readFile"; const val WRITE_FILE = "writeFile"
     const val LIST_DIRECTORY = "listDirectory"; const val GET_DEVICE_INFO = "getDeviceInfo"
-    const val PAIR_ADB = "pairAdbDevice"; const val CHECK_ADB_STATUS = "checkAdbStatus"
+    const val PAIR_ADB = "pairAdbDevice"
+
+    /**
+     * The capability audit, named for what it actually reports.
+     *
+     * IT USED TO BE `checkAdbStatus`, and the name was a lie in the direction that
+     * matters: it answers two separate questions, one of which is accessibility, and
+     * naming it after ADB told a normal user that a power-user transport was the thing
+     * they were being asked about. ADB and Shizuku stay power-user surfaces; this tool
+     * is the ordinary capability check and must not read as an ADB prompt.
+     */
+    const val CHECK_ACCESSIBILITY_STATUS = "checkAccessibilityStatus"
     const val GET_BUSYBOX_HELP = "getBusyboxHelp"; const val BUSYBOX_EXEC = "busyboxExec"
     const val PYTHON_EXEC = "executePythonScript"; const val FILE_SYSTEM_ACCESS = "checkFileSystemAccess"
     const val REQUEST_ALL_FILES_ACCESS = "requestAllFilesAccess"
@@ -52,7 +63,29 @@ object ShellToolDefinitions : ToolSetRegistration {
         ToolDefinition(name = LIST_DIRECTORY, description = "List contents of a directory.", category = "shell", parameters = listOf(ToolParameter("path", ToolParameterType.String, true, "Full path to the directory")), permissions = emptyList()),
         ToolDefinition(name = GET_DEVICE_INFO, description = "Get device information: manufacturer, model, Android version, SDK level, CPU ABI, storage info, RAM info, and root availability.", category = "shell", parameters = emptyList(), permissions = emptyList()),
         ToolDefinition(name = PAIR_ADB, description = "Pair with ADB Wireless Debugging using a pairing code.", category = "shell", parameters = listOf(ToolParameter("pairingCode", ToolParameterType.String, true, "6-digit pairing code"), ToolParameter("port", ToolParameterType.Integer, false, "Pairing port")), permissions = emptyList()),
-        ToolDefinition(name = CHECK_ADB_STATUS, description = "Check if ADB Wireless Debugging is connected and available.", category = "shell", parameters = emptyList(), permissions = emptyList()),
+        /*
+         * THE DESCRIPTION NAMES BOTH ANSWERS, because the tool carries both.
+         *
+         * Accessibility is the one a normal install cares about: it is what lets GURU
+         * drive the phone's own UI, and it needs no ADB, no root and no pairing. ADB is
+         * reported as well because a power user asks this same question after pairing,
+         * and hiding it would make the tool lie by omission. It is described as what it
+         * is — an optional transport — rather than as the subject.
+         */
+        ToolDefinition(
+            name = CHECK_ACCESSIBILITY_STATUS,
+            description = "Check whether GURU can drive the phone's own interface, and what the " +
+                "shell tier can reach. Reports the accessibility service as one of three states " +
+                "(running, enabled but not bound, or disabled) so a service that is starting is " +
+                "never reported as broken. Also reports whether a shell transport is available, " +
+                "which is optional: accessibility works with no ADB, no root and no pairing, and " +
+                "only system-level reads and writes need a higher tier. When a capability is out " +
+                "of reach, the answer says which tier would be needed rather than implying the " +
+                "device cannot do it.",
+            category = "shell",
+            parameters = emptyList(),
+            permissions = emptyList(),
+        ),
         ToolDefinition(name = GET_BUSYBOX_HELP, description = "List all available Unix utilities. Includes toybox applets and standalone binaries.", category = "shell", parameters = emptyList(), permissions = emptyList()),
         ToolDefinition(name = BUSYBOX_EXEC, description = "Execute a command using busybox/toybox. Provides curl, wget, grep, awk, sed, sqlite3, tar, and many more. curl and wget automatically route through Tor.", category = "shell", parameters = listOf(ToolParameter("command", ToolParameterType.ShellCommand, true, "The command to execute")), permissions = emptyList()),
         ToolDefinition(name = PYTHON_EXEC, description = "Execute a Python script. Python gives you full scripting capability.", category = "shell", parameters = listOf(ToolParameter("script", ToolParameterType.Script, true, "The Python script to execute")), permissions = emptyList()),

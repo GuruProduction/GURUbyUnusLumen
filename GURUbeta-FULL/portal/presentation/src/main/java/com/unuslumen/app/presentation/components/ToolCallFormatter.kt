@@ -343,7 +343,7 @@ val toolNameMap: Map<String, String> = mapOf(
     "sqlListDatabases" to "Listing databases",
 
     // ADB
-    "checkAdbStatus" to "Checking ADB",
+    "checkAccessibilityStatus" to "Checking accessibility",
     "autoPairAdb" to "Pairing ADB",
 
     // Util
@@ -631,7 +631,7 @@ val toolCategoryMap: Map<String, String> = mapOf(
 
     // ADB
     "pairAdbDevice" to "ADB",
-    "checkAdbStatus" to "ADB",
+    "checkAccessibilityStatus" to "Accessibility",
     "autoPairAdb" to "ADB",
 
     // System
@@ -1444,7 +1444,7 @@ val toolSummaryMap: Map<String, String> = mapOf(
 
     // ADB
     "pairAdbDevice" to "Paired an ADB device",
-    "checkAdbStatus" to "Checked ADB status",
+    "checkAccessibilityStatus" to "Checked accessibility status",
     "autoPairAdb" to "Auto-paired ADB",
 
     // Security

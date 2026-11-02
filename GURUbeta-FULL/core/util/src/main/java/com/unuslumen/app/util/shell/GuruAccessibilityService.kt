@@ -20,7 +20,7 @@ import kotlinx.coroutines.flow.StateFlow
  * ONE SOURCE OF TRUTH FOR "IS IT RUNNING", and it reports three states.
  * ============================================================================
  *
- * THE DEFECT THIS FIXES, from issue 36. `checkAdbStatus` answered
+ * THE DEFECT THIS FIXES, from issue 36. The status tool answered
  * `accessibilityRunning` from a flag, while every automation path gated on
  * [instance]. Two signals for one question meant a status that could not be
  * trusted as a capability check, which is the opposite of what a status field is
