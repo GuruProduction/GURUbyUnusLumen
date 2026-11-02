@@ -46,6 +46,13 @@ android {
     lint {
         disable += "NullSafeMutableLiveData"
     }
+    testOptions {
+        unitTests {
+            // Robolectric reads this module's own merged manifest and resources, so the
+            // container test runs against the real Android framework rather than stubs.
+            isIncludeAndroidResources = true
+        }
+    }
 }
 
 dependencies {
@@ -55,6 +62,12 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     testImplementation(libs.junit)
+    // The container test builds a real Koin graph and asks it for the view model. ViewModel's
+    // constructor needs Android's main looper, so Robolectric supplies the framework on the
+    // JVM. Same versions portal:data uses, so the build has one Robolectric rather than two.
+    testImplementation(libs.mockk)
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 
