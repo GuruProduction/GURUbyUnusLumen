@@ -21,6 +21,17 @@ interface MemoryEdgeDao {
     @Query("SELECT * FROM memory_edges WHERE source_id = :factId OR target_id = :factId")
     suspend fun getEdgesForFact(factId: String): List<MemoryEdgeEntity>
 
+    /**
+     * Every edge in the graph, for a reader that draws the whole picture at once.
+     *
+     * The per-fact queries above exist for BFS, which visits nodes one at a time
+     * and must not load the entire graph to answer one question. A map is the
+     * opposite: it needs the whole web before it can draw a single line, so
+     * loading it per node would be one query per memory for the same answer.
+     */
+    @Query("SELECT * FROM memory_edges")
+    suspend fun getAllEdges(): List<MemoryEdgeEntity>
+
     @Query("SELECT * FROM memory_edges WHERE source_id = :factId")
     suspend fun getOutgoingEdges(factId: String): List<MemoryEdgeEntity>
 

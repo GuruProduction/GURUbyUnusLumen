@@ -507,6 +507,12 @@ fun guruApp(
                 ) {
                     com.unuslumen.app.heartbeat.HeartbeatScreen(navController = navController)
                 }
+                composable<Screen.InnerMindScreen>(
+                    enterTransition = { slideInTransition() },
+                    exitTransition = { slideOutTransition() },
+                ) {
+                    com.unuslumen.app.innermind.InnerMindScreen(navController = navController)
+                }
                 composable<Screen.ThoughtCyclesScreen>(
                     enterTransition = { slideInTransition() },
                     exitTransition = { slideOutTransition() },
