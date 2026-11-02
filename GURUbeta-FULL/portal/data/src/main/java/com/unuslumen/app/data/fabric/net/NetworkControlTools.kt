@@ -49,7 +49,21 @@ data class NetDialResult(
     val success: Boolean,
     val address: String = "",
     val applicationUrl: String? = null,
-    val apps: List<String> = emptyList(),
+    /**
+     * The app names the device reported.
+     *
+     * NULL MEANS NOT READ, AND THAT IS THE POINT. Issue #251: this used to default to an
+     * empty list, so a caller that never read the apps was told the device had none. An
+     * empty collection read as a complete answer is the same failure class as #216 and #219.
+     * Null is "this was not read"; an empty list is "the device listed nothing".
+     */
+    val apps: List<String>? = null,
+    /** Whether the app list was actually read from the device. */
+    val appsRead: Boolean = false,
+    /** The HTTP status the device answered the action with, when there was one. */
+    val status: Int? = null,
+    /** What the device did: launched, accepted-only, or refused. Only 201 launched. */
+    val outcome: String? = null,
     val actionResult: String? = null,
     val note: String? = null,
     val error: String? = null,
@@ -322,7 +336,15 @@ class NetworkControlExecutor(
         val app = (args["app"] as? String)?.trim()?.ifBlank { null }
         val suppliedUrl = (args["applicationUrl"] as? String)?.trim()?.ifBlank { null }
 
-        val client = DialClient(address, port)
+        // THE DEVICE'S OWN DESCRIPTION LOCATION, WHEN DISCOVERY ALREADY SAW ONE.
+        //
+        // netHosts stores each host's evidence including the SSDP LOCATION, and that header
+        // is the only authoritative statement of where a description lives. Passing it means
+        // the first request is the device's own URL rather than one of our fallbacks, which
+        // is what issue #251 was about: every fallback was wrong for both sets here.
+        val knownLocation = store.get(address)?.location?.takeIf { it.startsWith("http") }
+
+        val client = DialClient(address, port, knownLocation = knownLocation)
 
         // The application URL is needed for everything except a list, so it is fetched
         // when the caller did not pass one rather than failing.
@@ -346,7 +368,10 @@ class NetworkControlExecutor(
                         success = true,
                         address = address,
                         applicationUrl = found.applicationUrl,
+                        // The device's actual list, or empty when it listed nothing. The
+                        // distinction from "not read" is carried by appsRead.
                         apps = found.apps,
+                        appsRead = found.read,
                         note = found.note,
                     )
                 },
@@ -354,6 +379,9 @@ class NetworkControlExecutor(
                     NetDialResult(
                         success = false,
                         address = address,
+                        // NOT READ, so apps stays null rather than pretending to be empty.
+                        apps = null,
+                        appsRead = false,
                         error = error.message ?: "Could not read the app list from $address:$port.",
                     )
                 },
@@ -365,8 +393,61 @@ class NetworkControlExecutor(
             return ToolExecutionResult.error("Missing 'app' for action '$action'")
         }
 
+        // A LAUNCH IS ITS OWN CASE because only 201 means an app started. Everything else
+        // here is an ordinary request-and-report.
+        if (action == "launch") {
+            val launched = client.launch(applicationUrl, app)
+            val r = launched.fold(
+                onSuccess = { report ->
+                    val started = report.started
+                    NetDialResult(
+                        // SUCCESS ONLY WHEN THE APP ACTUALLY STARTED. A 200 means the device
+                        // accepted the request without launching anything, which is exactly
+                        // the defect this issue was filed over.
+                        success = started,
+                        address = address,
+                        applicationUrl = applicationUrl,
+                        status = report.status,
+                        outcome = report.outcome.name,
+                        actionResult = "POST ${report.url} answered HTTP ${report.status}",
+                        note = when (report.outcome) {
+                            DialEndpoints.LaunchOutcome.STARTED ->
+                                "The device started $app. That is the 201 DIAL returns for a launch."
+                            DialEndpoints.LaunchOutcome.ACCEPTED_NOT_STARTED ->
+                                "The device accepted the request with HTTP 200 but did not start $app. " +
+                                    "DIAL answers 201 only when an app launches, so nothing opened. " +
+                                    "Check $app is installed on the device."
+                            DialEndpoints.LaunchOutcome.OTHER_SUCCESS ->
+                                "The device answered HTTP ${report.status}, which is neither 201 " +
+                                    "(launched) nor 200 (accepted without launching), so this build " +
+                                    "cannot say the app opened."
+                            DialEndpoints.LaunchOutcome.REFUSED -> null
+                        },
+                        error = if (started) null else when (report.outcome) {
+                            DialEndpoints.LaunchOutcome.ACCEPTED_NOT_STARTED ->
+                                "$app did not launch: the device answered HTTP 200, not 201."
+                            DialEndpoints.LaunchOutcome.OTHER_SUCCESS ->
+                                "$app did not launch: the device answered HTTP ${report.status}."
+                            else ->
+                                "The device refused the launch of $app with HTTP ${report.status}" +
+                                    report.body.trim().takeIf { it.isNotEmpty() }
+                                        ?.let { ", body: ${it.take(200)}" }.orEmpty() + "."
+                        },
+                    )
+                },
+                onFailure = { error ->
+                    NetDialResult(
+                        success = false,
+                        address = address,
+                        applicationUrl = applicationUrl,
+                        error = error.message ?: "launch $app failed on $address.",
+                    )
+                },
+            )
+            return emitPayload(json, json.encodeToString(NetDialResult.serializer(), r), r, r.success, r.error)
+        }
+
         val outcome = when (action) {
-            "launch" -> client.launch(applicationUrl, app)
             "stop" -> client.stop(applicationUrl, app)
             "status" -> client.isRunning(applicationUrl, app)
             else -> return ToolExecutionResult.error("Unknown DIAL action '$action'. Use list, launch, stop or status.")
@@ -379,8 +460,7 @@ class NetworkControlExecutor(
                     address = address,
                     applicationUrl = applicationUrl,
                     actionResult = message,
-                    note = "DIAL reports the device accepted the request. Whether the app appeared " +
-                        "on screen cannot be read back over DIAL.",
+                    note = "The device answered. DIAL does not report the on-screen result back.",
                 )
             },
             onFailure = { error ->
