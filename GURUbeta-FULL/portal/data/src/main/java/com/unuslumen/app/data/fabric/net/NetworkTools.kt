@@ -14,6 +14,9 @@ import com.unuslumen.app.data.tools.registry.ToolResultExtractor
 import com.unuslumen.app.data.tools.registry.ToolSetRegistration
 import com.unuslumen.app.data.tools.registry.permission.DomainToolModule
 import com.unuslumen.app.data.tools.senses.emitPayload
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.koin.core.module.Module
@@ -134,6 +137,18 @@ object NetworkToolDefinitions : ToolSetRegistration {
 class NetworkToolExecutor(
     private val scanner: NetworkScanner,
     private val store: NetworkStore,
+    /**
+     * Where blocking socket work runs.
+     *
+     * A PARAMETER SO THE DISPATCH IS PROVABLE. Issue #217 was the probe running on the
+     * calling thread, and a JVM test cannot reproduce that failure for free: Robolectric
+     * runs the test body on the main looper but does not enforce Android's main-thread
+     * socket ban, so a probe left on the wrong thread returns its bytes happily and the
+     * test passes on broken code. Handing the dispatcher in lets a test record where the
+     * work actually ran, which is the fact the bug was about. The default keeps every
+     * existing wiring exactly as it was.
+     */
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : ToolExecutor {
 
     constructor(context: Context) : this(NetworkScanner(), NetworkStore())
@@ -201,10 +216,25 @@ class NetworkToolExecutor(
         }
         val method = (args["method"] as? String)?.trim()?.lowercase() ?: "http"
 
-        return when (method) {
-            "raw" -> rawProbe(address, port)
-            "http" -> httpProbe(address, port)
-            else -> ToolExecutionResult.error("Unknown method '$method'. Use http or raw.")
+        // OFF THE CALLING THREAD, WHICH IS THE WHOLE POINT OF THIS WRAPPER. Issue #217.
+        //
+        // Both probe paths are plain functions doing blocking socket work, and the tool
+        // dispatcher calls the executor from the main thread. So netProbe threw
+        // NetworkOnMainThreadException on every single call, before a byte was read, while
+        // netHosts and netDeepScan on the same host and port succeeded because those paths
+        // already leave the main thread. Steven found it on a real television: raw probes to
+        // 8009 and 5555 both threw while the port scan of the same two ports returned real
+        // banners.
+        //
+        // withContext on the IO dispatcher rather than a thread per call, so the work lands on
+        // the pool the rest of the fabric already uses. It is injected so a test can prove
+        // the work left the calling thread, which is the fact this bug was about.
+        return withContext(ioDispatcher) {
+            when (method) {
+                "raw" -> rawProbe(address, port)
+                "http" -> httpProbe(address, port)
+                else -> ToolExecutionResult.error("Unknown method '$method'. Use http or raw.")
+            }
         }
     }
 
@@ -216,11 +246,26 @@ class NetworkToolExecutor(
             try {
                 connection.connectTimeout = 3000
                 connection.readTimeout = 3000
-                val status = "HTTP ${connection.responseCode} ${connection.responseMessage.orEmpty()}"
+                // A DEVICE THAT SPEAKS HTTP BADLY STILL SAID SOMETHING.
+                //
+                // responseCode throws on anything it cannot parse as a status line, which
+                // includes the malformed or absent one a set-top box or a bare socket server
+                // often sends. Reading it unguarded reports a device that plainly answered as
+                // a failure, so it is taken defensively and the bytes are read from whichever
+                // stream this connection actually opened.
+                val status = runCatching {
+                    "HTTP ${connection.responseCode} ${connection.responseMessage.orEmpty()}".trim()
+                }.getOrElse { "HTTP (no status line)" }
+
+                // The body lives on errorStream when the JDK classifies a response as an
+                // error, and inputStream is then empty. Reading only inputStream reports
+                // "empty body" for a server that has just sent one.
                 val body = runCatching {
                     connection.inputStream.bufferedReader().use { it.readText() }
                 }.getOrElse {
-                    connection.errorStream?.bufferedReader()?.use { stream -> stream.readText() }.orEmpty()
+                    runCatching {
+                        connection.errorStream?.bufferedReader()?.use { stream -> stream.readText() }
+                    }.getOrNull().orEmpty()
                 }
                 status to body.take(4000)
             } finally {
