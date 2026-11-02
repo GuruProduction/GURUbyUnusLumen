@@ -11,7 +11,7 @@ import java.net.UnknownHostException
  * The single routing decision every outbound connection asks for.
  *
  * WHY THIS EXISTS (#215). Tor cannot reach RFC1918 space. A SOCKS proxy asked
- * to CONNECT to 192.168.0.115 either refuses or fails, and `socks5h` means DNS
+ * to CONNECT to a private LAN address either refuses or fails, and `socks5h` means DNS
  * resolution happens at the exit node, so even a `.local` name is dead before
  * the address is examined. The result was that discovery could find a
  * television on the LAN and then nothing in the app could talk to it: `curl`
