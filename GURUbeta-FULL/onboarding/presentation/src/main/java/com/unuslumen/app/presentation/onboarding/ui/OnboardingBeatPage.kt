@@ -299,15 +299,22 @@ private fun FounderNoteCard(
             Box(Modifier.fillMaxWidth()) {
                 // The ghosted wordmark sits behind the copy, dropped below centre
                 // so it falls across the middle paragraphs as it does on the card.
-                Image(
-                    painter = painterResource(id = com.unuslumen.app.ui.R.drawable.guru_logo),
+                // DECODED TO THE BOX, NOT TO THE FILE. The artwork is 4224x2304, which is
+                // 37 MB of ARGB_8888, and this ghosted wordmark is drawn at 6% alpha across
+                // the middle of the page. painterResource decodes at intrinsic size and scales
+                // afterwards, so the whole 37 MB was allocated to show something almost
+                // invisible, and that is what ran the heap out.
+                com.unuslumen.app.ui.components.BoundedDrawable(
+                    drawableId = com.unuslumen.app.ui.R.drawable.guru_logo,
+                    targetWidthDp = 380,
+                    targetHeightDp = 208,
                     contentDescription = null,
                     contentScale = ContentScale.Fit,
+                    alpha = 0.06f,
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .offset(y = 300.dp)
                         .fillMaxWidth(0.92f)
-                        .alpha(0.06f)
                 )
 
                 Column(Modifier.fillMaxWidth()) {

@@ -579,8 +579,13 @@ fun OnboardingTopBar(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Image(
-            painter = painterResource(id = com.unuslumen.app.ui.R.drawable.guru_logo),
+        // AN 18dp WORDMARK MUST NOT COST 37 MB. The source is 4224x2304 and the whole
+        // bitmap was decoded to paint a strip 18dp tall in the top bar. Bounded to the
+        // height it is drawn at, the cost is a few hundred kilobytes instead.
+        com.unuslumen.app.ui.components.BoundedDrawable(
+            drawableId = com.unuslumen.app.ui.R.drawable.guru_logo,
+            targetWidthDp = 160,
+            targetHeightDp = 18,
             contentDescription = "GURU",
             contentScale = ContentScale.Fit,
             modifier = Modifier.height(18.dp)

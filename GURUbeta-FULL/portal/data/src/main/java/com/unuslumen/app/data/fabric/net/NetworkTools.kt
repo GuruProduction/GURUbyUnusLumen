@@ -260,11 +260,18 @@ class NetworkToolExecutor(
                 // The body lives on errorStream when the JDK classifies a response as an
                 // error, and inputStream is then empty. Reading only inputStream reports
                 // "empty body" for a server that has just sent one.
+                //
+                // BOTH READS ARE BOUNDED, WHICH IS NOT AN OPTIMISATION. `readText()` allocates
+                // the whole body into one String with no ceiling, so one local port that
+                // streams a large payload fills the heap and kills the process. That is the
+                // crash [readTextBounded] was written for, and this probe reintroduced it:
+                // the `take(4000)` after the read cuts the String after it has already been
+                // allocated, which bounds what is shown and not what is allocated.
                 val body = runCatching {
-                    connection.inputStream.bufferedReader().use { it.readText() }
+                    connection.inputStream.use { stream -> readTextBounded(stream, 64 * 1024) }
                 }.getOrElse {
                     runCatching {
-                        connection.errorStream?.bufferedReader()?.use { stream -> stream.readText() }
+                        connection.errorStream?.use { stream -> readTextBounded(stream, 64 * 1024) }
                     }.getOrNull().orEmpty()
                 }
                 status to body.take(4000)

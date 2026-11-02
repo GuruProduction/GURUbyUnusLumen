@@ -151,10 +151,12 @@ class UpnpSoapClient(
             connection.outputStream.use { it.write(bytes) }
 
             val code = connection.responseCode
+            // Bounded while reading, because `readText().take(n)` allocates the whole body and
+            // truncates afterwards, which bounds what is kept and not what is allocated.
             val reply = runCatching {
-                connection.inputStream.bufferedReader().use { it.readText().take(20_000) }
+                connection.inputStream.use { stream -> readTextBounded(stream, 20_000) }
             }.getOrElse {
-                connection.errorStream?.bufferedReader()?.use { it.readText().take(20_000) }.orEmpty()
+                connection.errorStream?.use { stream -> readTextBounded(stream, 20_000) }.orEmpty()
             }
 
             // A SOAP fault arrives as HTTP 500 with an error code in the body, so the
@@ -233,7 +235,7 @@ class UpnpSoapClient(
         return try {
             connection.connectTimeout = timeoutMillis
             connection.readTimeout = timeoutMillis
-            connection.inputStream.bufferedReader().use { it.readText().take(300_000) }
+            connection.inputStream.use { stream -> readTextBounded(stream, 300_000) }
         } finally {
             connection.disconnect()
         }
