@@ -6,7 +6,6 @@ package com.unuslumen.app.data.fabric.net
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
-import java.net.URL
 
 /**
  * DIAL: launching an app on a device that has one. Requirement 4 of the spec.
@@ -27,6 +26,12 @@ import java.net.URL
  * WHAT HIS OWN TEST SHOWED, which shapes this file: the Virgin boxes answered DIAL on
  * 56890 but their `/apps` returned 404. So the app list cannot be assumed, and a failure
  * to list is reported as exactly that rather than as a device with no apps.
+ *
+ * THE ORIGIN HEADER, WHICH IS ISSUE #252. A Roku answers a DIAL launch with HTTP 403 and
+ * the body "Origin  is not allowed access" when the POST carries no `Origin` header, and
+ * `HttpURLConnection` drops that header silently because it is on the JDK's reserved list.
+ * The launch and stop calls therefore go through [LocalHttp] with the device's own origin
+ * attached, and a refusal comes back with the device's own words rather than a bare code.
  */
 class DialClient(
     private val host: String,
@@ -145,57 +150,62 @@ class DialClient(
         }
 
     /**
-     * One DIAL request.
+     * One DIAL request, through the raw-socket client that can carry `Origin`.
      *
-     * A 201 means a launch started and a 200 means the read succeeded, so both are
-     * success; anything else is the device's own refusal and its status is quoted.
+     * WHY NOT HttpURLConnection. `Origin` is a reserved header there and is dropped without
+     * an error, which is exactly how a Roku ended up answering "Origin  is not allowed
+     * access" to a POST that looked correct in the source. [LocalHttp] writes the headers it
+     * is given, so the device's own requirement can actually be met.
+     *
+     * A 2xx means the device accepted, and anything else is its own refusal. Either way the
+     * device's words are quoted, because a status with an explanatory body is the most
+     * useful thing it can give a caller.
      */
     private fun request(method: String, url: String): Result<String> {
-        val connection = runCatching {
-            com.unuslumen.app.data.fabric.net.LocalRoute.open(url) as HttpURLConnection
-        }.getOrNull()
-            ?: return Result.failure(IllegalStateException("Could not reach $url."))
+        val parsed = runCatching { java.net.URI(url) }.getOrNull()
+            ?: return Result.failure(IllegalStateException("'$url' is not a URL."))
+        val target = parsed.host ?: return Result.failure(
+            IllegalStateException("'$url' names no host."),
+        )
+        val targetPort = if (parsed.port > 0) parsed.port else 80
+        val path = (parsed.rawPath ?: "/") + (parsed.rawQuery?.let { "?$it" } ?: "")
 
-        return try {
-            connection.requestMethod = method
-            connection.connectTimeout = timeoutMillis
-            connection.readTimeout = timeoutMillis
-            // Some DIAL implementations require a content type even with no body.
-            connection.setRequestProperty("Content-Type", "text/plain; charset=utf-8")
-            if (method == "POST") {
-                connection.doOutput = true
-                connection.setFixedLengthStreamingMode(0)
-                connection.outputStream.close()
-            }
+        val outcome = LocalHttp.request(
+            host = target,
+            port = targetPort,
+            method = method,
+            path = path,
+            headers = buildMap {
+                // Some DIAL implementations require a content type even with no body.
+                put("Content-Type", "text/plain; charset=utf-8")
+                // The device's own origin, which is what a direct client may claim. Roku
+                // refuses a POST without it and names that refusal in its body.
+                put("Origin", LocalHttp.sameOrigin(target, targetPort))
+            },
+            timeoutMillis = timeoutMillis,
+        )
 
-            val code = connection.responseCode
-            val body = runCatching {
-                connection.inputStream.bufferedReader().use { it.readText().take(4000) }
-            }.getOrElse {
-                connection.errorStream?.bufferedReader()?.use { it.readText().take(4000) }.orEmpty()
-            }
-
-            if (code in 200..299) {
-                Result.success(
-                    "$method $url returned HTTP $code" +
-                        if (body.isBlank()) "." else ", body: ${body.trim().take(200)}",
-                )
-            } else {
-                Result.failure(
-                    IllegalStateException(
-                        "$method $url returned HTTP $code" +
-                            if (body.isBlank()) "." else ", body: ${body.trim().take(200)}",
-                    ),
-                )
-            }
-        } catch (error: Exception) {
-            Result.failure(
+        return when (outcome) {
+            is LocalHttp.Outcome.NoAnswer -> Result.failure(
                 IllegalStateException(
-                    "$method $url failed: ${error.message ?: error.javaClass.simpleName}.",
+                    "$method $url got no answer at all: ${outcome.reason}.",
                 ),
             )
-        } finally {
-            connection.disconnect()
+            is LocalHttp.Outcome.Answered -> {
+                val response = outcome.response
+                val detail = response.body.trim().take(200)
+                val quoted = if (detail.isEmpty()) "" else ", body: $detail"
+                if (response.ok) {
+                    Result.success("$method $url returned HTTP ${response.status}$quoted")
+                } else {
+                    Result.failure(
+                        IllegalStateException(
+                            "$method $url returned HTTP ${response.status}$quoted. " +
+                                "That status is the device's own answer, not an absent one.",
+                        ),
+                    )
+                }
+            }
         }
     }
 }

@@ -3,11 +3,11 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.data.fabric.tv
 
-import com.unuslumen.app.data.fabric.net.LocalRoute
+import com.unuslumen.app.data.fabric.net.DeviceAnswer
+import com.unuslumen.app.data.fabric.net.LocalHttp
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.net.HttpURLConnection
 
 /**
  * Roku's External Control Protocol. Issue #187.
@@ -33,6 +33,19 @@ import java.net.HttpURLConnection
  * WHAT IT CANNOT DO. `PowerOff` exists and `PowerOn` does not: a Roku turns a set off
  * but cannot turn it back on, because the box is asleep and not listening. That is a
  * property of the protocol and is reported as such rather than pretended.
+ *
+ * THE ORIGIN HEADER, WHICH IS ISSUE #252. Roku OS 15.3.4 refuses a POST that carries no
+ * `Origin` header, answers HTTP 403 with the body "Origin  is not allowed access", and
+ * `HttpURLConnection` silently drops that header because it is on the JDK's reserved list.
+ * A probe against a local listener confirmed it: a custom header arrived and `Origin` was
+ * absent from what the server received. So this adapter speaks through [LocalHttp], which
+ * writes every header the caller asks for, and it sends the set's own origin, which is the
+ * value a direct client is allowed to send.
+ *
+ * A REFUSAL IS NOT AN ABSENCE. The same firmware made the old code call an answering set
+ * "in deep standby", which is a claim that it stopped answering. Here a status the set
+ * chose to send is reported as its answer with its own body, and only a request that
+ * produced no response at all may be described as unreachable.
  */
 class RokuRemote(
     private val host: String,
@@ -43,8 +56,7 @@ class RokuRemote(
     override val vendor: TvVendor = TvVendor.ROKU
 
     override suspend fun probe(): String? = withContext(Dispatchers.IO) {
-        val body = runCatching { request("GET", "/query/device-info") }.getOrNull()
-            ?: return@withContext null
+        val body = bodyOf(request("GET", "/query/device-info")) ?: return@withContext null
         if (!body.contains("<device-info", ignoreCase = true)) {
             return@withContext null
         }
@@ -69,26 +81,30 @@ class RokuRemote(
                 },
             )
 
-        runCatching { request("POST", "/keypress/$key") }.fold(
-            onSuccess = {
+        val subject = "The Roku at $host:$port"
+        when (val outcome = request("POST", "/keypress/$key")) {
+            is LocalHttp.Outcome.Answered -> {
+                val response = outcome.response
+                if (!response.ok) {
+                    return@withContext TvCommandOutcome.Failed(
+                        DeviceAnswer.describe(subject, response),
+                    )
+                }
                 TvCommandOutcome.Sent(
                     "Roku accepted the $key keypress on $host. " +
                         if (button == TvButton.POWER_OFF || button == TvButton.POWER) {
-                            "Whether the picture went off cannot be read back from a set that has " +
-                                "gone to standby."
+                            "Whether the picture went off cannot be read back from a set that " +
+                                "has gone to standby."
                         } else {
                             "Roku acknowledges the key was delivered."
                         },
                 )
-            },
-            onFailure = { error ->
-                TvCommandOutcome.Failed(
-                    "The Roku at $host:$port did not accept the $key keypress: " +
-                        "${error.message ?: error.javaClass.simpleName}. A set in deep standby stops " +
-                        "answering until it is woken.",
-                )
-            },
-        )
+            }
+            is LocalHttp.Outcome.NoAnswer -> TvCommandOutcome.Failed(
+                "$subject did not accept the $key keypress: " +
+                    DeviceAnswer.describeNoAnswer(subject.lowercase(), outcome.reason),
+            )
+        }
     }
 
     /**
@@ -99,8 +115,7 @@ class RokuRemote(
      * so it is absent instead of invented.
      */
     override suspend fun readState(): Map<TvStateKey, String>? = withContext(Dispatchers.IO) {
-        val body = runCatching { request("GET", "/query/device-info") }.getOrNull()
-            ?: return@withContext null
+        val body = bodyOf(request("GET", "/query/device-info")) ?: return@withContext null
         val state = mutableMapOf<TvStateKey, String>()
         tag(body, "power-mode")?.let { state[TvStateKey.POWER] = it }
         tag(body, "current-app")?.let { state[TvStateKey.APP] = it }
@@ -123,21 +138,28 @@ class RokuRemote(
                 TvApps.refusal("The Roku at $host", TvVendor.ROKU, app),
             )
 
-        runCatching { request("POST", "/launch/$id") }.fold(
-            onSuccess = {
+        val subject = "The Roku at $host:$port"
+        when (val outcome = request("POST", "/launch/$id")) {
+            is LocalHttp.Outcome.Answered -> {
+                val response = outcome.response
+                if (!response.ok) {
+                    return@withContext TvCommandOutcome.Failed(
+                        "The Roku refused to launch '$app': " +
+                            DeviceAnswer.describe(subject.lowercase(), response) +
+                            " A channel that is not installed answers HTTP 404, which is a real " +
+                            "answer rather than a fault.",
+                    )
+                }
                 TvCommandOutcome.Sent(
                     "The Roku at $host launched '$app' (channel $id). Whether a person can see it " +
                         "depends on that channel being installed on the set.",
                 )
-            },
-            onFailure = { error ->
-                TvCommandOutcome.Failed(
-                    "The Roku at $host:$port refused to launch '$app': " +
-                        "${error.message ?: error.javaClass.simpleName}. A channel that is not " +
-                        "installed answers HTTP 404, which is a real answer rather than a fault.",
-                )
-            },
-        )
+            }
+            is LocalHttp.Outcome.NoAnswer -> TvCommandOutcome.Failed(
+                "The Roku did not answer the launch of '$app': " +
+                    DeviceAnswer.describeNoAnswer(subject.lowercase(), outcome.reason),
+            )
+        }
     }
 
     /**
@@ -154,21 +176,28 @@ class RokuRemote(
         // Roku wants each character as its own literal keypress string, which is what the
         // Lit_ prefix means. Sending one path per character is the documented shape.
         val encoded = java.net.URLEncoder.encode(text, "UTF-8")
-        runCatching { request("POST", "/keypress/Lit_$encoded") }.fold(
-            onSuccess = {
+        val subject = "The Roku at $host:$port"
+        when (val outcome = request("POST", "/keypress/Lit_$encoded")) {
+            is LocalHttp.Outcome.Answered -> {
+                val response = outcome.response
+                if (!response.ok) {
+                    return@withContext TvCommandOutcome.Failed(
+                        "The Roku did not accept the text: " +
+                            DeviceAnswer.describe(subject.lowercase(), response) +
+                            " Open a search box first.",
+                    )
+                }
                 TvCommandOutcome.Sent(
                     "The Roku at $host accepted '$text'. It lands only if a search box or keyboard " +
                         "is already on screen, because a set with the home screen showing has " +
                         "nowhere to put it.",
                 )
-            },
-            onFailure = { error ->
-                TvCommandOutcome.Failed(
-                    "The Roku at $host:$port did not accept the text: " +
-                        "${error.message ?: error.javaClass.simpleName}. Open a search box first.",
-                )
-            },
-        )
+            }
+            is LocalHttp.Outcome.NoAnswer -> TvCommandOutcome.Failed(
+                "The Roku did not answer the text entry: " +
+                    DeviceAnswer.describeNoAnswer(subject.lowercase(), outcome.reason),
+            )
+        }
     }
 
     /**
@@ -217,36 +246,45 @@ class RokuRemote(
     }
 
     /**
-     * One HTTP call, returning the body or throwing with the platform's own words.
+     * One HTTP call to the set, carrying the headers Roku requires.
      *
-     * THE CONNECTION BYPASSES THE PROXY, and that is the whole reason a Roku was being found and
-     * then thrown away. Every outbound path in this app is injected with a Tor SOCKS proxy, and
-     * Tor will not route to a private address, so the device-info fetch died with a bare 000 that
-     * looked exactly like a set that was switched off. A local address is unreachable through a
-     * Tor circuit by definition, so routing it there removes capability and adds no privacy.
+     * TWO THINGS THIS DOES THAT THE PREVIOUS IMPLEMENTATION COULD NOT.
+     *
+     * It writes `Origin`, which Roku OS 15.3.4 requires on a POST and which
+     * `HttpURLConnection` drops without a word because `Origin` is on the JDK's reserved
+     * header list. The value is the set's own origin, which is what a direct client is
+     * entitled to claim; the alternative is a fabricated permission.
+     *
+     * It reports an error status as an answer rather than throwing, so a 403 arrives with
+     * the set's own body intact instead of being collapsed into a bare "HTTP 403" and then
+     * attributed to standby by a layer that could not see the difference.
+     *
+     * THE CONNECTION IS DIRECT, and that is deliberate. Every other outbound path in this
+     * app is injected with a Tor SOCKS proxy, and Tor cannot route to a private address, so
+     * a Roku fetch through the proxy died with a bare 000 that looked exactly like a set
+     * that was switched off. [LocalHttp] refuses a public host for the same reason, so a
+     * mistyped address cannot become a silent leak either.
      */
-    private fun request(method: String, path: String): String {
-        val connection = LocalRoute.open("http://$host:$port$path")
-            ?: throw IllegalStateException("the connection to $host:$port could not be built")
-        return try {
-            connection.requestMethod = method
-            connection.connectTimeout = timeoutMillis
-            connection.readTimeout = timeoutMillis
+    private fun request(method: String, path: String): LocalHttp.Outcome =
+        LocalHttp.request(
+            host = host,
+            port = port,
+            method = method,
+            path = path,
             // Roku wants a POST for a keypress and cares about neither a body nor a type,
-            // but some firmware refuses a POST with no content length at all.
-            if (method == "POST") {
-                connection.doOutput = true
-                connection.setFixedLengthStreamingMode(0)
-                connection.outputStream.close()
-            }
-            val code = connection.responseCode
-            if (code !in 200..299) {
-                throw IllegalStateException("the set answered HTTP $code")
-            }
-            connection.inputStream.bufferedReader().use { it.readText() }
-        } finally {
-            connection.disconnect()
-        }
+            // so the header set is the only thing that has to be right.
+            headers = if (method == "POST") {
+                mapOf("Origin" to LocalHttp.sameOrigin(host, port))
+            } else {
+                emptyMap()
+            },
+            timeoutMillis = timeoutMillis,
+        )
+
+    /** The body of an answer, or null when the set did not answer at all. */
+    private fun bodyOf(outcome: LocalHttp.Outcome): String? = when (outcome) {
+        is LocalHttp.Outcome.Answered -> outcome.response.body
+        is LocalHttp.Outcome.NoAnswer -> null
     }
 
     /** The text of one XML tag, or null when it is absent. */
