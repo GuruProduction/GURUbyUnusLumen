@@ -18,19 +18,18 @@ import org.junit.Test
  * nothing, a wrong SOAP envelope is refused with no error shown, a malformed MAC
  * broadcasts into the void, and a fake-200 device reports control it does not have. Those
  * are exactly the defects this project keeps removing, so the arithmetic and the text are
- * pinned here rather than discovered on his network.
+ * pinned here rather than discovered on a real network.
  */
 class NetworkControlTest {
 
     // ------------------------------------------------------------------
-    // Requirement 7: the fake-200 guard, using his real Virgin box behaviour
+    // Requirement 7: the fake-200 guard, using real Virgin box behaviour
     // ------------------------------------------------------------------
 
     /**
-     * THE DEFECT FROM HIS OWN NETWORK. The Virgin boxes at 192.168.0.50 and
-     * 192.168.0.154 answer HTTP 200 with "status=ok" to every path, including invented
-     * gibberish. A capability check that trusts the 200 reports control of a box that
-     * answers everything and does nothing.
+     * THE DEFECT FROM A REAL NETWORK. The Virgin set-top boxes answer HTTP 200 with
+     * "status=ok" to every path, including invented gibberish. A capability check that
+     * trusts the 200 reports control of a box that answers everything and does nothing.
      */
     @Test
     fun aDeviceThatAnswersEverythingIsReportedAsUninformative() {
@@ -207,18 +206,18 @@ class NetworkControlTest {
     fun aRelativeControlUrlIsResolvedAgainstTheDevice() {
         val client = UpnpSoapClient()
         assertEquals(
-            "http://192.168.0.71:49152/upnp/control/AVTransport1",
-            client.resolve("http://192.168.0.71:49152", "/upnp/control/AVTransport1"),
+            "http://192.0.2.10:49152/upnp/control/AVTransport1",
+            client.resolve("http://192.0.2.10:49152", "/upnp/control/AVTransport1"),
         )
         assertEquals(
             "an absolute URL is left alone",
-            "http://192.168.0.71:9197/dmr",
-            client.resolve("http://192.168.0.71:49152", "http://192.168.0.71:9197/dmr"),
+            "http://192.0.2.10:9197/dmr",
+            client.resolve("http://192.0.2.10:49152", "http://192.0.2.10:9197/dmr"),
         )
         assertEquals(
             "a bare path is joined",
-            "http://192.168.0.71:49152/control",
-            client.resolve("http://192.168.0.71:49152", "control"),
+            "http://192.0.2.10:49152/control",
+            client.resolve("http://192.0.2.10:49152", "control"),
         )
     }
 
@@ -228,13 +227,13 @@ class NetworkControlTest {
         val service = UpnpSoapClient.Service(
             serviceType = "urn:schemas-upnp-org:service:AVTransport:1",
             serviceId = "urn:upnp-org:serviceId:AVTransport",
-            controlUrl = "http://192.168.0.71/control",
+            controlUrl = "http://192.0.2.10/control",
         )
         assertEquals("AVTransport", service.shortName)
     }
 
     // ------------------------------------------------------------------
-    // Requirement 1 and the list he asked for
+    // Requirement 1 and the adapter list
     // ------------------------------------------------------------------
 
     /**
@@ -285,8 +284,8 @@ class NetworkControlTest {
     }
 
     /**
-     * His hardware has no emitter and the catalogue must say so rather than advertising
-     * infrared control that cannot work.
+     * A phone with no emitter must be reported as such rather than advertising infrared
+     * control that cannot work.
      */
     @Test
     fun infraredIsOnlyClaimedThroughANetworkBlaster() {
