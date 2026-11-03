@@ -43,7 +43,6 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
@@ -133,6 +132,18 @@ fun InnerMindScreen(
                     state.read?.failures?.takeIf { it.isNotEmpty() }?.let { failures ->
                         ReadFailures(failures)
                     }
+
+                    // The card sits over the map rather than over the page, so the
+                    // masthead's BACK block stays reachable while it is up. A notice
+                    // that traps a person in the room until they acknowledge it is a
+                    // worse defect than the thing it is warning about.
+                    if (state.developmentNotice) {
+                        DevelopmentNotice(
+                            onDismiss = {
+                                viewModel.onEvent(InnerMindEvent.DismissDevelopmentNotice)
+                            }
+                        )
+                    }
                 }
             }
 
@@ -154,6 +165,69 @@ fun InnerMindScreen(
 
             state.notice?.let { notice ->
                 NoticeBar(notice = notice, onDismiss = { viewModel.onEvent(InnerMindEvent.ClearNotice) })
+            }
+        }
+    }
+}
+
+/**
+ * The card that says this room is unfinished.
+ *
+ * WHY IT IS A CARD AND NOT A LINE. The room's search, chips and zoom controls are
+ * instruments floating over the canvas, so a passing line of text would read as
+ * another instrument. A printed block with the room's own border and drop reads as
+ * a note pinned over the page, which is what it is.
+ *
+ * IT COVERS THE CANVAS ON PURPOSE. The map is the thing that looks finished, so a
+ * message in its margin would be read after the first impression it is meant to
+ * correct. The masthead stays clear above it, because the door out of the room
+ * must not be behind an acknowledgement.
+ */
+@Composable
+private fun DevelopmentNotice(onDismiss: () -> Unit) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .padding(horizontal = 18.dp, vertical = 20.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        MemphisSurface(
+            modifier = Modifier.fillMaxWidth(),
+            color = Memphis.Yellow,
+            borderWidth = 3.dp,
+            shadowOffset = 7.dp,
+        ) {
+            Column(Modifier.padding(18.dp)) {
+                Text(
+                    text = "IN DEVELOPMENT",
+                    style = posterStyle(26f),
+                )
+
+                Text(
+                    text = "This room is still being built. You can look around the map, " +
+                        "but editing, deleting and pulling in the hidden rows are not " +
+                        "finished yet, so treat it as a preview for now.",
+                    style = captionStyle(10f, Memphis.Ink.copy(alpha = 0.75f)).copy(
+                        fontFamily = com.unuslumen.app.ui.theme.MemphisBody,
+                        letterSpacing = androidx.compose.ui.unit.TextUnit.Unspecified,
+                    ),
+                    modifier = Modifier.padding(top = 12.dp),
+                )
+
+                PanelButton(
+                    label = "Got it",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 16.dp),
+                    onClick = onDismiss,
+                )
+
+                Text(
+                    text = "THIS WILL NOT BE SHOWN AGAIN",
+                    style = captionStyle(7.5f, Memphis.Ink.copy(alpha = 0.45f)),
+                    modifier = Modifier.fillMaxWidth().padding(top = 9.dp),
+                    textAlign = TextAlign.Center,
+                )
             }
         }
     }
@@ -239,7 +313,6 @@ private fun MindCanvas(
     onLinkComplete: (String) -> Unit,
 ) {
     val layout = state.layout ?: return
-    val density = LocalDensity.current
     var scale by remember { mutableStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }

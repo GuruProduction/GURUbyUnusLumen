@@ -16,6 +16,7 @@ import com.unuslumen.app.database.dao.ProjectDao
 import com.unuslumen.app.database.dao.TaskDao
 import com.unuslumen.app.database.dao.UserProfileDao
 import com.unuslumen.app.domain.memory.MemoryRepository
+import org.koin.android.ext.koin.androidContext
 import org.koin.core.module.dsl.viewModel
 import org.koin.dsl.module
 
@@ -52,7 +53,15 @@ val innermindModule = module {
         )
     }
 
+    // The one piece of room state that outlives a visit. It is bound here rather
+    // than declared beside the stores because it is the room's own record, not
+    // something the mind holds.
+    single<MindNoticeMarks> { PrefsMindNoticeMarks(androidContext()) }
+
     viewModel {
-        InnerMindViewModel(source = get<MindSource>())
+        InnerMindViewModel(
+            source = get<MindSource>(),
+            noticeMarks = get<MindNoticeMarks>(),
+        )
     }
 }
