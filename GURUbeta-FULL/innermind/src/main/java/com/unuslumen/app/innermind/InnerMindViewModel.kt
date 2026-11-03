@@ -29,6 +29,14 @@ data class InnerMindState(
     val linkingFromId: String? = null,
     val error: String? = null,
     val notice: String? = null,
+    /**
+     * Whether the room's "in development" card is on screen.
+     *
+     * A separate flag from [notice] because it is not a transient message: it is
+     * a standing statement about the room's completeness, and it is dismissed for
+     * good rather than for a moment.
+     */
+    val developmentNotice: Boolean = false,
 ) {
     val graph: MindGraph? get() = read?.graph
 
@@ -69,6 +77,8 @@ sealed interface InnerMindEvent {
     /** Grow the family a fold belongs to. */
     data class Grow(val growNodeId: String) : InnerMindEvent
     data object ClearNotice : InnerMindEvent
+    /** Put the "in development" card away for good. */
+    data object DismissDevelopmentNotice : InnerMindEvent
 }
 
 /**
@@ -86,9 +96,15 @@ sealed interface InnerMindEvent {
  */
 class InnerMindViewModel(
     private val source: MindSource,
+    private val noticeMarks: MindNoticeMarks,
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow(InnerMindState())
+    private val _state = MutableStateFlow(
+        // Answered before the first frame, so the card either belongs to the room
+        // from its first draw or is absent entirely. Reading it after the read
+        // would flash the notice on a screen where it had been dismissed.
+        InnerMindState(developmentNotice = !noticeMarks.wasDismissed())
+    )
     val state: StateFlow<InnerMindState> = _state.asStateFlow()
 
     init {
@@ -112,7 +128,27 @@ class InnerMindViewModel(
             is InnerMindEvent.CompleteLink -> completeLink(event.targetId)
             is InnerMindEvent.Grow -> grow(event.growNodeId)
             InnerMindEvent.ClearNotice -> _state.update { it.copy(notice = null) }
+            InnerMindEvent.DismissDevelopmentNotice -> dismissDevelopmentNotice()
         }
+    }
+
+    /**
+     * Put the card away and never show it again.
+     *
+     * The mark is written first and the state is changed after it succeeds. If it
+     * were the other way round, a failed write would dismiss the card for this
+     * visit and bring it back on the next one, which is the behaviour that makes
+     * people stop reading warnings.
+     */
+    private fun dismissDevelopmentNotice() {
+        runCatching { noticeMarks.dismiss() }.fold(
+            onSuccess = { _state.update { it.copy(developmentNotice = false) } },
+            onFailure = {
+                _state.update {
+                    it.copy(notice = "The notice could not be dismissed. Try again.")
+                }
+            },
+        )
     }
 
     private fun load() {
