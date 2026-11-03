@@ -126,7 +126,7 @@ static void *load_python(const char *dir) {
 
 int main(int argc, char *argv[]) {
     char dir[PATH_MAX];
-    own_directory(dir);
+    own_directory(dir, sizeof(dir));
 
     void *handle = load_python(dir);
     if (handle == NULL) {

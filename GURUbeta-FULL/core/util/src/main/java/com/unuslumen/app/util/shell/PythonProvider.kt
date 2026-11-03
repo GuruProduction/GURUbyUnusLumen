@@ -62,11 +62,26 @@ class PythonProvider(private val context: Context) {
          * The stdlib archive for this device's ABI.
          *
          * The old code hard-coded arm64-v8a, so on an x86_64 emulator (which is
-         * where this app is tested) it either found nothing or found the wrong
-         * standard library. Both zips ship; this picks the one that matches the
-         * process that is actually running.
+         * where this app is tested) it found the wrong standard library.
+         *
+         * The file names are NOT derivable from the ABI with one rule. The two
+         * archives that actually ship are:
+         *
+         *   assets/python/arm64-v8a/python-stdlib-arm64.zip
+         *   assets/python/x86_64/python-stdlib-x86_64.zip
+         *
+         * The directory is the ABI while the file uses the shorter architecture
+         * name, so `python-stdlib-<abi>.zip` produces the non-existent
+         * python-stdlib-arm64-v8a.zip for the commonest device in the world. Both
+         * halves are therefore stated explicitly rather than composed, and a
+         * missing ABI returns null so the caller reports STDLIB_ASSET_MISSING
+         * with the paths that were tried.
          */
-        private fun assetPathFor(abi: String): String = "python/$abi/python-stdlib-$abi.zip"
+        private fun assetPathFor(abi: String): String? = when (abi) {
+            "arm64-v8a" -> "python/arm64-v8a/python-stdlib-arm64.zip"
+            "x86_64" -> "python/x86_64/python-stdlib-x86_64.zip"
+            else -> null
+        }
 
         private fun abiFor(context: Context): String {
             val preferred = android.os.Build.SUPPORTED_ABIS?.firstOrNull()
@@ -265,6 +280,18 @@ class PythonProvider(private val context: Context) {
     private fun ensureStdlib(): PythonStatus? {
         val abi = abiFor(context)
         val asset = assetPathFor(abi)
+        if (asset == null) {
+            // No standard library ships for this ABI. Saying so plainly is the
+            // only honest answer: falling back to another architecture's library
+            // would load and then fail on the first extension import, which is a
+            // far worse diagnostic than a named absence.
+            return PythonStatus.no(
+                Failure.STDLIB_ASSET_MISSING,
+                "This build ships no Python standard library for $abi. The archives " +
+                    "present are for arm64-v8a and x86_64 only.",
+                launcherPath = launcherFile.absolutePath,
+            )
+        }
         val packageVersion = runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode
         }.getOrDefault(0L).toString()
