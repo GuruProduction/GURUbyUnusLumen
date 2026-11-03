@@ -104,7 +104,27 @@ static void own_directory(char *out, size_t out_size) {
     strcpy(out, exe);
 }
 
-/* Load libpython, trying the absolute path beside this binary first.
+/* Load libpython.
+ *
+ * ORDER MATTERS, AND IT IS THE OPPOSITE OF THE OBVIOUS ONE.
+ *
+ * The first version of this function tried the directory containing this binary
+ * first, on the reasoning that the launcher and libpython ship together. That was
+ * right while libpython lived in jniLibs beside the launcher, and it became wrong
+ * the moment the interpreter moved into the extracted runtime: the stale copy in
+ * nativeLibraryDir still existed, still loaded, and was the wrong build. The app
+ * reported a working Python 3.14.5 while the runtime it had just unpacked was
+ * 3.14.8, so every extension module failed with
+ *
+ *   cannot locate symbol "_PyType_AllocNoTrack"
+ *
+ * and the mismatch looked like a stdlib problem rather than a search-order one.
+ *
+ * So the linker's own search comes FIRST. PYTHONHOME's lib/ is placed at the head
+ * of LD_LIBRARY_PATH by PythonProvider, which makes the extracted runtime win,
+ * and the interpreter can never silently be a different build from the standard
+ * library extracted with it. The launcher's own directory is the fallback, for the
+ * case where someone runs this binary by hand without the app's environment.
  *
  * RTLD_NOW because a lazily bound interpreter fails at an arbitrary later point
  * inside user code, where the error cannot be read. Failing at load time names
@@ -112,6 +132,13 @@ static void own_directory(char *out, size_t out_size) {
 static void *load_python(const char *dir) {
     static const char *const names[] = {"libpython3.14.so", "libpython3.so"};
     const size_t count = sizeof(names) / sizeof(names[0]);
+
+    for (size_t i = 0; i < count; i++) {
+        void *handle = dlopen(names[i], RTLD_NOW | RTLD_GLOBAL);
+        if (handle != NULL) {
+            return handle;
+        }
+    }
 
     if (dir[0] != '\0') {
         for (size_t i = 0; i < count; i++) {
@@ -124,15 +151,6 @@ static void *load_python(const char *dir) {
             if (handle != NULL) {
                 return handle;
             }
-        }
-    }
-
-    /* Fallback: let the linker search its own paths, which includes
-     * nativeLibraryDir when LD_LIBRARY_PATH carries it. */
-    for (size_t i = 0; i < count; i++) {
-        void *handle = dlopen(names[i], RTLD_NOW | RTLD_GLOBAL);
-        if (handle != NULL) {
-            return handle;
         }
     }
     return NULL;

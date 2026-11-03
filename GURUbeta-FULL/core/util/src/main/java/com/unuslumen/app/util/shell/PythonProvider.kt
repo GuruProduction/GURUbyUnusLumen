@@ -53,35 +53,32 @@ class PythonProvider(private val context: Context) {
         private const val TAG = "guru"
         private const val LAUNCHER_NAME = "libpython_launcher.so"
         private const val PYTHON_DIR_NAME = "python"
-        private const val STDLIB_DIR_NAME = "python-lib"
+        private const val RUNTIME_DIR_NAME = "runtime"
         private const val PYTHON_VERSION = "python3.14"
         private const val DYNLOAD_DIR_NAME = "lib-dynload"
         private const val MARKER_NAME = "stdlib_version"
 
         /**
-         * The stdlib archive for this device's ABI.
+         * The runtime archive, which is the interpreter, the standard library and
+         * every shared library they need, all from one build.
          *
-         * The old code hard-coded arm64-v8a, so on an x86_64 emulator (which is
-         * where this app is tested) it found the wrong standard library.
+         * ONE ARCHIVE, NOT TWO HALVES. The previous arrangement shipped
+         * libpython3.14.so in jniLibs and a separate stdlib zip in assets, sourced
+         * independently. They were different builds: the interpreter reported
+         * "3.14.5 (tags/v3.14.5-dirty)" while the extensions were built elsewhere,
+         * and a C extension is loadable only by the exact interpreter that defines
+         * its private symbols, so loading them together failed with
          *
-         * The file names are NOT derivable from the ABI with one rule. The two
-         * archives that actually ship are:
+         *   dlopen failed: cannot locate symbol "_PyType_AllocNoTrack"
          *
-         *   assets/python/arm64-v8a/python-stdlib-arm64.zip
-         *   assets/python/x86_64/python-stdlib-x86_64.zip
-         *
-         * The directory is the ABI while the file uses the shorter architecture
-         * name, so `python-stdlib-<abi>.zip` produces the non-existent
-         * python-stdlib-arm64-v8a.zip for the commonest device in the world. Both
-         * halves are therefore stated explicitly rather than composed, and a
-         * missing ABI returns null so the caller reports STDLIB_ASSET_MISSING
-         * with the paths that were tried.
+         * The archive is produced by fetch_python_runtime.sh from pinned packages,
+         * which computes the library closure and refuses to produce a runtime whose
+         * ELFs are not 16 KB page aligned.
          */
-        private fun assetPathFor(abi: String): String? = when (abi) {
-            "arm64-v8a" -> "python/arm64-v8a/python-stdlib-arm64.zip"
-            "x86_64" -> "python/x86_64/python-stdlib-x86_64.zip"
-            else -> null
-        }
+        private const val RUNTIME_ASSET = "python-runtime/python-runtime-arm64.zip"
+
+        /** The ABIs a runtime archive is published for. */
+        private fun hasRuntimeFor(abi: String): Boolean = abi == "arm64-v8a"
 
         private fun abiFor(context: Context): String {
             val preferred = android.os.Build.SUPPORTED_ABIS?.firstOrNull()
@@ -173,13 +170,14 @@ class PythonProvider(private val context: Context) {
         get() = File(context.filesDir, PYTHON_DIR_NAME)
 
     /**
-     * The directory PYTHONHOME points at: the parent of `lib/python3.14`.
+     * The directory PYTHONHOME points at: the parent of `lib/python3.14` and of
+     * `lib/libpython3.14.so`.
      *
-     * Named "root" rather than "stdlib" because the stdlib itself is one level
-     * below, and the difference between the two is the whole of defect 2.
+     * Named "root" rather than "stdlib" because the standard library is one level
+     * below it, and the difference between the two is the whole of defect 2.
      */
     private val stdlibRoot: File
-        get() = File(pythonDir, STDLIB_DIR_NAME)
+        get() = File(pythonDir, RUNTIME_DIR_NAME)
 
     /** `<root>/lib/python3.14`, where os.py and friends live. */
     private val stdlibDir: File
@@ -257,9 +255,27 @@ class PythonProvider(private val context: Context) {
             )
         }
 
-        // 2. The stdlib must be unpacked into the layout CPython searches.
+        // 2. The runtime must be unpacked: the interpreter, the standard library
+        //    and the libraries its extensions name, all from one build. This is
+        //    checked before anything is executed because running a launcher that
+        //    has no interpreter to load can only report a missing library.
         val extracted = ensureStdlib()
         if (extracted != null) return extracted
+
+        // The interpreter lives inside the extracted runtime now, not in
+        // nativeLibraryDir. Its presence there is what makes a run possible, so it
+        // is checked explicitly rather than discovered as a dlopen failure.
+        val interpreter = File(File(stdlibRoot, "lib"), "libpython3.14.so")
+        if (!interpreter.isFile) {
+            return PythonStatus.no(
+                Failure.STDLIB_EXTRACTION_FAILED,
+                "The runtime was extracted but has no interpreter at " +
+                    "${interpreter.absolutePath}. This is a fault in the asset, not in " +
+                    "the device: rerun fetch_python_runtime.sh.",
+                launcherPath = launcher.absolutePath,
+                stdlibRoot = stdlibRoot.absolutePath,
+            )
+        }
 
         // 3. Prove it. A runtime that has never printed its version is a
         //    hypothesis, and reporting a hypothesis as `available` is what made
@@ -279,19 +295,19 @@ class PythonProvider(private val context: Context) {
      */
     private fun ensureStdlib(): PythonStatus? {
         val abi = abiFor(context)
-        val asset = assetPathFor(abi)
-        if (asset == null) {
-            // No standard library ships for this ABI. Saying so plainly is the
-            // only honest answer: falling back to another architecture's library
-            // would load and then fail on the first extension import, which is a
-            // far worse diagnostic than a named absence.
+        if (!hasRuntimeFor(abi)) {
+            // No runtime archive ships for this ABI. Saying so plainly is the only
+            // honest answer: falling back to another architecture's library would
+            // load and then fail on the first extension import, which is a far
+            // worse diagnostic than a named absence.
             return PythonStatus.no(
                 Failure.STDLIB_ASSET_MISSING,
-                "This build ships no Python standard library for $abi. The archives " +
-                    "present are for arm64-v8a and x86_64 only.",
+                "This build ships no Python runtime for $abi. The archive " +
+                    "$RUNTIME_ASSET is built for arm64-v8a.",
                 launcherPath = launcherFile.absolutePath,
             )
         }
+        val asset = RUNTIME_ASSET
         val packageVersion = runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode
         }.getOrDefault(0L).toString()
@@ -299,8 +315,9 @@ class PythonProvider(private val context: Context) {
         val marker = File(stdlibRoot, MARKER_NAME)
         // Every condition is checked because each one alone catches a different
         // partial state: the directory missing, the directory empty, the archive
-        // extracted but the marker never written, or an upgrade that changed the
-        // version code under an existing tree.
+        // extracted but the marker never written, an upgrade that changed the
+        // version code under an existing tree, or a tree that has the pure-Python
+        // library but none of its extension modules.
         val complete = stdlibDir.isDirectory &&
             File(stdlibDir, "os.py").isFile &&
             dynloadDir.isDirectory &&
@@ -315,27 +332,29 @@ class PythonProvider(private val context: Context) {
         stdlibRoot.deleteRecursively()
 
         val assetPresent = runCatching {
-            context.assets.list("python/$abi")?.contains(asset.substringAfterLast('/')) == true
+            val dir = asset.substringBeforeLast('/', "")
+            val name = asset.substringAfterLast('/')
+            context.assets.list(dir)?.contains(name) == true
         }.getOrDefault(false)
 
         if (!assetPresent) {
             return PythonStatus.no(
                 Failure.STDLIB_ASSET_MISSING,
-                "No standard library archive at $asset inside the APK, for ABI $abi. " +
-                    "The interpreter can start without one but cannot import os, so it is " +
-                    "reported as unavailable rather than as a broken script.",
+                "No runtime archive at $asset inside the APK. Without it the interpreter " +
+                    "has no standard library and cannot import os, so it is reported as " +
+                    "unavailable rather than as a broken script.",
                 launcherPath = launcherFile.absolutePath,
             )
         }
 
-        val scratch = File(pythonDir, "${STDLIB_DIR_NAME}.incoming")
+        val scratch = File(pythonDir, "$RUNTIME_DIR_NAME.incoming")
         return try {
             pythonDir.mkdirs()
             scratch.deleteRecursively()
-            // Files go directly under the scratch root; the scratch root IS the
-            // PYTHONHOME directory, so it must end up containing lib/python3.14.
-            val stageStdlib = File(File(scratch, "lib"), PYTHON_VERSION)
-            stageStdlib.mkdirs()
+            // The archive's own root IS the PYTHONHOME directory: it contains
+            // lib/libpython3.14.so and lib/python3.14/. So entries are extracted
+            // exactly as named, and the scratch root becomes the runtime root.
+            scratch.mkdirs()
 
             val zipCopy = File(pythonDir, "stdlib.incoming.zip")
             try {
@@ -348,7 +367,7 @@ class PythonProvider(private val context: Context) {
                     val root = scratch.canonicalFile
                     while (entries.hasMoreElements()) {
                         val entry = entries.nextElement()
-                        val target = File(stageStdlib, entry.name)
+                        val target = File(scratch, entry.name)
 
                         // Zip-slip guard. An archive entry named "../../.." would
                         // otherwise write outside the app's own directory, and the
@@ -380,17 +399,15 @@ class PythonProvider(private val context: Context) {
                 zipCopy.delete()
             }
 
-            // Extension modules belong in lib-dynload, which is where getpath
-            // looks for them. Leaving them beside os.py also works for the ones
-            // that happen to be found by the ordinary path walk, but the ones the
-            // import system expects at that exact location do not, and the failure
-            // only shows up on the first `import sqlite3` rather than at startup.
-            val stageDynload = File(stageStdlib, DYNLOAD_DIR_NAME)
-            stageDynload.mkdirs()
-            stageStdlib.listFiles { f -> f.isFile && f.name.endsWith(".so") }?.forEach { so ->
-                so.renameTo(File(stageDynload, so.name))
-            }
-
+            // No reshuffling of extension modules.
+            //
+            // The archive is produced by fetch_python_runtime.sh, which lays the
+            // tree out exactly as CPython searches it: lib/python3.14/lib-dynload
+            // for extensions and lib/ for the interpreter's own shared libraries.
+            // An earlier version of this class moved root-level .so files into
+            // lib-dynload after extraction, which only made sense while the
+            // shipped archive was flat. Doing it now would move the interpreter's
+            // dependencies out of lib/ and break the library search.
             File(scratch, MARKER_NAME).writeText(packageVersion)
 
             // Rename into place. Both paths are inside filesDir, so this is a
@@ -569,6 +586,11 @@ class PythonProvider(private val context: Context) {
         val stdlib = stdlibDir.absolutePath
         val dynload = dynloadDir.absolutePath
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
+        // The runtime's own lib/ comes FIRST in the library search. That is where
+        // libpython3.14.so and the seventeen libraries its extension modules need
+        // live, all from the same pinned build. nativeLibraryDir stays on the path
+        // after it because the launcher itself is there.
+        val runtimeLib = File(stdlibRoot, "lib").absolutePath
         return mapOf(
             "PYTHONHOME" to home,
             "PYTHONPATH" to "$stdlib:$dynload",
@@ -577,7 +599,7 @@ class PythonProvider(private val context: Context) {
             "PYTHONNOUSERSITE" to "1",
             "HOME" to context.filesDir.absolutePath,
             "TMPDIR" to context.cacheDir.absolutePath,
-            "LD_LIBRARY_PATH" to nativeLibDir,
+            "LD_LIBRARY_PATH" to "$runtimeLib:$nativeLibDir",
         )
     }
 }
