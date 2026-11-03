@@ -61,6 +61,33 @@ data class HostView(
     val controllable: Boolean = false,
 )
 
+/** What the full sweep found, one entry per device, with how each was identified. */
+@Serializable
+data class NetworkEverythingResult(
+    val success: Boolean,
+    val subnet: String? = null,
+    val probedAddresses: Int = 0,
+    /** How many addresses were present at all, which is not the same as how many were named. */
+    val aliveAddresses: Int = 0,
+    val count: Int = 0,
+    val devices: List<DeviceView> = emptyList(),
+    val problems: List<String> = emptyList(),
+    val error: String? = null,
+) : ToolResultData
+
+/** One device as the tool reports it. */
+@Serializable
+data class DeviceView(
+    val address: String,
+    val name: String,
+    val deviceClass: String,
+    val vendor: String? = null,
+    val model: String? = null,
+    val location: String? = null,
+    /** One line per fact, each naming the protocol and whether it was declared or inferred. */
+    val evidence: List<String> = emptyList(),
+)
+
 @Serializable
 data class HostProbeResult(
     val success: Boolean,
@@ -85,6 +112,16 @@ object NetworkToolDefinitions : ToolSetRegistration {
      */
     const val NETWORK_HOSTS = "netHosts"
     const val NETWORK_PROBE = "netProbe"
+
+    /**
+     * The full sweep, which asks every protocol rather than only the ones the first two use.
+     *
+     * WHY THIS IS A SEPARATE TOOL RATHER THAN netHosts GROWING QUIETLY. `netHosts` is already wired
+     * into three tools and its own tests, and its behaviour is what the owner has used and
+     * reported on. Changing what it does underneath him would make every past description of it a
+     * lie. This tool is the one that gains SNMP, NBNS and reverse DNS, and it says so.
+     */
+    const val NETWORK_EVERYTHING = "netEverything"
 
     override val definitions = listOf(
         ToolDefinition(
@@ -128,6 +165,22 @@ object NetworkToolDefinitions : ToolSetRegistration {
             // declaring it only trips the catalogue contract without buying anything.
             permissions = emptyList(),
         ),
+        ToolDefinition(
+            name = NETWORK_EVERYTHING,
+            description = "Find everything on the wifi network, by asking every protocol at once " +
+                "rather than only the ones a television answers. Sweeps every address on the local " +
+                "subnet and asks over SNMP, NetBIOS, reverse DNS through the router, and a TCP " +
+                "connect on the ports real devices expose. This is what names a printer, a NAS, a " +
+                "switch or a router that serves no web page, and what names a washing machine or " +
+                "a fridge by the hostname the router gave it when it joined the wifi. Each device " +
+                "comes back with what it is, who made it, and how that was worked out, so a guess " +
+                "is never presented as a fact. A device that answers nothing at all on any " +
+                "protocol is still invisible, and the result says so rather than reporting an " +
+                "empty house.",
+            category = "network",
+            parameters = emptyList(),
+            permissions = emptyList(),
+        ),
     )
 
     override fun executorClass(): KClass<out ToolExecutor> = NetworkToolExecutor::class
@@ -149,6 +202,14 @@ class NetworkToolExecutor(
      * existing wiring exactly as it was.
      */
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    /**
+     * The full sweep, which is what netEverything runs.
+     *
+     * A SECOND PARAMETER RATHER THAN REPLACING THE FIRST. The existing scanner stays the thing
+     * netHosts runs, because that behaviour is what the owner has used and reported on. The new
+     * sweep is additive until it has proved itself on his own network.
+     */
+    private val fullSweep: FullNetworkSweep = FullNetworkSweep(),
 ) : ToolExecutor {
 
     constructor(context: Context) : this(NetworkScanner(), NetworkStore())
@@ -159,8 +220,47 @@ class NetworkToolExecutor(
         when (toolName) {
             NetworkToolDefinitions.NETWORK_HOSTS -> scan()
             NetworkToolDefinitions.NETWORK_PROBE -> probe(args)
+            NetworkToolDefinitions.NETWORK_EVERYTHING -> everything()
             else -> ToolExecutionResult.error("Unknown tool: $toolName")
         }
+
+    /**
+     * Run the full sweep and report every device it found.
+     *
+     * WHY THE RESULT KEEPS THE PROVENANCE. A list that says "printer" without saying whether the
+     * device declared it or it was inferred from a port is a list nobody can trust, because the
+     * two facts have different weight and only one of them is the device's own word. Each entry
+     * carries its evidence, so a wrong label can be traced to the protocol that produced it.
+     */
+    private suspend fun everything(): ToolExecutionResult {
+        val report = fullSweep.sweep()
+
+        val r = NetworkEverythingResult(
+            success = report.devices.isNotEmpty(),
+            subnet = report.subnet,
+            probedAddresses = report.probedAddresses,
+            aliveAddresses = report.aliveAddresses.size,
+            count = report.devices.size,
+            devices = report.devices.map { device ->
+                DeviceView(
+                    address = device.address,
+                    name = device.displayName,
+                    deviceClass = device.deviceClass.name,
+                    vendor = device.vendor,
+                    model = device.model,
+                    location = device.location,
+                    evidence = device.evidence.map { "${it.source}: ${it.detail} (${it.kind.name.lowercase()})" },
+                )
+            },
+            problems = report.problems,
+            error = if (report.devices.isEmpty()) {
+                report.problems.firstOrNull() ?: "Nothing answered on this network."
+            } else {
+                null
+            },
+        )
+        return emitPayload(json, json.encodeToString(NetworkEverythingResult.serializer(), r), r, r.success, r.error)
+    }
 
     /**
      * Sweep the network and store what was found.
@@ -387,10 +487,13 @@ object NetworkDomainModule : DomainToolModule {
     override fun bindings(): Module = module {
         single { NetworkStore() }
         single { NetworkScanner() }
+        // The full sweep, with its targets resolved from the platform rather than assumed.
+        single { ScanTargets() }
+        single { FullNetworkSweep(targets = get()) }
         single { UpnpSoapClient() }
         single { ShellNetworkRecon() }
         single { DeepPortScanner() }
-        factory { NetworkToolExecutor(get(), get()) }
+        factory { NetworkToolExecutor(get(), get(), fullSweep = get()) }
         factory { NetworkControlExecutor(get(), get(), get()) }
         factory { NetworkReconExecutor(get(), get()) }
         single { XboxConsole() }
