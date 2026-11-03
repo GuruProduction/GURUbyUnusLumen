@@ -20,10 +20,12 @@ import io.mockk.mockk
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.koin.android.ext.koin.androidContext
 import org.koin.core.error.NoDefinitionFoundException
 import org.koin.dsl.koinApplication
 import org.koin.dsl.module
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 
 /**
  * The inner mind's view model must resolve from its own module.
@@ -44,6 +46,11 @@ class InnerMindModuleTest {
     @Test
     fun `inner mind view model resolves from the innermind module alone`() {
         val koin = koinApplication {
+            // The module binds the room's dismissal marks from an Android context,
+            // the same way the app's own startKoin supplies one. Without it the
+            // container fails on the Context rather than on the view model, which
+            // would make this test pass for the wrong reason.
+            androidContext(RuntimeEnvironment.getApplication())
             modules(
                 innermindModule,
                 module {
@@ -81,6 +88,7 @@ class InnerMindModuleTest {
     @Test
     fun `the mind source resolves from the innermind module alone`() {
         val koin = koinApplication {
+            androidContext(RuntimeEnvironment.getApplication())
             modules(
                 innermindModule,
                 module {
