@@ -73,13 +73,19 @@ object DeviceIdentity {
             )
         }
 
+        // A NAME THAT IS THE ADDRESS IS NOT A NAME. Some devices announce their hostname as their
+        // own IP, and a router's reverse lookup can return nothing but the address it was asked
+        // about. Keying one of those as `name:192.0.2.14` looked strong while actually being the
+        // weakest identity there is, and it hid the weakness from the reason a person reads.
+        val nameIsAddress = name?.trim() == address
+
         // A RANDOMISED MAC IS DELIBERATELY NOT USED AS IDENTITY. Both phones and some laptops now
         // present a different address on every network join, so trusting one would create a new
         // device each time the owner came home. When a randomised address IS the only thing seen,
         // it is still reported, but the identity falls through to a name or the address.
         val randomised = mac?.let { normaliseMac(it) }?.takeIf { it.isNotBlank() && !isHardwareAddress(it) }
 
-        val safeName = name?.trim()?.takeIf { it.isNotBlank() }
+        val safeName = name?.trim()?.takeIf { it.isNotBlank() }?.takeIf { !nameIsAddress }
         if (safeName != null) {
             return Identity(
                 id = "name:${safeName.lowercase()}",

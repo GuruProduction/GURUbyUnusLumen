@@ -199,26 +199,65 @@ object NetworkMapToolDefinitions : ToolSetRegistration {
 /**
  * The map's tool executor.
  *
- * ONE CONSTRUCTOR, WITH ITS COLLABORATORS INJECTED. Every other domain builds its executor this way
- * and Koin supplies both, so a Context constructor would be a second path that bypassed the store
- * the rest of the app shares and built a second sweep with its own concurrency budget.
+ * THE COLLABORATORS ARE INJECTED, and the single-Context constructor beside them exists because
+ * every domain executor in this app is built that way by the honesty contract test, which fails a
+ * domain whose executor cannot be constructed from a Context. That test is right to exist: a
+ * registration nobody can build throws only when a person calls the tool.
+ *
+ * NO KOIN ANNOTATION HERE. The Koin compiler scans `com.unuslumen.app.data` and would emit a second
+ * binding for this class beside the one in [NetworkDomainModule]. With `allowOverride(true)` the
+ * duplicate resolves silently, so the app would run while the wiring nobody reads wins, which is
+ * the sort of fault that only shows up when one of the two paths is changed.
  */
-@org.koin.core.annotation.Factory
 class NetworkMapExecutor(
     private val store: NetworkMapStore,
     private val sweep: FullNetworkSweep,
 ) : ToolExecutor {
+
+    /**
+     * The single-Context constructor the domain honesty contract requires.
+     *
+     * It mirrors [NetworkToolExecutor], [XboxToolExecutor] and [FabricToolExecutor] rather than
+     * opening its own Room connection. A second `Room.databaseBuilder` here would build a second
+     * connection to the same file with no migrations attached, so the first launch after an upgrade
+     * would crash on a schema mismatch instead of reading the map it already had. The DAO is
+     * resolved through [KoinNetworkVisionDao], which returns the app's own DAO when Koin is started
+     * and an object that refuses loudly when it is not.
+     */
+    constructor(context: Context) : this(
+        NetworkMapStore(KoinNetworkVisionDao.resolve(context)),
+        FullNetworkSweep(),
+    )
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     override suspend fun execute(toolName: String, args: Map<String, Any?>): ToolExecutionResult =
         when (toolName) {
             NetworkMapToolDefinitions.NET_MAP -> map(args)
-            NetworkMapToolDefinitions.NET_LOOK -> look()
+            NetworkMapToolDefinitions.NET_LOOK -> look(ToolProgressSink.NONE)
             NetworkMapToolDefinitions.NET_NAME -> name(args)
             NetworkMapToolDefinitions.NET_HISTORY -> history(args)
             else -> ToolExecutionResult.error("Unknown tool: $toolName")
         }
+
+    /**
+     * A sweep reports what it is finding while it runs, because it is the one tool here that takes
+     * real time.
+     *
+     * WHY ONLY `netLook` OVERRIDES THIS. The other three answer from storage in milliseconds and
+     * have nothing honest to report mid-flight. This one walks 254 addresses, and a phone showing a
+     * spinner with no words for twenty seconds reads as a hang, which is how a working tool gets
+     * closed before it finishes. Every stage the sweep announces and every device it identifies is
+     * forwarded to the sink, so the work is visible as it happens.
+     */
+    override suspend fun executeWithProgress(
+        toolName: String,
+        args: Map<String, Any?>,
+        progress: ToolProgressSink,
+    ): ToolExecutionResult = when (toolName) {
+        NetworkMapToolDefinitions.NET_LOOK -> look(progress)
+        else -> execute(toolName, args)
+    }
 
     /** Report what is already known, without touching the network. */
     private suspend fun map(args: Map<String, Any?>): ToolExecutionResult {
@@ -244,25 +283,86 @@ class NetworkMapExecutor(
         return emitPayload(json, json.encodeToString(NetMapResult.serializer(), r), r, r.success, r.error)
     }
 
-    /** Sweep, save, and report what changed. */
-    private suspend fun look(): ToolExecutionResult {
-        val report = sweep.sweep()
+    /**
+     * Sweep, save, and report what changed.
+     *
+     * [progress] CARRIES BOTH KINDS OF NEWS THE SWEEP HAS: a stage sentence as each pass starts, and
+     * one line per device the moment it is identified. A device is reported as it is found rather
+     * than collected and dumped at the end, because a list that appears all at once twenty seconds
+     * later is indistinguishable from a hang while it is running.
+     */
+    private suspend fun look(progress: ToolProgressSink): ToolExecutionResult {
+        var found = 0
+        val report = sweep.sweep(
+            onFound = { device ->
+                found++
+                progress.report(
+                    ToolProgressEvent(
+                        toolName = NetworkMapToolDefinitions.NET_LOOK,
+                        message = "found ${device.displayName} at ${device.address}",
+                        payload = mapOf(
+                            "address" to device.address,
+                            "name" to device.displayName,
+                            "kind" to device.deviceClass.name,
+                        ),
+                    ),
+                )
+            },
+            onStage = { stage ->
+                progress.report(
+                    ToolProgressEvent(
+                        toolName = NetworkMapToolDefinitions.NET_LOOK,
+                        message = stage,
+                    ),
+                )
+            },
+        )
+        progress.report(
+            ToolProgressEvent(
+                toolName = NetworkMapToolDefinitions.NET_LOOK,
+                message = "saving $found device(s) to the map",
+            ),
+        )
 
         // The sweep is saved before anything is reported, because a map that only exists in the
         // answer is a map that is gone by the next question.
         val recorded = store.recordSweep(report, trigger = "tool")
-        val devices = store.devices()
+
+        // WHAT THIS SWEEP SAW, NOT EVERYTHING EVER STORED. The first version answered from
+        // `store.devices()`, which is the whole map across every network the phone has been on, so a
+        // sweep of a café would list his television at home as though it were in the room. A person
+        // asking "what can you see" wants this network now; the map is what `netMap` is for, and the
+        // two answers must not be the same list.
+        //
+        // ONE READ OF THE MAP, KEYED BY ADDRESS, rather than a query per device. The stored row
+        // carries the owner's name and room, which the sweep itself never learns, so each device is
+        // matched back to its row. A device that somehow has no row still appears, built from the
+        // sighting alone, because dropping a device that plainly answered would be the empty-network
+        // lie this whole tool exists to avoid.
+        val storedByAddress = store.devices().associateBy { it.lastAddress }
+        val views = report.devices.map { device ->
+            storedByAddress[device.address]?.toView() ?: MapDeviceView(
+                id = device.address,
+                name = device.displayName,
+                address = device.address,
+                kind = device.deviceClass.name,
+                vendor = device.vendor,
+                model = device.model,
+                openPorts = device.openPorts,
+                services = device.services,
+            )
+        }
 
         val r = NetLookResult(
-            success = devices.isNotEmpty(),
-            deviceCount = devices.size,
+            success = report.devices.isNotEmpty(),
+            deviceCount = report.devices.size,
             newDevices = recorded.inserted,
             knownDevices = recorded.updated,
             movedAddress = recorded.movedAddress,
             subnet = report.subnet,
-            devices = devices.map { it.toView() },
+            devices = views,
             problems = report.problems,
-            error = if (devices.isEmpty()) {
+            error = if (report.devices.isEmpty()) {
                 report.problems.firstOrNull() ?: "Nothing answered on this network."
             } else {
                 null
@@ -347,8 +447,23 @@ class NetworkMapExecutor(
         return emitPayload(json, json.encodeToString(NetHistoryResult.serializer(), r), r, r.success, r.error)
     }
 
-    /** Resolve a spoken device to exactly one row, refusing to guess between two. */
-    private suspend fun resolve(query: String): List<NetworkDeviceEntity> = store.search(query)
+    /**
+     * Resolve a spoken device to exactly one row, refusing to guess between two.
+     *
+     * THE ID IS TRIED FIRST, AS AN ADDITION TO THE TEXT SEARCH RATHER THAN A REPLACEMENT. `netMap`
+     * reports each device with an id, and the docstring of both tools tells the model to pass it
+     * back, but the search query matched only name, observed name, vendor, model, address and MAC.
+     * So the one identifier the tool itself handed out was the one thing it could not look up, and
+     * a model following the instructions reached "no device matches" every time.
+     *
+     * The text search still runs, because a person says "the printer" rather than
+     * "mac:94:b3:f7:90:92:81".
+     */
+    private suspend fun resolve(query: String): List<NetworkDeviceEntity> {
+        val byId = store.device(query)?.let { listOf(it) }.orEmpty()
+        if (byId.isNotEmpty()) return byId
+        return store.search(query)
+    }
 
     private fun failure(query: String, reason: String): ToolExecutionResult {
         val r = NetNameResult(success = false, device = query, error = reason)

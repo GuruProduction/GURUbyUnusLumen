@@ -30,8 +30,8 @@ import java.util.concurrent.atomic.AtomicInteger
  * connection and the wifi has no internet, Android makes cellular the default network, and every
  * unbound socket sends its packets out of the wrong interface. That is a network full of devices
  * reporting as empty, and it is why a laptop on the same wifi found three sets while the phone
- * found none. [ScanTargets.bind] takes the wifi network's own interface and every socket here is
- * bound to it.
+ * found none. [wifiInterface] resolves the wifi interface once per sweep and
+ * [HostPresence.probePort] takes it, so every connect leaves by the right interface.
  *
  * SECOND, PRESENCE WAS ONLY PROVED BY AN OPEN PORT. A device that answers ARP and drops every
  * connection is on the network, and it was invisible. [HostPresence] classifies how a connect
@@ -100,24 +100,34 @@ class FullNetworkSweep(
             set.addAll(ports)
         }
 
+        // RESOLVED ONCE FOR THE WHOLE SWEEP. Every socket below is bound to this interface, because
+        // a phone whose mobile data is validated sends an unbound socket's packets out of the
+        // carrier and every device on the wifi reads as absent. Looking it up once also means a
+        // mid-sweep interface change cannot half-bind the work.
+        val wifi = targets.wifiInterface()
+
         // THE ALIVENESS PASS COMES FIRST because it decides what the expensive probes are spent
         // on, and because a present-but-silent host is proved here and nowhere else.
-        val alive = findAlive(addresses, problems, onStage)
+        val alive = findAlive(addresses, problems, onStage, wifi)
         onStage("${alive.size} address(es) answered; asking each one what it is")
+
+        // ONE BUDGET FOR THE WHOLE PORT SWEEP, shared by every host, so fifty live devices cannot
+        // each open their own full set of sockets. See [sweepPorts].
+        val portGate = Semaphore(concurrency)
 
         coroutineScope {
             // THE PORT SWEEP, which is what gives a device its open ports and what finds a device
             // that answers a service the identification probes do not speak. It runs only against
             // live addresses, because probing a switched-off host costs a full timeout each.
             launchEach(alive) { address ->
-                recordPorts(address, sweepPorts(address))
+                recordPorts(address, sweepPorts(address, portGate, wifi))
             }
 
             // SNMP, which is the only protocol that names a printer or a switch that serves no
             // web page. It runs against every live address rather than every address, because an
             // absent host costs a full timeout and there are 254 of them.
             launchEach(alive) { address ->
-                val channel = UdpProbeChannel()
+                val channel = UdpProbeChannel(bindTo = wifi)
                 val result = SnmpProbe.query(address, channel)
                 if (result != null) {
                     record(address, DeviceIdentifier.fromSnmp(result.values))
@@ -126,7 +136,7 @@ class FullNetworkSweep(
 
             // NBNS, for the name and MAC that a Windows machine or NAS will give away.
             launchEach(alive) { address ->
-                val channel = UdpProbeChannel()
+                val channel = UdpProbeChannel(bindTo = wifi)
                 val replies = channel.exchange(
                     address, NBNS_PORT, NbnsProbe.nodeStatusRequest(), deadlineMillis = 500,
                 )
@@ -152,10 +162,14 @@ class FullNetworkSweep(
             // REVERSE DNS THROUGH THE GATEWAY. This is the only probe that names an appliance
             // which answers nothing at all, because the name came from the DHCP request it made
             // when it joined and the router still holds it.
+            //
+            // THE GATEWAY IS RESOLVED ONCE, OUTSIDE THE PER-ADDRESS LOOP. It used to be looked up
+            // inside it, which meant 250 live addresses each did two TCP probes to find the same
+            // answer, and every one of those probes went out unbound.
+            val gateway = targets.gateway()
             launchEach(alive) { address ->
-                val gateway = targets.gateway()
                 if (gateway != null) {
-                    val channel = UdpProbeChannel()
+                    val channel = UdpProbeChannel(bindTo = wifi)
                     val transactionId = dnsCounter.getAndIncrement() and 0xFFFF
                     val replies = channel.exchange(
                         gateway, DNS_PORT,
@@ -216,6 +230,7 @@ class FullNetworkSweep(
         addresses: List<String>,
         problems: MutableList<String>,
         onStage: (String) -> Unit,
+        bindTo: java.net.NetworkInterface? = null,
     ): List<String> = coroutineScope {
         val gate = Semaphore(concurrency)
         val alive = ConcurrentHashMap.newKeySet<String>()
@@ -223,7 +238,9 @@ class FullNetworkSweep(
         addresses.map { address ->
             async {
                 gate.withPermit {
-                    val probe = HostPresence.probe(address, ALIVENESS_PORTS, connectTimeoutMillis)
+                    val probe = HostPresence.probe(
+                        address, ALIVENESS_PORTS, connectTimeoutMillis, bindTo,
+                    )
                     when (probe.state) {
                         HostPresence.State.OPEN,
                         HostPresence.State.PRESENT_CLOSED,
@@ -259,13 +276,21 @@ class FullNetworkSweep(
      * them is also something the classification rules can use. Scanning all 65535 ports is the
      * thing that turns a sweep into a run that never ends, and on a home network it returns
      * nothing the protocol ports did not already return.
+     *
+     * THE CONCURRENCY BUDGET IS PER SWEEP, NOT PER ADDRESS, and that is a real correction. The
+     * first version took a fresh [Semaphore] for every host, so fifty live hosts could each open
+     * [concurrency] sockets at once, which is several thousand sockets on a phone. The budget is
+     * now owned by the caller and passed in, so the ceiling is the sweep's and not one host's.
      */
-    private suspend fun sweepPorts(address: String): List<Int> = coroutineScope {
-        val gate = Semaphore(concurrency)
+    private suspend fun sweepPorts(
+        address: String,
+        gate: Semaphore,
+        bindTo: java.net.NetworkInterface? = null,
+    ): List<Int> = coroutineScope {
         SERVICE_PORTS.map { port ->
             async {
                 gate.withPermit {
-                    if (HostPresence.probePort(address, port, connectTimeoutMillis) ==
+                    if (HostPresence.probePort(address, port, connectTimeoutMillis, bindTo) ==
                         HostPresence.State.OPEN
                     ) {
                         port
@@ -394,8 +419,9 @@ open class ScanTargets {
         // network with a mesh node or a second router has its gateway somewhere else entirely.
         val prefix = subnetPrefix() ?: return null
         val candidates = listOf("$prefix.1", "$prefix.254")
+        val wifi = wifiInterface()
         candidates.firstOrNull { address ->
-            HostPresence.probePort(address, 53, 300) != HostPresence.State.ABSENT
+            HostPresence.probePort(address, 53, 300, wifi) != HostPresence.State.ABSENT
         }
     }.getOrNull()
 

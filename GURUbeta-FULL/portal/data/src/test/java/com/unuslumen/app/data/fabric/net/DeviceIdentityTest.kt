@@ -165,4 +165,36 @@ class DeviceIdentityTest {
         cases.forEach { assertNotNull(it.reason) }
         cases.forEach { assertTrue(it.reason.isNotBlank()) }
     }
+
+    // ------------------------------------------------------------------
+    // A name that is really an address, which would fake a strong identity
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `a hostname that is the device's own address is not treated as a name`() {
+        // Some devices announce their hostname as their own IP, and a router's reverse lookup can
+        // return nothing but the address it was asked about. Keying that as `name:192.0.2.14`
+        // claimed the reliability of a name for what is really the weakest identity of all.
+        val identity = DeviceIdentity.of("192.0.2.14", null, "192.0.2.14")
+
+        assertEquals(DeviceIdentity.Basis.ADDRESS, identity.basis)
+        assertEquals("address:192.0.2.14", identity.id)
+    }
+
+    // ------------------------------------------------------------------
+    // Two devices with the same announced name
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `two different addresses with the same name still collapse, and that is a known weakness`() {
+        // A name is not unique, and the identity cannot tell two devices called "printer" apart
+        // without a MAC. This test pins the current behaviour so the limitation is a decision on
+        // the record rather than a surprise: the reason sentence names the weakness, and a device
+        // that reports a MAC never reaches this branch at all.
+        val a = DeviceIdentity.of("192.0.2.60", null, "printer")
+        val b = DeviceIdentity.of("192.0.2.61", null, "printer")
+
+        assertEquals(a.id, b.id)
+        assertTrue(a.reason.contains("announced"))
+    }
 }

@@ -69,17 +69,23 @@ interface NetworkVisionDao {
      * A map is useless if finding one device in it means reading all of them, and the owner's own
      * words for a device are what they will search with, which is why the owner's name comes first
      * in the match rather than being an afterthought.
+     *
+     * `room` IS SEARCHED TOO, because a person asks "what is in the kitchen" as readily as "where
+     * is the printer". Both are answers this map holds, and leaving the room out meant a question
+     * it could answer came back as nothing matched.
      */
     @Query(
         """
         SELECT * FROM network_devices
         WHERE retired = 0 AND (
             name LIKE '%' || :query || '%' OR
+            room LIKE '%' || :query || '%' OR
             observed_name LIKE '%' || :query || '%' OR
             vendor LIKE '%' || :query || '%' OR
             model LIKE '%' || :query || '%' OR
             last_address LIKE '%' || :query || '%' OR
-            mac LIKE '%' || :query || '%'
+            mac LIKE '%' || :query || '%' OR
+            device_class LIKE '%' || :query || '%'
         )
         ORDER BY last_seen DESC
         """
@@ -99,6 +105,12 @@ interface NetworkVisionDao {
      * A SEPARATE QUERY FROM THE UPSERT FOR THE SAME REASON [FabricDao.placeDevice] is separate:
      * `name` and `room` are the owner's, and a sweep that overwrote them would rename a device
      * every time it was seen.
+     *
+     * IT ALSO UN-RETIRES THE DEVICE, AND THAT IS NOT A DETAIL. A device is retired when it has
+     * been gone a long time. Seeing it again is proof it is back, so the row must return to the
+     * map. Without this the retired flag was a one-way door: a device retired during a quiet week
+     * stayed invisible for ever while its sightings kept accumulating underneath it, and the map
+     * shrank permanently every time something was unplugged.
      */
     @Query(
         """
@@ -112,7 +124,8 @@ interface NetworkVisionDao {
             services_json = :servicesJson,
             sighting_count = sighting_count + 1,
             last_seen = :now,
-            updated_at = :now
+            updated_at = :now,
+            retired = 0
         WHERE id = :id
         """
     )

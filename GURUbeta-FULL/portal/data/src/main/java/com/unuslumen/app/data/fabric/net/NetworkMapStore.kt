@@ -47,12 +47,20 @@ class NetworkMapStore(private val dao: NetworkVisionDao) {
      *
      * [trigger] is what asked for the sweep ("user", "skill", "schedule", "tool") and [prompt] is
      * the words that started it, so a map keeps the reason it was built.
+     *
+     * [retireAfterMillis] IS A GRACE WINDOW, NOT "NOT SEEN THIS TIME", and getting that wrong was a
+     * real defect in the first version of this class. It retired every device absent from the
+     * current sweep, which meant joining one other wifi retired the entire house: a café network's
+     * sweep saw none of his devices and therefore declared all of them gone. A device is retired
+     * only after it has been unseen for longer than this window, so a single sweep away from home
+     * costs nothing and a device that genuinely left is eventually marked.
      */
     suspend fun recordSweep(
         report: FullNetworkSweep.SweepReport,
         trigger: String,
         prompt: String? = null,
         now: Long = System.currentTimeMillis(),
+        retireAfterMillis: Long = RETIRE_AFTER_MILLIS,
     ): SweepRecorded {
         val scanId = "scan:${UUID.randomUUID()}"
         dao.insertScan(
@@ -76,12 +84,15 @@ class NetworkMapStore(private val dao: NetworkVisionDao) {
         val seenIds = mutableSetOf<String>()
 
         for (device in report.devices) {
-            // The identity is derived from the strongest fact this device gave up. Every lookup
-            // below is keyed on that, never on the address.
+            // THE IDENTITY IS DERIVED FROM THE STRONGEST FACT THIS DEVICE GAVE UP, and the name
+            // fed in here is the device's OWN name, never its vendor. An earlier version fell back
+            // to the vendor, which is a collision waiting to happen: a Sony television and a Sony
+            // speaker both became "name:sony", so the second device overwrote the first and the
+            // map quietly held one of them. A vendor names a company, not a device.
             val identity = DeviceIdentity.of(
                 address = device.address,
                 mac = device.evidence.firstNotNullOfOrNull { macFromEvidence(it) },
-                name = device.name ?: device.vendor,
+                name = device.name,
             )
 
             val existing = findExisting(identity, device.address)
@@ -172,7 +183,14 @@ class NetworkMapStore(private val dao: NetworkVisionDao) {
         // A DEVICE UNSEEN IS MARKED RATHER THAN DELETED. Its history is the reason the map is worth
         // having, so a device that has left is retired and its sightings kept. Only a deliberate
         // purge removes rows, and nothing in this class does that.
-        val unseen = dao.getUnseenSince(now)
+        //
+        // THE CUTOFF IS THE GRACE WINDOW, NOT "NOW". Retiring on `now` meant any sweep from a
+        // network that is not his own retired his whole house in one pass, because none of his
+        // devices answer on a café's wifi. A device is only retired once it has been missing for the
+        // whole window, so one sweep elsewhere changes nothing and a device that really left is
+        // marked a week later.
+        val cutoff = now - retireAfterMillis
+        val unseen = dao.getUnseenSince(cutoff)
         unseen.forEach { dao.retireDevice(it.id, now) }
 
         dao.finishScan(
@@ -247,6 +265,19 @@ class NetworkMapStore(private val dao: NetworkVisionDao) {
     /** Search the map by any fact a person would remember a device by. */
     suspend fun search(query: String): List<NetworkDeviceEntity> = dao.searchDevices(query)
 
+    /**
+     * One device by the id `netMap` reported, or by an address or MAC a person typed.
+     *
+     * Needed because the id is what the tools hand out, and a map that cannot be asked about a
+     * device by the identifier it printed is a map that makes its own caller guess.
+     */
+    suspend fun device(id: String): NetworkDeviceEntity? {
+        dao.getDevice(id)?.let { return it }
+        dao.getDeviceByAddress(id)?.let { return it }
+        val mac = DeviceIdentity.normaliseMac(id) ?: return null
+        return dao.getDeviceByMac(mac)
+    }
+
     /** Give a device a name. No sweep may undo this. */
     suspend fun rename(deviceId: String, name: String?, now: Long = System.currentTimeMillis()) {
         dao.renameDevice(deviceId, name?.trim()?.ifBlank { null }, now)
@@ -295,14 +326,31 @@ class NetworkMapStore(private val dao: NetworkVisionDao) {
 
     companion object {
         /**
+         * How long a device may be missing from sweeps before it is retired.
+         *
+         * SEVEN DAYS, WHICH IS A JUDGEMENT RATHER THAN A MAGIC NUMBER. A phone that leaves the
+         * house for a weekend and comes back is still a device in the house, and retiring it on the
+         * first sweep it misses would make its history look like a series of unrelated arrivals.
+         * A device genuinely removed is marked within a week, which is soon enough that the map
+         * stops listing it while its sightings remain readable.
+         */
+        const val RETIRE_AFTER_MILLIS: Long = 7L * 24 * 60 * 60 * 1000
+
+        /**
          * A MAC address in any of the spellings a protocol may use.
          *
          * The evidence line is the only place a probe records a MAC, so this is what recovers it
          * for the identity. Matching all three forms matters because SNMP reports hex octets, NBNS
          * reports a colon-separated string and mDNS TXT records vary by vendor.
+         *
+         * THE BARE TWELVE-HEX FORM IS BRACKETED WITH WORD BOUNDARIES, which matters because the
+         * unanchored version matches the first twelve characters of any longer hex run. An SNMP
+         * value such as a 16-character serial in hex would otherwise be read as a MAC, and a device
+         * would be given a hardware identity it does not have. That is the exact fault this class
+         * exists to prevent, so the pattern refuses it at the source.
          */
         private val MAC_PATTERN = Regex(
-            "([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}|[0-9a-fA-F]{12}",
+            "\\b(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}\\b|\\b[0-9a-fA-F]{12}\\b",
         )
     }
 }

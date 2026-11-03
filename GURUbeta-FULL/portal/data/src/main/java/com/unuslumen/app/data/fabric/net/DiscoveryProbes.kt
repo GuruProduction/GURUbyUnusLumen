@@ -6,8 +6,10 @@ package com.unuslumen.app.data.fabric.net
 import java.io.ByteArrayOutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -34,7 +36,19 @@ import java.util.concurrent.atomic.AtomicInteger
  * The correlation is the source address, because every protocol here puts the answering host's
  * address in the packet header where the socket can read it for free.
  */
-class UdpProbeChannel(private val timeoutMillis: Int = 900) {
+class UdpProbeChannel(
+    private val timeoutMillis: Int = 900,
+    /**
+     * The interface every datagram leaves by, or null to let the platform decide.
+     *
+     * UDP NEEDS THIS MORE THAN TCP DOES. A UDP socket that is not bound has no route lookup to
+     * correct afterwards, so a datagram to a LAN address on a phone with a working mobile
+     * connection leaves by the mobile interface, arrives at the carrier's gateway and is dropped.
+     * SNMP, NBNS and reverse DNS are all UDP, which is why all three can return nothing on a
+     * network that is plainly there.
+     */
+    private val bindTo: java.net.NetworkInterface? = null,
+) {
 
     /**
      * Send [payload] to [address]:[port] and collect every reply that arrives within the window.
@@ -53,6 +67,22 @@ class UdpProbeChannel(private val timeoutMillis: Int = 900) {
         val replies = mutableListOf<ByteArray>()
         runCatching {
             DatagramSocket().use { socket ->
+                // Bound to the wifi interface's address when one was supplied, because a datagram
+                // sent from an unbound socket on a phone with validated mobile data leaves by the
+                // carrier and never reaches the house. A bind that fails is not fatal: the packet
+                // then takes the default route, which is what happened before this existed.
+                //
+                // The local copy is not a style choice. `bindTo` is a constructor property of this
+                // class, so Kotlin will not smart-cast it to non-null inside the lambda and the
+                // direct call does not compile. Copying it makes the null check above binding.
+                val iface = bindTo
+                if (iface != null) {
+                    runCatching {
+                        iface.inetAddresses.toList()
+                            .firstOrNull { it is Inet4Address }
+                            ?.let { socket.bind(InetSocketAddress(it, 0)) }
+                    }
+                }
                 socket.soTimeout = 120
                 val target = InetAddress.getByName(address)
                 socket.send(DatagramPacket(payload, payload.size, target, port))
@@ -429,13 +459,19 @@ object HostPresence {
      * Probe one address on a list of ports and report the strongest fact learned.
      *
      * Ordered so a refusal or an open port is found before an absence is concluded, because the
-     * first two prove presence and only the third needs all of them to fail.
+     * first two prove presence and only the third needs all of them to fail. [bindTo] is threaded
+     * through for the same reason it exists on [probePort].
      */
-    fun probe(address: String, ports: List<Int>, timeoutMillis: Int = 350): Probe {
+    fun probe(
+        address: String,
+        ports: List<Int>,
+        timeoutMillis: Int = 350,
+        bindTo: NetworkInterface? = null,
+    ): Probe {
         var sawPresent = false
         var sawAbsent = false
         for (port in ports) {
-            val state = probePort(address, port, timeoutMillis)
+            val state = probePort(address, port, timeoutMillis, bindTo)
             when (state) {
                 State.OPEN -> return Probe(State.OPEN, port)
                 State.PRESENT_CLOSED -> {
@@ -459,10 +495,34 @@ object HostPresence {
      * `ConnectException` whose message mentions an unreachable host is an absence, while the same
      * type with any other message is a refusal. A timeout is neither, because there is no evidence
      * either way.
+     *
+     * [bindTo] IS WHAT MAKES A SWEEP SEE THE HOUSE, and it is passed rather than resolved here so
+     * a sweep looks the interface up once instead of once per socket. When the phone has a working
+     * mobile connection and a wifi network with no internet, Android makes cellular the default and
+     * an unbound socket sends its packets out of the mobile interface. Every device then reads as
+     * absent, and the sweep reports an empty network while a laptop on the same wifi finds three
+     * televisions.
+     *
+     * JAVA CANNOT BIND A SOCKET TO AN INTERFACE, only to a local address, so the binding is the
+     * interface's own IPv4 address with an ephemeral local port. A failure to bind is deliberately
+     * tolerated rather than fatal: the connect then takes the default interface exactly as it did
+     * before this parameter existed, which is worse but is not a lie about the network.
      */
-    fun probePort(address: String, port: Int, timeoutMillis: Int = 350): State {
+    fun probePort(
+        address: String,
+        port: Int,
+        timeoutMillis: Int = 350,
+        bindTo: NetworkInterface? = null,
+    ): State {
         return runCatching {
             Socket().use { socket ->
+                if (bindTo != null) {
+                    runCatching {
+                        bindTo.inetAddresses.toList()
+                            .firstOrNull { it is Inet4Address }
+                            ?.let { socket.bind(InetSocketAddress(it, 0)) }
+                    }
+                }
                 socket.connect(InetSocketAddress(address, port), timeoutMillis)
                 State.OPEN
             }
