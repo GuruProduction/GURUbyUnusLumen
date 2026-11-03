@@ -2247,18 +2247,56 @@ class TermuxProvider(private val context: Context) {
             val filesDirInRoot = File(termuxRoot, rel)
             filesDirInRoot.mkdirs()
 
+            /*
+             * readlink, NOT exists(), and the difference is a real defect.
+             *
+             * File.exists() FOLLOWS a symlink, so it answers "is the target
+             * reachable", not "is the mapping correct". Two ways that went wrong
+             * and both were measured:
+             *
+             *  - A directory left at this path by an earlier install reported
+             *    true, so the symlink was never created. dpkg then wrote a whole
+             *    parallel tree at <termuxRoot>/data/data/com.termux/files/usr,
+             *    reported the packages installed, and not one binary reached the
+             *    prefix. `apt install cowsay` exited 0 and `cowsay` was not
+             *    there.
+             *  - A dangling symlink reported false and was left dangling, so the
+             *    same fault recurred on every init.
+             *
+             * readlink answers what this code actually needs: is the entry a
+             * symlink, and does it point where the mapping requires.
+             */
             val usrLink = File(filesDirInRoot, "usr")
-            if (!usrLink.exists()) {
-                try {
-                    android.system.Os.symlink(
-                        File(usrPrefix, "").absolutePath.trimEnd('/'),
-                        usrLink.absolutePath,
+            val wanted = File(usrPrefix, "").absolutePath.trimEnd('/')
+            val existingTarget = runCatching {
+                android.system.Os.readlink(usrLink.absolutePath)
+            }.getOrNull()
+
+            if (existingTarget != wanted) {
+                if (existingTarget == null && usrLink.exists()) {
+                    // A real directory or file occupies the path. It cannot be a
+                    // working mapping, because dpkg writes THROUGH this path into
+                    // the prefix; left in place it silently swallows installs.
+                    Log.w(
+                        TAG,
+                        "TermuxProvider: compatibility root holds a real directory at " +
+                            "${usrLink.absolutePath}, replacing it with the symlink",
                     )
+                    usrLink.deleteRecursively()
+                } else if (existingTarget != null) {
+                    usrLink.delete()
+                }
+                try {
+                    android.system.Os.symlink(wanted, usrLink.absolutePath)
                 } catch (e: Exception) {
                     Log.w(TAG, "TermuxProvider: compatibility root symlink failed: ${e.message}")
                 }
             }
-            val ok = usrLink.exists()
+            // Verified by readlink so the log reports the MAPPING, not whether
+            // its target happens to be reachable at this instant.
+            val ok = runCatching {
+                android.system.Os.readlink(usrLink.absolutePath) == wanted
+            }.getOrDefault(false)
             Log.d(
                 TAG,
                 "TermuxProvider: compatibility root ${if (ok) "ready" else "INCOMPLETE"} — " +

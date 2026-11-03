@@ -14,6 +14,7 @@ import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
 import com.unuslumen.app.data.tor.EgressClassifier
 import com.unuslumen.app.data.tor.TorManager
+import com.unuslumen.app.util.shell.PythonProvider
 import com.unuslumen.app.util.shell.ShellExecutor
 import com.unuslumen.app.util.shell.ShellResult
 import kotlinx.coroutines.Dispatchers
@@ -402,12 +403,47 @@ class ShellToolExecutor(
             return@withContext ToolExecutionResult.success(r, json.encodeToString(PythonExecResult.serializer(), r))
         }
 
+        // EGRESS (issue 285). Python ran with a clean environment, so every
+        // socket it opened went out on the device's real IP while every other tool
+        // in the app rode Tor. That is the one failure the architecture exists to
+        // prevent, and it was silent: the script succeeded and the caller had no
+        // way to tell the request had bypassed the circuit.
+        //
+        // The decision is the same one the curl path makes, using the same
+        // classifier. A script that only touches private space gets no proxy at
+        // all, because injecting one for a LAN address is what produced issue 215
+        // where a request to the router read as a dead host.
+        val needsTor = EgressClassifier.commandNeedsTor(script)
+        val torPorts: PythonProvider.TorPorts? = if (needsTor) {
+            if (!torManager.isReady.value) {
+                // Fail closed, exactly as curl does. A public script with no
+                // circuit is not run rather than run direct, because a silent
+                // clearnet connection is worse than a refusal.
+                val r = PythonExecResult(
+                    "",
+                    "Tor is not running, so this script was not run. It targets a public " +
+                        "address and public traffic rides Tor, so it will not be sent direct. " +
+                        "A script that only touches the local network is unaffected.",
+                    null,
+                    false,
+                    status = "LAUNCH_FAILED",
+                    reason = "TOR_UNAVAILABLE",
+                )
+                return@withContext ToolExecutionResult.success(r, json.encodeToString(PythonExecResult.serializer(), r))
+            }
+            val socksPort = (torManager.getSocksProxy().address() as? InetSocketAddress)?.port ?: 9050
+            val httpPort = (torManager.getProxy().address() as? InetSocketAddress)?.port ?: 8118
+            PythonProvider.TorPorts(socksPort, httpPort)
+        } else {
+            null
+        }
+
         val scriptFile = File(context.cacheDir, "guru_script_${System.currentTimeMillis()}.py")
         var process: Process? = null
         try {
             scriptFile.writeText(script)
             val builder = ProcessBuilder(shellExecutor.python.buildExecCommand(scriptFile.absolutePath))
-            builder.environment().putAll(shellExecutor.python.getPythonEnv())
+            builder.environment().putAll(shellExecutor.python.getPythonEnv(torPorts))
             val started = builder.start()
             process = started
 
