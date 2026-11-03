@@ -77,6 +77,19 @@ class PythonProvider(private val context: Context) {
          */
         private const val RUNTIME_ASSET = "python-runtime/python-runtime-arm64.zip"
 
+        /**
+         * Private space for the proxy bypass, stated the same way the curl path
+         * states it.
+         *
+         * Both cases are emitted because Python's urllib reads the lowercase form
+         * on some versions and the uppercase on others. This is a safety net
+         * rather than the mechanism: the real decision is EgressClassifier's, made
+         * before a proxy is injected at all.
+         */
+        const val NO_PROXY_VALUE: String =
+            "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16," +
+                "169.254.0.0/16,100.64.0.0/10,*.local,*.lan,*.home,*.home.arpa,*.internal"
+
         /** The ABIs a runtime archive is published for. */
         private fun hasRuntimeFor(abi: String): Boolean = abi == "arm64-v8a"
 
@@ -581,7 +594,58 @@ class PythonProvider(private val context: Context) {
     /** PYTHONHOME: the directory that CONTAINS `lib/python3.14`. */
     fun getPythonHome(): String = stdlibRoot.absolutePath
 
-    fun getPythonEnv(): Map<String, String> {
+    /**
+     * The CA bundle path, extracting it from assets on first use.
+     *
+     * Issues 286: the interpreter's OpenSSL was compiled against
+     * /data/data/com.termux/files/usr/etc/tls/cert.pem, a path that does not exist
+     * in this app, so ssl.get_default_verify_paths() reported an empty trust store
+     * and every HTTPS request failed CERTIFICATE_VERIFY_FAILED. The app already
+     * ships a working bundle for curl; this makes Python use the same file.
+     *
+     * Returns null only if the asset is genuinely absent, in which case the caller
+     * leaves SSL_CERT_FILE unset rather than pointing it at a file that is not
+     * there, because an unset variable produces the normal OpenSSL error while a
+     * wrong one produces a misleading one.
+     */
+    fun ensureCaBundle(): String? {
+        val target = File(context.filesDir, "cacert.pem")
+        if (target.isFile && target.length() > 0) return target.absolutePath
+        return try {
+            context.assets.open("cacert.pem").use { input ->
+                FileOutputStream(target).use { output -> input.copyTo(output) }
+            }
+            if (target.length() > 0) target.absolutePath else null
+        } catch (e: Exception) {
+            Log.w(TAG, "PythonProvider: could not extract cacert.pem", e)
+            null
+        }
+    }
+
+    /**
+     * The environment for the interpreter.
+     *
+     * Two things beyond the runtime itself, both of which were missing and both of
+     * which made Python behave differently from every other tool in the app:
+     *
+     * TLS (issue 286). SSL_CERT_FILE points at the bundle this app ships, because
+     * the interpreter's compiled-in OpenSSL prefix is a Termux path that does not
+     * exist here. Without it HTTPS fails, and the obvious workaround a caller
+     * reaches for is disabling verification, which is worse than the failure.
+     *
+     * EGRESS (issue 285). The proxy variables are only added when [torPorts] is
+     * non-null, which the caller decides by asking EgressClassifier whether the
+     * script targets anything public. That is the same decision curl gets, and it
+     * matters that it is the same one: injecting a proxy for a LAN address is what
+     * produced issue 215, where a request to the router came back as a dead host.
+     *
+     * What this does NOT do, and cannot: a raw socket.create_connection ignores
+     * proxy variables completely. Only urllib, http.client with a proxy handler and
+     * requests honour them. Confining a raw socket needs a network namespace or a
+     * transparent redirect, which a stock app cannot install. The tool description
+     * says so plainly rather than implying the environment covers everything.
+     */
+    fun getPythonEnv(torPorts: TorPorts? = null): Map<String, String> {
         val home = stdlibRoot.absolutePath
         val stdlib = stdlibDir.absolutePath
         val dynload = dynloadDir.absolutePath
@@ -591,7 +655,8 @@ class PythonProvider(private val context: Context) {
         // live, all from the same pinned build. nativeLibraryDir stays on the path
         // after it because the launcher itself is there.
         val runtimeLib = File(stdlibRoot, "lib").absolutePath
-        return mapOf(
+
+        val env = mutableMapOf(
             "PYTHONHOME" to home,
             "PYTHONPATH" to "$stdlib:$dynload",
             "PYTHONDONTWRITEBYTECODE" to "1",
@@ -601,5 +666,38 @@ class PythonProvider(private val context: Context) {
             "TMPDIR" to context.cacheDir.absolutePath,
             "LD_LIBRARY_PATH" to "$runtimeLib:$nativeLibDir",
         )
+
+        // TLS. Both names are set because OpenSSL reads SSL_CERT_FILE while
+        // requests reads REQUESTS_CA_BUNDLE, and a caller importing either should
+        // find a working store without having to know which is which.
+        ensureCaBundle()?.let { ca ->
+            env["SSL_CERT_FILE"] = ca
+            env["SSL_CERT_DIR"] = File(ca).parent ?: context.filesDir.absolutePath
+            env["REQUESTS_CA_BUNDLE"] = ca
+            env["CURL_CA_BUNDLE"] = ca
+            env["AWS_CA_BUNDLE"] = ca
+        }
+
+        // Tor, only when the caller decided this script needs it.
+        if (torPorts != null) {
+            val socks = "socks5h://127.0.0.1:${torPorts.socksPort}"
+            val http = "http://127.0.0.1:${torPorts.httpPort}"
+            env["ALL_PROXY"] = socks
+            env["all_proxy"] = socks
+            env["HTTP_PROXY"] = http
+            env["http_proxy"] = http
+            env["HTTPS_PROXY"] = http
+            env["https_proxy"] = http
+            // socks5h is what makes the PROXY resolve the name rather than the
+            // device, so a DNS lookup does not leak the destination outside the
+            // circuit. The NO_PROXY list is the same one curl receives.
+            env["NO_PROXY"] = NO_PROXY_VALUE
+            env["no_proxy"] = NO_PROXY_VALUE
+        }
+
+        return env
     }
+
+    /** The two Tor listeners, as ports. Null in the env means no proxying. */
+    data class TorPorts(val socksPort: Int, val httpPort: Int)
 }

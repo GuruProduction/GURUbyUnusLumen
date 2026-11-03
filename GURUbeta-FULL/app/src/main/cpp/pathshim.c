@@ -67,10 +67,12 @@
 #define _GNU_SOURCE
 
 #include <dlfcn.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -281,11 +283,134 @@ int execv(const char *path, char *const argv[]) {
 }
 
 /*
- * mkdir is deliberately NOT intercepted.
+ * execvp and execvpe search PATH themselves, inside libc.
  *
- * Package installs write through dpkg, whose paths are handled by the
- * compatibility root and instdir. Directories a program creates at an upstream
- * path are rare, and rewriting mkdir would let a stray write create structure
- * inside our prefix that nothing expects. Reading and executing are the
- * behaviours that were broken; writing new trees is not.
+ * That matters here: the search happens before any path is handed to a function
+ * this shim intercepts, so an absolute upstream path passed to execvp is resolved
+ * by bionic's own open/access calls and never reaches the execve hook. Defining
+ * these and delegating to it keeps the rewrite in one place rather than
+ * reimplementing a PATH walk.
+ *
+ * A bare name ("apt-key") still goes through the PATH search, which is correct:
+ * PATH in this app's environment already points at the real prefix's bin.
  */
+typedef int (*execvp_fn)(const char *, char *const[]);
+int execvp(const char *file, char *const argv[]) {
+    static execvp_fn real = NULL;
+    if (!real) real = (execvp_fn)dlsym(RTLD_NEXT, "execvp");
+    char buf[PATHBUF];
+    return real(SHIM(file, buf), argv);
+}
+
+typedef int (*execvpe_fn)(const char *, char *const[], char *const[]);
+int execvpe(const char *file, char *const argv[], char *const envp[]) {
+    static execvpe_fn real = NULL;
+    if (!real) real = (execvpe_fn)dlsym(RTLD_NEXT, "execvpe");
+    char buf[PATHBUF];
+    return real(SHIM(file, buf), argv, envp);
+}
+
+/*
+ * DIRECTORY READING — the hooks apt actually needs (issue 193).
+ *
+ * The hooks above cover open/openat/stat/lstat/fstatat/access/realpath/readlink
+ * and execve. That set made `dash`, `grep`, `sed`, `ls` and `apt --version` run,
+ * and it was still not enough for a package operation:
+ *
+ *   E: Unable to read /data/data/com.termux/files/usr/etc/apt/apt.conf.d/
+ *      - opendir (2: No such file or directory)
+ *
+ * apt enumerates its config tree with opendir/readdir, not with open. An
+ * unrewritten opendir therefore fails on a path that does not exist, and apt
+ * refuses to run at all: "Unable to determine a suitable packaging system type".
+ * Every hook in the list above was irrelevant to that failure because the call
+ * that failed was never intercepted.
+ *
+ * fopen matters for the same reason one level down. A great deal of code opens
+ * a FILE* rather than a descriptor, and bionic implements fopen as
+ * __sfvwrite/__srefill against its OWN open, so a hook on open() alone does not
+ * always see it. Intercepting fopen closes that gap without double-rewriting:
+ * if the path is rewritten here it no longer starts with the upstream prefix by
+ * the time bionic's open is called, and the open hook passes it through.
+ *
+ * scandir and its 64-bit alias are the same class again. They are separate
+ * symbols, not wrappers around opendir, so a program that calls scandir directly
+ * bypasses an opendir hook.
+ *
+ * WHAT IS STILL NOT INTERCEPTED, AND WHY.
+ *
+ * mkdir, rename, unlink and their relatives stay untouched. Reads and executes
+ * were the broken behaviours; rewriting writes would let a stray call create
+ * structure inside our prefix that nothing expects. dpkg handles its own paths
+ * through the compatibility root, which is a separate mechanism built for that
+ * purpose.
+ */
+
+typedef DIR *(*opendir_fn)(const char *);
+DIR *opendir(const char *path) {
+    static opendir_fn real = NULL;
+    if (!real) real = (opendir_fn)dlsym(RTLD_NEXT, "opendir");
+    char buf[PATHBUF];
+    return real(SHIM(path, buf));
+}
+
+/*
+ * fopen and its 64-bit alias.
+ *
+ * The types come from <stdio.h>, not from a guess. bionic declares
+ * `FILE *fopen(const char *, const char *)`, and a hook returning void* is a
+ * conflicting declaration that the compiler rejects outright — which is how the
+ * first attempt at this file failed to build.
+ *
+ * On 64-bit Android fopen and fopen64 are distinct symbols even though FILE is
+ * the same type, so both are defined. A program linked against fopen64 must not
+ * fall through to a hook that only knows the plain name.
+ */
+typedef FILE *(*fopen_fn)(const char *, const char *);
+FILE *fopen(const char *path, const char *mode) {
+    static fopen_fn real = NULL;
+    if (!real) real = (fopen_fn)dlsym(RTLD_NEXT, "fopen");
+    char buf[PATHBUF];
+    return real(SHIM(path, buf), mode);
+}
+
+FILE *fopen64(const char *path, const char *mode) {
+    static fopen_fn real = NULL;
+    if (!real) real = (fopen_fn)dlsym(RTLD_NEXT, "fopen64");
+    char buf[PATHBUF];
+    return real(SHIM(path, buf), mode);
+}
+
+/*
+ * scandir, in both the plain and the 64-bit form.
+ *
+ * Again the real signature from <dirent.h>: the selector receives a
+ * `const struct dirent *` and the comparator receives `const struct dirent **`.
+ * Spelling those as void* is a conflicting declaration, not a lenient one.
+ *
+ * scandir does not wrap opendir: it is a separate libc symbol with its own
+ * directory walk, so a program that calls it directly bypasses an opendir hook
+ * entirely. That is why it is here rather than being assumed covered.
+ */
+typedef int (*scandir_fn)(const char *, struct dirent ***,
+                          int (*)(const struct dirent *),
+                          int (*)(const struct dirent **, const struct dirent **));
+int scandir(const char *path, struct dirent ***namelist,
+            int (*filter)(const struct dirent *),
+            int (*compar)(const struct dirent **, const struct dirent **)) {
+    static scandir_fn real = NULL;
+    if (!real) real = (scandir_fn)dlsym(RTLD_NEXT, "scandir");
+    char buf[PATHBUF];
+    return real(SHIM(path, buf), namelist, filter, compar);
+}
+
+int scandir64(const char *path, struct dirent64 ***namelist,
+              int (*filter)(const struct dirent64 *),
+              int (*compar)(const struct dirent64 **, const struct dirent64 **)) {
+    static scandir_fn real = NULL;
+    if (!real) real = (scandir_fn)dlsym(RTLD_NEXT, "scandir64");
+    char buf[PATHBUF];
+    return real(SHIM(path, buf), (struct dirent ***)namelist,
+                 (int (*)(const struct dirent *))filter,
+                 (int (*)(const struct dirent **, const struct dirent **))compar);
+}

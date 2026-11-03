@@ -13,9 +13,27 @@ import kotlinx.serialization.json.jsonPrimitive
  * Inspects by parameter type, not by hardcoded tool name. For each parameter
  * in the ToolDefinition whose type is ShellCommand, Code, or Script, the policy
  * inspects the argument value for dangerous patterns: sed commands, perl -i,
- * awk -i inplace, python open() with write mode.
+ * awk -i inplace.
  *
  * Any tool that has a code parameter gets the security check automatically.
+ *
+ * PYTHON IS DELIBERATELY NOT IN THIS LIST (issue 283/284).
+ *
+ * There used to be a block here that refused a script containing the word
+ * "python" alongside an open() call with a write mode. It was removed because it
+ * did not work in either direction:
+ *
+ *   - It blocked honest code. The match was a substring test on the whole source,
+ *     so print("python") next to a legitimate write was refused, and so was any
+ *     script mentioning PYTHONPATH or python3.
+ *   - It did not prevent writes. pathlib.Path.write_text, os.open, shutil,
+ *     sqlite3, zipfile and subprocess all wrote files freely while the guard
+ *     refused the one route a careful script would take.
+ *
+ * A restriction that refuses good code and cannot stop bad code is worse than no
+ * restriction: it teaches a caller to reach for os.open to get the job done. The
+ * owner's decision is that Python is fully unlocked, which is the honest version
+ * of what the guard was already pretending to be.
  */
 class ToolSecurityPolicy {
 
@@ -56,14 +74,9 @@ class ToolSecurityPolicy {
                 "BLOCKED: awk -i inplace is not allowed. Use the editFile tool to edit files."
             )
 
-            // python open() write mode detection
-            val writeModePatterns = listOf("'w'", "\"w\"", "'w+'", "\"w+\"", "'wb'", "\"wb\"",
-                "'wb+'", "\"wb+\"", "'a'", "\"a\"", "'a+'", "\"a+\"", "'ab'", "\"ab+'", "'ab+'")
-            val hasPythonWrite = "python" in lower && "open(" in lower &&
-                writeModePatterns.any { it in lower }
-            if (hasPythonWrite) return SecurityCheckResult.blocked(
-                "BLOCKED: python open() with write mode is not allowed. Use the editFile tool to edit files."
-            )
+            // No Python block. See the class comment: the previous one was a
+            // substring test that refused honest scripts and was trivially
+            // bypassed, so it protected nothing and cost real capability.
         }
         return SecurityCheckResult.passed()
     }
