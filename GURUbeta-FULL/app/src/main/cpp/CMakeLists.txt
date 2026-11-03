@@ -90,3 +90,79 @@ target_link_options(pathshim PRIVATE
     "-Wl,-z,max-page-size=16384"
     "-Wl,-z,common-page-size=16384"
 )
+
+# python_launcher — the executable that starts the bundled CPython.
+#
+# WHY THIS IS AN EXECUTABLE AND NOT A SHARED LIBRARY (issue 175)
+#
+# libpython3.14.so is a shared object: `llvm-readelf -h` reports entry point 0x0
+# and `llvm-readelf -l` finds no PT_INTERP. execve() on it maps the segments and
+# jumps to address zero, which the kernel reports as SIGILL — exit 132, no output,
+# no message. PythonProvider has always looked for libpython_launcher.so in
+# nativeLibraryDir, and this file was never given a target, so it was never built
+# and every Python call short-circuited at "not found".
+#
+# HOW IT ENDS UP IN nativeLibraryDir WITH A .so NAME
+#
+# Android will not execute from the app's writable data directory, so
+# nativeLibraryDir is the only place a packaged binary can run. The packager only
+# extracts `lib/<abi>/lib*.so` from the APK, so a runnable ELF has to wear that
+# name. Every one of the seventeen bundled tools (toybox, jq, curl, git, ...) is
+# shipped exactly this way, and the toybox entry in the device diagnostic is proof
+# it works: it executed from nativeLibraryDir and got as far as dispatching on its
+# own argv[0].
+#
+# The name is decided by OUTPUT_NAME plus PREFIX/SUFFIX rather than by renaming a
+# file after the build, because a rename in a Gradle doLast task is invisible to
+# the packaging step: the packager runs off the CMake target's declared output, so
+# a file renamed afterwards simply never reaches the APK. Setting the properties
+# on the target is what makes Gradle copy it at all.
+#
+# PIE is explicit. An add_executable in CMake 3.22 targeting Android already
+# defaults to a PIE, but the whole point of this target is that the ELF must be
+# executable, so the property is stated rather than inherited. Without ENABLE_PIE
+# the linker emits ET_EXEC, which the packager's strip step and the 16 KB
+# alignment requirement both handle differently.
+#
+# The 16 KB link options are repeated here deliberately. A PIE executable carries
+# LOAD segments exactly like a shared object, and Android 15+ devices with 16 KB
+# pages require every loadable segment to be aligned to that page size. The
+# bundled prebuilts predate the rule and happen to carry 4 KB alignment, which
+# still loads today, but anything this project compiles now should be correct by
+# construction rather than by luck.
+add_executable(python_launcher
+    python_launcher.c
+)
+
+set_target_properties(python_launcher PROPERTIES
+    OUTPUT_NAME "python_launcher"
+    PREFIX "lib"
+    SUFFIX ".so"
+    POSITION_INDEPENDENT_CODE ON
+    LINKER_LANGUAGE C
+)
+
+# libdl for dlopen/dlsym/dlerror. There is no need to link libpython itself: the
+# launcher resolves it at run time, so the launcher keeps working whichever of
+# libpython3.14.so or libpython3.so it finds.
+target_link_libraries(python_launcher dl)
+
+target_link_options(python_launcher PRIVATE
+    "-Wl,-z,max-page-size=16384"
+    "-Wl,-z,common-page-size=16384"
+)
+
+# No post-build copy is needed, and the reason is worth recording because the
+# first attempt here added one and it caused a duplicate-file failure.
+#
+# AGP packages an add_executable target into the APK when its OUTPUT NAME looks
+# like a shared library. `rootshell` and `exploit_runner` are dropped because
+# they are named `rootshell` and `exploit_runner`; this target is named
+# `libpython_launcher.so` by the properties above, so AGP merges it into
+# lib/<abi>/ exactly like a shared library and it reaches nativeLibraryDir.
+#
+# The evidence is the failure that proved it: with an extra jniLibs source
+# directory also carrying the file, mergeDebugNativeLibs reported
+# "2 files found with path 'lib/x86_64/libpython_launcher.so'", one from
+# intermediates/cxx/.../obj/x86_64/ (AGP's own copy of the CMake target) and one
+# from the hand-declared directory. The naming is the whole mechanism.

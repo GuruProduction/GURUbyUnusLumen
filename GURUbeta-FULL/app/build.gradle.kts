@@ -72,6 +72,7 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
         }
+
     }
 
     // AGP will auto-download this NDK version
@@ -83,6 +84,15 @@ android {
             version = "3.22.1"
         }
     }
+
+    // No extra jniLibs source directory is needed for the Python launcher.
+    //
+    // AGP packages an add_executable target when its output name looks like a
+    // shared library, and this one is named libpython_launcher.so, so it is
+    // merged into lib/<abi>/ by the same mechanism as libquickjs.so. Adding a
+    // hand-declared directory as well produced a duplicate-file failure in
+    // mergeDebugNativeLibs, which is how that was established rather than
+    // assumed.
 
     // The keystore that every shipped GURU release was signed with. Installing a
     // build signed with any other key over an existing GURU is refused by
