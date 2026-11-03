@@ -82,9 +82,22 @@ class FullNetworkSweep(
         // One record per address, and everything that answers merges into it.
         val reports = ConcurrentHashMap<String, MutableList<Identified>>()
 
+        // What each address exposed, kept beside its reports rather than inside them. A port is not
+        // an identification: it is a fact about the host that several probes contribute to and that
+        // the map stores separately, so a port opening between two sweeps is visible as a change.
+        val portsByAddress = ConcurrentHashMap<String, MutableSet<Int>>()
+
         fun record(address: String, identified: Identified) {
             reports.getOrPut(address) { java.util.Collections.synchronizedList(mutableListOf()) }
                 .add(identified)
+        }
+
+        fun recordPorts(address: String, ports: Collection<Int>) {
+            if (ports.isEmpty()) return
+            val set = portsByAddress.getOrPut(address) {
+                java.util.Collections.synchronizedSet(mutableSetOf())
+            }
+            set.addAll(ports)
         }
 
         // THE ALIVENESS PASS COMES FIRST because it decides what the expensive probes are spent
@@ -93,6 +106,13 @@ class FullNetworkSweep(
         onStage("${alive.size} address(es) answered; asking each one what it is")
 
         coroutineScope {
+            // THE PORT SWEEP, which is what gives a device its open ports and what finds a device
+            // that answers a service the identification probes do not speak. It runs only against
+            // live addresses, because probing a switched-off host costs a full timeout each.
+            launchEach(alive) { address ->
+                recordPorts(address, sweepPorts(address))
+            }
+
             // SNMP, which is the only protocol that names a printer or a switch that serves no
             // web page. It runs against every live address rather than every address, because an
             // absent host costs a full timeout and there are 254 of them.
@@ -150,9 +170,17 @@ class FullNetworkSweep(
             }
         }
 
-        // Merge what every protocol said about each address, then report.
-        val devices = reports.map { (address, identified) ->
-            DeviceMerge.merge(address, identified.toList())
+        // EVERY ADDRESS THAT ANSWERED BECOMES A DEVICE, even one no protocol could name. A host
+        // that refused a connection is a host that is there, and dropping it because it had
+        // nothing to say would report an empty network on a network full of devices.
+        val everyAddress = (reports.keys + portsByAddress.keys).toSet()
+
+        val devices = everyAddress.map { address ->
+            DeviceMerge.merge(
+                address = address,
+                reports = reports[address]?.toList() ?: emptyList(),
+                openPorts = portsByAddress[address]?.toList() ?: emptyList(),
+            )
         }.sortedBy { it.address.substringAfterLast('.').toIntOrNull() ?: 999 }
 
         devices.forEach(onFound)
@@ -223,6 +251,32 @@ class FullNetworkSweep(
         alive.sortedBy { it.substringAfterLast('.').toIntOrNull() ?: 999 }
     }
 
+    /**
+     * Every port on one address that accepts a connection.
+     *
+     * THE PORT LIST IS THE PROTOCOL LIST, NOT A GUESSED SET OF NUMBERS. Each entry is a port a
+     * real class of device actually opens, grouped by what answering it means, and every one of
+     * them is also something the classification rules can use. Scanning all 65535 ports is the
+     * thing that turns a sweep into a run that never ends, and on a home network it returns
+     * nothing the protocol ports did not already return.
+     */
+    private suspend fun sweepPorts(address: String): List<Int> = coroutineScope {
+        val gate = Semaphore(concurrency)
+        SERVICE_PORTS.map { port ->
+            async {
+                gate.withPermit {
+                    if (HostPresence.probePort(address, port, connectTimeoutMillis) ==
+                        HostPresence.State.OPEN
+                    ) {
+                        port
+                    } else {
+                        null
+                    }
+                }
+            }
+        }.awaitAll().filterNotNull()
+    }
+
     /** Run [block] on every item with a bounded number in flight. */
     private suspend fun <T> launchEach(items: List<T>, block: suspend (T) -> Unit) = coroutineScope {
         val gate = Semaphore(concurrency)
@@ -257,6 +311,34 @@ class FullNetworkSweep(
          * there. This is a presence question, not an identity one, so the list stays short.
          */
         val ALIVENESS_PORTS = listOf(80, 443, 445, 62078, 5555, 8060, 8009, 631, 53)
+
+        /**
+         * The ports a device on a home network actually opens.
+         *
+         * EVERY ENTRY IS A PROTOCOL SOMETHING SPEAKS, never a number picked to fill a range. Grouped
+         * so the reason each is here survives:
+         *
+         *  - Web and remote access: 22 ssh, 23 telnet, 80, 443, 8080, 8443.
+         *  - Printers: 515 lpd, 631 ipp, 9100 raw, 3910, 3911.
+         *  - Cameras: 554 rtsp, 8554 an alternate rtsp, 34567 a common DVR port.
+         *  - Files and desktops: 139, 445 smb, 3389 rdp, 548 afp, 2049 nfs.
+         *  - Media and streaming: 8008 cast, 8009 dial, 8060 roku, 8001 and 8002 samsung,
+         *    3000 and 3001 lg, 7345 vizio, 6466 and 6467 android tv, 1925 and 1926 philips,
+         *    9000 philips, 7000 and 7100 airplay, 5000 and 5001 synology, 32400 plex.
+         *  - Home automation and IoT: 1883 and 8883 mqtt, 8123 home assistant, 5683 coap,
+         *    49152 and 49153 upnp, 9080 a media service, 6668 a common IoT websocket.
+         *  - Phones and set-top boxes: 62078 ios lockdown, 5555 adb, 5556 an alternate.
+         *
+         * Deliberately absent: the 1..65535 walk. It is minutes per host, it is the reason an
+         * earlier sweep never finished, and everything a home network runs is in this list.
+         */
+        val SERVICE_PORTS: List<Int> = listOf(
+            22, 23, 53, 80, 139, 443, 445, 515, 548, 554, 631,
+            1400, 1883, 1925, 1926, 2049, 3000, 3001, 3389, 3910, 3911, 5000, 5001,
+            5555, 5556, 5683, 6668, 7000, 7100, 7345, 8001, 8002, 8008, 8009, 8060,
+            8080, 8123, 8443, 8554, 8883, 9000, 9080, 9100, 32400, 34567, 49152,
+            49153, 62078, 6466, 6467,
+        ).sorted()
 
         private const val NBNS_PORT = 137
         private const val DNS_PORT = 53
