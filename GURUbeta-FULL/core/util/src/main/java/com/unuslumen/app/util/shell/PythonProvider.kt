@@ -9,156 +9,548 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.TimeUnit
 import java.util.zip.ZipFile
 
+/**
+ * The bundled CPython, and the three separate things that have to be true before
+ * it can run a line of code.
+ *
+ * Issue 175 was filed as "python does not work in the app", which is one symptom
+ * with three causes stacked on top of each other. Each one alone is enough to
+ * make every Python call fail, and each one fails differently, so fixing them one
+ * at a time looks like the fix did not work. They are:
+ *
+ * 1. NO LAUNCHER. libpython3.14.so is a shared object: entry point 0x0, no
+ *    PT_INTERP. It can be loaded, never executed, and exec'ing it dies on SIGILL
+ *    (exit 132) with no message. The launcher that starts it existed as a source
+ *    file with no CMake target, so it was never built, never packaged, and this
+ *    class returned false at the very first check. That is fixed in
+ *    CMakeLists.txt and python_launcher.c.
+ *
+ * 2. WRONG STDLIB LAYOUT. The shipped python-stdlib-arm64.zip is FLAT: os.py,
+ *    encodings/, site.py and forty-six .so files all sit at the archive root.
+ *    CPython 3.14 does not look there. getpath searches
+ *    <PYTHONHOME>/lib/python3.14/ for os.py and
+ *    <PYTHONHOME>/lib/python3.14/lib-dynload/ for extension modules, and the
+ *    shipped binary confirms it — `strings libpython3.14.so` carries the literal
+ *    "<prefix>/lib/pythonX.X" and "/lib-dynload". Extracting flat and pointing
+ *    PYTHONHOME at the result produces an interpreter that starts and then cannot
+ *    `import os`, which reads as the same bug again.
+ *
+ * 3. A SENTINEL EXIT CODE. A launch failure was reported as exit code -1, which
+ *    is a number that a real process can also return, so a caller could not tell
+ *    "never started" from "ran and failed". See [PythonStatus].
+ *
+ * The rule this class now follows: [isAvailable] is true only when a real
+ * interpreter process has been observed to start and print its version. A file
+ * existing on disk is not evidence that Python works, and reporting it as one is
+ * exactly the defect pattern that produced issues 25, 30 and 175.
+ */
 class PythonProvider(private val context: Context) {
 
     companion object {
         private const val TAG = "guru"
-        private const val PYTHON_LIB_SO = "libpython_launcher.so"
-        private const val STDLIB_ASSET = "python/arm64-v8a/python-stdlib-arm64.zip"
+        private const val LAUNCHER_NAME = "libpython_launcher.so"
         private const val PYTHON_DIR_NAME = "python"
         private const val STDLIB_DIR_NAME = "python-lib"
         private const val PYTHON_VERSION = "python3.14"
+        private const val DYNLOAD_DIR_NAME = "lib-dynload"
+        private const val MARKER_NAME = "stdlib_version"
+
+        /**
+         * The stdlib archive for this device's ABI.
+         *
+         * The old code hard-coded arm64-v8a, so on an x86_64 emulator (which is
+         * where this app is tested) it either found nothing or found the wrong
+         * standard library. Both zips ship; this picks the one that matches the
+         * process that is actually running.
+         */
+        private fun assetPathFor(abi: String): String = "python/$abi/python-stdlib-$abi.zip"
+
+        private fun abiFor(context: Context): String {
+            val preferred = android.os.Build.SUPPORTED_ABIS?.firstOrNull()
+            return when {
+                preferred == null -> "arm64-v8a"
+                preferred == "x86_64" -> "x86_64"
+                preferred == "arm64-v8a" -> "arm64-v8a"
+                // armeabi-v7a and x86 are not shipped with a stdlib. Falling back
+                // to arm64 would silently install a library for the wrong
+                // architecture, so the honest answer is the one that will fail
+                // with "asset missing" and say which path was looked for.
+                else -> preferred
+            }
+        }
+
+        /**
+         * One warm-up for the whole process, not one per instance.
+         *
+         * Two PythonProvider instances are alive at once in normal use:
+         * GuruApplication builds one to warm the runtime at startup and
+         * ShellExecutor owns another to run scripts. With independent state both
+         * could see "stdlib not extracted" and unpack sixteen megabytes into the
+         * same directory at the same time, which produces a mixed tree that
+         * passes some of its own checks and fails at import time.
+         *
+         * The answer is cached process-wide, so whichever instance runs second
+         * waits on this lock and then reads the first one's result instead of
+         * repeating the work.
+         */
+        private val initLock = Any()
+
+        @Volatile
+        private var sharedStatus: PythonStatus? = null
+    }
+
+    /**
+     * Why Python is or is not available, in the caller's terms.
+     *
+     * The enum exists so a tool can say something true and specific. "Python is
+     * not available" is the sentence that made issue 175 take a diagnostic
+     * battery to unpick, because it is what you see whether the launcher is
+     * missing, the stdlib is in the wrong place, or the interpreter segfaults.
+     */
+    enum class Failure {
+        /** No launcher in nativeLibraryDir: this build did not package one. */
+        LAUNCHER_MISSING,
+
+        /** The stdlib zip for this device ABI is not in the APK's assets. */
+        STDLIB_ASSET_MISSING,
+
+        /** Extraction threw. [PythonStatus.detail] carries the message. */
+        STDLIB_EXTRACTION_FAILED,
+
+        /** The launcher exists but the kernel would not run it. */
+        LAUNCHER_NOT_EXECUTABLE,
+
+        /** The launcher ran and the interpreter inside it failed to start. */
+        INTERPRETER_FAILED,
+
+        /** Everything started, but the stdlib could not be imported from. */
+        STDLIB_NOT_IMPORTABLE,
+    }
+
+    /**
+     * A real, specific answer about the runtime.
+     *
+     * [detail] is written for a person reading a tool result, not for a log
+     * file. It names the path that was checked and what was found there, so the
+     * next report says which layer broke instead of "python does not work".
+     */
+    data class PythonStatus(
+        val available: Boolean,
+        val failure: Failure? = null,
+        val detail: String? = null,
+        val launcherPath: String? = null,
+        val stdlibRoot: String? = null,
+        val version: String? = null,
+    ) {
+        companion object {
+            fun ok(launcherPath: String, stdlibRoot: String, version: String) =
+                PythonStatus(true, launcherPath = launcherPath, stdlibRoot = stdlibRoot, version = version)
+
+            fun no(failure: Failure, detail: String, launcherPath: String? = null, stdlibRoot: String? = null) =
+                PythonStatus(false, failure = failure, detail = detail, launcherPath = launcherPath, stdlibRoot = stdlibRoot)
+        }
     }
 
     private val pythonDir: File
         get() = File(context.filesDir, PYTHON_DIR_NAME)
 
-    private val stdlibDir: File
+    /**
+     * The directory PYTHONHOME points at: the parent of `lib/python3.14`.
+     *
+     * Named "root" rather than "stdlib" because the stdlib itself is one level
+     * below, and the difference between the two is the whole of defect 2.
+     */
+    private val stdlibRoot: File
         get() = File(pythonDir, STDLIB_DIR_NAME)
 
+    /** `<root>/lib/python3.14`, where os.py and friends live. */
+    private val stdlibDir: File
+        get() = File(File(stdlibRoot, "lib"), PYTHON_VERSION)
+
+    /** `<root>/lib/python3.14/lib-dynload`, where extension modules live. */
+    private val dynloadDir: File
+        get() = File(stdlibDir, DYNLOAD_DIR_NAME)
+
+    @Volatile
+    private var status: PythonStatus = PythonStatus(false)
+
+    @Volatile
     private var initialized = false
-    private var available = false
-    private var binaryPath: String = ""
 
-    suspend fun initialize(): Boolean = withContext(Dispatchers.IO) {
-        if (initialized) return@withContext available
+    private val launcherFile: File
+        get() = File(context.applicationInfo.nativeLibraryDir, LAUNCHER_NAME)
 
-        try {
-            val nativeLibDir = context.applicationInfo.nativeLibraryDir
-
-            val binaryFile = File(nativeLibDir, PYTHON_LIB_SO)
-            if (!binaryFile.exists()) {
-                Log.w(TAG, "PythonProvider: $PYTHON_LIB_SO not found at ${binaryFile.absolutePath}")
+    /**
+     * Bring the runtime up, once, and report what actually happened.
+     *
+     * Every step is checked in the order its failure would mask the next, and a
+     * failure returns the reason instead of a bare false. The last step is a
+     * real execution: this method does not report success for a runtime it has
+     * not seen print its own version.
+     */
+    suspend fun initialize(): PythonStatus = withContext(Dispatchers.IO) {
+        synchronized(initLock) {
+            // Another instance in this process already did the work. Reading its
+            // answer is the whole point of the shared lock: the extraction and
+            // the probe are the expensive part and neither is idempotent-safe to
+            // run concurrently.
+            sharedStatus?.let {
+                status = it
                 initialized = true
-                available = false
-                return@withContext false
+                return@withContext it
             }
-            binaryPath = binaryFile.absolutePath
-            Log.d(TAG, "PythonProvider: binary found at $binaryPath")
+            if (initialized) return@withContext status
 
+            val result = prepare()
+            status = result
+            sharedStatus = result
+            initialized = true
+
+            if (result.available) {
+                Log.d(TAG, "PythonProvider: ready - ${result.version} at ${result.launcherPath}")
+            } else {
+                // Logged at warn, with the reason. A silent false here is what let
+                // issue 175 survive several releases: the app knew Python was
+                // missing and said so only to a debug log nobody was reading.
+                Log.w(TAG, "PythonProvider: unavailable (${result.failure}): ${result.detail}")
+            }
+            return@withContext result
+        }
+    }
+
+    private fun prepare(): PythonStatus {
+        // 1. The launcher must exist and be executable. This is the check that
+        //    used to fail silently for every install of every build.
+        val launcher = launcherFile
+        if (!launcher.isFile) {
+            return PythonStatus.no(
+                Failure.LAUNCHER_MISSING,
+                "No $LAUNCHER_NAME in ${launcher.parent}. This build did not package the " +
+                    "Python launcher, so there is no process that can start the interpreter. " +
+                    "The interpreter library being present is not enough on its own: " +
+                    "libpython3.14.so is a shared object with no entry point and cannot be executed.",
+            )
+        }
+        if (!launcher.canExecute()) {
+            return PythonStatus.no(
+                Failure.LAUNCHER_NOT_EXECUTABLE,
+                "$LAUNCHER_NAME exists at ${launcher.absolutePath} but is not executable.",
+                launcherPath = launcher.absolutePath,
+            )
+        }
+
+        // 2. The stdlib must be unpacked into the layout CPython searches.
+        val extracted = ensureStdlib()
+        if (extracted != null) return extracted
+
+        // 3. Prove it. A runtime that has never printed its version is a
+        //    hypothesis, and reporting a hypothesis as `available` is what made
+        //    this issue survive several releases.
+        return verify(launcher)
+    }
+
+    /**
+     * Unpack the standard library into `<root>/lib/python3.14`, or return the
+     * reason it could not be done.
+     *
+     * Extraction is atomic: everything lands in a scratch directory and the
+     * scratch directory is renamed into place only once it is complete. A process
+     * killed mid-extract therefore leaves either the old runtime or no runtime,
+     * never a half-written one that passes a marker check. The marker is written
+     * last, for the same reason.
+     */
+    private fun ensureStdlib(): PythonStatus? {
+        val abi = abiFor(context)
+        val asset = assetPathFor(abi)
+        val packageVersion = runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode
+        }.getOrDefault(0L).toString()
+
+        val marker = File(stdlibRoot, MARKER_NAME)
+        // Every condition is checked because each one alone catches a different
+        // partial state: the directory missing, the directory empty, the archive
+        // extracted but the marker never written, or an upgrade that changed the
+        // version code under an existing tree.
+        val complete = stdlibDir.isDirectory &&
+            File(stdlibDir, "os.py").isFile &&
+            dynloadDir.isDirectory &&
+            marker.isFile &&
+            marker.readText().trim() == packageVersion
+
+        if (complete) return null
+
+        // A new install, an upgraded APK, or a previous attempt that died. Delete
+        // whatever is there: a partial tree is worse than none, because it makes
+        // every later check ambiguous.
+        stdlibRoot.deleteRecursively()
+
+        val assetPresent = runCatching {
+            context.assets.list("python/$abi")?.contains(asset.substringAfterLast('/')) == true
+        }.getOrDefault(false)
+
+        if (!assetPresent) {
+            return PythonStatus.no(
+                Failure.STDLIB_ASSET_MISSING,
+                "No standard library archive at $asset inside the APK, for ABI $abi. " +
+                    "The interpreter can start without one but cannot import os, so it is " +
+                    "reported as unavailable rather than as a broken script.",
+                launcherPath = launcherFile.absolutePath,
+            )
+        }
+
+        val scratch = File(pythonDir, "${STDLIB_DIR_NAME}.incoming")
+        return try {
             pythonDir.mkdirs()
-            val versionMarker = File(pythonDir, "stdlib_version")
-            val currentVersion = context.packageManager
-                .getPackageInfo(context.packageName, 0).longVersionCode.toString()
-            val needsExtraction = !stdlibDir.exists() ||
-                !versionMarker.exists() ||
-                versionMarker.readText().trim() != currentVersion
+            scratch.deleteRecursively()
+            // Files go directly under the scratch root; the scratch root IS the
+            // PYTHONHOME directory, so it must end up containing lib/python3.14.
+            val stageStdlib = File(File(scratch, "lib"), PYTHON_VERSION)
+            stageStdlib.mkdirs()
 
-            if (needsExtraction) {
-                val stdlibAssetExists = try {
-                    context.assets.list("python/arm64-v8a")
-                        ?.contains("python-stdlib-arm64.zip") ?: false
-                } catch (e: Exception) {
-                    false
+            val zipCopy = File(pythonDir, "stdlib.incoming.zip")
+            try {
+                context.assets.open(asset).use { input ->
+                    FileOutputStream(zipCopy).use { output -> input.copyTo(output) }
                 }
 
-                if (!stdlibAssetExists) {
-                    Log.w(TAG, "PythonProvider: stdlib zip not found in assets")
-                    initialized = true
-                    available = false
-                    return@withContext false
-                }
+                ZipFile(zipCopy).use { zip ->
+                    val entries = zip.entries()
+                    val root = scratch.canonicalFile
+                    while (entries.hasMoreElements()) {
+                        val entry = entries.nextElement()
+                        val target = File(stageStdlib, entry.name)
 
-                Log.d(TAG, "PythonProvider: extracting stdlib from $STDLIB_ASSET")
-                val tempZip = File(pythonDir, "stdlib_temp.zip")
-                try {
-                    context.assets.open(STDLIB_ASSET).use { input ->
-                        FileOutputStream(tempZip).use { output ->
-                            input.copyTo(output)
+                        // Zip-slip guard. An archive entry named "../../.." would
+                        // otherwise write outside the app's own directory, and the
+                        // archive is shipped content rather than something this
+                        // code controls.
+                        val canonical = target.canonicalFile
+                        if (!canonical.path.startsWith(root.path + File.separator)) {
+                            return PythonStatus.no(
+                                Failure.STDLIB_EXTRACTION_FAILED,
+                                "Refused to extract ${entry.name}: it resolves outside the " +
+                                    "Python directory.",
+                                launcherPath = launcherFile.absolutePath,
+                            )
                         }
-                    }
 
-                    stdlibDir.mkdirs()
-                    ZipFile(tempZip).use { zip ->
-                        val entries = zip.entries()
-                        while (entries.hasMoreElements()) {
-                            val entry = entries.nextElement()
-                            val entryFile = File(stdlibDir, entry.name)
-
-                            if (entry.isDirectory) {
-                                entryFile.mkdirs()
-                            } else {
-                                entryFile.parentFile?.mkdirs()
-                                zip.getInputStream(entry).use { entryInput ->
-                                    FileOutputStream(entryFile).use { entryOutput ->
-                                        entryInput.copyTo(entryOutput)
-                                    }
+                        if (entry.isDirectory) {
+                            canonical.mkdirs()
+                        } else {
+                            canonical.parentFile?.mkdirs()
+                            zip.getInputStream(entry).use { entryInput ->
+                                FileOutputStream(canonical).use { entryOutput ->
+                                    entryInput.copyTo(entryOutput)
                                 }
                             }
                         }
                     }
-
-                    val pythonHomeDir = File(stdlibDir, PYTHON_VERSION)
-                    val libDynloadDir = File(pythonHomeDir, "lib-dynload")
-
-                    if (!libDynloadDir.exists() || libDynloadDir.listFiles().isNullOrEmpty()) {
-                        libDynloadDir.mkdirs()
-                        stdlibDir.listFiles { f -> f.name.endsWith(".so") }?.forEach { soFile ->
-                            soFile.renameTo(File(libDynloadDir, soFile.name))
-                        }
-                    }
-
-                    versionMarker.writeText(currentVersion)
-                    Log.d(TAG, "PythonProvider: stdlib extracted to ${stdlibDir.absolutePath}")
-                } finally {
-                    tempZip.delete()
                 }
+            } finally {
+                zipCopy.delete()
             }
 
-            available = true
-            initialized = true
-            Log.d(TAG, "PythonProvider: ready - binary=$binaryPath, stdlib=${stdlibDir.absolutePath}")
-            available
+            // Extension modules belong in lib-dynload, which is where getpath
+            // looks for them. Leaving them beside os.py also works for the ones
+            // that happen to be found by the ordinary path walk, but the ones the
+            // import system expects at that exact location do not, and the failure
+            // only shows up on the first `import sqlite3` rather than at startup.
+            val stageDynload = File(stageStdlib, DYNLOAD_DIR_NAME)
+            stageDynload.mkdirs()
+            stageStdlib.listFiles { f -> f.isFile && f.name.endsWith(".so") }?.forEach { so ->
+                so.renameTo(File(stageDynload, so.name))
+            }
+
+            File(scratch, MARKER_NAME).writeText(packageVersion)
+
+            // Rename into place. Both paths are inside filesDir, so this is a
+            // same-filesystem move and cannot half-succeed.
+            if (!scratch.renameTo(stdlibRoot)) {
+                // renameTo on a directory can fail if the destination exists on
+                // some filesystems. It was deleted above, so a failure here is a
+                // real one and worth naming rather than swallowing.
+                scratch.deleteRecursively()
+                return PythonStatus.no(
+                    Failure.STDLIB_EXTRACTION_FAILED,
+                    "Extracted the standard library but could not move it into " +
+                        "${stdlibRoot.absolutePath}. The internal storage may be full.",
+                    launcherPath = launcherFile.absolutePath,
+                )
+            }
+            null
         } catch (e: Exception) {
-            Log.e(TAG, "PythonProvider: initialization failed", e)
-            initialized = true
-            available = false
-            false
+            scratch.deleteRecursively()
+            PythonStatus.no(
+                Failure.STDLIB_EXTRACTION_FAILED,
+                "Could not unpack $asset: ${e.javaClass.simpleName}: ${e.message}",
+                launcherPath = launcherFile.absolutePath,
+            )
         }
     }
 
-    fun isAvailable(): Boolean = available
+    /**
+     * Run the interpreter and read its own version out of it.
+     *
+     * The probe deliberately imports nothing beyond `sys` on the first line and
+     * `os` on the second. `sys` proves the interpreter started; `os` proves the
+     * standard library is reachable at the location this class set up, which is
+     * the defect that would otherwise appear as "python works but nothing else
+     * does".
+     */
+    private fun verify(launcher: File): PythonStatus {
+        val probe = "import sys; import os; sys.stdout.write(sys.version.split()[0])"
+        val result = runLauncher(launcher, listOf("-c", probe), timeoutSeconds = 30)
 
-    fun getPath(): String = binaryPath
+        if (result == null) {
+            return PythonStatus.no(
+                Failure.LAUNCHER_NOT_EXECUTABLE,
+                "${launcher.absolutePath} exists and is marked executable but could not be " +
+                    "started at all. Android refuses to execute files from the writable data " +
+                    "directory, so this has to be the copy in nativeLibraryDir.",
+                launcherPath = launcher.absolutePath,
+            )
+        }
 
-    fun buildExecCommand(scriptPath: String): List<String> {
-        return listOf(binaryPath, scriptPath)
+        if (result.exitCode != 0) {
+            val stderr = result.stderr.trim()
+            val stdout = result.stdout.trim()
+
+            // The interpreter starts but cannot find its library. This is the
+            // exact signature of a wrong layout, so it gets its own reason rather
+            // than a generic start failure.
+            val libraryMissing = stderr.contains("Could not find platform independent libraries") ||
+                stderr.contains("Consider setting \$PYTHONHOME") ||
+                stderr.contains("ModuleNotFoundError: No module named 'os'") ||
+                stderr.contains("No module named 'encodings'")
+
+            return if (libraryMissing) {
+                PythonStatus.no(
+                    Failure.STDLIB_NOT_IMPORTABLE,
+                    "The interpreter started but could not find its standard library, so no " +
+                        "Python code can run. It looked for os.py under " +
+                        "${stdlibDir.absolutePath}. Interpreter said: " +
+                        (stderr.ifBlank { stdout }).take(500),
+                    launcherPath = launcher.absolutePath,
+                    stdlibRoot = stdlibRoot.absolutePath,
+                )
+            } else {
+                PythonStatus.no(
+                    Failure.INTERPRETER_FAILED,
+                    "The interpreter exited ${result.exitCode}. " +
+                        (stderr.ifBlank { stdout }).take(500),
+                    launcherPath = launcher.absolutePath,
+                    stdlibRoot = stdlibRoot.absolutePath,
+                )
+            }
+        }
+
+        val version = result.stdout.trim()
+        if (version.isBlank()) {
+            return PythonStatus.no(
+                Failure.INTERPRETER_FAILED,
+                "The interpreter ran and exited 0 without printing a version, which means it " +
+                    "did not execute the probe. stderr: ${result.stderr.trim().take(300)}",
+                launcherPath = launcher.absolutePath,
+                stdlibRoot = stdlibRoot.absolutePath,
+            )
+        }
+
+        return PythonStatus.ok(
+            launcherPath = launcher.absolutePath,
+            stdlibRoot = stdlibRoot.absolutePath,
+            version = version,
+        )
     }
 
-    fun buildExecCommand(code: String, isCode: Boolean = true): List<String> {
-        return if (isCode) {
-            listOf(binaryPath, "-c", code)
-        } else {
-            listOf(binaryPath, code)
+    private data class LauncherRun(val exitCode: Int, val stdout: String, val stderr: String)
+
+    /**
+     * Start the launcher with the runtime environment and collect both streams.
+     *
+     * Returns null when the process could not be created at all, which is a
+     * different fact from a process that started and failed. Both streams are
+     * drained concurrently: an interpreter that writes enough to fill a pipe
+     * buffer before exit would otherwise deadlock this call forever.
+     */
+    private fun runLauncher(
+        launcher: File,
+        arguments: List<String>,
+        timeoutSeconds: Long,
+    ): LauncherRun? {
+        return try {
+            val command = mutableListOf(launcher.absolutePath)
+            command.addAll(arguments)
+            val builder = ProcessBuilder(command)
+            builder.environment().putAll(getPythonEnv())
+            val process = builder.start()
+
+            val stdout = StringBuilder()
+            val stderr = StringBuilder()
+            val readerOut = Thread {
+                runCatching { process.inputStream.bufferedReader().use { stdout.append(it.readText()) } }
+            }
+            val readerErr = Thread {
+                runCatching { process.errorStream.bufferedReader().use { stderr.append(it.readText()) } }
+            }
+            readerOut.start()
+            readerErr.start()
+
+            val finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
+            if (!finished) {
+                process.destroyForcibly()
+                readerOut.join(2000)
+                readerErr.join(2000)
+                return LauncherRun(
+                    exitCode = -1,
+                    stdout = stdout.toString().trim(),
+                    stderr = "Timed out after ${timeoutSeconds}s." +
+                        if (stderr.isNotBlank()) " " + stderr.toString().trim() else "",
+                )
+            }
+            readerOut.join(5000)
+            readerErr.join(5000)
+
+            LauncherRun(process.exitValue(), stdout.toString().trim(), stderr.toString().trim())
+        } catch (e: Exception) {
+            Log.w(TAG, "PythonProvider: launcher could not be started", e)
+            null
         }
     }
 
-    fun getPythonHome(): String = stdlibDir.absolutePath
+    /** The current runtime answer. Call [initialize] first. */
+    fun status(): PythonStatus = status
+
+    /** True only when a real interpreter has been observed to start. */
+    fun isAvailable(): Boolean = status.available
+
+    fun getPath(): String = status.launcherPath ?: ""
+
+    fun buildExecCommand(scriptPath: String): List<String> =
+        listOf(getPath(), scriptPath)
+
+    fun buildExecCommand(code: String, isCode: Boolean = true): List<String> =
+        if (isCode) listOf(getPath(), "-c", code) else listOf(getPath(), code)
+
+    /** PYTHONHOME: the directory that CONTAINS `lib/python3.14`. */
+    fun getPythonHome(): String = stdlibRoot.absolutePath
 
     fun getPythonEnv(): Map<String, String> {
-        val pythonHome = getPythonHome()
-        val libDynloadDir = File(File(stdlibDir, PYTHON_VERSION), "lib-dynload")
+        val home = stdlibRoot.absolutePath
+        val stdlib = stdlibDir.absolutePath
+        val dynload = dynloadDir.absolutePath
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
         return mapOf(
-            "PYTHONHOME" to pythonHome,
-            "PYTHONPATH" to "$pythonHome:${libDynloadDir.absolutePath}",
+            "PYTHONHOME" to home,
+            "PYTHONPATH" to "$stdlib:$dynload",
             "PYTHONDONTWRITEBYTECODE" to "1",
             "PYTHONUNBUFFERED" to "1",
+            "PYTHONNOUSERSITE" to "1",
             "HOME" to context.filesDir.absolutePath,
             "TMPDIR" to context.cacheDir.absolutePath,
-            "LD_LIBRARY_PATH" to nativeLibDir
+            "LD_LIBRARY_PATH" to nativeLibDir,
         )
     }
 }

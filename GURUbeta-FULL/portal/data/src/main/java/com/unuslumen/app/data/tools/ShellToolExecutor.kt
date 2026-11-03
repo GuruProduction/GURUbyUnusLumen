@@ -25,6 +25,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.net.InetSocketAddress
+import java.util.concurrent.TimeUnit
 
 class ShellToolExecutor(
     private val context: Context,
@@ -46,6 +47,15 @@ class ShellToolExecutor(
         const val NO_PROXY_VALUE: String =
             "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16," +
                 "169.254.0.0/16,100.64.0.0/10,*.local,*.lan,*.home,*.home.arpa,*.internal"
+
+        /**
+         * How long a Python script may run before it is stopped.
+         *
+         * A ceiling, not a target. It exists because an unbounded run holds a
+         * thread and a process handle forever on a device that has other work to
+         * do; it is generous enough that nothing legitimate hits it.
+         */
+        const val PYTHON_TIMEOUT_SECONDS: Long = 300
     }
     private val shellExecutor = ShellExecutor(context)
     private var rootAvailable: Boolean? = null
@@ -331,12 +341,126 @@ class ShellToolExecutor(
         val fullCommand = shellExecutor.busybox.wrapCommand(command); val result = shellExecutor.execute(fullCommand); val r = ShellCommandResult(result.exitCode, result.stdout, result.stderr, result.success, denial = result.denial, advisory = result.advisory); ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r))
     }
 
+    /**
+     * Run Python, and report how the run ended in a way a caller can act on.
+     *
+     * Issue 175 was filed as "python does not work in the app" and the tool's
+     * answer to every one of its three causes was the identical sentence "Python
+     * not available on this device" with exitCode -1. That sentence is true of a
+     * missing launcher, an unreachable standard library and a build that never
+     * packaged either, and a caller cannot fix any of them from it.
+     *
+     * So the failures now carry the runtime's own diagnosis. PythonProvider
+     * reports which layer broke and the exact path it checked, and that sentence
+     * goes to the caller verbatim rather than being flattened into a code.
+     *
+     * A script that runs keeps its real exit code, including negative ones and
+     * including signal terms, because those are the script's own answer and
+     * overriding them would be the same dishonesty in the other direction.
+     */
     private suspend fun executePython(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val script = args["script"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'script'")
+        val script = args["script"] as? String
+            ?: return@withContext ToolExecutionResult.error("Missing 'script'")
         val scriptLower = script.lowercase()
-        if (fileAccessGuard.checkSedBlocked(scriptLower)) { val r = PythonExecResult("", "BLOCKED: sed not allowed in Python.", -1, false); return@withContext ToolExecutionResult.success(r, json.encodeToString(PythonExecResult.serializer(), r)) }
-        if (scriptLower.contains("sed") && (scriptLower.contains("os.system") || scriptLower.contains("subprocess") || scriptLower.contains("popen"))) { val r = PythonExecResult("", "BLOCKED: sed not allowed via Python subprocess.", -1, false); return@withContext ToolExecutionResult.success(r, json.encodeToString(PythonExecResult.serializer(), r)) }
-        try { if (!shellExecutor.python.isAvailable()) shellExecutor.python.initialize(); if (!shellExecutor.python.isAvailable()) { val r = PythonExecResult("", "Python not available on this device.", -1, false); return@withContext ToolExecutionResult.success(r, json.encodeToString(PythonExecResult.serializer(), r)) }; val scriptFile = File(context.cacheDir, "guru_script_${System.currentTimeMillis()}.py"); scriptFile.writeText(script); val execCmd = shellExecutor.python.buildExecCommand(scriptFile.absolutePath); val pb = ProcessBuilder(execCmd); pb.environment().putAll(shellExecutor.python.getPythonEnv()); pb.redirectErrorStream(false); val process = pb.start(); val stdout = async { BufferedReader(InputStreamReader(process.inputStream)).use { it.readText() } }; val stderr = async { BufferedReader(InputStreamReader(process.errorStream)).use { it.readText() } }; process.waitFor(); scriptFile.delete(); val exitCode = process.exitValue(); val r = PythonExecResult(stdout.await().trim(), stderr.await().trim(), exitCode, exitCode == 0); ToolExecutionResult.success(r, json.encodeToString(PythonExecResult.serializer(), r)) } catch (e: Exception) { val r = PythonExecResult("", "Python execution failed: ${e.message}. Try busybox.", -1, false); ToolExecutionResult.success(r, json.encodeToString(PythonExecResult.serializer(), r)) }
+
+        if (fileAccessGuard.checkSedBlocked(scriptLower)) {
+            val r = PythonExecResult(
+                "", "BLOCKED: sed not allowed in Python.", null, false,
+                status = "LAUNCH_FAILED",
+                reason = "The script was refused before it ran, so no interpreter was started.",
+            )
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(PythonExecResult.serializer(), r))
+        }
+        if (scriptLower.contains("sed") &&
+            (scriptLower.contains("os.system") || scriptLower.contains("subprocess") || scriptLower.contains("popen"))
+        ) {
+            val r = PythonExecResult(
+                "", "BLOCKED: sed not allowed via Python subprocess.", null, false,
+                status = "LAUNCH_FAILED",
+                reason = "The script was refused before it ran, so no interpreter was started.",
+            )
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(PythonExecResult.serializer(), r))
+        }
+
+        // initialize() is idempotent and now returns the reason, so there is no
+        // second isAvailable() check that could disagree with it.
+        val runtime = if (shellExecutor.python.status().available) {
+            shellExecutor.python.status()
+        } else {
+            shellExecutor.python.initialize()
+        }
+
+        if (!runtime.available) {
+            val r = PythonExecResult(
+                stdout = "",
+                stderr = runtime.detail ?: "The Python runtime could not be started.",
+                exitCode = null,
+                success = false,
+                status = "LAUNCH_FAILED",
+                reason = runtime.failure?.name,
+            )
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(PythonExecResult.serializer(), r))
+        }
+
+        val scriptFile = File(context.cacheDir, "guru_script_${System.currentTimeMillis()}.py")
+        var process: Process? = null
+        try {
+            scriptFile.writeText(script)
+            val builder = ProcessBuilder(shellExecutor.python.buildExecCommand(scriptFile.absolutePath))
+            builder.environment().putAll(shellExecutor.python.getPythonEnv())
+            val started = builder.start()
+            process = started
+
+            // Both streams are drained concurrently. A script that writes enough
+            // to fill the pipe buffer before exiting would deadlock a sequential
+            // read, and that looks exactly like a hung interpreter.
+            val stdout = async { BufferedReader(InputStreamReader(started.inputStream)).use { it.readText() } }
+            val stderr = async { BufferedReader(InputStreamReader(started.errorStream)).use { it.readText() } }
+
+            val finished = started.waitFor(PYTHON_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            if (!finished) {
+                started.destroyForcibly()
+                val partialOut = runCatching { stdout.await() }.getOrDefault("")
+                val partialErr = runCatching { stderr.await() }.getOrDefault("")
+                val r = PythonExecResult(
+                    partialOut.trim(),
+                    (partialErr.trim().takeIf { it.isNotEmpty() }
+                        ?: "The script was still running after ${PYTHON_TIMEOUT_SECONDS}s and was stopped."),
+                    null,
+                    false,
+                    status = "TIMED_OUT",
+                    reason = "TIMEOUT",
+                )
+                return@withContext ToolExecutionResult.success(r, json.encodeToString(PythonExecResult.serializer(), r))
+            }
+
+            val exitCode = started.exitValue()
+            val r = PythonExecResult(
+                stdout.await().trim(),
+                stderr.await().trim(),
+                exitCode,
+                exitCode == 0,
+                status = "EXITED",
+            )
+            ToolExecutionResult.success(r, json.encodeToString(PythonExecResult.serializer(), r))
+        } catch (e: Exception) {
+            // Reached only when the process could not be created or its streams
+            // could not be read, which is a launch failure and not an exit code.
+            val r = PythonExecResult(
+                "",
+                "The Python interpreter could not be started: ${e.javaClass.simpleName}: ${e.message}",
+                null,
+                false,
+                status = "LAUNCH_FAILED",
+                reason = "PROCESS_START_FAILED",
+            )
+            ToolExecutionResult.success(r, json.encodeToString(PythonExecResult.serializer(), r))
+        } finally {
+            // A killed process still holds the stream handles, so this runs for
+            // the timeout path too.
+            runCatching { process?.destroy() }
+            scriptFile.delete()
+        }
     }
 
     private suspend fun checkFileSystemAccess(): ToolExecutionResult = withContext(Dispatchers.IO) {

@@ -90,3 +90,98 @@ target_link_options(pathshim PRIVATE
     "-Wl,-z,max-page-size=16384"
     "-Wl,-z,common-page-size=16384"
 )
+
+# python_launcher — the executable that starts the bundled CPython.
+#
+# WHY THIS IS AN EXECUTABLE AND NOT A SHARED LIBRARY (issue 175)
+#
+# libpython3.14.so is a shared object: `llvm-readelf -h` reports entry point 0x0
+# and `llvm-readelf -l` finds no PT_INTERP. execve() on it maps the segments and
+# jumps to address zero, which the kernel reports as SIGILL — exit 132, no output,
+# no message. PythonProvider has always looked for libpython_launcher.so in
+# nativeLibraryDir, and this file was never given a target, so it was never built
+# and every Python call short-circuited at "not found".
+#
+# HOW IT ENDS UP IN nativeLibraryDir WITH A .so NAME
+#
+# Android will not execute from the app's writable data directory, so
+# nativeLibraryDir is the only place a packaged binary can run. The packager only
+# extracts `lib/<abi>/lib*.so` from the APK, so a runnable ELF has to wear that
+# name. Every one of the seventeen bundled tools (toybox, jq, curl, git, ...) is
+# shipped exactly this way, and the toybox entry in the device diagnostic is proof
+# it works: it executed from nativeLibraryDir and got as far as dispatching on its
+# own argv[0].
+#
+# The name is decided by OUTPUT_NAME plus PREFIX/SUFFIX rather than by renaming a
+# file after the build, because a rename in a Gradle doLast task is invisible to
+# the packaging step: the packager runs off the CMake target's declared output, so
+# a file renamed afterwards simply never reaches the APK. Setting the properties
+# on the target is what makes Gradle copy it at all.
+#
+# PIE is explicit. An add_executable in CMake 3.22 targeting Android already
+# defaults to a PIE, but the whole point of this target is that the ELF must be
+# executable, so the property is stated rather than inherited. Without ENABLE_PIE
+# the linker emits ET_EXEC, which the packager's strip step and the 16 KB
+# alignment requirement both handle differently.
+#
+# The 16 KB link options are repeated here deliberately. A PIE executable carries
+# LOAD segments exactly like a shared object, and Android 15+ devices with 16 KB
+# pages require every loadable segment to be aligned to that page size. The
+# bundled prebuilts predate the rule and happen to carry 4 KB alignment, which
+# still loads today, but anything this project compiles now should be correct by
+# construction rather than by luck.
+add_executable(python_launcher
+    python_launcher.c
+)
+
+set_target_properties(python_launcher PROPERTIES
+    OUTPUT_NAME "python_launcher"
+    PREFIX "lib"
+    SUFFIX ".so"
+    POSITION_INDEPENDENT_CODE ON
+    LINKER_LANGUAGE C
+)
+
+# libdl for dlopen/dlsym/dlerror. There is no need to link libpython itself: the
+# launcher resolves it at run time, so the launcher keeps working whichever of
+# libpython3.14.so or libpython3.so it finds.
+target_link_libraries(python_launcher dl)
+
+target_link_options(python_launcher PRIVATE
+    "-Wl,-z,max-page-size=16384"
+    "-Wl,-z,common-page-size=16384"
+)
+
+# Hand the finished executable to the Java-side packaging step.
+#
+# This copy is not optional and it is not tidiness. AGP's externalNativeBuild
+# packages SHARED LIBRARIES only: an add_executable target is compiled into
+# intermediates/cxx/<config>/<hash>/obj/<abi>/ and then dropped. `rootshell` and
+# `exploit_runner` in this very file are the proof — both build, and neither is
+# present in intermediates/merged_native_libs/.../lib/arm64-v8a/.
+#
+# So the executable is copied to a directory Gradle declares as a jniLibs source
+# (see GURU_PYTHON_LAUNCHER_DIR in app/build.gradle.kts), and AGP merges it into
+# the APK by the same route as the seventeen bundled prebuilt tools. That tree is
+# the one mechanism this project already relies on for "an ELF that must be
+# runnable from nativeLibraryDir".
+#
+# The destination is inside the BUILD tree, never src/main/jniLibs: a build that
+# writes into the source tree leaves the working copy dirty after every compile
+# and makes it impossible to tell a real change from build output.
+#
+# If the variable is absent, the copy is skipped rather than silently writing to
+# a guessed path. Gradle always sets it, so an absent value means this file is
+# being configured by something else, and guessing would be worse than doing
+# nothing.
+if(GURU_PYTHON_LAUNCHER_DIR)
+    add_custom_command(TARGET python_launcher POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+                "${GURU_PYTHON_LAUNCHER_DIR}/${ANDROID_ABI}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:python_launcher>"
+                "${GURU_PYTHON_LAUNCHER_DIR}/${ANDROID_ABI}/libpython_launcher.so"
+        COMMENT "python_launcher -> ${GURU_PYTHON_LAUNCHER_DIR}/${ANDROID_ABI}/libpython_launcher.so"
+        VERBATIM
+    )
+endif()
