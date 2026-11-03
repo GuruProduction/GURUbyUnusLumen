@@ -72,6 +72,25 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
         }
+
+        // issue 175: tell CMake where to drop the finished launcher.
+        //
+        // AGP's externalNativeBuild packages SHARED LIBRARIES only and drops
+        // add_executable output: `rootshell` and `exploit_runner` in the same
+        // CMakeLists both build and neither appears in merged_native_libs, so
+        // neither reaches the APK. CMake therefore copies the launcher into a
+        // directory declared as a jniLibs source below, which is the route the
+        // seventeen bundled prebuilt tools already use.
+        //
+        // This lives on defaultConfig rather than the top-level cmake block
+        // because in AGP 9 the top-level Cmake interface carries only path,
+        // version and buildStagingDirectory; `arguments` is on CmakeFlags, which
+        // is reached through defaultConfig.externalNativeBuild.
+        externalNativeBuild {
+            cmake {
+                arguments.add("-DGURU_PYTHON_LAUNCHER_DIR=${layout.buildDirectory.get().asFile.absolutePath}/pythonLauncher")
+            }
+        }
     }
 
     // AGP will auto-download this NDK version
@@ -81,26 +100,20 @@ android {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
             version = "3.22.1"
-            // issue 175: the launcher that starts the bundled CPython is a PIE
-            // executable wearing a lib*.so name, because nativeLibraryDir is the
-            // only place Android lets an app execute from. AGP's
-            // externalNativeBuild packages SHARED LIBRARIES only and drops
-            // add_executable output (`rootshell` and `exploit_runner` in the same
-            // CMakeLists both build and neither reaches the APK), so CMake itself
-            // copies the finished binary into the directory declared as a jniLibs
-            // source below.
-            arguments += "-DGURU_PYTHON_LAUNCHER_DIR=$buildDir/pythonLauncher"
         }
     }
 
     // Where CMake drops the launcher, one directory per ABI. AGP merges this into
     // the APK exactly like src/main/jniLibs, which is how the seventeen bundled
     // prebuilt tools (toybox, jq, curl, git ...) already reach nativeLibraryDir.
+    //
     // It lives in the build tree rather than in src/ so a compile never leaves the
-    // working copy dirty.
+    // working copy dirty, which matters here because every other native binary in
+    // this project is a checked-in prebuilt and build output would be
+    // indistinguishable from one.
     sourceSets {
         getByName("main") {
-            jniLibs.srcDir(layout.buildDirectory.dir("pythonLauncher"))
+            jniLibs.directories.add(layout.buildDirectory.dir("pythonLauncher").get().asFile.absolutePath)
         }
     }
 
