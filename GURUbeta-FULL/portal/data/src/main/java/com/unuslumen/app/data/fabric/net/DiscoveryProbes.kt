@@ -129,7 +129,13 @@ object SnmpProbe {
             if (values.isNotEmpty()) {
                 return Result(
                     community = community,
-                    version = reply.version,
+                    // The wire version is an integer and the enum is what the caller reads, so
+                    // it is mapped back here rather than leaking a raw int through the result.
+                    version = if (reply.version == SnmpCodec.Version.V2C.wire) {
+                        SnmpCodec.Version.V2C
+                    } else {
+                        SnmpCodec.Version.V1
+                    },
                     values = values,
                 )
             }
