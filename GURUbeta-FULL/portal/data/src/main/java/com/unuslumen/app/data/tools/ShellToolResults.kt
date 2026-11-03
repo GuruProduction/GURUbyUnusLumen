@@ -66,7 +66,34 @@ import kotlinx.serialization.Serializable
     val accessibilityDetail: String? = null,
 ) : ToolResultData
 @Serializable data class BusyboxHelpResult(val available: Boolean, val path: String, val appletCount: Int, val applets: List<String>) : ToolResultData
-@Serializable data class PythonExecResult(val stdout: String, val stderr: String, val exitCode: Int, val success: Boolean) : ToolResultData
+/*
+ * The outcome of running a Python script.
+ *
+ * Issue 175: `exitCode` was the only way to report how a run ended, and a run
+ * that never started was reported as exit Code -1. That is a number a real
+ * process can return, so a caller could not distinguish "the interpreter is not
+ * on this device" from "your script called sys.exit(-1)". The two need opposite
+ * responses: one is a packaging fault, the other is the script's own answer.
+ *
+ * `status` now carries that distinction, and it is always present:
+ *
+ *   EXITED     the interpreter ran and returned exitCode. exitCode is meaningful.
+ *   LAUNCH_FAILED  no process was created at all, so exitCode is null rather
+ *                  than a sentinel, and `reason` says which layer was missing.
+ *   TIMED_OUT  the process started and was killed at the deadline. Partial
+ *              stdout and stderr are still real and are kept.
+ *
+ * exitCode is nullable on purpose. A null cannot be mistaken for a real exit
+ * code by arithmetic, comparison or a careless log line, which -1 could.
+ */
+@Serializable data class PythonExecResult(
+    val stdout: String,
+    val stderr: String,
+    val exitCode: Int?,
+    val success: Boolean,
+    val status: String = "EXITED",
+    val reason: String? = null,
+) : ToolResultData
 @Serializable data class PathAccessInfo(val path: String, val label: String, val exists: Boolean, val readable: Boolean, val writable: Boolean) : ToolResultData
 @Serializable data class FileSystemAccessResult(val accessTier: String, val hasAllFilesAccess: Boolean, val adbAvailable: Boolean, val adbPaired: Boolean, val rootAvailable: Boolean, val appStoragePath: String, val externalStoragePath: String, val pathAccess: List<PathAccessInfo>, val restrictions: List<String>) : ToolResultData
 @Serializable data class RequestAccessResult(val success: Boolean, val alreadyGranted: Boolean, val message: String) : ToolResultData
