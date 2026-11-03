@@ -482,6 +482,9 @@ object NetworkDomainModule : DomainToolModule {
         NetworkReconToolDefinitions,
         // The Xbox tools, so a console is reachable rather than only described by classes.
         XboxToolDefinitions,
+        // The map: what GURU has seen, when it saw it and what it is called. A separate tool set
+        // because these answer questions across time rather than about the network right now.
+        NetworkMapToolDefinitions,
     )
 
     override fun bindings(): Module = module {
@@ -498,5 +501,9 @@ object NetworkDomainModule : DomainToolModule {
         factory { NetworkReconExecutor(get(), get()) }
         single { XboxConsole() }
         factory { XboxToolExecutor(get<XboxConsole>()) }
+        // The map store and executor. The store is a single because two tools must see the same
+        // map, and a store rebuilt per call would answer a recall from an empty table.
+        single { NetworkMapStore(get()) }
+        factory { NetworkMapExecutor(get(), get()) }
     }
 }

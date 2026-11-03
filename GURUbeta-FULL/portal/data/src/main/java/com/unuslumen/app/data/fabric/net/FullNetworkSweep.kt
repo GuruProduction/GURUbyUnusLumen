@@ -30,8 +30,8 @@ import java.util.concurrent.atomic.AtomicInteger
  * connection and the wifi has no internet, Android makes cellular the default network, and every
  * unbound socket sends its packets out of the wrong interface. That is a network full of devices
  * reporting as empty, and it is why a laptop on the same wifi found three sets while the phone
- * found none. [ScanTargets.bind] takes the wifi network's own interface and every socket here is
- * bound to it.
+ * found none. [wifiInterface] resolves the wifi interface once per sweep and
+ * [HostPresence.probePort] takes it, so every connect leaves by the right interface.
  *
  * SECOND, PRESENCE WAS ONLY PROVED BY AN OPEN PORT. A device that answers ARP and drops every
  * connection is on the network, and it was invisible. [HostPresence] classifies how a connect
@@ -82,22 +82,52 @@ class FullNetworkSweep(
         // One record per address, and everything that answers merges into it.
         val reports = ConcurrentHashMap<String, MutableList<Identified>>()
 
+        // What each address exposed, kept beside its reports rather than inside them. A port is not
+        // an identification: it is a fact about the host that several probes contribute to and that
+        // the map stores separately, so a port opening between two sweeps is visible as a change.
+        val portsByAddress = ConcurrentHashMap<String, MutableSet<Int>>()
+
         fun record(address: String, identified: Identified) {
             reports.getOrPut(address) { java.util.Collections.synchronizedList(mutableListOf()) }
                 .add(identified)
         }
 
+        fun recordPorts(address: String, ports: Collection<Int>) {
+            if (ports.isEmpty()) return
+            val set = portsByAddress.getOrPut(address) {
+                java.util.Collections.synchronizedSet(mutableSetOf())
+            }
+            set.addAll(ports)
+        }
+
+        // RESOLVED ONCE FOR THE WHOLE SWEEP. Every socket below is bound to this interface, because
+        // a phone whose mobile data is validated sends an unbound socket's packets out of the
+        // carrier and every device on the wifi reads as absent. Looking it up once also means a
+        // mid-sweep interface change cannot half-bind the work.
+        val wifi = targets.wifiInterface()
+
         // THE ALIVENESS PASS COMES FIRST because it decides what the expensive probes are spent
         // on, and because a present-but-silent host is proved here and nowhere else.
-        val alive = findAlive(addresses, problems, onStage)
+        val alive = findAlive(addresses, problems, onStage, wifi)
         onStage("${alive.size} address(es) answered; asking each one what it is")
 
+        // ONE BUDGET FOR THE WHOLE PORT SWEEP, shared by every host, so fifty live devices cannot
+        // each open their own full set of sockets. See [sweepPorts].
+        val portGate = Semaphore(concurrency)
+
         coroutineScope {
+            // THE PORT SWEEP, which is what gives a device its open ports and what finds a device
+            // that answers a service the identification probes do not speak. It runs only against
+            // live addresses, because probing a switched-off host costs a full timeout each.
+            launchEach(alive) { address ->
+                recordPorts(address, sweepPorts(address, portGate, wifi))
+            }
+
             // SNMP, which is the only protocol that names a printer or a switch that serves no
             // web page. It runs against every live address rather than every address, because an
             // absent host costs a full timeout and there are 254 of them.
             launchEach(alive) { address ->
-                val channel = UdpProbeChannel()
+                val channel = UdpProbeChannel(bindTo = wifi)
                 val result = SnmpProbe.query(address, channel)
                 if (result != null) {
                     record(address, DeviceIdentifier.fromSnmp(result.values))
@@ -106,7 +136,7 @@ class FullNetworkSweep(
 
             // NBNS, for the name and MAC that a Windows machine or NAS will give away.
             launchEach(alive) { address ->
-                val channel = UdpProbeChannel()
+                val channel = UdpProbeChannel(bindTo = wifi)
                 val replies = channel.exchange(
                     address, NBNS_PORT, NbnsProbe.nodeStatusRequest(), deadlineMillis = 500,
                 )
@@ -132,10 +162,14 @@ class FullNetworkSweep(
             // REVERSE DNS THROUGH THE GATEWAY. This is the only probe that names an appliance
             // which answers nothing at all, because the name came from the DHCP request it made
             // when it joined and the router still holds it.
+            //
+            // THE GATEWAY IS RESOLVED ONCE, OUTSIDE THE PER-ADDRESS LOOP. It used to be looked up
+            // inside it, which meant 250 live addresses each did two TCP probes to find the same
+            // answer, and every one of those probes went out unbound.
+            val gateway = targets.gateway()
             launchEach(alive) { address ->
-                val gateway = targets.gateway()
                 if (gateway != null) {
-                    val channel = UdpProbeChannel()
+                    val channel = UdpProbeChannel(bindTo = wifi)
                     val transactionId = dnsCounter.getAndIncrement() and 0xFFFF
                     val replies = channel.exchange(
                         gateway, DNS_PORT,
@@ -150,9 +184,17 @@ class FullNetworkSweep(
             }
         }
 
-        // Merge what every protocol said about each address, then report.
-        val devices = reports.map { (address, identified) ->
-            DeviceMerge.merge(address, identified.toList())
+        // EVERY ADDRESS THAT ANSWERED BECOMES A DEVICE, even one no protocol could name. A host
+        // that refused a connection is a host that is there, and dropping it because it had
+        // nothing to say would report an empty network on a network full of devices.
+        val everyAddress = (reports.keys + portsByAddress.keys).toSet()
+
+        val devices = everyAddress.map { address ->
+            DeviceMerge.merge(
+                address = address,
+                reports = reports[address]?.toList() ?: emptyList(),
+                openPorts = portsByAddress[address]?.toList() ?: emptyList(),
+            )
         }.sortedBy { it.address.substringAfterLast('.').toIntOrNull() ?: 999 }
 
         devices.forEach(onFound)
@@ -188,6 +230,7 @@ class FullNetworkSweep(
         addresses: List<String>,
         problems: MutableList<String>,
         onStage: (String) -> Unit,
+        bindTo: java.net.NetworkInterface? = null,
     ): List<String> = coroutineScope {
         val gate = Semaphore(concurrency)
         val alive = ConcurrentHashMap.newKeySet<String>()
@@ -195,7 +238,9 @@ class FullNetworkSweep(
         addresses.map { address ->
             async {
                 gate.withPermit {
-                    val probe = HostPresence.probe(address, ALIVENESS_PORTS, connectTimeoutMillis)
+                    val probe = HostPresence.probe(
+                        address, ALIVENESS_PORTS, connectTimeoutMillis, bindTo,
+                    )
                     when (probe.state) {
                         HostPresence.State.OPEN,
                         HostPresence.State.PRESENT_CLOSED,
@@ -221,6 +266,40 @@ class FullNetworkSweep(
         }
         onStage("${alive.size} of ${addresses.size} addresses are present")
         alive.sortedBy { it.substringAfterLast('.').toIntOrNull() ?: 999 }
+    }
+
+    /**
+     * Every port on one address that accepts a connection.
+     *
+     * THE PORT LIST IS THE PROTOCOL LIST, NOT A GUESSED SET OF NUMBERS. Each entry is a port a
+     * real class of device actually opens, grouped by what answering it means, and every one of
+     * them is also something the classification rules can use. Scanning all 65535 ports is the
+     * thing that turns a sweep into a run that never ends, and on a home network it returns
+     * nothing the protocol ports did not already return.
+     *
+     * THE CONCURRENCY BUDGET IS PER SWEEP, NOT PER ADDRESS, and that is a real correction. The
+     * first version took a fresh [Semaphore] for every host, so fifty live hosts could each open
+     * [concurrency] sockets at once, which is several thousand sockets on a phone. The budget is
+     * now owned by the caller and passed in, so the ceiling is the sweep's and not one host's.
+     */
+    private suspend fun sweepPorts(
+        address: String,
+        gate: Semaphore,
+        bindTo: java.net.NetworkInterface? = null,
+    ): List<Int> = coroutineScope {
+        SERVICE_PORTS.map { port ->
+            async {
+                gate.withPermit {
+                    if (HostPresence.probePort(address, port, connectTimeoutMillis, bindTo) ==
+                        HostPresence.State.OPEN
+                    ) {
+                        port
+                    } else {
+                        null
+                    }
+                }
+            }
+        }.awaitAll().filterNotNull()
     }
 
     /** Run [block] on every item with a bounded number in flight. */
@@ -257,6 +336,34 @@ class FullNetworkSweep(
          * there. This is a presence question, not an identity one, so the list stays short.
          */
         val ALIVENESS_PORTS = listOf(80, 443, 445, 62078, 5555, 8060, 8009, 631, 53)
+
+        /**
+         * The ports a device on a home network actually opens.
+         *
+         * EVERY ENTRY IS A PROTOCOL SOMETHING SPEAKS, never a number picked to fill a range. Grouped
+         * so the reason each is here survives:
+         *
+         *  - Web and remote access: 22 ssh, 23 telnet, 80, 443, 8080, 8443.
+         *  - Printers: 515 lpd, 631 ipp, 9100 raw, 3910, 3911.
+         *  - Cameras: 554 rtsp, 8554 an alternate rtsp, 34567 a common DVR port.
+         *  - Files and desktops: 139, 445 smb, 3389 rdp, 548 afp, 2049 nfs.
+         *  - Media and streaming: 8008 cast, 8009 dial, 8060 roku, 8001 and 8002 samsung,
+         *    3000 and 3001 lg, 7345 vizio, 6466 and 6467 android tv, 1925 and 1926 philips,
+         *    9000 philips, 7000 and 7100 airplay, 5000 and 5001 synology, 32400 plex.
+         *  - Home automation and IoT: 1883 and 8883 mqtt, 8123 home assistant, 5683 coap,
+         *    49152 and 49153 upnp, 9080 a media service, 6668 a common IoT websocket.
+         *  - Phones and set-top boxes: 62078 ios lockdown, 5555 adb, 5556 an alternate.
+         *
+         * Deliberately absent: the 1..65535 walk. It is minutes per host, it is the reason an
+         * earlier sweep never finished, and everything a home network runs is in this list.
+         */
+        val SERVICE_PORTS: List<Int> = listOf(
+            22, 23, 53, 80, 139, 443, 445, 515, 548, 554, 631,
+            1400, 1883, 1925, 1926, 2049, 3000, 3001, 3389, 3910, 3911, 5000, 5001,
+            5555, 5556, 5683, 6668, 7000, 7100, 7345, 8001, 8002, 8008, 8009, 8060,
+            8080, 8123, 8443, 8554, 8883, 9000, 9080, 9100, 32400, 34567, 49152,
+            49153, 62078, 6466, 6467,
+        ).sorted()
 
         private const val NBNS_PORT = 137
         private const val DNS_PORT = 53
@@ -312,8 +419,9 @@ open class ScanTargets {
         // network with a mesh node or a second router has its gateway somewhere else entirely.
         val prefix = subnetPrefix() ?: return null
         val candidates = listOf("$prefix.1", "$prefix.254")
+        val wifi = wifiInterface()
         candidates.firstOrNull { address ->
-            HostPresence.probePort(address, 53, 300) != HostPresence.State.ABSENT
+            HostPresence.probePort(address, 53, 300, wifi) != HostPresence.State.ABSENT
         }
     }.getOrNull()
 
