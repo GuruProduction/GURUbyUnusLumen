@@ -91,8 +91,12 @@ import com.unuslumen.app.database.entity.MemoryInjectionEntity
 import com.unuslumen.app.database.entity.FabricDeviceEntity
 import com.unuslumen.app.database.entity.FabricSceneEntity
 import com.unuslumen.app.database.entity.HeartbeatPromptEntity
+import com.unuslumen.app.database.entity.NetworkDeviceEntity
+import com.unuslumen.app.database.entity.NetworkScanEntity
+import com.unuslumen.app.database.entity.NetworkSightingEntity
 import com.unuslumen.app.database.dao.FabricDao
 import com.unuslumen.app.database.dao.HeartbeatPromptDao
+import com.unuslumen.app.database.dao.NetworkVisionDao
 
 @Database(
     entities = [
@@ -140,9 +144,14 @@ import com.unuslumen.app.database.dao.HeartbeatPromptDao
         FabricDeviceEntity::class,
         FabricSceneEntity::class,
         // The heartbeat prompt, so it is the owner's to edit rather than a compiled asset.
-        HeartbeatPromptEntity::class
+        HeartbeatPromptEntity::class,
+        // The network map: what GURU has seen, when it saw it, and why it looked. Three tables
+        // because the present, the history and the run are three different questions.
+        NetworkDeviceEntity::class,
+        NetworkSightingEntity::class,
+        NetworkScanEntity::class,
     ],
-    version = 33
+    version = 34
 )
 @TypeConverters(DBConverters::class)
 abstract class guruDatabase: RoomDatabase() {
@@ -189,6 +198,7 @@ abstract class guruDatabase: RoomDatabase() {
     abstract fun memoryInjectionDao(): MemoryInjectionDao
     abstract fun fabricDao(): FabricDao
     abstract fun heartbeatPromptDao(): HeartbeatPromptDao
+    abstract fun networkVisionDao(): NetworkVisionDao
 
     companion object {
         const val DATABASE_NAME = "guru_db"

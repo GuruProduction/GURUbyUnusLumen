@@ -445,9 +445,21 @@ object DeviceMerge {
      * [reports] may be empty, in which case a device that only proved it exists comes back with
      * no name: it is still a device that is there, and hiding it would be the lie.
      */
-    fun merge(address: String, reports: List<Identified>): MergedDevice {
+    fun merge(
+        address: String,
+        reports: List<Identified>,
+        openPorts: List<Int> = emptyList(),
+        services: List<String> = emptyList(),
+    ): MergedDevice {
         if (reports.isEmpty()) {
-            return MergedDevice(address = address, name = null, vendor = null, deviceClass = DeviceClass.UNKNOWN)
+            return MergedDevice(
+                address = address,
+                name = null,
+                vendor = null,
+                deviceClass = DeviceClass.UNKNOWN,
+                openPorts = openPorts.sorted(),
+                services = services.distinct(),
+            )
         }
 
         // Rank by the best evidence each report carries, so a device that declared itself is
@@ -461,14 +473,32 @@ object DeviceMerge {
         val deviceClass = ranked.firstNotNullOfOrNull { it.deviceClass } ?: DeviceClass.UNKNOWN
         val allEvidence = reports.flatMap { it.evidence }.distinct()
 
+        // A class that no protocol declared falls back to the port inference, and the evidence
+        // records that it was a guess so a reader can tell the two apart.
+        val inferred = if (ranked.none { it.deviceClass != null }) {
+            DeviceIdentifier.classFromPorts(openPorts)?.let { guessed ->
+                allEvidence + Evidence(
+                    "ports",
+                    "inferred from the open ports rather than from anything the device said",
+                    EvidenceKind.INFERRED,
+                ) to guessed
+            }
+        } else {
+            null
+        }
+
         return MergedDevice(
             address = address,
             name = name,
             vendor = vendor,
             model = model,
             location = location,
-            deviceClass = deviceClass,
-            evidence = allEvidence,
+            deviceClass = deviceClass.takeIf { it != DeviceClass.UNKNOWN }
+                ?: inferred?.second
+                ?: DeviceClass.UNKNOWN,
+            evidence = inferred?.first ?: allEvidence,
+            openPorts = openPorts.sorted(),
+            services = services.distinct(),
         )
     }
 
@@ -491,6 +521,17 @@ data class MergedDevice(
     val location: String? = null,
     val deviceClass: DeviceClass = DeviceClass.UNKNOWN,
     val evidence: List<Evidence> = emptyList(),
+    /**
+     * Ports that accepted a connection on this sighting.
+     *
+     * CARRIED ON THE DEVICE RATHER THAN RE-DERIVED LATER. A map store that had to re-scan to learn
+     * what ports a device had would write empty port lists into history, and a port that opened
+     * between two sweeps is one of the changes a network map exists to show. The sweep knows this
+     * at the moment it finds the device, so it travels with the device.
+     */
+    val openPorts: List<Int> = emptyList(),
+    /** Services the device announced on this sighting. */
+    val services: List<String> = emptyList(),
 ) {
     /** What to show in a list, which is never blank because an address is always something. */
     val displayName: String
