@@ -152,36 +152,17 @@ target_link_options(python_launcher PRIVATE
     "-Wl,-z,common-page-size=16384"
 )
 
-# Hand the finished executable to the Java-side packaging step.
+# No post-build copy is needed, and the reason is worth recording because the
+# first attempt here added one and it caused a duplicate-file failure.
 #
-# This copy is not optional and it is not tidiness. AGP's externalNativeBuild
-# packages SHARED LIBRARIES only: an add_executable target is compiled into
-# intermediates/cxx/<config>/<hash>/obj/<abi>/ and then dropped. `rootshell` and
-# `exploit_runner` in this very file are the proof — both build, and neither is
-# present in intermediates/merged_native_libs/.../lib/arm64-v8a/.
+# AGP packages an add_executable target into the APK when its OUTPUT NAME looks
+# like a shared library. `rootshell` and `exploit_runner` are dropped because
+# they are named `rootshell` and `exploit_runner`; this target is named
+# `libpython_launcher.so` by the properties above, so AGP merges it into
+# lib/<abi>/ exactly like a shared library and it reaches nativeLibraryDir.
 #
-# So the executable is copied to a directory Gradle declares as a jniLibs source
-# (see GURU_PYTHON_LAUNCHER_DIR in app/build.gradle.kts), and AGP merges it into
-# the APK by the same route as the seventeen bundled prebuilt tools. That tree is
-# the one mechanism this project already relies on for "an ELF that must be
-# runnable from nativeLibraryDir".
-#
-# The destination is inside the BUILD tree, never src/main/jniLibs: a build that
-# writes into the source tree leaves the working copy dirty after every compile
-# and makes it impossible to tell a real change from build output.
-#
-# If the variable is absent, the copy is skipped rather than silently writing to
-# a guessed path. Gradle always sets it, so an absent value means this file is
-# being configured by something else, and guessing would be worse than doing
-# nothing.
-if(GURU_PYTHON_LAUNCHER_DIR)
-    add_custom_command(TARGET python_launcher POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-                "${GURU_PYTHON_LAUNCHER_DIR}/${ANDROID_ABI}"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:python_launcher>"
-                "${GURU_PYTHON_LAUNCHER_DIR}/${ANDROID_ABI}/libpython_launcher.so"
-        COMMENT "python_launcher -> ${GURU_PYTHON_LAUNCHER_DIR}/${ANDROID_ABI}/libpython_launcher.so"
-        VERBATIM
-    )
-endif()
+# The evidence is the failure that proved it: with an extra jniLibs source
+# directory also carrying the file, mergeDebugNativeLibs reported
+# "2 files found with path 'lib/x86_64/libpython_launcher.so'", one from
+# intermediates/cxx/.../obj/x86_64/ (AGP's own copy of the CMake target) and one
+# from the hand-declared directory. The naming is the whole mechanism.

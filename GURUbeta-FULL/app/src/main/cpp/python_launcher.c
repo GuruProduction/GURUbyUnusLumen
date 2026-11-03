@@ -54,13 +54,27 @@
 #include <string.h>
 #include <unistd.h>
 
-/* Py_Main is the public embedding entry point. Signature history matters:
- *   3.5  - 3.12 : int Py_Main(int argc, wchar_t **argv)
- *   3.13 onwards: int Py_Main(int argc, char **argv)
- * The bundled interpreter is 3.14, so char** is correct. Verified against the
- * shipped binary with `llvm-nm -D --defined-only libpython3.14.so`, which reports
- * "00000000004366ec T Py_Main". */
-typedef int (*PyMainFunc)(int, char **);
+/* Py_BytesMain, NOT Py_Main. This distinction cost hours and is the whole
+ * reason this file exists in its present shape.
+ *
+ * Py_Main still exists in 3.14 and still links, so calling it looks correct and
+ * compiles cleanly. On Android it starts the interpreter and then dies:
+ *
+ *   Fatal Python error: memory allocation failed
+ *   Python runtime state: core initialized
+ *
+ * Py_Main was deprecated in 3.13 and is no longer the supported entry point.
+ * Py_BytesMain is, it is what CPython's own Android packaging uses (the Termux
+ * python3.14 stub's only Python import is Py_BytesMain), and it starts the same
+ * library on the same device with the same environment and works.
+ *
+ * Measured on an API 37 arm64 emulator, 16 KB pages, against CPython 3.14.8:
+ *   Py_Main       -> "memory allocation failed", exit 1, no output
+ *   Py_BytesMain  -> 3.14.8 (main, ...), prints the version
+ *
+ * Both symbols are exported by the shipped libpython, so this is a real choice
+ * rather than a workaround for a missing symbol. */
+typedef int (*PyBytesMainFunc)(int, char **);
 
 /* The launcher's own directory, or a zero-length string if it cannot be read.
  *
@@ -140,10 +154,17 @@ int main(int argc, char *argv[]) {
         return 127;
     }
 
-    PyMainFunc py_main = (PyMainFunc)dlsym(handle, "Py_Main");
-    if (py_main == NULL) {
+    /* Py_BytesMain first, Py_Main only as a fallback. An interpreter older than
+     * 3.13 has no Py_BytesMain, and a future one may drop Py_Main, so trying
+     * both keeps this launcher working across the range rather than pinning it
+     * to one API generation. */
+    PyBytesMainFunc entry = (PyBytesMainFunc)dlsym(handle, "Py_BytesMain");
+    if (entry == NULL) {
+        entry = (PyBytesMainFunc)dlsym(handle, "Py_Main");
+    }
+    if (entry == NULL) {
         const char *why = dlerror();
-        fprintf(stderr, "python_launcher: libpython has no Py_Main: %s\n",
+        fprintf(stderr, "python_launcher: libpython exports neither Py_BytesMain nor Py_Main: %s\n",
                 why != NULL ? why : "no detail");
         /* Deliberately no dlclose: returning is enough, and unloading a
          * half-initialised interpreter is the risk this file exists to avoid. */
@@ -154,5 +175,5 @@ int main(int argc, char *argv[]) {
      * path. sys.executable then names a file that exists and can be re-executed
      * to start another interpreter, which is what code expecting a python
      * binary relies on. */
-    return py_main(argc, argv);
+    return entry(argc, argv);
 }

@@ -73,24 +73,6 @@ android {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
         }
 
-        // issue 175: tell CMake where to drop the finished launcher.
-        //
-        // AGP's externalNativeBuild packages SHARED LIBRARIES only and drops
-        // add_executable output: `rootshell` and `exploit_runner` in the same
-        // CMakeLists both build and neither appears in merged_native_libs, so
-        // neither reaches the APK. CMake therefore copies the launcher into a
-        // directory declared as a jniLibs source below, which is the route the
-        // seventeen bundled prebuilt tools already use.
-        //
-        // This lives on defaultConfig rather than the top-level cmake block
-        // because in AGP 9 the top-level Cmake interface carries only path,
-        // version and buildStagingDirectory; `arguments` is on CmakeFlags, which
-        // is reached through defaultConfig.externalNativeBuild.
-        externalNativeBuild {
-            cmake {
-                arguments.add("-DGURU_PYTHON_LAUNCHER_DIR=${layout.buildDirectory.get().asFile.absolutePath}/pythonLauncher")
-            }
-        }
     }
 
     // AGP will auto-download this NDK version
@@ -103,19 +85,14 @@ android {
         }
     }
 
-    // Where CMake drops the launcher, one directory per ABI. AGP merges this into
-    // the APK exactly like src/main/jniLibs, which is how the seventeen bundled
-    // prebuilt tools (toybox, jq, curl, git ...) already reach nativeLibraryDir.
+    // No extra jniLibs source directory is needed for the Python launcher.
     //
-    // It lives in the build tree rather than in src/ so a compile never leaves the
-    // working copy dirty, which matters here because every other native binary in
-    // this project is a checked-in prebuilt and build output would be
-    // indistinguishable from one.
-    sourceSets {
-        getByName("main") {
-            jniLibs.directories.add(layout.buildDirectory.dir("pythonLauncher").get().asFile.absolutePath)
-        }
-    }
+    // AGP packages an add_executable target when its output name looks like a
+    // shared library, and this one is named libpython_launcher.so, so it is
+    // merged into lib/<abi>/ by the same mechanism as libquickjs.so. Adding a
+    // hand-declared directory as well produced a duplicate-file failure in
+    // mergeDebugNativeLibs, which is how that was established rather than
+    // assumed.
 
     // The keystore that every shipped GURU release was signed with. Installing a
     // build signed with any other key over an existing GURU is refused by
