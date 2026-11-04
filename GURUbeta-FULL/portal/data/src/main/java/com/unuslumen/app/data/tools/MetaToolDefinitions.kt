@@ -35,12 +35,16 @@ object MetaToolDefinitions : ToolSetRegistration {
          */
         ToolDefinition(
             name = DEFINE_TOOL,
-            description = "Define a new tool for yourself. Composition (chained existing tools), shell command, or webhook — every kind registers immediately with no approval step, and is callable from your very next request. " +
+            description = "Define a new tool for yourself. Composition (chained tools, including tools you defined), shell command, or webhook — every kind registers immediately with no approval step, and is callable from your very next request. " +
                 "PARAMETERS accepts three shapes: " +
                 "(1) JSON Schema form {\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"string\"}},\"required\":[\"a\"]} — the required array is honoured exactly; " +
                 "(2) flat form {\"a\":{\"type\":\"string\",\"description\":\"what it is\"}} — every property is required unless it carries \"required\":false; " +
                 "(3) map form {\"a\":\"string\"} — a bare type name per argument, all required. " +
-                "In any shape, a property may carry \"required\":false or \"optional\":true to make it optional.",
+                "In any shape, a property may carry \"required\":false or \"optional\":true to make it optional. " +
+                "A SHELL COMMAND reads its parameters in any of these forms: \$name, \${name}, or a positional \$1, \$2 … in the order you declared them. " +
+                "Real shell variables such as \$HOME and \$PATH are left alone, and \\\$ gives a literal dollar. " +
+                "Shell commands run with your own bundled binaries on PATH, so curl, jq, rsync, sqlite3, ffmpeg, git and every toybox applet work by name. " +
+                "The result always carries stdout, stderr and the exit code, so nothing that went wrong is invisible.",
             category = "meta",
             parameters = listOf(
                 ToolParameter("name", ToolParameterType.String, true, "Tool name (lowercase, underscores)"),

@@ -233,6 +233,31 @@ class GuruToolRepositoryImpl(
                     errors.add("Shell command cannot be empty")
                 }
                 warnings.add("Shell commands have elevated permissions - review carefully before approving")
+
+                /*
+                 * ISSUE 303's third half: a declared parameter the command never
+                 * references is silently dropped at call time. The tool runs,
+                 * exits 0, and returns a result that ignores an argument the
+                 * caller supplied — which is exactly the class of quiet wrongness
+                 * this whole contract exists to remove.
+                 *
+                 * The check runs the SAME renderer the executor runs, so the
+                 * warning can never disagree with what actually happens.
+                 *
+                 * A WARNING, not an error. A tool may legitimately declare a
+                 * parameter it does not use, and refusing the definition would be
+                 * a gate nobody asked for.
+                 */
+                val declared = GuruToolSchemaMapper.parseParameters(request.parameters).map { it.name }
+                val unreferenced = ShellCommandTemplate.unreferencedParameters(impl.command, declared)
+                if (unreferenced.isNotEmpty()) {
+                    warnings.add(
+                        "The command never references ${unreferenced.joinToString(", ")}. " +
+                            "A shell command receives a parameter as \$name, \${name}, or a " +
+                            "positional \$1/\$2 in declaration order; an argument the command " +
+                            "does not name is dropped silently at call time.",
+                    )
+                }
             }
             is ToolImplementation.Webhook -> {
                 if (impl.url.isBlank()) {
