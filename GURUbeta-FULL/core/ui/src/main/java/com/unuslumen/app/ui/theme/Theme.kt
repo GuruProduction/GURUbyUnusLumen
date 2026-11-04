@@ -5,12 +5,10 @@ package com.unuslumen.app.ui.theme
 
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.compositionLocalOf
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -19,25 +17,15 @@ import com.unuslumen.app.preferences.domain.model.LayoutConfig
 
 val LocalGuruColors = compositionLocalOf { LightGuruColors }
 
-private val LightColorPalette = lightColorScheme(
-    primary = PrimaryColor,
-    onPrimary = OnPrimary,
-    secondary = SecondaryColor,
-    tertiary = TertiaryColor,
-    background = LightBackgroundColor,
-    onBackground = DarkGray,
-    onSurfaceVariant = DarkGray,
-    surface = LightCardColor,
-    surfaceTint = LightCardColor,
-    surfaceVariant = LightCardColor,
-    surfaceContainerHighest = LightCardColor,
-    surfaceContainerLow = LightCardColor,
-    surfaceContainerLowest = LightCardColor,
-    surfaceContainer = LightCardColor,
-    surfaceContainerHigh = LightCardColor,
-    surfaceDim = LightCardColor,
-    surfaceBright = LightCardColor
-)
+/*
+ * LightColorPalette REMOVED (issue 312).
+ *
+ * It was a second, unused definition of the same scheme that still set only the
+ * older token list. Two definitions of one thing is how a component ends up
+ * reading a colour the other definition never set, which is precisely what
+ * happened here: the container tokens were falling through to Material's
+ * baseline purple. [applyGuruThemeLight] is now the single source.
+ */
 
 /**
  * CompositionLocal that provides the current LayoutConfig throughout the compose tree.
