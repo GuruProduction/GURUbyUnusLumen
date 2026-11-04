@@ -78,59 +78,48 @@ fun listCustomFonts(context: Context): List<String> {
 /**
  * Apply GuruTheme overrides to the light color scheme.
  * Any null values fall back to the hardcoded defaults.
- *
- * EVERY TOKEN IS SET, INCLUDING THE CONTAINERS (issue 312).
- *
- * `lightColorScheme` fills anything it is not given with Material's own
- * BASELINE purple palette. That is why the container tokens were never part of
- * GURU's design: `secondaryContainer`, `primaryContainer`, `tertiaryContainer`,
- * `errorContainer` and their `on*` pairs were silently Material defaults, and
- * the tool-call card is drawn from `secondaryContainer`. They are set here
- * explicitly, from Memphis, so no component can inherit a colour that belongs
- * to a different design system.
- *
- * The user's own theme overrides still win where they exist, because the theme
- * keys are read first and Memphis is only the fallback.
  */
 fun applyGuruThemeLight(theme: GuruThemeModel?): androidx.compose.material3.ColorScheme {
+    if (theme == null) return lightColorSchemeDefaults
     return androidx.compose.material3.lightColorScheme(
-        primary = theme?.parseColor(theme.lightPrimary) ?: PrimaryColor,
-        onPrimary = theme?.parseColor(theme.lightOnPrimary) ?: OnPrimary,
-        primaryContainer = Memphis.Lilac,
-        onPrimaryContainer = Memphis.Ink,
-        secondary = theme?.parseColor(theme.lightSecondary) ?: SecondaryColor,
-        onSecondary = Memphis.Paper,
-        secondaryContainer = Memphis.Lilac,
-        onSecondaryContainer = Memphis.Ink,
-        tertiary = theme?.parseColor(theme.lightTertiary) ?: TertiaryColor,
-        onTertiary = Memphis.Paper,
-        tertiaryContainer = Memphis.Cyan,
-        onTertiaryContainer = Memphis.Ink,
-        background = theme?.parseColor(theme.lightBackground) ?: LightBackgroundColor,
-        onBackground = theme?.parseColor(theme.lightOnBackground) ?: DarkGray,
-        surface = theme?.parseColor(theme.lightSurface) ?: LightCardColor,
-        // onSurface was never set, so it was the Material baseline. It is the
-        // colour of every default Text colour in the app.
-        onSurface = theme?.parseColor(theme.lightOnSurface) ?: DarkGray,
-        onSurfaceVariant = theme?.parseColor(theme.lightOnSurfaceVariant) ?: DarkGray,
-        surfaceVariant = theme?.parseColor(theme.lightSurfaceVariant) ?: LightCardColor,
-        surfaceTint = theme?.parseColor(theme.lightSurfaceTint) ?: LightCardColor,
-        surfaceContainerHighest = theme?.parseColor(theme.lightSurface) ?: LightCardColor,
-        surfaceContainerLow = theme?.parseColor(theme.lightSurface) ?: LightCardColor,
-        surfaceContainerLowest = theme?.parseColor(theme.lightSurface) ?: LightCardColor,
-        surfaceContainer = theme?.parseColor(theme.lightSurface) ?: LightCardColor,
-        surfaceContainerHigh = theme?.parseColor(theme.lightSurface) ?: LightCardColor,
-        surfaceDim = theme?.parseColor(theme.lightSurface) ?: LightCardColor,
-        surfaceBright = theme?.parseColor(theme.lightSurface) ?: LightCardColor,
-        error = Memphis.Coral,
-        onError = Memphis.Paper,
-        errorContainer = Memphis.Coral,
-        onErrorContainer = Memphis.Paper,
-        outline = Memphis.Ink,
-        outlineVariant = Memphis.Ink.copy(alpha = 0.35f),
-        inversePrimary = Memphis.Yellow,
-        inverseSurface = Memphis.Ink,
-        inverseOnSurface = Memphis.Paper,
-        scrim = Memphis.Ink,
+        primary = theme.parseColor(theme.lightPrimary) ?: PrimaryColor,
+        onPrimary = theme.parseColor(theme.lightOnPrimary) ?: OnPrimary,
+        secondary = theme.parseColor(theme.lightSecondary) ?: SecondaryColor,
+        tertiary = theme.parseColor(theme.lightTertiary) ?: TertiaryColor,
+        background = theme.parseColor(theme.lightBackground) ?: LightBackgroundColor,
+        onBackground = theme.parseColor(theme.lightOnBackground) ?: DarkGray,
+        surface = theme.parseColor(theme.lightSurface) ?: LightCardColor,
+        onSurface = theme.parseColor(theme.lightOnSurface) ?: DarkGray,
+        onSurfaceVariant = theme.parseColor(theme.lightOnSurfaceVariant) ?: DarkGray,
+        surfaceVariant = theme.parseColor(theme.lightSurfaceVariant) ?: LightCardColor,
+        surfaceTint = theme.parseColor(theme.lightSurfaceTint) ?: LightCardColor,
+        surfaceContainerHighest = theme.parseColor(theme.lightSurface) ?: LightCardColor,
+        surfaceContainerLow = theme.parseColor(theme.lightSurface) ?: LightCardColor,
+        surfaceContainerLowest = theme.parseColor(theme.lightSurface) ?: LightCardColor,
+        surfaceContainer = theme.parseColor(theme.lightSurface) ?: LightCardColor,
+        surfaceContainerHigh = theme.parseColor(theme.lightSurface) ?: LightCardColor,
+        surfaceDim = theme.parseColor(theme.lightSurface) ?: LightCardColor,
+        surfaceBright = theme.parseColor(theme.lightSurface) ?: LightCardColor,
     )
 }
+
+/** Cached default light scheme */
+private val lightColorSchemeDefaults = androidx.compose.material3.lightColorScheme(
+    primary = PrimaryColor,
+    onPrimary = OnPrimary,
+    secondary = SecondaryColor,
+    tertiary = TertiaryColor,
+    background = LightBackgroundColor,
+    onBackground = DarkGray,
+    onSurfaceVariant = DarkGray,
+    surface = LightCardColor,
+    surfaceTint = LightCardColor,
+    surfaceVariant = LightCardColor,
+    surfaceContainerHighest = LightCardColor,
+    surfaceContainerLow = LightCardColor,
+    surfaceContainerLowest = LightCardColor,
+    surfaceContainer = LightCardColor,
+    surfaceContainerHigh = LightCardColor,
+    surfaceDim = LightCardColor,
+    surfaceBright = LightCardColor
+)
