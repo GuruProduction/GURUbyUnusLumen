@@ -75,20 +75,39 @@ class AdbClient(
 
         fun getOrCreateRsaKeyPair(): KeyPair {
             if (_rsaKeyPair != null) return _rsaKeyPair!!
-            
+
             val ctx = _context
-            if (ctx != null) {
-                _rsaKeyPair = AdbKeyStore.getOrCreateKeyPair(ctx)
+            val pair = if (ctx != null) {
+                AdbKeyStore.getOrCreateKeyPair(ctx)
             } else {
-                // Fallback: generate ephemeral key (won't persist across restarts)
-                val keyGen = KeyPairGenerator.getInstance("RSA")
-                keyGen.initialize(RSAKeyGenParameterSpec(2048, RSAKeyGenParameterSpec.F4))
-                _rsaKeyPair = keyGen.generateKeyPair()
+                // No context means nothing can be persisted, so this key is
+                // ephemeral by construction and the device will not remember it.
+                // It is still built through AdbKeyMaterial so it is a complete key:
+                // an incomplete one cannot complete a TLS handshake at all.
                 Log.w(TAG, "AdbClient: no context, generated ephemeral RSA key pair")
+                AdbKeyMaterial.generate()
             }
-            return _rsaKeyPair!!
+
+            // Issue 306: a key with no public exponent is rejected by BoringSSL with
+            // KEY_VALUES_MISMATCH while the certificate is configured, which reports
+            // itself as a certificate fault and hides the real cause. Refuse it here,
+            // where the message can name the actual problem.
+            AdbKeyMaterial.selfCheck(pair)
+            _rsaKeyPair = pair
+            return pair
         }
-        
+
+        /**
+         * Drop the cached key pair, so the next call re-reads it from disk.
+         *
+         * Called by [AdbKeyStore.deleteSavedKey]. Without this, a reset would leave
+         * the old pair in memory and keep signing with a key the caller asked to
+         * forget, which looks exactly like the device ignoring the reset.
+         */
+        fun forgetCachedKeyPair() {
+            _rsaKeyPair = null
+        }
+
         /**
          * Initialize the key store with application context.
          * Call this once at app startup for key persistence.
@@ -422,6 +441,10 @@ class AdbClient(
         })
 
         val selfSignedCert = SelfSignedCert.generate(rsaKeyPair)
+        // Issue 306: prove the exact invariant BoringSSL checks, before it checks it.
+        // The failure otherwise arrives as an OpenSSL certificate error that names
+        // neither the key nor the cause.
+        AdbKeyMaterial.checkCertificate(selfSignedCert, rsaKeyPair)
         val keyManager = object : X509ExtendedKeyManager() {
             private val alias = "guru"
             override fun chooseClientAlias(keyTypes: Array<out String>, issuers: Array<out java.security.Principal>?, socket: Socket?): String? =

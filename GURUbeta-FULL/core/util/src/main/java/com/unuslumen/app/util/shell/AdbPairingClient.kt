@@ -261,7 +261,12 @@ class AdbPairingClient(
 
         val keyManager = object : X509ExtendedKeyManager() {
             private val alias = "guru"
-            private val cert = SelfSignedCert.generate(rsaKeyPair)
+            private val cert = SelfSignedCert.generate(rsaKeyPair).also {
+                // Issue 306: the pairing socket is where this fault surfaced, and the
+                // check has to run before the handshake so the failure names the key
+                // rather than arriving as an OpenSSL certificate routine.
+                AdbKeyMaterial.checkCertificate(it, rsaKeyPair)
+            }
 
             override fun chooseClientAlias(keyTypes: Array<out String>, issuers: Array<out java.security.Principal>?, socket: Socket?): String? =
                 if (keyTypes.contains("RSA") || keyTypes.contains("DHE_RSA") || keyTypes.contains("ECDHE_RSA")) alias else null
