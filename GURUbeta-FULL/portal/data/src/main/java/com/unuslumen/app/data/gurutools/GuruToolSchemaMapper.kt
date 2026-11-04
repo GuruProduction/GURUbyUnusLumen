@@ -35,9 +35,27 @@ import kotlinx.serialization.json.jsonPrimitive
  *  2. Flat form:          {name:{type,description}, ...}      (no "properties" key)
  *  3. Map form:           {name:"string", ...}              (flat + primitive values)
  *
- * Required semantics (JSON Schema rules): when no `required` array exists every
- * top-level property is REQUIRED (safer default for executed tools); when a
- * `required` array exists it is honoured verbatim.
+ * REQUIRED SEMANTICS, and the one place this differs from strict JSON Schema.
+ *
+ * A JSON Schema `required` array is honoured verbatim when present, which is the
+ * correct reading and always was.
+ *
+ * When there is NO `required` array, the default is still REQUIRED per property,
+ * because a tool that silently drops an argument is worse than one that demands
+ * it. But strict JSON Schema offers no way to express "optional" at all without
+ * that array, and a model writing the obvious flat map had no way to say it
+ * either. Issue 296 measured the cost: every property became mandatory, so a
+ * flat-form tool could not describe an optional argument, and the only escape
+ * was knowing a second schema dialect existed.
+ *
+ * So a per-property hint is accepted in ANY form: `"required": false` inside a
+ * property's own spec. It is read before the default is applied. This adds
+ * expressiveness without weakening the safe default: an author who writes
+ * nothing still gets required, and an author who writes the hint gets exactly
+ * what they asked for.
+ *
+ * The hint is also accepted as `"optional": true`, because that is the word a
+ * non-JSON-Schema author reaches for first and refusing it would be pedantry.
  *
  * Anything unresolvable degrades gracefully: one malformed tool can never
  * block every other GURU-created tool from being offered to the model.
@@ -79,24 +97,73 @@ object GuruToolSchemaMapper {
         obj.entries.filterNot { it.key == "type" && (it.value as? JsonPrimitive)?.contentOrNull == "object" }
             .map { (name, spec) -> paramFromSpec(name, spec, requiredExplicit = null) }
 
-    /** The heart: spec → typed, described registry parameter.
-    `requiredExplicit` = null means nothing specified → default required (safer). */
+    /**
+     * The heart: spec → typed, described registry parameter.
+     *
+     * `requiredExplicit` carries the JSON Schema `required` array's verdict, which
+     * is authoritative when the array exists. When it does not, [requiredFromSpec]
+     * looks for a per-property hint and only then falls back to the safe default
+     * of required.
+     */
     private fun paramFromSpec(
         name: String,
         spec: JsonElement,
         requiredExplicit: Boolean?
     ): ParsedParam {
         val (type, enumVals) = typeOfSpec(spec)
-        val desc = (spec as? JsonObject)?.get("description")?.let {
+        val obj = spec as? JsonObject
+        val desc = obj?.get("description")?.let {
             (it as? JsonPrimitive)?.contentOrNull
         } ?: ""
         return ParsedParam(
             name = name,
             type = type,
-            required = requiredExplicit ?: true,
+            required = requiredExplicit ?: requiredFromSpec(obj),
             description = desc.ifBlank { name },
             enumValues = enumVals
         )
+    }
+
+    /**
+     * A per-property requiredness hint, or the safe default when there is none.
+     *
+     * `"required": false` is the JSON Schema spelling and reads naturally next to
+     * the other keywords. `"optional": true` is accepted because it is the word
+     * people actually reach for when they are not thinking in JSON Schema, and
+     * silently ignoring it would produce a tool whose arguments are all mandatory
+     * for a reason the author cannot see.
+     *
+     * An unparseable value falls through to the default rather than throwing: the
+     * whole mapper degrades gracefully on malformed input, and a boolean that
+     * arrives as the string "false" should still mean false rather than becoming
+     * a silent truthy.
+     */
+    private fun requiredFromSpec(spec: JsonObject?): Boolean {
+        if (spec == null) return true
+
+        val explicitRequired = booleanish(spec["required"])
+        if (explicitRequired != null) return explicitRequired
+
+        val explicitOptional = booleanish(spec["optional"])
+        if (explicitOptional != null) return !explicitOptional
+
+        return true
+    }
+
+    /**
+     * A JsonElement read as a boolean, or null when it says nothing usable.
+     *
+     * Accepts real booleans and the strings a hand-written schema produces, since
+     * `"required": "false"` in JSON is a string and reading it as the value true
+     * would be the exact class of silent inversion this change exists to remove.
+     */
+    private fun booleanish(element: JsonElement?): Boolean? {
+        val raw = (element as? JsonPrimitive)?.contentOrNull?.trim()?.lowercase() ?: return null
+        return when (raw) {
+            "true", "1", "yes" -> true
+            "false", "0", "no" -> false
+            else -> null
+        }
     }
 
     /** (registry type, enum values) from a property's spec object or primitive. */

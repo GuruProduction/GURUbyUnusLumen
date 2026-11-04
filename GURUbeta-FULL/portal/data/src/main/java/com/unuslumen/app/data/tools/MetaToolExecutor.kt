@@ -11,6 +11,7 @@ import com.unuslumen.app.domain.model.ToolStep
 import com.unuslumen.app.domain.repository.GuruToolRepository
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -53,16 +54,72 @@ class MetaToolExecutor(private val guruToolRepository: GuruToolRepository) : Too
         return ToolExecutionResult.success(r, json.encodeToString(DefineToolResult.serializer(), r))
     }
 
+    /**
+     * Change a tool that already exists, including its parameter schema.
+     *
+     * ISSUE 297: `parameters` was not accepted at all. The rebuilt request passed
+     * `existing.parameters` through every time, so the schema was write-once and
+     * the only way to repair a wrong one was delete-and-redefine — which destroys
+     * the tool's id, its use count, its creation time and every automation that
+     * references it by name. A model writing a JSON schema by hand gets it wrong
+     * often enough that a repair path has to exist, and destroying history is not
+     * a repair.
+     *
+     * VALIDATION IS THE SAME ONE defineTool USES, and it runs before the write.
+     * That matters more here than at define time: an edit to a live tool can break
+     * a working composition, so an invalid schema has to be refused with the same
+     * error surface rather than persisted and discovered on the next call.
+     *
+     * Every field is optional and each falls back to the stored value, so a caller
+     * changing one thing does not have to resend the rest. `parameters` accepts
+     * either a JSON string or an already-structured element, because a model
+     * calling this tool sometimes passes the schema as text and sometimes as an
+     * object, and refusing the object form would be a trap.
+     */
     private suspend fun updateTool(args: Map<String, Any?>): ToolExecutionResult {
         val toolId = args["toolId"] as? String ?: return ToolExecutionResult.error("Missing 'toolId'")
         val existing = guruToolRepository.getTool(toolId) ?: return ToolExecutionResult.error("Not found: $toolId")
+
         val implStr = args["implementation"] as? String
         val parsedImpl = implStr?.let { parseImplementation(json.parseToJsonElement(it)) } ?: existing.implementation
-        val req = com.unuslumen.app.domain.model.DefineToolRequest(existing.name, (args["displayName"] as? String) ?: existing.displayName, (args["description"] as? String) ?: existing.description, existing.parameters, parsedImpl, existing.rationale)
+
+        // The repair path this issue is about. A string is parsed; a map or list
+        // is used as-is; absent means "leave the schema alone".
+        val parametersElement: JsonElement = when (val raw = args["parameters"]) {
+            null -> existing.parameters
+            is String -> {
+                if (raw.isBlank()) existing.parameters else runCatching { json.parseToJsonElement(raw) }
+                    .getOrElse { return ToolExecutionResult.error("Invalid 'parameters' JSON: ${it.message}") }
+            }
+            is JsonElement -> raw
+            else -> return ToolExecutionResult.error(
+                "'parameters' must be a JSON string or object, got ${raw::class.simpleName}",
+            )
+        }
+
+        val req = com.unuslumen.app.domain.model.DefineToolRequest(
+            existing.name,
+            (args["displayName"] as? String) ?: existing.displayName,
+            (args["description"] as? String) ?: existing.description,
+            parametersElement,
+            parsedImpl,
+            existing.rationale,
+        )
+
+        // Refuse an invalid definition BEFORE it reaches the database. The same
+        // check defineTool runs, so an edit and a create reject the same things
+        // with the same sentences.
+        val validation = guruToolRepository.validateToolDefinition(req)
+        if (!validation.valid) return ToolExecutionResult.error("Invalid: ${validation.errors.joinToString(";")}")
+
         val updated = guruToolRepository.updateTool(toolId, req)
         // No trailing approve call: row keeps its APPROVED status through the
         // edit (the repo no longer resets to PENDING), one clean write.
-        val r = UpdateToolResult(updated.id, updated.name, updated.status.name, "Updated.")
+        val changed = when (args["parameters"]) {
+            null -> "Updated."
+            else -> "Updated, including the parameter schema. The new contract is live from your next request."
+        }
+        val r = UpdateToolResult(updated.id, updated.name, updated.status.name, changed)
         return ToolExecutionResult.success(r, json.encodeToString(UpdateToolResult.serializer(), r))
     }
 
