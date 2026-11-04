@@ -76,14 +76,24 @@ import com.unuslumen.app.ui.R
 import com.unuslumen.app.ui.components.common.LeftToRight
 import com.unuslumen.app.ui.components.common.clearGlass
 import com.unuslumen.app.ui.components.common.drawGradientRadial
+import com.unuslumen.app.ui.theme.Memphis
 import com.unuslumen.app.ui.theme.guruTheme
 import io.github.fletchmckee.liquid.LiquidState
 import io.github.fletchmckee.liquid.liquefiable
 import io.github.fletchmckee.liquid.rememberLiquidState
 import kotlinx.coroutines.launch
 
-private val GoldAccent = Color(0xFFDAA520)
-private val WarmInk = Color(0xFF2B241C)
+/*
+ * THE BAR'S OWN PALETTE, ON MEMPHIS (issue 312).
+ *
+ * These were a private gold (#DAA520) and a private warm brown (#2B241C), both
+ * from the retired Portal palette, and neither was reachable from the theme —
+ * which is exactly why this bar kept its colour while everything around it was
+ * repainted. Memphis has no gold: its warm ink is Sun, and its text colour is
+ * Ink. Naming them through Memphis means this file cannot drift again.
+ */
+private val AccentGold = Memphis.Sun
+private val BarInk = Memphis.Ink
 
 @Composable
 fun PortalChatBar(
@@ -151,7 +161,7 @@ fun PortalChatBar(
                 modifier = Modifier
                     .padding(horizontal = 12.dp)
                     .fillMaxWidth()
-                    .background(Color(0xFF2B241C).copy(alpha = 0.12f), RoundedCornerShape(26.dp))
+                    .background(BarInk.copy(alpha = 0.08f), RoundedCornerShape(26.dp))
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -159,7 +169,7 @@ fun PortalChatBar(
                 LinearPulsingDot()
                 Text(
                     text = "Processing media…",
-                    style = MaterialTheme.typography.labelMedium.copy(color = WarmInk),
+                    style = MaterialTheme.typography.labelMedium.copy(color = BarInk),
                     modifier = Modifier.padding(start = 10.dp)
                 )
             }
@@ -182,20 +192,16 @@ fun PortalChatBar(
                     )
                     .fillMaxWidth(),
             ) {
-                // Warm paper tint on the chat bar — subtle aged-cream wash
-                // matching the warm palette instead of the old lavender
-                Box(
-                    modifier = Modifier
-                        .matchParentSize()
-                        .background(
-                            brush = Brush.verticalGradient(
-                                colors = listOf(
-                                    Color(0xFFF0E8DA).copy(alpha = 0.12f),
-                                    Color(0xFFE4D9C6).copy(alpha = 0.04f),
-                                )
-                            )
-                        )
-                )
+                /*
+                 * THE CREAM WASH IS GONE (issue 312).
+                 *
+                 * It was a vertical gradient of #F0E8DA at 0.12 over #E4D9C6 at
+                 * 0.04, painted over the whole bar. Memphis paper is #FFFBF0,
+                 * which is lighter and cleaner than either stop, so the wash did
+                 * not tint the bar towards the page — it darkened it, and that is
+                 * the dirty cast the owner saw. The bar sits on Memphis.Paper
+                 * now, and paper needs no glaze.
+                 */
                 Column {
                     Row(
                         modifier = Modifier
@@ -218,7 +224,7 @@ fun PortalChatBar(
                                 focusedIndicatorColor = Color.Transparent,
                                 unfocusedIndicatorColor = Color.Transparent,
                                 disabledIndicatorColor = Color.Transparent,
-                                cursorColor = GoldAccent
+                                cursorColor = AccentGold
                             ),
                             placeholder = {
                                 Crossfade(
@@ -229,7 +235,7 @@ fun PortalChatBar(
                                     Text(
                                         text = rotatingTips[tipIndex],
                                         style = MaterialTheme.typography.bodyMedium,
-                                        color = WarmInk.copy(alpha = 0.5f)
+                                        color = BarInk.copy(alpha = 0.45f)
                                     )
                                 }
                             }
@@ -355,7 +361,7 @@ fun PortalChatBar(
                                                 .align(Alignment.TopEnd)
                                                 .size(14.dp)
                                                 .background(
-                                                    if (isToolCallActive) Color(0xFFFFA726) else GoldAccent,
+                                                    if (isToolCallActive) Memphis.Coral else AccentGold,
                                                     CircleShape
                                                 ),
                                             contentAlignment = Alignment.Center,
@@ -366,7 +372,10 @@ fun PortalChatBar(
                                                     fontSize = 8.sp,
                                                     fontWeight = FontWeight.Bold,
                                                 ),
-                                                color = Color.Black,
+                                                // Ink on Sun reads as a printed
+                                                // stamp. Sun is light, so the
+                                                // label has to be dark.
+                                                color = BarInk,
                                             )
                                         }
                                     }
@@ -407,7 +416,7 @@ private fun LinearPulsingDot() {
             Modifier
                 .align(Alignment.Center)
                 .size(10.dp)
-                .background(GoldAccent.copy(alpha = pulse.value), CircleShape)
+                .background(AccentGold.copy(alpha = pulse.value), CircleShape)
         )
     }
 }
@@ -447,18 +456,23 @@ fun Modifier.drawAnimatedGradient(
     drawBehind {
         val xMul = animX.value
         val yMul = animY.value
+        // ONE FAMILY, THREE ALPHAS (issue 312). These were #DAA520, #B8956A and
+        // #8A6D3A at three different strengths: a brass, a tan and an olive,
+        // which together read as a smear rather than a glow. They are Sun at
+        // three alphas now, so the light has a colour and the movement shows in
+        // its intensity.
         drawGradientRadial(
-            Color(0xFFDAA520).copy(0.10f),
+            Memphis.Sun.copy(alpha = 0.10f),
             Offset(size.width * xMul, size.height - size.height * yMul),
             radius = size.maxDimension * 0.45f
         )
         drawGradientRadial(
-            Color(0xFFB8956A).copy(0.10f),
+            Memphis.Sun.copy(alpha = 0.07f),
             Offset(size.width - size.width * xMul, size.height - size.height * yMul),
             radius = size.maxDimension * 0.45f
         )
         drawGradientRadial(
-            Color(0xFF8A6D3A).copy(0.08f),
+            Memphis.Sun.copy(alpha = 0.05f),
             Offset(size.width - size.width * xMul * 0.7f, size.height * yMul),
             radius = size.maxDimension * 0.45f
         )

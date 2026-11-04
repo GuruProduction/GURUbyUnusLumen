@@ -46,6 +46,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.unuslumen.app.ui.R
+import com.unuslumen.app.ui.theme.Memphis
 
 enum class ThinkingDisplayLevel {
     OFF, LOW, MEDIUM, HIGH, XHIGH
@@ -69,11 +70,29 @@ fun ThinkingBlockCard(
         ThinkingDisplayLevel.MEDIUM, ThinkingDisplayLevel.HIGH, ThinkingDisplayLevel.XHIGH -> true
     }
 
+    /*
+     * THE THINKING BLOCK, ON MEMPHIS (issue 312).
+     *
+     * WHAT WAS WRONG. The container was `surfaceVariant` at 60%, and the label,
+     * the icon and the streaming dot were all `primary` at 70 to 90 percent. On
+     * the old scheme that meant a beige box with slate-blue text in it, which the
+     * owner read as a horrible colour. Neither token is a thinking colour, so the
+     * block had no identity of its own: it was whatever the primary brand
+     * happened to be that month.
+     *
+     * WHAT IT IS NOW. Paper inside an Ink hairline, with Teal as the one accent —
+     * the icon and the streaming dot. The LABEL is Ink rather than teal, because a
+     * thinking block is a quiet caption and teal text at 11sp beside teal chrome
+     * reads as noise.
+     *
+     * Shape, padding, animation and the collapse behaviour are untouched.
+     */
     Card(
         shape = RoundedCornerShape(10.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+            containerColor = Memphis.Paper,
         ),
+        border = androidx.compose.foundation.BorderStroke(1.5.dp, Memphis.Ink.copy(alpha = 0.55f)),
         modifier = modifier
             .fillMaxWidth()
             .animateContentSize(),
@@ -90,7 +109,7 @@ fun ThinkingBlockCard(
                 Icon(
                     painter = painterResource(id = R.drawable.ic_otio_placeholder),
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                    tint = Memphis.Teal,
                     modifier = Modifier.size(14.dp),
                 )
                 Spacer(modifier = Modifier.width(6.dp))
@@ -98,17 +117,18 @@ fun ThinkingBlockCard(
                     text = if (isStreaming) stringResource(id = R.string.thinking_block_card_thinking)
                     else stringResource(id = R.string.thinking_block_card_thought_process),
                     style = MaterialTheme.typography.labelSmall.copy(
-                        fontWeight = FontWeight.Medium,
+                        fontWeight = FontWeight.Bold,
                         fontSize = 11.sp,
+                        letterSpacing = 0.6.sp,
                     ),
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                    color = Memphis.Ink,
                 )
                 if (isStreaming) {
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
                         text = "●",
                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp),
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f),
+                        color = Memphis.Teal,
                     )
                 }
             }
@@ -116,8 +136,11 @@ fun ThinkingBlockCard(
             // Content area
             if (showContent) {
                 if (isCollapsed) {
-                    // Collapsed: show a few lines with gradient fade
-                    val fadeColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                    // Collapsed: a few lines, fading into the card's own paper.
+                    // The fade MUST be the card colour and not a token: a fade to
+                    // anything else draws a visible band across the last line,
+                    // which is what the old beige fade did on a lighter ground.
+                    val fadeColor = Memphis.Paper
                     Text(
                         text = thinkingTokens,
                         style = MaterialTheme.typography.bodySmall.copy(
@@ -125,7 +148,7 @@ fun ThinkingBlockCard(
                             fontSize = 11.sp,
                             lineHeight = 15.sp,
                         ),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        color = Memphis.Ink.copy(alpha = 0.62f),
                         maxLines = 3,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
@@ -162,7 +185,7 @@ fun ThinkingBlockCard(
                                 fontSize = 11.sp,
                                 lineHeight = 15.sp,
                             ),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            color = Memphis.Ink.copy(alpha = 0.78f),
                         )
                     }
                 }
