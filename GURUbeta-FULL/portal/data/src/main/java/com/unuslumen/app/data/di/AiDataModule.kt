@@ -194,7 +194,12 @@ val aiDataModule = module {
         { com.unuslumen.app.data.metadata.MetadataConfigFetcher.getCachedConfig(get<Context>()) },
         get<TorManager>()
     ) }
-    factory { DynamicToolExecutor() }
+    // The executor takes the Context because a shell tool now runs in an
+    // environment that has to name this app's own binary directories (issue 300).
+    // The repository is deliberately NOT a constructor argument: it takes this
+    // executor in its own constructor, so injecting it eagerly is the Koin cycle
+    // the class doc warns about. DynamicToolExecutor resolves it on first use.
+    factory { DynamicToolExecutor(get<Context>()) }
     single<GuruToolRepository> { GuruToolRepositoryImpl(get(), get()) }
     single<AutomationRepository> { AutomationRepositoryImpl(get(), get()) }
     single<AutomationRunRepository> { com.unuslumen.app.data.automation.AutomationRunRepositoryImpl(get()) }
