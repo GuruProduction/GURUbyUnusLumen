@@ -1304,12 +1304,41 @@ class AiRepositoryImpl(
                                 }
                             }
 
+                            /*
+                             * REACHING HERE MEANS THE STREAM SAID IT WAS FINISHED.
+                             *
+                             * Issue 307: this used to be unsafe. An incomplete
+                             * stream completed the flow normally, so `collect`
+                             * returned as though the model had finished and the
+                             * turn ended with the model's intent discarded.
+                             * UnusLumenStreamingClient now throws on every ending
+                             * other than `done: true`, so arriving at this line is
+                             * itself the proof that the response was complete.
+                             *
+                             * The log line is the other half of the fix: it makes
+                             * the difference between "the model finished" and "the
+                             * model was cut off" readable on a release build, which
+                             * is what was missing when this fault was reported.
+                             */
                             succeeded = true
                             val finalText = textBuilder.toString()
                             val finalThinking = thinkingBuilder.toString()
 
+                            android.util.Log.d(
+                                "guru",
+                                "COLLECT_RETURNED iteration=${consecutiveToolCalls + 1} model=${tryModel.id} " +
+                                    "textLength=${finalText.length} completedTools=${collectedToolCalls.size} " +
+                                    "succeeded=$succeeded",
+                            )
+
                             if (collectedToolCalls.isEmpty()) {
                                 android.util.Log.d("guru", "No tool calls, emitting final assistant message (${finalText.length} chars)")
+                                android.util.Log.d(
+                                    "guru",
+                                    "TURN_TERMINATED reason=NO_COMPLETED_TOOL_CALLS " +
+                                        "textLength=${finalText.length} — the stream reported done, so the model " +
+                                        "chose to finish rather than being cut off",
+                                )
                                 if (finalText.isNotBlank()) {
                                     val assistantMessage = AiMessage.AssistantMessage(
                                         content = finalText,
@@ -1460,13 +1489,28 @@ class AiRepositoryImpl(
                         } catch (e: LLMClientException) {
                             lastError = e
                             val errMsg = e.message ?: ""
+                            /*
+                             * ISSUE 307 IS IN THIS LIST NOW.
+                             *
+                             * A truncated stream is the one failure mode that used
+                             * to arrive as a SUCCESS, so it never reached this
+                             * ladder at all. It is retryable for a specific reason:
+                             * the request was valid and the server had begun
+                             * answering it, so the same request has a real chance
+                             * of getting past the point it died at.
+                             *
+                             * A malformed line is NOT retryable, because the same
+                             * request produces the same line, and a cancellation is
+                             * never retried because the caller asked for it.
+                             */
                             val isRetryable = errMsg.contains("503", ignoreCase = true) ||
                                     errMsg.contains("overloaded", ignoreCase = true) ||
                                     errMsg.contains("temporarily", ignoreCase = true) ||
                                     errMsg.contains("Connection refused", ignoreCase = true) ||
                                     errMsg.contains("ConnectException", ignoreCase = true) ||
                                     errMsg.contains("500", ignoreCase = true) ||
-                                    errMsg.contains("timeout", ignoreCase = true)
+                                    errMsg.contains("timeout", ignoreCase = true) ||
+                                    errMsg.contains("connection closed before the response was finished", ignoreCase = true)
 
                             retryCount++
                             if (isRetryable && retryCount < maxRetries) {
@@ -1523,6 +1567,19 @@ class AiRepositoryImpl(
                     "The model host rejected the request (500). This is usually a problem with the conversation history rather than the server, and it has already been retried. Send again to continue; if it keeps happening on this conversation, start a new one."
                 errorMsg.contains("503", ignoreCase = true) || errorMsg.contains("overloaded", ignoreCase = true) ->
                     "Model is temporarily overloaded (503). The server is busy — try again in a moment, or switch to a smaller model."
+                /*
+                 * ISSUE 307. The old behaviour here was silence: the turn simply
+                 * ended, and the owner's report was "it just replies then stops".
+                 *
+                 * The streaming client's own sentence is used verbatim, because it
+                 * names the observable fact — the connection closed before the
+                 * response finished, and how many pending tool calls were lost —
+                 * rather than guessing at a cause. Guessing is what made this take
+                 * a consultation to find.
+                 */
+                errorMsg.contains("connection closed before the response was finished", ignoreCase = true) ->
+                    "$errorMsg Send again and it will usually continue; if it stops at the same point every " +
+                        "time, start a new conversation so the history that trips it is not resent."
                 else -> "LLM error: $errorMsg"
             }
             throw AiRepositoryException(PortalResult.OtherError(userMsg))
