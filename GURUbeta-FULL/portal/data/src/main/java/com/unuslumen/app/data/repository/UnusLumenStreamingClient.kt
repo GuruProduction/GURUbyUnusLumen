@@ -24,6 +24,7 @@ import io.ktor.http.contentType
 import io.ktor.http.content.TextContent
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.jvm.javaio.toInputStream
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -49,6 +50,25 @@ private data class ToolCallAccumulator(
     var completeArguments: String? = null
 )
 
+/**
+ * The Ollama-format streaming client, and the endings a response can have.
+ *
+ * ISSUE 307: this client used to treat EVERY ending as success. `readLine()`
+ * returning null broke the loop, the `flow { }` builder completed normally, and
+ * the agent loop read that as the model having finished its turn. When the
+ * connection dropped after a partial answer with a tool call still pending, the
+ * user watched GURU stop mid-task with no error and no message, and the tool call
+ * the model had asked for was discarded.
+ *
+ * THE RULE NOW: only `done: true` may end a response successfully. Every other
+ * ending throws, so it reaches the repository's retry ladder and its fallback
+ * models, and if those exhaust, the user is told the reply was cut short instead
+ * of watching the app go quiet.
+ *
+ * There is one exception, and it is deliberate: a [CancellationException] is
+ * never caught, wrapped or converted. A stop button that produces an error
+ * message is a worse bug than the one being fixed.
+ */
 class UnusLumenStreamingClient(
     private val baseUrl: String,
     private val httpClient: HttpClient,
@@ -82,10 +102,14 @@ class UnusLumenStreamingClient(
         val baseUrlTrimmed = baseUrl.trimEnd('/')
         val url = "$baseUrlTrimmed/api/chat"
         val requestJson = buildRequestJson(prompt, model, tools, toolDefinitions, llmConfig)
+        val requestId = java.util.UUID.randomUUID().toString().take(8)
 
-        android.util.Log.d("guru", "Stream request to: $url, body length: ${requestJson.length} chars")
-        android.util.Log.d("guru", "Stream request body starts with: ${requestJson.take(200)}")
-        android.util.Log.d("guru", "Stream request body ends with: ${requestJson.takeLast(200)}")
+        android.util.Log.d("guru", "STREAM_START request=$requestId url=$url body=${requestJson.length}chars")
+        // The first and last slice of the body are logged because a malformed
+        // history shows up there and nowhere else. They are truncated so the
+        // log stays readable and no tool result text is dumped wholesale.
+        android.util.Log.d("guru", "STREAM_BODY_HEAD request=$requestId ${requestJson.take(200)}")
+        android.util.Log.d("guru", "STREAM_BODY_TAIL request=$requestId ${requestJson.takeLast(200)}")
 
         val response: HttpResponse = httpClient.post(url) {
             byoApiKey?.takeIf { it.isNotBlank() }?.let {
@@ -94,7 +118,7 @@ class UnusLumenStreamingClient(
             setBody(TextContent(requestJson, ContentType.Application.Json))
         }
 
-        android.util.Log.d("guru", "Stream HTTP response: ${response.status}")
+        android.util.Log.d("guru", "STREAM_HTTP request=$requestId status=${response.status.value}")
 
         // THE STATUS GATE. Ktor does not throw on a non-2xx status by default,
         // so before this gate a 500 arriving as plain text parsed as nothing,
@@ -113,7 +137,8 @@ class UnusLumenStreamingClient(
             val serverWords = bodyText.take(600).trim()
             android.util.Log.e(
                 "guru",
-                "Stream HTTP ${response.status.value} from $url body: ${serverWords.ifBlank { "<empty>" }}"
+                "STREAM_HTTP_ERROR request=$requestId status=${response.status.value} " +
+                    "body=${serverWords.ifBlank { "<empty>" }}"
             )
             throw LLMClientException(
                 "unuslumen",
@@ -129,6 +154,10 @@ class UnusLumenStreamingClient(
         var index = 0
         var lineCount = 0
 
+        /** The one fact that decides whether this response may be reported as finished. */
+        var receivedDone = false
+        var doneReason: String? = null
+
         val pendingToolCalls = mutableMapOf<Int, ToolCallAccumulator>()
 
         try {
@@ -137,154 +166,234 @@ class UnusLumenStreamingClient(
                 lineCount++
                 if (line.isBlank()) continue
 
-                try {
-                    val chunk = json.parseToJsonElement(line).jsonObject
+                /*
+                 * PARSING IS SEPARATE FROM PROCESSING, DELIBERATELY, AND THIS IS
+                 * THE SECOND HALF OF ISSUE 307.
+                 *
+                 * The old shape wrapped BOTH in one try/catch, so an exception
+                 * thrown by `emit()` — a downstream collector failing — was caught
+                 * and logged as though the server had sent a bad line, and the
+                 * loop carried on reading. That violates Flow exception
+                 * transparency: a consumer that throws must be able to stop the
+                 * producer, and a cancellation must never be mistaken for input.
+                 *
+                 * So only the parse is guarded, and a line that will not parse is
+                 * now reported rather than swallowed. A reply that cannot be read
+                 * past a point is not a reply that finished.
+                 */
+                val chunk = try {
+                    json.parseToJsonElement(line).jsonObject
+                } catch (e: Exception) {
+                    android.util.Log.e(
+                        "guru",
+                        "STREAM_MALFORMED request=$requestId line=$lineCount " +
+                            "raw=${line.take(200)} error=${e.javaClass.simpleName}: ${e.message}"
+                    )
+                    throw LLMClientException(
+                        "unuslumen",
+                        StreamCompletion.message(
+                            StreamCompletion.Ending.MALFORMED,
+                            linesRead = lineCount,
+                            pendingToolCalls = pendingToolCalls.size,
+                            textLength = 0,
+                        ),
+                    )
+                }
 
-                    val errorField = chunk["error"]?.jsonPrimitive?.contentOrNull
-                    if (errorField != null) {
-                        android.util.Log.e("guru", "Stream error: $errorField")
-                        android.util.Log.e("guru", "Error full line: ${line.take(500)}")
-                        throw LLMClientException("unuslumen", "Server error: $errorField")
+                val errorField = chunk["error"]?.jsonPrimitive?.contentOrNull
+                if (errorField != null) {
+                    android.util.Log.e("guru", "STREAM_SERVER_ERROR request=$requestId line=$lineCount error=$errorField")
+                    android.util.Log.e("guru", "STREAM_SERVER_ERROR_LINE request=$requestId ${line.take(500)}")
+                    throw LLMClientException("unuslumen", "Server error: $errorField")
+                }
+
+                val done = try {
+                    chunk["done"]?.jsonPrimitive?.contentOrNull == "true"
+                } catch (e: Exception) {
+                    android.util.Log.w("guru", "STREAM_BAD_DONE_FLAG request=$requestId line=$lineCount error=${e.message}")
+                    false
+                }
+
+                val message = chunk["message"]?.jsonObject
+                if (message != null) {
+                    val content = message["content"]?.jsonPrimitive?.contentOrNull ?: ""
+                    val thinking = message["thinking"]?.jsonPrimitive?.contentOrNull
+
+                    if (thinking != null && thinking.isNotBlank()) {
+                        emit(StreamFrame.ReasoningDelta(thinking, null, index))
                     }
 
-                    val done = try {
-                        chunk["done"]?.jsonPrimitive?.contentOrNull == "true"
-                    } catch (e: Exception) {
-                        android.util.Log.w("guru", "Error reading done flag: ${e.message}")
-                        false
-                    }
+                    val toolCalls = message["tool_calls"]?.jsonArray
+                    if (toolCalls != null && toolCalls.isNotEmpty()) {
+                        for ((tcIndex, toolCall) in toolCalls.withIndex()) {
+                            val tc = toolCall.jsonObject
+                            val tcId = tc["id"]?.jsonPrimitive?.contentOrNull
+                                ?: "call_${System.currentTimeMillis()}_$tcIndex"
+                            val function = tc["function"]?.jsonObject ?: tc
+                            val tcName = function["name"]?.jsonPrimitive?.contentOrNull ?: ""
 
-                    try {
-                        val message = chunk["message"]?.jsonObject
-                        if (message != null) {
-                            val content = message["content"]?.jsonPrimitive?.contentOrNull ?: ""
-                            val thinking = message["thinking"]?.jsonPrimitive?.contentOrNull
+                            val argsElement = function["arguments"]
 
-                            if (thinking != null && thinking.isNotBlank()) {
-                                emit(StreamFrame.ReasoningDelta(thinking, null, index))
-                            }
+                            when (argsElement) {
+                                is JsonObject -> {
+                                    val argsStr = argsElement.toString()
+                                    pendingToolCalls[tcIndex] = ToolCallAccumulator(
+                                        id = tcId,
+                                        name = tcName,
+                                        completeArguments = argsStr
+                                    )
+                                    emit(StreamFrame.ToolCallDelta(tcId, tcName, argsStr, index))
+                                }
+                                is JsonPrimitive -> {
+                                    val rawContent = argsElement.contentOrNull ?: ""
 
-                            val toolCalls = message["tool_calls"]?.jsonArray
-                            if (toolCalls != null && toolCalls.isNotEmpty()) {
-                                android.util.Log.d("guru", "Raw tool_calls JSON: ${toolCalls.toString().take(500)}")
-                                for ((tcIndex, toolCall) in toolCalls.withIndex()) {
-                                    val tc = toolCall.jsonObject
-                                    val tcId = tc["id"]?.jsonPrimitive?.contentOrNull
-                                        ?: "call_${System.currentTimeMillis()}_$tcIndex"
-                                    val function = tc["function"]?.jsonObject ?: tc
-                                    val tcName = function["name"]?.jsonPrimitive?.contentOrNull ?: ""
+                                    val accumulator = pendingToolCalls.getOrPut(tcIndex) {
+                                        ToolCallAccumulator(id = tcId, name = tcName)
+                                    }
 
-                                    val argsElement = function["arguments"]
+                                    accumulator.argumentsBuilder.append(rawContent)
 
-                                    when (argsElement) {
-                                        is JsonObject -> {
-                                            val argsStr = argsElement.toString()
-                                            pendingToolCalls[tcIndex] = ToolCallAccumulator(
-                                                id = tcId,
-                                                name = tcName,
-                                                completeArguments = argsStr
-                                            )
-                                            emit(StreamFrame.ToolCallDelta(tcId, tcName, argsStr, index))
-                                        }
-                                        is JsonPrimitive -> {
-                                            val rawContent = argsElement.contentOrNull ?: ""
+                                    emit(StreamFrame.ToolCallDelta(tcId, tcName, accumulator.argumentsBuilder.toString(), index))
 
-                                            val accumulator = pendingToolCalls.getOrPut(tcIndex) {
-                                                ToolCallAccumulator(id = tcId, name = tcName)
-                                            }
-
-                                            accumulator.argumentsBuilder.append(rawContent)
-
-                                            emit(StreamFrame.ToolCallDelta(tcId, tcName, accumulator.argumentsBuilder.toString(), index))
-
-                                            val accumulated = accumulator.argumentsBuilder.toString()
-                                            if (isCompleteJson(accumulated)) {
-                                                accumulator.completeArguments = accumulated
-                                            }
-                                        }
-                                        null -> {
-                                            if (tcIndex !in pendingToolCalls) {
-                                                pendingToolCalls[tcIndex] = ToolCallAccumulator(
-                                                    id = tcId,
-                                                    name = tcName,
-                                                    completeArguments = "{}"
-                                                )
-                                            }
-                                        }
-                                        else -> {
-                                            pendingToolCalls[tcIndex] = ToolCallAccumulator(
-                                                id = tcId,
-                                                name = tcName,
-                                                completeArguments = argsElement.toString()
-                                            )
-                                        }
+                                    val accumulated = accumulator.argumentsBuilder.toString()
+                                    if (isCompleteJson(accumulated)) {
+                                        accumulator.completeArguments = accumulated
                                     }
                                 }
-                            }
-
-                            if (content.isNotBlank()) {
-                                if (done) {
-                                    emit(StreamFrame.TextComplete(content, index))
-                                } else {
-                                    emit(StreamFrame.TextDelta(content, index))
+                                null -> {
+                                    if (tcIndex !in pendingToolCalls) {
+                                        pendingToolCalls[tcIndex] = ToolCallAccumulator(
+                                            id = tcId,
+                                            name = tcName,
+                                            completeArguments = "{}"
+                                        )
+                                    }
+                                }
+                                else -> {
+                                    pendingToolCalls[tcIndex] = ToolCallAccumulator(
+                                        id = tcId,
+                                        name = tcName,
+                                        completeArguments = argsElement.toString()
+                                    )
                                 }
                             }
                         }
-                    } catch (e: Exception) {
-                        android.util.Log.w("guru", "Message processing error on line $lineCount (stream continues): ${e.message}")
+                        android.util.Log.d(
+                            "guru",
+                            "STREAM_TOOL_ACCUMULATED request=$requestId line=$lineCount " +
+                                "pending=${pendingToolCalls.size} names=${pendingToolCalls.values.map { it.name }}",
+                        )
                     }
 
-                    if (done) {
-                        for ((tcIndex, accumulator) in pendingToolCalls.toSortedMap()) {
-                            val finalArgs = accumulator.completeArguments ?: run {
-                                val accumulated = accumulator.argumentsBuilder.toString()
-                                if (accumulated.isNotBlank()) {
-                                    try {
-                                        val parsed = json.parseToJsonElement(accumulated)
-                                        if (parsed is JsonObject) {
-                                            accumulated
-                                        } else {
-                                            android.util.Log.w("guru", "Tool call args parsed but not object: ${accumulated.take(100)}")
-                                            "{}"
-                                        }
-                                    } catch (e: Exception) {
-                                        android.util.Log.w("guru", "Tool call args incomplete JSON: ${accumulated.take(100)}, falling back to empty object")
+                    if (content.isNotBlank()) {
+                        if (done) {
+                            emit(StreamFrame.TextComplete(content, index))
+                        } else {
+                            emit(StreamFrame.TextDelta(content, index))
+                        }
+                    }
+                }
+
+                if (done) {
+                    receivedDone = true
+                    doneReason = chunk["done_reason"]?.jsonPrimitive?.contentOrNull
+
+                    /*
+                     * THE TOOL CALLS ARE EMITTED HERE, AND ONLY HERE, BECAUSE THIS
+                     * IS THE ONLY POINT AT WHICH THEY ARE KNOWN TO BE COMPLETE.
+                     *
+                     * Their arguments arrive in fragments across many chunks, so
+                     * emitting earlier would hand over a partial JSON object. The
+                     * old consequence was that a stream closing one chunk early
+                     * discarded a fully-formed intent: the model asked for a tool
+                     * and nothing ran.
+                     *
+                     * That is now impossible rather than merely handled, because
+                     * reaching this branch is the ONLY way this flow ends without
+                     * throwing, and throwing is what the repository retries.
+                     */
+                    for ((_, accumulator) in pendingToolCalls.toSortedMap()) {
+                        val finalArgs = accumulator.completeArguments ?: run {
+                            val accumulated = accumulator.argumentsBuilder.toString()
+                            if (accumulated.isNotBlank()) {
+                                try {
+                                    val parsed = json.parseToJsonElement(accumulated)
+                                    if (parsed is JsonObject) {
+                                        accumulated
+                                    } else {
+                                        android.util.Log.w("guru", "STREAM_TOOL_ARGS_NOT_OBJECT request=$requestId tool=${accumulator.name} raw=${accumulated.take(100)}")
                                         "{}"
                                     }
-                                } else {
+                                } catch (e: Exception) {
+                                    android.util.Log.w("guru", "STREAM_TOOL_ARGS_INCOMPLETE request=$requestId tool=${accumulator.name} raw=${accumulated.take(100)}")
                                     "{}"
                                 }
-                            }
-
-                            val safeArgs = try {
-                                val parsed = json.parseToJsonElement(finalArgs)
-                                if (parsed is JsonObject) finalArgs else "{}"
-                            } catch (e: Exception) {
-                                android.util.Log.w("guru", "Tool call final args not valid JSON: ${finalArgs.take(100)}, falling back to empty object")
+                            } else {
                                 "{}"
                             }
-
-                            android.util.Log.d("guru", "Emitting ToolCallComplete: ${accumulator.name}, args=${safeArgs.take(200)}")
-                            emit(StreamFrame.ToolCallComplete(accumulator.id, accumulator.name, safeArgs, index))
                         }
-                        pendingToolCalls.clear()
 
-                        emit(StreamFrame.End(chunk["done_reason"]?.jsonPrimitive?.contentOrNull, ResponseMetaInfo.Empty))
-                        break
+                        val safeArgs = try {
+                            val parsed = json.parseToJsonElement(finalArgs)
+                            if (parsed is JsonObject) finalArgs else "{}"
+                        } catch (e: Exception) {
+                            android.util.Log.w("guru", "STREAM_TOOL_ARGS_INVALID request=$requestId tool=${accumulator.name} raw=${finalArgs.take(100)}")
+                            "{}"
+                        }
+
+                        android.util.Log.d("guru", "STREAM_TOOL_COMPLETE request=$requestId tool=${accumulator.name} args=${safeArgs.length}chars")
+                        emit(StreamFrame.ToolCallComplete(accumulator.id, accumulator.name, safeArgs, index))
                     }
+                    pendingToolCalls.clear()
 
-                    index++
-                } catch (e: LLMClientException) {
-                    android.util.Log.e("guru", "LLM error, rethrowing: ${e.message}")
-                    throw e
-                } catch (e: Exception) {
-                    android.util.Log.w("guru", "Streaming parse error on line $lineCount: ${e.message}")
+                    android.util.Log.d("guru", "STREAM_DONE request=$requestId lines=$lineCount reason=$doneReason")
+                    emit(StreamFrame.End(doneReason, ResponseMetaInfo.Empty))
+                    break
                 }
+
+                index++
             }
+        } catch (e: CancellationException) {
+            // A deliberate stop, by the user or by a newer send. It propagates
+            // untouched and is never reported as an error; the repository catches
+            // CancellationException explicitly for the same reason.
+            android.util.Log.d("guru", "STREAM_CANCELLED request=$requestId lines=$lineCount")
+            throw e
         } finally {
             reader.close()
-            android.util.Log.d("guru", "Stream finished: $lineCount lines read, $index frames emitted")
         }
+
+        /*
+         * THE WHOLE OF ISSUE 307, IN SIX LINES.
+         *
+         * `break` out of the read loop is reached either by `done` above, or by
+         * the stream ending. Before this check the two were indistinguishable to
+         * everything downstream, and the second was reported as a finished turn.
+         *
+         * A Kotlin Flow cannot express "I ended because my input ran out" as
+         * different from "I ended because I was finished", so the flow has to
+         * throw. Throwing is what makes the repository retry the same request,
+         * hand over to a fallback model, and, when all of that fails, tell the
+         * user the reply was cut short instead of going quiet.
+         */
+        if (!receivedDone) {
+            val pending = pendingToolCalls.size
+            android.util.Log.e(
+                "guru",
+                "STREAM_EOF request=$requestId lines=$lineCount done=false pendingTools=$pending",
+            )
+            throw LLMClientException(
+                "unuslumen",
+                StreamCompletion.message(
+                    StreamCompletion.Ending.TRUNCATED,
+                    linesRead = lineCount,
+                    pendingToolCalls = pending,
+                    textLength = 0,
+                ),
+            )
+        }
+
+        android.util.Log.d("guru", "STREAM_END request=$requestId lines=$lineCount status=complete")
     }.flowOn(Dispatchers.IO)
 
     private fun isCompleteJson(str: String): Boolean {
