@@ -11,6 +11,8 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.core.app.AlarmManagerCompat
 import androidx.work.WorkManager
+import com.unuslumen.app.domain.model.HeartbeatSlot
+import com.unuslumen.app.domain.repository.HeartbeatBookingRepository
 import com.unuslumen.app.preferences.PrefsConstants
 import com.unuslumen.app.preferences.domain.model.stringPreferencesKey
 import com.unuslumen.app.preferences.domain.use_case.GetPreferenceUseCase
@@ -70,6 +72,51 @@ object HeartbeatScheduler : KoinComponent {
     private val getPreference: GetPreferenceUseCase by inject()
     private val savePreference: SavePreferenceUseCase by inject()
 
+    /**
+     * The diary, so the calendar is topped up and yesterday's gaps are recorded.
+     *
+     * Resolved lazily rather than in a constructor, because this object is a Kotlin object
+     * with no constructor and it is reached from a broadcast receiver inside goAsync,
+     * where the container is already running.
+     */
+    private val bookingRepository: HeartbeatBookingRepository
+        get() = org.koin.java.KoinJavaComponent.getKoin().get()
+
+    /**
+     * How close to a half hour is too close to book.
+     *
+     * AN EARLY-FIRING ALARM MUST NOT BOOK A LOOP. Inexact alarms can be delivered a few
+     * seconds before their target, and floor() would then say the current slot is the one
+     * ending in a moment, so the next booking lands seconds away and the phone wakes
+     * again immediately. A minute of clearance makes that impossible while still booking
+     * the very next half hour in every real case.
+     */
+    private const val MIN_LEAD_MILLIS = 60_000L
+
+    /**
+     * The next absolute half hour a beat should be booked for.
+     *
+     * THIS IS THE ONE CHANGE THE DIARY IMPOSES ON THE CHAIN, AND IT IS DELIBERATE.
+     *
+     * The booking used to be "now plus thirty minutes", which anchored the whole grid to
+     * whenever the first alarm happened to be written: 09:14, 09:44, 10:14. That is a
+     * stopwatch, and a stopwatch cannot hold a diary, because a diary slot means a time
+     * of day. A booking at 09:00 has to fire at 09:00.
+     *
+     * So the target is the next half hour on the clock. Everything else about the booking
+     * — the guard, the exact-alarm call and its fallback, the WorkManager purge, the
+     * booked-at write — is untouched, and the cadence is still thirty minutes because
+     * consecutive half hours are thirty minutes apart.
+     */
+    fun nextSlotMillis(nowMillis: Long = System.currentTimeMillis()): Long {
+        val next = HeartbeatSlot.next(nowMillis)
+        return if (next - nowMillis < MIN_LEAD_MILLIS) {
+            next + HeartbeatSlot.SLOT_MILLIS
+        } else {
+            next
+        }
+    }
+
     fun buildPendingIntent(context: Context, bookedAt: Long): PendingIntent {
         val intent = Intent(context, HeartbeatAlarmReceiver::class.java).apply {
             putExtra(HEARTBEAT_EXTRA_BOOKED_AT, bookedAt)
@@ -112,7 +159,11 @@ object HeartbeatScheduler : KoinComponent {
         }
 
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val next = System.currentTimeMillis() + INTERVAL_MILLIS
+        // THE NEXT HALF HOUR ON THE CLOCK, not thirty minutes from whenever this ran. A
+        // diary slot is a time of day, and an interval from an arbitrary moment can never
+        // mean 09:00. The cadence is unchanged: consecutive half hours are thirty minutes
+        // apart, so the chain still beats every thirty minutes for the life of the app.
+        val next = nextSlotMillis()
         val pi = buildPendingIntent(context, next)
 
         runCatching {
@@ -140,6 +191,26 @@ object HeartbeatScheduler : KoinComponent {
                     next.toString()
                 )
             }.onFailure { Log.w(TAG, "Booked-state write failed: ${it.message}") }
+        }
+
+        /*
+         * TOP THE CALENDAR UP ON EVERY REBOOK, AND RECORD WHAT WAS MISSED.
+         *
+         * These two belong on the booking path because it is the only thing guaranteed to
+         * run: on boot, on every fire, on a time-set change and at the end of every beat.
+         * Topping up here means the diary is always a year deep without anyone opening the
+         * room, and sweeping here means a half hour that went by without a beat is written
+         * down as missed within thirty minutes of it happening rather than whenever
+         * somebody next looks.
+         *
+         * It cannot fail the booking. The alarm above is already written, and a diary that
+         * could not reconcile must never cost the owner a beat.
+         */
+        applicationScope.launch {
+            runCatching {
+                val now = System.currentTimeMillis()
+                bookingRepository.reconcile(now)
+            }.onFailure { Log.w(TAG, "Diary reconcile failed: ${it.message}") }
         }
 
         Log.d(TAG, "Heartbeat booked exact at $next (founder ${INTERVAL_MINUTES}m AlarmManager chain)")

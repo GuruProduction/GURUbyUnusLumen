@@ -15,7 +15,13 @@ import android.os.PowerManager
 import android.util.Log
 import com.unuslumen.app.domain.memory.MemoryRepository
 import com.unuslumen.app.domain.model.AiMessage
+import com.unuslumen.app.domain.model.EntryState
+import com.unuslumen.app.domain.model.HeartbeatBooking
+import com.unuslumen.app.domain.model.HeartbeatEntry
+import com.unuslumen.app.domain.model.HeartbeatSlot
+import com.unuslumen.app.domain.model.composeBeatInstruction
 import com.unuslumen.app.domain.repository.AiRepository
+import com.unuslumen.app.domain.repository.HeartbeatBookingRepository
 import com.unuslumen.app.domain.repository.HeartbeatPromptRepository
 import com.unuslumen.app.preferences.PrefsConstants
 import com.unuslumen.app.preferences.domain.model.stringPreferencesKey
@@ -64,6 +70,16 @@ class HeartbeatRunService : Service(), KoinComponent {
     private val getPreference: GetPreferenceUseCase by inject()
     /** The prompt in force: the owner's saved one. There is no other source. */
     private val promptRepository: HeartbeatPromptRepository by inject()
+    /**
+     * The diary.
+     *
+     * A beat does not just send the master prompt any more: it asks the diary what is
+     * booked in the half hour it woke in, sends that booking's instruction (alone or
+     * beside the master prompt), and writes the result back against that occurrence. The
+     * repository is the same one the room draws from, so what the diary says happened is
+     * what actually happened.
+     */
+    private val bookingRepository: HeartbeatBookingRepository by inject()
 
     private val serviceScope = CoroutineScope(Job() + Dispatchers.Default)
     private var runningJob: Job? = null
@@ -161,8 +177,39 @@ class HeartbeatRunService : Service(), KoinComponent {
         // the first's real end block books the next slot, so nothing gets queued-doubled.
         if (runningJob?.isActive == true) {
             Log.d(TAG, "Overlap-locked: second start refused while a beat is live")
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            /*
+             * THE DIARY RECORDS THE REFUSAL, AND THAT IS NOT BOOKKEEPING.
+             *
+             * A half hour that a booking claimed and a running beat swallowed would
+             * otherwise still read "booked" forever, and a person looking at their diary
+             * would see a slot that neither ran nor said why. SKIPPED is its own state,
+             * separate from MISSED, because the cause is different: this one is GURU busy
+             * with its own previous instruction, not the phone being asleep.
+             *
+             * THE STOP HAPPENS INSIDE THE WRITE, NOT BEFORE IT. Stopping first tears the
+             * service down and cancels its scope, so the sentence explaining the skip
+             * would never reach the database and the diary would keep the lie.
+             */
+            serviceScope.launch {
+                runCatching {
+                    val slot = HeartbeatSlot.floor(System.currentTimeMillis())
+                    val entry = bookingRepository.entryAt(slot)
+                    if (entry != null && entry.state == EntryState.PENDING) {
+                        bookingRepository.recordOutcome(
+                            entryId = entry.id,
+                            state = EntryState.SKIPPED,
+                            firedAt = 0L,
+                            finishedAt = 0L,
+                            outcome = "The beat before this one was still running, so this " +
+                                "half hour was skipped rather than stacked on top of it.",
+                        )
+                    }
+                }.onFailure { Log.w(TAG, "Skip record failed: ${it.message}") }
+                withContext(Dispatchers.Main) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+            }
             return START_NOT_STICKY
         }
 
@@ -193,6 +240,51 @@ class HeartbeatRunService : Service(), KoinComponent {
         acquireWakeLock()
 
         val currentJob = serviceScope.launch {
+            // THE HALF HOUR THIS BEAT BELONGS TO, AND WHAT IS BOOKED IN IT.
+            //
+            // Resolved before the timed block so both the success path and every early
+            // return can write against the same occurrence. A diary entry that is not
+            // resolved here would have no id to report against, and the whole point of
+            // the diary is that it says what actually happened rather than what was
+            // planned.
+            val slotAt = HeartbeatSlot.floor(System.currentTimeMillis())
+            var bookedEntry: HeartbeatEntry? = null
+            var bookedBooking: HeartbeatBooking? = null
+            runCatching {
+                bookedEntry = bookingRepository.entryAt(slotAt)
+                bookedBooking = bookedEntry?.let { bookingRepository.booking(it.bookingId) }
+            }.onFailure { Log.w(TAG, "Diary lookup failed: ${it.message}") }
+
+            /*
+             * WHAT THIS HALF HOUR ENDED AS, WRITTEN ONCE, FROM ANY PATH.
+             *
+             * A beat has five ways to end: it reaches the model, it finds nothing to send,
+             * it finds no conversation, it is cut off at ten minutes, or it throws. All
+             * five are a real outcome for a booked half hour, and the diary must say which
+             * one happened rather than leaving the slot reading "booked" forever.
+             *
+             * The default is CUT_SHORT because that is the only ending that reaches here
+             * without setting anything: a beaten timeout returns null from
+             * withTimeoutOrNull and falls straight through, which is exactly the case a
+             * person most needs named.
+             */
+            var endedAs: EntryState? = null
+            var endedBecause = ""
+
+            // A booked slot is not still pending once a beat is working in it, so anything
+            // that reads the diary right now sees RUNNING rather than a stale "booked".
+            bookedEntry?.let { entry ->
+                runCatching {
+                    bookingRepository.recordOutcome(
+                        entryId = entry.id,
+                        state = EntryState.RUNNING,
+                        firedAt = System.currentTimeMillis(),
+                        finishedAt = 0L,
+                        outcome = "",
+                    )
+                }.onFailure { Log.w(TAG, "Running mark failed: ${it.message}") }
+            }
+
             try {
                 withTimeoutOrNull(BEAT_BUDGET_MILLIS) {
                     // --- 1. Real human name read (founder name token) ---
@@ -213,13 +305,37 @@ class HeartbeatRunService : Service(), KoinComponent {
                     // the room's preview and the real injection honour one contract: a
                     // second substitution rule here would let the two drift apart.
                     val rawPrompt = promptRepository.current()
-                    val prompt = if (rawPrompt.isBlank()) {
-                        null
+                    val masterPrompt = if (rawPrompt.isBlank()) {
+                        ""
                     } else {
                         HeartbeatPrompts.substitute(rawPrompt, humanName)
                     }
-                    if (prompt.isNullOrBlank()) {
-                        Log.w(TAG, "No prompt is saved: beat ends without sending")
+
+                    /*
+                     * THE BOOKING IS COMPOSED IN, AND THE COMPOSITION IS NOT DECIDED HERE.
+                     *
+                     * composeBeatInstruction is the single definition of what a beat sends
+                     * when a half hour is booked: the master prompt with the booking beside
+                     * it, or the booking alone when its owner chose "instead of master".
+                     * The room's preview calls the same function, so what a person is shown
+                     * in the diary is exactly what this line injects.
+                     *
+                     * A BOOKING ALONE IS A VALID BEAT. The rule that a beat needs a prompt
+                     * was written when the master prompt was the only thing a beat could
+                     * say; a booked half hour with an instruction of its own has something
+                     * to send, so requiring the master prompt as well would refuse a beat
+                     * that is fully specified.
+                     */
+                    val prompt = composeBeatInstruction(
+                        masterPrompt = masterPrompt,
+                        booking = bookedBooking,
+                        entry = bookedEntry,
+                    )
+                    if (prompt.isBlank()) {
+                        Log.w(TAG, "No prompt is saved and nothing is booked: beat ends without sending")
+                        endedAs = EntryState.SKIPPED
+                        endedBecause = "Nothing was written to send in this half hour, so the " +
+                            "beat had no instruction."
                         HeartbeatScheduler.recordOutcome(
                             applicationContext,
                             "The beat fired but no heartbeat prompt has been written yet, so " +
@@ -234,6 +350,9 @@ class HeartbeatRunService : Service(), KoinComponent {
                     }.getOrNull()
                     if (conversation == null) {
                         Log.d(TAG, "No conversation exists yet: nothing to wake into")
+                        endedAs = EntryState.SKIPPED
+                        endedBecause = "There was no conversation to wake into, so the beat " +
+                            "had nowhere to send."
                         HeartbeatScheduler.recordOutcome(
                             applicationContext,
                             "The beat fired but there is no conversation to wake into yet, so " +
@@ -263,6 +382,9 @@ class HeartbeatRunService : Service(), KoinComponent {
                     }
                     if (history.isEmpty()) {
                         Log.d(TAG, "Conversation has no user/assistant history: nothing to wake into")
+                        endedAs = EntryState.SKIPPED
+                        endedBecause = "The conversation held no history to continue, so the " +
+                            "beat had nothing to build on."
                         HeartbeatScheduler.recordOutcome(
                             applicationContext,
                             "The beat fired but the newest conversation holds no user or " +
@@ -295,6 +417,8 @@ class HeartbeatRunService : Service(), KoinComponent {
                         }
                     }
                     Log.d(TAG, "Beat complete: ${conversation.id}")
+                    endedAs = EntryState.RAN
+                    endedBecause = ""
                     // A beat that reached the model clears the previous failure, so the
                     // room reports the current state of the chain rather than its worst
                     // moment. Written inside the timed block, so only a real completion
@@ -303,12 +427,18 @@ class HeartbeatRunService : Service(), KoinComponent {
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 Log.w(TAG, "Beat cancelled: ${cancelled.message}")
+                endedAs = EntryState.CUT_SHORT
+                endedBecause = "The beat was cancelled before it finished: " +
+                    "${cancelled.message ?: "no reason given"}."
                 HeartbeatScheduler.recordOutcome(
                     applicationContext,
                     "The beat was cancelled before it finished: ${cancelled.message ?: "no reason given"}.",
                 )
             } catch (failure: Exception) {
                 Log.e(TAG, "Beat failed: ${failure.message}")
+                endedAs = EntryState.MISSED
+                endedBecause = "The beat started and then failed: " +
+                    "${failure.message ?: failure.javaClass.simpleName}."
                 // THE SENTENCE A PERSON NEEDS. A thrown beat used to leave only a log
                 // line under a tag nobody reads, which on screen is identical to a beat
                 // that never fired. This names the fault in the room.
@@ -323,6 +453,36 @@ class HeartbeatRunService : Service(), KoinComponent {
                 // This book reuses the canonical scheduler entry point to keep
                 // one single booking chain across every site in the design.
                 withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
+                    // THE DIARY'S OWN END, AND IT IS PART OF THE SAME GUARANTEE.
+                    //
+                    // A booked half hour gets its real ending written here, inside the
+                    // block a cancellation cannot skip, for the same reason the wake lock
+                    // and the rebook are: an outcome that only lands on the happy path is
+                    // an outcome that is missing exactly when something went wrong.
+                    //
+                    // A beat that reached its timeout returns null rather than throwing,
+                    // so it leaves endedAs unset — and that null IS the cut-short case.
+                    // It is named as such rather than as ran or missed, because both of
+                    // those would be untrue.
+                    bookedEntry?.let { entry ->
+                        val state = endedAs
+                            ?: EntryState.CUT_SHORT
+                        val reason = when {
+                            endedAs != null -> endedBecause
+                            else -> "The beat was still working when its ten-minute budget " +
+                                "ran out, so it was cut short rather than finished."
+                        }
+                        runCatching {
+                            bookingRepository.recordOutcome(
+                                entryId = entry.id,
+                                state = state,
+                                firedAt = entry.firedAt,
+                                finishedAt = System.currentTimeMillis(),
+                                outcome = reason,
+                            )
+                        }.onFailure { Log.w(TAG, "Diary outcome write failed: ${it.message}") }
+                    }
+
                     releaseWakeLockReal()
                     runCatching {
                         HeartbeatScheduler.schedule(applicationContext)

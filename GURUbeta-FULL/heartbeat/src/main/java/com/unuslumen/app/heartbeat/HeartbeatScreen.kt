@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
@@ -28,7 +29,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -38,41 +42,63 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
+import com.unuslumen.app.domain.model.BookingCombine
+import com.unuslumen.app.domain.model.EntryState
+import com.unuslumen.app.domain.model.RepeatKind
 import com.unuslumen.app.ui.components.common.guruAppBar
 import com.unuslumen.app.ui.theme.Memphis
 import com.unuslumen.app.ui.theme.MemphisBody
+import com.unuslumen.app.ui.theme.MemphisSquareMark
 import com.unuslumen.app.ui.theme.MemphisSurface
 import com.unuslumen.app.ui.theme.captionStyle
 import com.unuslumen.app.ui.theme.posterStyle
 import org.koin.androidx.compose.koinViewModel
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
 /**
- * The heartbeat room: the prompt GURU beats with, in its owner's hands.
+ * The heartbeat room: the prompt GURU beats with, and the diary of booked half hours.
  *
  * WHAT THIS REPLACED. The prompt shipped inside the APK. Changing a word of what
  * GURU says to itself every thirty minutes meant a developer, a commit and a
  * release, on an app whose whole premise is that its owner is in charge. This screen
  * is the fix: read it, edit it, save it, and the next beat uses the new text.
  *
- * TWO FIELDS, NOT ONE. The editor shows the text as written, tokens and all, and the
- * preview shows exactly what will be injected after substitution. Without the second
- * one a person cannot tell what `${human}` turns into, and a prompt that looks right
- * and reads wrong is the worst of both.
+ * TWO TABS, ONE SWITCH. The switch governs the whole room and sits above both tabs,
+ * because "is it running" is the first question either tab answers. The prompt tab is
+ * what every beat sends. The diary tab is what a booked half hour does, in addition to
+ * or instead of that prompt.
+ *
+ * TWO FIELDS, NOT ONE, on the prompt tab. The editor shows the text as written, tokens
+ * and all, and the preview shows exactly what will be injected after substitution.
+ * Without the second one a person cannot tell what `${human}` turns into, and a prompt
+ * that looks right and reads wrong is the worst of both.
  *
  * SHAPE. Fixed head, scrolling body, fixed action foot, the same as the agent creator
- * and the detail sheets: the Save button is always on screen, so a long prompt can
- * never push the only way to commit it off the bottom.
+ * and the detail sheets: the commit button is always on screen, so a long prompt or a
+ * long day can never push the only way to commit it off the bottom.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HeartbeatScreen(
     navController: NavHostController,
     viewModel: HeartbeatViewModel = koinViewModel(),
+    diaryViewModel: HeartbeatDiaryViewModel = koinViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val diary by diaryViewModel.state.collectAsStateWithLifecycle()
+
+    /*
+     * WHICH TAB IS OPEN, HELD HERE RATHER THAN IN A VIEW MODEL.
+     *
+     * A selected tab is not app state: it does not outlive the room and nobody expects
+     * it to. rememberSaveable keeps it across a rotation, which is the only lifetime it
+     * needs. In a view model it would mean a reopened room always landed on whichever tab
+     * was last used, which is a small thing that reads as wrong.
+     */
+    var tab by rememberSaveable { mutableIntStateOf(0) }
 
     /*
      * OPEN THE PORTAL WHEN A BEAT IS FIRED BY HAND.
@@ -113,178 +139,883 @@ fun HeartbeatScreen(
                 }
 
                 else -> Column(Modifier.fillMaxSize()) {
-                    LazyColumn(
-                        modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 16.dp),
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(start = 18.dp, end = 18.dp, top = 12.dp),
                     ) {
                         /*
-                         * THE SWITCH COMES FIRST, ABOVE EVERYTHING.
+                         * THE SWITCH COMES FIRST, ABOVE BOTH TABS.
                          *
-                         * It decides whether the clock below means anything at all,
-                         * and a person opening this room has one question before any
-                         * other: is it running. Putting the prompt above it would bury
-                         * the control that governs the whole screen.
+                         * It decides whether anything below means anything at all, and a
+                         * person opening this room has one question before any other: is
+                         * it running. Putting the tabs above it would bury the control
+                         * that governs the whole screen.
                          */
+                        ChainSwitch(
+                            enabled = state.enabled,
+                            toggling = state.toggling,
+                            canEnable = state.canEnable,
+                            promptRequired = state.promptRequired,
+                            onToggle = { viewModel.onEvent(HeartbeatEvent.SetEnabled(it)) },
+                        )
+
                         /*
-                         * THE SWITCH, AND ITS REFUSAL, AS ONE BLOCK OF PRINTED TEXT.
+                         * THE TAB STRIP.
                          *
-                         * There is no separate warning bar. A slab under the switch drew
-                         * its hard shadow outside its own bounds and landed on the
-                         * sentence beneath it, and it also said the same thing twice: the
-                         * switch cannot be on without a prompt, so the reason belongs
-                         * inside the switch rather than floating below it.
+                         * Two printed cells, the active one filled with ink, because that
+                         * is the only selected-state vocabulary this design language has.
+                         * A Material tab row draws an indicator and a ripple, both of
+                         * which would be the one soft object on a printed page.
                          */
-                        item(key = "switch") {
-                            ChainSwitch(
-                                enabled = state.enabled,
-                                toggling = state.toggling,
-                                canEnable = state.canEnable,
-                                promptRequired = state.promptRequired,
-                                onToggle = { viewModel.onEvent(HeartbeatEvent.SetEnabled(it)) },
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            PrintedTab(
+                                label = "Prompt",
+                                selected = tab == 0,
+                                modifier = Modifier.weight(1f),
+                                onClick = { tab = 0 },
                             )
+                            PrintedTab(
+                                label = "Diary",
+                                selected = tab == 1,
+                                modifier = Modifier.weight(1f),
+                                onClick = { tab = 1 },
+                            )
+                        }
+                    }
+
+                    if (tab == 0) {
+                        PromptTabBody(state = state, viewModel = viewModel)
+                    } else {
+                        DiaryTabBody(diary = diary, diaryViewModel = diaryViewModel)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The prompt tab: the chain's pulse, the editor, the tokens and the preview.
+ *
+ * IT KEEPS ITS OWN FOOT. Save and Reset belong to the prompt, so they scroll with it
+ * rather than sitting under the diary, where they would look like they saved a booking.
+ */
+@Composable
+private fun PromptTabBody(state: HeartbeatState, viewModel: HeartbeatViewModel) {
+    Column(Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 16.dp),
+        ) {
+            /*
+             * THE PROMPT PANEL.
+             *
+             * A dismissible sheet that tells the owner a heartbeat master prompt has to be
+             * written before the chain can be switched on. It sits in the list flow with
+             * its own padding so the printed drop stays inside its own cell, which a bar
+             * pinned under the switch did not: that one drew its shadow onto the sentence
+             * below it.
+             */
+            if (state.promptRequired) {
+                item(key = "prompt-required") {
+                    PromptRequiredPanel(
+                        onDismiss = {
+                            viewModel.onEvent(HeartbeatEvent.DismissPromptRequired)
+                        },
+                    )
+                }
+            }
+
+            item(key = "intro") {
+                Text(
+                    when {
+                        state.enabled ->
+                            "GURU wakes every thirty minutes and sends itself the " +
+                                "prompt below. Change it and the next beat uses your words."
+                        state.draft.isBlank() ->
+                            "A prompt has to exist before the heartbeat can be switched " +
+                                "on, because that prompt is what every beat sends."
+                        else ->
+                            "GURU is not waking. Switch the heartbeat on above and it " +
+                                "will fire every thirty minutes with the prompt below."
+                    },
+                    style = bodyText(),
+                )
+            }
+
+            // THE CHAIN'S PULSE, BEFORE THE PROMPT.
+            //
+            // A heartbeat that has stopped is the fault a person notices,
+            // and until this block existed the room could only show the
+            // prompt, which looked perfectly healthy whether or not anything
+            // ever fired. Both numbers are printed because neither is enough
+            // alone: a next booking with no last fire is a chain written and
+            // never delivered, which is exactly what a dead heartbeat looks
+            // like from the inside.
+            item(key = "chain") { ChainState(state, viewModel) }
+
+            state.notice?.let { notice ->
+                item(key = "notice") { Notice(notice, Memphis.Teal) }
+            }
+            state.error?.let { error ->
+                item(key = "error") { Notice(error, Memphis.Coral) }
+            }
+
+            item(key = "editor-band") {
+                Band("The prompt", if (state.draft.isBlank()) null else "as written")
+            }
+            item(key = "editor") {
+                PromptField(
+                    value = state.draft,
+                    onChange = { viewModel.onEvent(HeartbeatEvent.Edit(it)) },
+                )
+            }
+
+            item(key = "tokens") {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "These get filled in at beat time. The preview below shows the result.",
+                    style = captionStyle(9f, Memphis.Ink.copy(alpha = 0.6f)),
+                )
+                Spacer(Modifier.height(7.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    TokenChip("\${human}", "your name")
+                    TokenChip("\${time}", "the clock")
+                }
+            }
+
+            item(key = "preview-band") {
+                Band("What a beat injects", if (state.preview.isBlank()) null else "now")
+            }
+            item(key = "preview") {
+                MemphisSurface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Memphis.Paper,
+                    borderWidth = 2.5.dp,
+                    shadowOffset = 4.dp,
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp)
+                            .verticalScroll(rememberScrollState())
+                            .padding(12.dp),
+                    ) {
+                        if (state.preview.isBlank()) {
+                            Text(
+                                "Nothing yet. Write a prompt above.",
+                                style = captionStyle(9.5f, Memphis.Ink.copy(alpha = 0.45f)),
+                            )
+                        } else {
+                            Text(state.preview, style = bodyText())
+                        }
+                    }
+                }
+            }
+        }
+
+        // THE FOOT. Save is the commit. Reset clears the prompt, because
+        // there is no shipped one to go back to.
+        Box(Modifier.fillMaxWidth().height(3.dp).background(Memphis.Ink))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            PrintedButton(
+                label = "Reset",
+                modifier = Modifier.weight(1f),
+                filled = false,
+                enabled = state.edited && !state.saving,
+                onClick = { viewModel.onEvent(HeartbeatEvent.Reset) },
+            )
+            PrintedButton(
+                label = when {
+                    state.saving -> "Saving…"
+                    else -> "Save"
+                },
+                modifier = Modifier.weight(1f),
+                filled = true,
+                enabled = state.canSave && !state.saving,
+                onClick = { viewModel.onEvent(HeartbeatEvent.Save) },
+            )
+        }
+    }
+}
+
+/**
+ * The diary tab: a week, a day, and every half hour in it.
+ *
+ * WHY EVERY HALF HOUR IS DRAWN, not only the booked ones. The empty slot is the thing a
+ * person presses to book, so hiding it would mean the only way to make a booking was a
+ * button floating somewhere else. Forty-eight rows is a scroll, and the scroll is the
+ * calendar.
+ *
+ * THE STATUS WORD IS WHAT HAPPENED. A card's right-hand word is never "booked" for a time
+ * that has gone: it is ran, running, missed, skipped, or cut short, all of which are
+ * written by the beat that actually reached that half hour.
+ */
+@Composable
+private fun DiaryTabBody(diary: DiaryState, diaryViewModel: HeartbeatDiaryViewModel) {
+    val clock = remember { SimpleDateFormat("HH:mm", Locale.UK) }
+    val dayFormat = remember { SimpleDateFormat("EEE d MMM", Locale.UK) }
+    val weekdayFormat = remember { SimpleDateFormat("EEE", Locale.UK) }
+    val dayNumber = remember { SimpleDateFormat("d", Locale.UK) }
+
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 16.dp),
+            ) {
+                item(key = "week-band") {
+                    Band(
+                        "Bookings",
+                        if (diary.bookedCount == 0) "nothing today" else "${diary.bookedCount} today",
+                    )
+                }
+
+                item(key = "week") {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        diary.weekDays.forEach { day ->
+                            DayCell(
+                                label = weekdayFormat.format(Date(day)),
+                                number = dayNumber.format(Date(day)),
+                                selected = day == diary.selectedDayStart,
+                                marked = day in diary.daysWithBookings,
+                                modifier = Modifier.weight(1f),
+                                onClick = { diaryViewModel.onEvent(DiaryEvent.SelectDay(day)) },
+                            )
+                        }
+                    }
+                }
+
+                item(key = "day-line") {
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        WeekArrow(
+                            forward = false,
+                            onClick = { diaryViewModel.onEvent(DiaryEvent.ShiftWeek(-1)) },
+                        )
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                dayFormat.format(Date(diary.selectedDayStart)).uppercase(),
+                                style = posterStyle(13f),
+                            )
+                            Spacer(Modifier.height(3.dp))
+                            Text(
+                                when {
+                                    diary.runningCount > 0 -> "one running now"
+                                    diary.bookedCount == 0 -> "nothing booked"
+                                    else -> "the day"
+                                },
+                                style = captionStyle(7.5f, Memphis.Ink.copy(alpha = 0.55f)),
+                            )
+                        }
+                        WeekArrow(
+                            forward = true,
+                            onClick = { diaryViewModel.onEvent(DiaryEvent.ShiftWeek(1)) },
+                        )
+                    }
+                }
+
+                diary.notice?.let { notice ->
+                    item(key = "diary-notice") { Notice(notice, Memphis.Teal) }
+                }
+                diary.error?.let { error ->
+                    item(key = "diary-error") { Notice(error, Memphis.Coral) }
+                }
+
+                items(
+                    count = diary.slots.size,
+                    key = { index -> "slot-${diary.slots[index].slotAt}" },
+                ) { index ->
+                    val slot = diary.slots[index]
+                    SlotRow(
+                        slot = slot,
+                        time = clock.format(Date(slot.slotAt)),
+                        onOpen = {
+                            diaryViewModel.onEvent(
+                                DiaryEvent.OpenSheet(
+                                    slotAt = slot.slotAt,
+                                    editingId = slot.booking?.id,
+                                )
+                            )
+                        },
+                    )
+                }
+            }
+
+            Box(Modifier.fillMaxWidth().height(3.dp).background(Memphis.Ink))
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 12.dp),
+            ) {
+                PrintedButton(
+                    label = "Book a slot",
+                    modifier = Modifier.weight(1f),
+                    filled = true,
+                    enabled = true,
+                    onClick = {
+                        // The first open half hour of the shown day, so the sheet opens on
+                        // something real rather than on an invented time.
+                        val nextOpen = diary.slots.firstOrNull { !it.isBooked }?.slotAt
+                            ?: diary.selectedDayStart
+                        diaryViewModel.onEvent(DiaryEvent.OpenSheet(slotAt = nextOpen))
+                    },
+                )
+            }
+        }
+
+        /*
+         * THE BOOKING SHEET, ON TOP OF THE DAY.
+         *
+         * A scrim and a printed sheet, the same geometry as the Ottio detail sheet: an ink
+         * wash at low alpha, a heavier border and a bigger drop than anything behind it, a
+         * fixed masthead and foot, and a body that scrolls. It covers the day rather than
+         * replacing it, so the half hour being booked stays visible behind.
+         */
+        diary.sheet?.let { sheet ->
+            BookingSheetOverlay(
+                sheet = sheet,
+                preview = diaryViewModel.previewFor(sheet),
+                onEvent = diaryViewModel::onEvent,
+            )
+        }
+    }
+}
+
+/** One printed tab. The active one is filled with ink, exactly as a chosen cell is. */
+@Composable
+private fun PrintedTab(
+    label: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    MemphisSurface(
+        modifier = modifier.clickable { onClick() },
+        color = if (selected) Memphis.Ink else Memphis.Paper,
+        borderWidth = 2.5.dp,
+        shadowOffset = 4.dp,
+    ) {
+        Box(
+            Modifier.fillMaxWidth().padding(vertical = 11.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                label.uppercase(),
+                style = captionStyle(9.5f, if (selected) Memphis.Paper else Memphis.Ink),
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+/**
+ * One day in the week strip.
+ *
+ * THE MARK IS NOT DECORATION. A day with something on it carries a rule under its number
+ * so a person can see at a glance which days are worth opening. The selected day fills
+ * with ink, which is the only selected-state shape this language has.
+ */
+@Composable
+private fun DayCell(
+    label: String,
+    number: String,
+    selected: Boolean,
+    marked: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier
+            .background(if (selected) Memphis.Ink else Memphis.Paper)
+            .border(2.5.dp, Memphis.Ink)
+            .clickable { onClick() }
+            .padding(vertical = 7.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                label.uppercase(),
+                style = captionStyle(7.5f, if (selected) Memphis.Paper.copy(alpha = 0.7f) else Memphis.Ink.copy(alpha = 0.55f)),
+            )
+            Text(
+                number,
+                style = posterStyle(15f, if (selected) Memphis.Paper else Memphis.Ink),
+            )
+            Box(
+                Modifier
+                    .padding(top = 3.dp)
+                    .width(7.dp)
+                    .height(2.5.dp)
+                    .background(
+                        when {
+                            !marked -> Color.Transparent
+                            selected -> Memphis.Yellow
+                            else -> Memphis.Coral
+                        }
+                    ),
+            )
+        }
+    }
+}
+
+/**
+ * A week arrow, printed as its own small cell.
+ *
+ * A CHEVRON IN A BOX RATHER THAN A TEXT BUTTON. It is the only way to move the week, so
+ * it has to look pressable on a page where nothing else glides or signals; a bare glyph
+ * would read as decoration. One composable for both directions so the two cannot drift
+ * apart in size or hit area.
+ */
+@Composable
+private fun WeekArrow(forward: Boolean, onClick: () -> Unit) {
+    MemphisSurface(
+        modifier = Modifier.clickable { onClick() },
+        color = Memphis.Paper,
+        borderWidth = 2.5.dp,
+        shadowOffset = 3.dp,
+    ) {
+        Box(
+            Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                if (forward) "›" else "‹",
+                style = posterStyle(13f),
+            )
+        }
+    }
+}
+
+/**
+ * One half hour: a booking card, or a hairline saying the slot is open.
+ *
+ * THE EMPTY SLOT IS A ROW, NOT A BUTTON. Forty-eight buttons in a column would read as a
+ * control panel; a hairline that names itself reads as a diary with space in it, and the
+ * whole row is the press target either way.
+ */
+@Composable
+private fun SlotRow(
+    slot: DiarySlot,
+    time: String,
+    onOpen: () -> Unit,
+) {
+    val booking = slot.booking
+    Row(
+        Modifier.fillMaxWidth().padding(bottom = 7.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text(
+            time,
+            style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.55f)),
+            modifier = Modifier.width(40.dp).padding(top = 11.dp),
+        )
+
+        if (booking == null) {
+            Box(
+                Modifier
+                    .weight(1f)
+                    .height(27.dp)
+                    .border(1.5.dp, Memphis.Ink.copy(alpha = 0.22f))
+                    .clickable { onOpen() }
+                    .padding(horizontal = 10.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                Text(
+                    "Open. Tap to book.",
+                    style = captionStyle(7.5f, Memphis.Ink.copy(alpha = 0.32f)),
+                )
+            }
+            return@Row
+        }
+
+        val entry = slot.entry
+        val state = entry?.state ?: EntryState.PENDING
+
+        MemphisSurface(
+            modifier = Modifier.weight(1f).clickable { onOpen() },
+            color = Memphis.Paper,
+            borderWidth = 2.5.dp,
+            shadowOffset = 3.dp,
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    MemphisSquareMark(
+                        color = Memphis.inkFor(booking.colourIndex),
+                        side = 9.dp,
+                    )
+                    Spacer(Modifier.width(7.dp))
+                    Text(booking.name.uppercase(), style = posterStyle(13.5f))
+                }
+                Spacer(Modifier.height(7.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        repeatLabel(booking.repeat, booking.chosenDays, booking.combine),
+                        style = captionStyle(7.5f, Memphis.Ink.copy(alpha = 0.55f)),
+                    )
+                    EntryStateWord(state = state, entry = entry, time = time)
+                }
+            }
+        }
+    }
+}
+
+/** What a booking repeats, and how it combines, in one small line. */
+private fun repeatLabel(
+    repeat: RepeatKind,
+    chosenDays: Set<Int>,
+    combine: BookingCombine,
+): String {
+    val base = when (repeat) {
+        RepeatKind.ONCE -> "ONCE"
+        RepeatKind.DAILY -> "DAILY"
+        RepeatKind.WEEKDAYS -> "WEEKDAYS"
+        RepeatKind.CHOSEN -> if (chosenDays.isEmpty()) {
+            "NO DAYS"
+        } else {
+            chosenDays.sorted().joinToString(" ") { DAY_LETTERS[it] }
+        }
+    }
+    return when (combine) {
+        BookingCombine.ALONGSIDE -> base
+        BookingCombine.INSTEAD -> "$base · INSTEAD OF MASTER"
+    }
+}
+
+private val DAY_LETTERS = listOf("M", "T", "W", "T", "F", "S", "S")
+
+/**
+ * The one word that says what happened here.
+ *
+ * IT IS THE POINT OF THE DIARY. A calendar that only shows a plan is a wish list. This
+ * prints the real ending: ran at a time, running now, missed while the phone was asleep,
+ * skipped because the previous beat was still working, or cut short at the ten-minute
+ * budget. Every one of those is a different fault a person can act on.
+ */
+@Composable
+private fun EntryStateWord(state: EntryState, entry: com.unuslumen.app.domain.model.HeartbeatEntry?, time: String) {
+    val clock = remember { SimpleDateFormat("HH:mm", Locale.UK) }
+    val (text, ink, fill) = when (state) {
+        EntryState.RAN -> Triple(
+            if (entry != null && entry.firedAt > 0L) "RAN ${clock.format(Date(entry.firedAt))}" else "RAN",
+            Memphis.Teal,
+            Color.Transparent,
+        )
+        EntryState.RUNNING -> Triple("RUNNING", Memphis.Ink, Memphis.Yellow)
+        EntryState.MISSED -> Triple("MISSED", Memphis.Coral, Color.Transparent)
+        EntryState.SKIPPED -> Triple("SKIPPED", Memphis.Purple, Color.Transparent)
+        EntryState.CUT_SHORT -> Triple("CUT SHORT", Memphis.Sun, Color.Transparent)
+        EntryState.CANCELLED -> Triple("CANCELLED", Memphis.Ink.copy(alpha = 0.4f), Color.Transparent)
+        EntryState.PENDING -> Triple("BOOKED", Memphis.Ink.copy(alpha = 0.55f), Color.Transparent)
+    }
+    Text(
+        text,
+        style = captionStyle(7.5f, ink),
+        modifier = if (fill == Color.Transparent) {
+            Modifier
+        } else {
+            Modifier.background(fill).padding(horizontal = 5.dp, vertical = 1.dp)
+        },
+    )
+}
+
+/**
+ * The booking sheet.
+ *
+ * THE SAME GEOMETRY AS THE AGENTS DETAIL SHEET: an ink wash at low alpha, a heavier border
+ * and a bigger drop than anything behind it, a fixed masthead and foot, and a body that
+ * scrolls. That sheet already solved "a long body must not push the way out past the
+ * fold", so this one uses its shape rather than inventing a second answer to the same
+ * problem.
+ *
+ * EVERY CHOICE IS A PRINTED CELL that fills with ink. No switch, no chip cloud, no
+ * dropdown: those are three more selected-state vocabularies for a page that already has
+ * one.
+ */
+@Composable
+private fun BookingSheetOverlay(
+    sheet: BookingSheet,
+    preview: String,
+    onEvent: (DiaryEvent) -> Unit,
+) {
+    val clock = remember { SimpleDateFormat("HH:mm", Locale.UK) }
+    val dayFormat = remember { SimpleDateFormat("EEE d MMM", Locale.UK) }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Memphis.Ink.copy(alpha = 0.34f)),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 18.dp),
+        ) {
+            MemphisSurface(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 640.dp),
+                color = Memphis.Paper,
+                borderWidth = 3.dp,
+                shadowOffset = 8.dp,
+            ) {
+                Column(Modifier.fillMaxWidth()) {
+                    // --- fixed head ---
+                    Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 15.dp)) {
+                        Text(
+                            when {
+                                sheet.isEdit -> "Edit booking"
+                                else -> "Book ${clock.format(Date(sheet.slotAt))}"
+                            }.uppercase(),
+                            style = posterStyle(24f),
+                        )
+                        Spacer(Modifier.height(5.dp))
+                        Text(
+                            dayFormat.format(Date(sheet.slotAt)).uppercase() + " · HALF HOUR",
+                            style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.55f)),
+                        )
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(top = 7.dp)
+                                .height(3.dp)
+                                .background(Memphis.Ink),
+                        )
+                    }
+
+                    // --- the body scrolls ---
+                    Column(
+                        Modifier
+                            .weight(1f, fill = false)
+                            .verticalScroll(rememberScrollState())
+                            .padding(start = 16.dp, end = 16.dp, top = 12.dp),
+                    ) {
+                        FieldLabel("Name it")
+                        SheetField(
+                            value = sheet.name,
+                            placeholder = "Morning mail",
+                            onChange = { onEvent(DiaryEvent.EditName(it)) },
+                        )
+
+                        FieldLabel("What GURU does")
+                        SheetField(
+                            value = sheet.instruction,
+                            placeholder = "Check the two inboxes and tell me only what needs a reply before noon.",
+                            onChange = { onEvent(DiaryEvent.EditInstruction(it)) },
+                            minHeight = 74.dp,
+                        )
+
+                        FieldLabel("Repeat")
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            RepeatKind.entries.forEach { kind ->
+                                ChoiceCell(
+                                    label = kind.label,
+                                    selected = sheet.repeat == kind,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { onEvent(DiaryEvent.SetRepeat(kind)) },
+                                )
+                            }
                         }
 
                         /*
-                         * THE PROMPT PANEL.
+                         * THE DAYS ARE ALWAYS SHOWN, not only when CHOSEN is active.
                          *
-                         * A dismissible sheet that tells the owner a heartbeat master
-                         * prompt has to be written before the chain can be switched on.
-                         * It sits in the list flow with its own padding so the printed
-                         * drop stays inside its own cell, which a bar pinned under the
-                         * switch did not: that one drew its shadow onto the sentence
-                         * below it.
+                         * A person editing a weekday booking needs to see which days it
+                         * covers, and pressing one is itself a statement that they want to
+                         * choose days. Hiding the grid until a separate control was pressed
+                         * would mean two presses to change Thursday.
                          */
-                        if (state.promptRequired) {
-                            item(key = "prompt-required") {
-                                PromptRequiredPanel(
-                                    onDismiss = {
-                                        viewModel.onEvent(HeartbeatEvent.DismissPromptRequired)
+                        FieldLabel("On these days")
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            DAY_LETTERS.forEachIndexed { index, letter ->
+                                ChoiceCell(
+                                    label = letter,
+                                    selected = index in sheet.chosenDays,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { onEvent(DiaryEvent.ToggleDay(index)) },
+                                )
+                            }
+                        }
+
+                        FieldLabel("How it combines")
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            BookingCombine.entries.forEach { combine ->
+                                ChoiceCell(
+                                    label = combine.label,
+                                    selected = sheet.combine == combine,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { onEvent(DiaryEvent.SetCombine(combine)) },
+                                )
+                            }
+                        }
+
+                        /*
+                         * THE PREVIEW IS NOT AN EXTRA. A booking beside a master prompt
+                         * sends both, and "instead of master" sends only one. Without
+                         * showing the composed text, a person cannot tell which of those
+                         * their choice produces, and the control becomes a guess.
+                         */
+                        FieldLabel("What a beat would send")
+                        MemphisSurface(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Memphis.Paper,
+                            borderWidth = 2.5.dp,
+                            shadowOffset = 3.dp,
+                        ) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 160.dp)
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(11.dp),
+                            ) {
+                                Text(
+                                    preview.ifBlank { "Nothing yet. Write what GURU does." },
+                                    style = if (preview.isBlank()) {
+                                        bodyText().copy(color = Memphis.Ink.copy(alpha = 0.4f))
+                                    } else {
+                                        bodyText()
                                     },
                                 )
                             }
                         }
 
-                        item(key = "intro") {
-                            Text(
-                                when {
-                                    state.enabled ->
-                                        "GURU wakes every thirty minutes and sends itself the " +
-                                            "prompt below. Change it and the next beat uses your words."
-                                    state.draft.isBlank() ->
-                                        "A prompt has to exist before the heartbeat can be switched " +
-                                            "on, because that prompt is what every beat sends."
-                                    else ->
-                                        "GURU is not waking. Switch the heartbeat on above and it " +
-                                            "will fire every thirty minutes with the prompt below."
-                                },
-                                style = bodyText(),
-                            )
+                        sheet.error?.let { error ->
+                            Notice(error, Memphis.Coral)
                         }
 
-                        // THE CHAIN'S PULSE, BEFORE THE PROMPT.
-                        //
-                        // A heartbeat that has stopped is the fault a person notices,
-                        // and until this block existed the room could only show the
-                        // prompt, which looked perfectly healthy whether or not anything
-                        // ever fired. Both numbers are printed because neither is enough
-                        // alone: a next booking with no last fire is a chain written and
-                        // never delivered, which is exactly what a dead heartbeat looks
-                        // like from the inside.
-                        item(key = "chain") { ChainState(state, viewModel) }
-
-                        state.notice?.let { notice ->
-                            item(key = "notice") { Notice(notice, Memphis.Teal) }
-                        }
-                        state.error?.let { error ->
-                            item(key = "error") { Notice(error, Memphis.Coral) }
-                        }
-
-                        item(key = "editor-band") {
-                            Band("The prompt", if (state.draft.isBlank()) null else "as written")
-                        }
-                        item(key = "editor") {
-                            PromptField(
-                                value = state.draft,
-                                onChange = { viewModel.onEvent(HeartbeatEvent.Edit(it)) },
-                            )
-                        }
-
-                        item(key = "tokens") {
-                            Spacer(Modifier.height(12.dp))
-                            Text(
-                                "These get filled in at beat time. The preview below shows the result.",
-                                style = captionStyle(9f, Memphis.Ink.copy(alpha = 0.6f)),
-                            )
-                            Spacer(Modifier.height(7.dp))
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                TokenChip("\${human}", "your name")
-                                TokenChip("\${time}", "the clock")
-                            }
-                        }
-
-                        item(key = "preview-band") {
-                            Band("What a beat injects", if (state.preview.isBlank()) null else "now")
-                        }
-                        item(key = "preview") {
-                            MemphisSurface(
-                                modifier = Modifier.fillMaxWidth(),
-                                color = Memphis.Paper,
-                                borderWidth = 2.5.dp,
-                                shadowOffset = 4.dp,
-                            ) {
-                                Box(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(max = 320.dp)
-                                        .verticalScroll(rememberScrollState())
-                                        .padding(12.dp),
-                                ) {
-                                    if (state.preview.isBlank()) {
-                                        Text(
-                                            "Nothing yet. Write a prompt above.",
-                                            style = captionStyle(9.5f, Memphis.Ink.copy(alpha = 0.45f)),
-                                        )
-                                    } else {
-                                        Text(state.preview, style = bodyText())
-                                    }
-                                }
-                            }
-                        }
+                        Spacer(Modifier.height(14.dp))
                     }
 
-                    // THE FOOT. Save is the commit. Reset clears the prompt, because
-                    // there is no shipped one to go back to.
+                    // --- the fixed foot: the way out and the commit, always visible ---
                     Box(Modifier.fillMaxWidth().height(3.dp).background(Memphis.Ink))
                     Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 18.dp, vertical = 12.dp),
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         PrintedButton(
-                            label = "Reset",
+                            label = "Cancel",
                             modifier = Modifier.weight(1f),
                             filled = false,
-                            enabled = state.edited && !state.saving,
-                            onClick = { viewModel.onEvent(HeartbeatEvent.Reset) },
+                            enabled = !sheet.saving,
+                            onClick = { onEvent(DiaryEvent.CloseSheet) },
                         )
                         PrintedButton(
                             label = when {
-                                state.saving -> "Saving…"
-                                else -> "Save"
+                                sheet.saving -> "Saving…"
+                                sheet.isEdit -> "Save it"
+                                else -> "Book it"
                             },
                             modifier = Modifier.weight(1f),
                             filled = true,
-                            enabled = state.canSave && !state.saving,
-                            onClick = { viewModel.onEvent(HeartbeatEvent.Save) },
+                            enabled = sheet.canSave && sheet.validDays,
+                            onClick = { onEvent(DiaryEvent.SaveBooking) },
                         )
                     }
                 }
             }
         }
+    }
+}
+
+/** A small printed label above a field. */
+@Composable
+private fun FieldLabel(text: String) {
+    Text(
+        text.uppercase(),
+        style = captionStyle(8f, Memphis.Ink.copy(alpha = 0.55f)),
+        modifier = Modifier.padding(top = 12.dp, bottom = 5.dp),
+    )
+}
+
+/** A field the owner types into, in the same surface as every other object. */
+@Composable
+private fun SheetField(
+    value: String,
+    placeholder: String,
+    onChange: (String) -> Unit,
+    minHeight: androidx.compose.ui.unit.Dp = 46.dp,
+) {
+    MemphisSurface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Memphis.Paper,
+        borderWidth = 2.5.dp,
+        shadowOffset = 3.dp,
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = minHeight)
+                .padding(11.dp),
+        ) {
+            if (value.isEmpty()) {
+                Text(
+                    placeholder,
+                    style = bodyText().copy(color = Memphis.Ink.copy(alpha = 0.4f)),
+                )
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onChange,
+                textStyle = bodyText(),
+                cursorBrush = SolidColor(Memphis.Ink),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+/** One printed choice. Selected fills with ink; nothing glides. */
+@Composable
+private fun ChoiceCell(
+    label: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier
+            .background(if (selected) Memphis.Ink else Memphis.Paper)
+            .border(2.5.dp, Memphis.Ink)
+            .clickable { onClick() }
+            .padding(vertical = 9.dp, horizontal = 2.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label.uppercase(),
+            style = captionStyle(7.5f, if (selected) Memphis.Paper else Memphis.Ink),
+            textAlign = TextAlign.Center,
+        )
     }
 }
 
@@ -464,8 +1195,8 @@ private fun Band(label: String, note: String?) {
  * THE THIRD LINE IS THE REFUSAL, AND IT LIVES HERE. When there is no prompt the block
  * says so in its own caption rather than in a warning bar underneath, because the
  * reason the switch will not move is a property of the switch. Pressing it while
- * there is no prompt sets [promptRequired] on the view model, which lights this line
- * up and draws the border in coral; the switch itself never moves.
+ * there is no prompt sets [HeartbeatState.promptRequired] on the view model, which
+ * lights this line up and draws the border in coral; the switch itself never moves.
  *
  * IT CANNOT BE PRESSED WHILE A WRITE IS IN FLIGHT, which is the same guard the rest of
  * the room uses for Save. A double tap on a switch that books an alarm is not a thing

@@ -4,6 +4,7 @@
 package com.unuslumen.app.heartbeat
 
 import android.content.Context
+import com.unuslumen.app.domain.repository.HeartbeatBookingRepository
 import com.unuslumen.app.domain.repository.HeartbeatPromptRepository
 import com.unuslumen.app.preferences.domain.use_case.GetPreferenceUseCase
 import kotlinx.coroutines.runBlocking
@@ -85,6 +86,25 @@ val heartbeatModule = module {
                     true
                 }.getOrDefault(false)
             },
+        )
+    }
+
+    /*
+     * THE DIARY, DECLARED THE SAME WAY AND FOR THE SAME REASON.
+     *
+     * The diary is a second view model in the same room, so it gets a second explicit
+     * definition. The generated-module fault that hit Ottio and Agents does not care how
+     * many view models a module holds: it emits nothing for either of them.
+     *
+     * THE CLOCK IS NOT OVERRIDDEN HERE. The default is System.currentTimeMillis, and a
+     * test constructs the view model directly with its own clock rather than reaching
+     * into the container for a fake one. A production binding with a fake clock in it is
+     * the kind of thing that ships.
+     */
+    viewModel {
+        HeartbeatDiaryViewModel(
+            bookingRepository = get<HeartbeatBookingRepository>(),
+            promptRepository = get<HeartbeatPromptRepository>(),
         )
     }
 }
