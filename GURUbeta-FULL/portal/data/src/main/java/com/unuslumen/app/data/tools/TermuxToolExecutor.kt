@@ -38,12 +38,32 @@ class TermuxToolExecutor(private val context: Context) : ToolExecutor {
      * same collapse of two facts this class exists to prevent.
      */
     private suspend fun ensureReady(): String? = withContext(Dispatchers.IO) {
-        if (!termuxProvider.isInitialized()) { termuxProvider.initialize() }
+        /*
+         * UNCONDITIONAL, and this is the whole of the second fault in issue 317.
+         *
+         * The previous revision of this fix wrote `if (!isInitialized())`, which
+         * reads like "initialise if not already done" and is in fact "never
+         * initialise". isInitialized() is `initialized || isAvailable()`, and
+         * isAvailable() is "the bin directory has files" — true on every install
+         * that ever extracted, including one where all 416 files are dead. So on
+         * a real phone the call was skipped, initialize() never ran, the
+         * execution probe never fired, and the status surface reported null for
+         * prefixExecutes and prefixHealth because nothing had measured them.
+         *
+         * That is the same mistake as the original `if (!isAvailable())` one
+         * layer down: both ask a filesystem question and treat the answer as
+         * evidence that the tree works.
+         *
+         * initialize() is safe to call every time. Its own `initialized` latch
+         * returns immediately once this instance has run, and its execution probe
+         * is gated by a marker keyed to the package versionCode, so the repeat
+         * cost on a healthy device is a marker read.
+         */
+        termuxProvider.initialize()
         if (!termuxProvider.isAvailable()) return@withContext "Termux not available"
         if (!termuxProvider.isUsable()) {
-            val health = termuxProvider.executionHealth()
-            return@withContext "Termux is installed but its binaries will not execute" +
-                (health?.let { ": ${it.describe()}" } ?: "")
+            return@withContext "Termux is installed but its binaries will not execute: " +
+                termuxProvider.executionHealth().describe()
         }
         val reTools = shellExecutor.reTools; if (!reTools.isInitialized) { reTools.initialize() }
         null
@@ -61,11 +81,19 @@ class TermuxToolExecutor(private val context: Context) : ToolExecutor {
                 // is a read, and a read should not be able to claim the app cannot
                 // do something it can install itself.
                 //
-                // Issue 317: always entered, for the same reason ensureReady is.
-                // A status call is precisely the call that must be able to notice
-                // a tree that is present and cannot run, and gating the probe on
-                // "is anything installed" is what made that impossible.
-                if (!termuxProvider.isInitialized()) { runCatching { termuxProvider.initialize() } }
+                // Issue 317: ALWAYS entered, unconditionally. The first revision
+                // of this fix kept an `if (!isInitialized())` guard here, and
+                // because isInitialized() is true whenever the bin directory has
+                // files, a status call on a real install never initialised
+                // anything and never measured anything. prefixExecutes and
+                // prefixHealth were therefore null and vanished from the JSON,
+                // which is exactly what the v3.45 report showed.
+                //
+                // A status call is the one that most has to be able to notice a
+                // tree that is present and cannot run, so it never gets to skip
+                // the probe. runCatching stays: a status read must report a
+                // failure rather than throw out of the tool layer.
+                runCatching { termuxProvider.initialize() }
                 if (!termuxProvider.isAvailable()) {
                     val r = TermuxStatusResult(false, "", "", "", "", 0, emptyMap())
                     ToolExecutionResult.success(r, json.encodeToString(TermuxStatusResult.serializer(), r))
@@ -124,8 +152,8 @@ class TermuxToolExecutor(private val context: Context) : ToolExecutor {
                         availableTools = tools,
                         toolStates = states,
                         toolDetails = details,
-                        prefixExecutes = health?.allRan,
-                        prefixHealth = health?.describe(),
+                        prefixExecutes = health.allRan,
+                        prefixHealth = health.describe(),
                     )
                     ToolExecutionResult.success(r, json.encodeToString(TermuxStatusResult.serializer(), r))
                 }

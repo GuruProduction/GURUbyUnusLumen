@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The instrumented test manifest.
+
+    WHY THIS FILE EXISTS. AGP takes the runner NAME from defaultConfig, but a
+    runner can only be reached by `am instrument` when it is also declared here
+    with the instrumentation tag. Without the declaration the command fails with
+    "Unable to find instrumentation info", which is what happened the first time
+    TermuxTestRunner was used.
+
+    BOTH RUNNERS ARE DECLARED. The default androidx runner keeps working exactly
+    as before for every existing test, and TermuxTestRunner is available by name
+    for the Termux tests that cannot survive GuruApplication.onCreate starting Tor
+    on a fresh emulator. Nothing about the app itself changes: this is the test
+    APK, and the product manifest in src/main is untouched.
+
+    android:targetPackage is the debug variant's package, which is what
+    targetContext must resolve to for the tests' filesDir and nativeLibraryDir to
+    be the real ones.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application />
+
+    <instrumentation
+        android:name="androidx.test.runner.AndroidJUnitRunner"
+        android:targetPackage="com.unuslumen.app.gurubeta.debug"
+        android:label="GURU instrumented tests" />
+
+    <instrumentation
+        android:name="com.unuslumen.app.guru.TermuxTestRunner"
+        android:targetPackage="com.unuslumen.app.gurubeta.debug"
+        android:label="GURU Termux tests (plain Application)" />
+
+</manifest>
