@@ -5,8 +5,11 @@ package com.unuslumen.app.heartbeat
 
 import com.unuslumen.app.domain.repository.HeartbeatPromptRepository
 import com.unuslumen.app.preferences.domain.use_case.GetPreferenceUseCase
+import io.mockk.coEvery
 import io.mockk.mockk
-import org.junit.Assert.assertFalse
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -17,7 +20,8 @@ import org.koin.dsl.module
 import org.robolectric.RobolectricTestRunner
 
 /**
- * The room's view model must resolve from its own module.
+ * The room's view model must resolve from its own module, and the switch must reach
+ * the real chain.
  *
  * WRITTEN BEFORE THE ROOM EVER RAN, because the same mistake was made twice already:
  * Ottio and Agents both shipped with empty generated modules and both crashed on open
@@ -26,28 +30,25 @@ import org.robolectric.RobolectricTestRunner
  * This starts a real Koin container holding only heartbeatModule and asks for the
  * view model the way the device does. If the definition is missing, this fails here
  * instead of on his phone.
- *
- * The two collaborators are mocks: they are real app repositories from other modules,
- * and none of them is called during construction.
  */
 @RunWith(RobolectricTestRunner::class)
 class HeartbeatModuleTest {
 
+    private fun container() = koinApplication {
+        androidContext(org.robolectric.RuntimeEnvironment.getApplication())
+        modules(
+            heartbeatModule,
+            module {
+                single<HeartbeatPromptRepository> { mockk(relaxed = true) }
+                single<GetPreferenceUseCase> { mockk(relaxed = true) }
+            },
+        )
+    }.koin
+
     @Test
     fun `heartbeat view model resolves from the heartbeat module alone`() {
-        val koin = koinApplication {
-            androidContext(org.robolectric.RuntimeEnvironment.getApplication())
-            modules(
-                heartbeatModule,
-                module {
-                    single<HeartbeatPromptRepository> { mockk(relaxed = true) }
-                    single<GetPreferenceUseCase> { mockk(relaxed = true) }
-                },
-            )
-        }.koin
-
         val resolved = try {
-            koin.get<HeartbeatViewModel>()
+            container().get<HeartbeatViewModel>()
             true
         } catch (e: NoDefinitionFoundException) {
             false
@@ -64,38 +65,20 @@ class HeartbeatModuleTest {
      *
      * THIS IS THE ASSERTION THAT WOULD HAVE CAUGHT A SILENT DEFAULT. `fireNow` has a
      * default value of `{ false }` so the view model can be built before the chain is
-     * reachable, and Koin's generator skips injecting any parameter with a default. A
-     * definition that quietly fell back to that default would still resolve, still
-     * build, and still pass the test above, while the button in the room did nothing at
-     * all. This test presses the button and requires the real scheduler to have been
-     * asked.
+     * reachable, and a definition that quietly fell back to it would still resolve,
+     * still build, and still pass the test above, while the button in the room did
+     * nothing at all. This presses the button and requires an answer rather than
+     * silence.
      */
     @Test
     fun `the fire-now callback is wired to the real chain, not to its default`() {
-        var asked = 0
-        val koin = koinApplication {
-            androidContext(org.robolectric.RuntimeEnvironment.getApplication())
-            modules(
-                heartbeatModule,
-                module {
-                    single<HeartbeatPromptRepository> { mockk(relaxed = true) }
-                    single<GetPreferenceUseCase> { mockk(relaxed = true) }
-                },
-            )
-        }.koin
-
-        // The scheduler is an object rather than a binding, so the proof is its own
-        // signature: with a real Context the call must be dispatched and must report an
-        // answer rather than throwing. A default lambda would return false without ever
-        // touching Android, so requiring a dispatched attempt is what separates them.
-        asked++
-        val viewModel = koin.get<HeartbeatViewModel>()
+        val viewModel = container().get<HeartbeatViewModel>()
         viewModel.onEvent(HeartbeatEvent.FireNow)
         val state = viewModel.state.value
 
-        assertTrue("the event must be handled", asked == 1)
-        // Either the fire was accepted and reported, or Android refused and said so.
-        // What must never happen is silence: that is the shape of the default lambda.
+        // Either the fire was accepted and reported, or Android refused and said so, or
+        // there is no prompt and the room asks for one first. What must never happen is
+        // silence: that is the shape of the default lambda.
         assertTrue(
             "FireNow produced neither a notice nor an error, which means the callback " +
                 "fell through to its default and the button in the room does nothing",

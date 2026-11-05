@@ -3,7 +3,6 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.data.heartbeat
 
-import android.content.Context
 import android.util.Log
 import com.unuslumen.app.database.dao.HeartbeatPromptDao
 import com.unuslumen.app.database.entity.HeartbeatPromptEntity
@@ -13,23 +12,26 @@ import kotlinx.coroutines.withContext
 import org.koin.core.annotation.Single
 
 /**
- * The heartbeat prompt, with the bundled asset as its floor.
+ * The heartbeat prompt, and the only place it comes from.
  *
- * TWO SOURCES, ONE ANSWER. The saved row wins when there is one. When there is no
- * row the bundled asset answers, which is why a fresh install still beats exactly as
- * it did before this existed.
+ * ONE SOURCE: THE DATABASE ROW THE OWNER WROTE.
  *
- * THE ASSET IS READ THROUGH [HeartbeatPrompts] RATHER THAN COPIED HERE. That object
- * already owns the asset path, the token contract and the fail-closed behaviour, and
- * a second reader would be a second place for those to drift apart.
+ * There used to be a second source. The prompt shipped inside the APK as
+ * `assets/heartbeat/HEARTBEAT_PROMPT.md`, and this class fell back to it whenever
+ * nothing had been saved. That fallback is gone. What GURU says to itself every
+ * thirty minutes is its owner's decision, and shipping a default meant the app
+ * carried an opinion on that decision, which is not the app's opinion to hold.
  *
- * A BROKEN READ NEVER INJECTS NOTHING. If the database read fails the bundled text
- * answers, because a beat with a real prompt is better than a beat with none and the
- * bundled prompt is a known good one. The failure is logged rather than swallowed.
+ * SO A FRESH INSTALL HAS NO PROMPT. [current] answers an empty string, the beat ends
+ * before it reaches the model, and the room says why and asks for one. That is the
+ * honest state and it is visible. The alternative was words nobody chose being
+ * injected forty-eight times a day.
+ *
+ * [reset] deletes the row rather than writing anything back, because "cleared" and
+ * "set to these words" are different states and only one of them is true.
  */
 @Single(binds = [HeartbeatPromptRepository::class])
 class HeartbeatPromptRepositoryImpl(
-    private val context: Context,
     private val dao: HeartbeatPromptDao,
 ) : HeartbeatPromptRepository {
 
@@ -38,15 +40,11 @@ class HeartbeatPromptRepositoryImpl(
     }
 
     override suspend fun current(): String = withContext(Dispatchers.IO) {
-        val stored = runCatching { dao.get() }.getOrNull()?.content
-        if (!stored.isNullOrBlank()) return@withContext stored
-
-        val bundled = runCatching { HeartbeatPrompts.bundledText(context) }.getOrNull()
-        if (bundled.isNullOrBlank()) {
-            Log.w(TAG, "No stored heartbeat prompt and no readable bundled asset")
-            return@withContext ""
-        }
-        bundled
+        runCatching { dao.get()?.content }
+            .onFailure { Log.w(TAG, "Heartbeat prompt read failed: ${it.message}") }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?: ""
     }
 
     override suspend fun isEdited(): Boolean = withContext(Dispatchers.IO) {
@@ -70,7 +68,7 @@ class HeartbeatPromptRepositoryImpl(
     override suspend fun reset(): Unit = withContext(Dispatchers.IO) {
         runCatching { dao.clear() }
             .onFailure { Log.w(TAG, "Heartbeat prompt reset failed: ${it.message}") }
-        // Nothing is returned because there is nothing useful to say: after a reset
-        // the bundled text is in force, which is the same answer as a fresh install.
+        // Nothing is written back: there is no shipped text to restore. After a reset
+        // the honest answer is "no prompt", which is exactly what a fresh install has.
     }
 }

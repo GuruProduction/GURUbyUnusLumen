@@ -4,28 +4,31 @@
 package com.unuslumen.app.domain.repository
 
 /**
- * The heartbeat prompt, as its owner edits it.
+ * The heartbeat prompt, as its owner writes it.
  *
- * THE SHIPPED TEXT IS THE FLOOR. A fresh install runs exactly as it did when this
- * was a compiled asset: [current] answers with the bundled prompt until somebody
- * saves one, so nothing about a new phone changes. From the first save, the stored
- * row is what the beat injects.
+ * ONE SOURCE: THE DATABASE. There is no shipped prompt any more. It used to be an
+ * asset inside the APK, and [current] used to fall back to it, which meant the app
+ * carried an opinion about what GURU should say to itself every thirty minutes. That
+ * opinion is its owner's, so the asset and the fallback are gone.
  *
- * [reset] deletes the override rather than writing the bundled text into the table.
- * That matters because the bundled text can still be corrected in a release, and a
- * copy sitting in the database would never pick the correction up.
+ * A FRESH INSTALL THEREFORE HAS NO PROMPT, and [current] answers an empty string. A
+ * beat that finds nothing ends, records why, and the room asks for one. That is the
+ * honest state, and it is visible rather than papered over with words nobody chose.
+ *
+ * [reset] deletes the row. "Cleared" and "set to these words" are different states
+ * and only one of them is true after a reset.
  */
 interface HeartbeatPromptRepository {
 
-    /** The prompt in force: the saved one, or the bundled text when nothing is saved. */
+    /** The prompt in force, or an empty string when the owner has written none. */
     suspend fun current(): String
 
-    /** True when the owner has edited it, false when the bundled text is in force. */
+    /** True when a prompt has been saved, false when there is none at all. */
     suspend fun isEdited(): Boolean
 
-    /** Save an edited prompt. An empty string is refused rather than stored. */
+    /** Save a prompt. An empty string is refused rather than stored. */
     suspend fun save(content: String): Result<Unit>
 
-    /** Throw away the edit and fall back to the bundled text. */
+    /** Delete the prompt. Leaves no prompt, which is what a fresh install has. */
     suspend fun reset()
 }
