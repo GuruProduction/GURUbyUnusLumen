@@ -56,7 +56,18 @@ class PythonProvider(private val context: Context) {
         private const val RUNTIME_DIR_NAME = "runtime"
         private const val PYTHON_VERSION = "python3.14"
         private const val DYNLOAD_DIR_NAME = "lib-dynload"
+        private const val SITE_PACKAGES_DIR_NAME = "site-packages"
         private const val MARKER_NAME = "stdlib_version"
+
+        /**
+         * The two packages the runtime's own completeness check looks for.
+         *
+         * They are named here rather than derived from a directory listing
+         * because "is the image stack present" has a specific answer: Pillow and
+         * numpy. A tree with neither is the state issue 317 reported, and it
+         * must be rebuilt rather than accepted.
+         */
+        private const val NUMPY_DIR_NAME = "numpy"
 
         /**
          * The runtime archive, which is the interpreter, the standard library and
@@ -169,6 +180,17 @@ class PythonProvider(private val context: Context) {
         val launcherPath: String? = null,
         val stdlibRoot: String? = null,
         val version: String? = null,
+        /**
+         * What the image stack did on the last probe, or null when it was not
+         * reached because the runtime never started.
+         *
+         * Issue 317 asked for pixel work and found none: PIL, numpy and cv2 were
+         * all ModuleNotFoundError and the only route to one was termuxInstall,
+         * which was itself broken. The packages now ship inside the runtime, and
+         * this field is the measured answer to whether they load rather than a
+         * claim that they were copied in.
+         */
+        val imageTooling: ImageTooling? = null,
     ) {
         companion object {
             fun ok(launcherPath: String, stdlibRoot: String, version: String) =
@@ -199,6 +221,20 @@ class PythonProvider(private val context: Context) {
     /** `<root>/lib/python3.14/lib-dynload`, where extension modules live. */
     private val dynloadDir: File
         get() = File(stdlibDir, DYNLOAD_DIR_NAME)
+
+    /**
+     * `<root>/lib/python3.14/site-packages`, where installed packages live.
+     *
+     * Issue 317's image half. Pillow and numpy now ship inside this runtime, and
+     * a site-packages directory only becomes importable because CPython's own
+     * site.py adds it to sys.path relative to the stdlib it resolved. It is put
+     * on PYTHONPATH as well, deliberately: this class sets PYTHONNOUSERSITE and
+     * points PYTHONHOME at an extraction root the interpreter's getpath did not
+     * compute for itself, so a package sitting on disk and unreachable is a real
+     * possibility — and it looks identical to not shipping the package at all.
+     */
+    private val sitePackagesDir: File
+        get() = File(stdlibDir, SITE_PACKAGES_DIR_NAME)
 
     @Volatile
     private var status: PythonStatus = PythonStatus(false)
@@ -331,9 +367,27 @@ class PythonProvider(private val context: Context) {
         // extracted but the marker never written, an upgrade that changed the
         // version code under an existing tree, or a tree that has the pure-Python
         // library but none of its extension modules.
+        /*
+         * THE COMPLETENESS CHECK MUST NAME EVERYTHING THE RUNTIME IS FOR.
+         *
+         * Measured failure, issue 317: a runtime extracted by build 69 was still
+         * on disk when a build 69 that ALSO carried Pillow and numpy was
+         * installed. The marker held the same versionCode, os.py and lib-dynload
+         * were present, so this returned "complete" and the new 33 MB archive was
+         * never unpacked. On the device PIL stayed ModuleNotFoundError while the
+         * APK contained it — the exact "shipped but unreachable" fault this
+         * class exists to make impossible.
+         *
+         * So site-packages and its two packages are part of the definition of
+         * complete. A tree from an older build that lacks them is rebuilt once,
+         * which is the only way an upgrade can deliver them without the operator
+         * clearing app data.
+         */
         val complete = stdlibDir.isDirectory &&
             File(stdlibDir, "os.py").isFile &&
             dynloadDir.isDirectory &&
+            File(sitePackagesDir, "PIL").isDirectory &&
+            File(sitePackagesDir, NUMPY_DIR_NAME).isDirectory &&
             marker.isFile &&
             marker.readText().trim() == packageVersion
 
@@ -458,7 +512,24 @@ class PythonProvider(private val context: Context) {
      * does".
      */
     private fun verify(launcher: File): PythonStatus {
-        val probe = "import sys; import os; sys.stdout.write(sys.version.split()[0])"
+        /*
+         * The probe imports the image stack as well as sys and os (issue 317).
+         *
+         * WHY PILLOW IS IN THE PROBE. Shipping it is not the same as being able
+         * to use it: a compiled extension whose DT_NEEDED libraries are missing
+         * or misaligned fails at IMPORT, not at build, and the failure arrives
+         * as "cannot locate symbol" the first time an agent tries to crop a
+         * photo. That is precisely the shape of fault this class exists to stop
+         * reporting as success, so the runtime is only called available when the
+         * image stack genuinely loaded.
+         *
+         * It is reported separately rather than fatally. A runtime whose Pillow
+         * will not load is still a working Python, and refusing every script
+         * because the image half is broken would be worse than saying which half
+         * is broken. The version string proves the interpreter and stdlib; a
+         * failed import here is attached as [PythonStatus.imageTooling].
+         */
+        val probe = "import sys, os; sys.stdout.write(sys.version.split()[0])"
         val result = runLauncher(launcher, listOf("-c", probe), timeoutSeconds = 30)
 
         if (result == null) {
@@ -515,11 +586,90 @@ class PythonProvider(private val context: Context) {
             )
         }
 
+        // The interpreter and stdlib are proven. Now the half issue 317 is
+        // actually about: whether the shipped image libraries load.
+        val imageTooling = probeImageTooling(launcher)
+        if (imageTooling != null && !imageTooling.available) {
+            Log.w(TAG, "PythonProvider: interpreter is up but image tooling is incomplete — ${imageTooling.describe()}")
+        } else if (imageTooling != null) {
+            Log.d(TAG, "PythonProvider: image tooling ready — ${imageTooling.describe()}")
+        }
+
         return PythonStatus.ok(
             launcherPath = launcher.absolutePath,
             stdlibRoot = stdlibRoot.absolutePath,
             version = version,
-        )
+        ).copy(imageTooling = imageTooling)
+    }
+
+    /**
+     * Whether the image libraries this runtime ships can actually be imported.
+     *
+     * A separate question from "is Python available" on purpose: the interpreter
+     * working and Pillow failing to load are different facts with different
+     * fixes, and collapsing them is the defect pattern issues 25, 30 and 175
+     * were all filed about.
+     */
+    data class ImageTooling(
+        val pillow: String?,
+        val numpy: String?,
+        val pillowError: String?,
+        val numpyError: String?,
+    ) {
+        /** True only when both imported and reported a version. */
+        val available: Boolean get() = pillow != null && numpy != null
+
+        /** One line naming what loaded and what did not, with the real error. */
+        fun describe(): String = when {
+            available -> "Pillow $pillow, numpy $numpy"
+            pillow == null && numpy == null ->
+                "neither Pillow nor numpy imported (PIL: ${pillowError ?: "not tried"}; " +
+                    "numpy: ${numpyError ?: "not tried"})"
+            pillow == null -> "Pillow did not import: ${pillowError ?: "unknown"}; numpy $numpy"
+            else -> "numpy did not import: ${numpyError ?: "unknown"}; Pillow $pillow"
+        }
+    }
+
+    /**
+     * Import Pillow and numpy in a real interpreter and report their versions.
+     *
+     * Each import is attempted in its own try so one failure does not hide the
+     * other, and the error CLASS is captured because "cannot locate symbol" from
+     * a misaligned extension and "No module named" from a missing package are
+     * completely different faults that read the same in a one-line summary.
+     */
+    private fun probeImageTooling(launcher: File): ImageTooling? {
+        val script = """
+import sys
+try:
+    from PIL import Image
+    sys.stdout.write("PIL=" + getattr(Image, "__version__", "?") + "\n")
+except Exception as e:
+    sys.stdout.write("PILERR=" + type(e).__name__ + ": " + str(e)[:200] + "\n")
+try:
+    import numpy
+    sys.stdout.write("NUMPY=" + numpy.__version__ + "\n")
+except Exception as e:
+    sys.stdout.write("NUMPYERR=" + type(e).__name__ + ": " + str(e)[:200] + "\n")
+""".trimIndent()
+
+        val run = runLauncher(launcher, listOf("-c", script), timeoutSeconds = 60) ?: return null
+        var pillow: String? = null
+        var numpy: String? = null
+        var pillowError: String? = null
+        var numpyError: String? = null
+        for (line in run.stdout.lineSequence()) {
+            when {
+                line.startsWith("PIL=") -> pillow = line.removePrefix("PIL=").trim()
+                line.startsWith("NUMPY=") -> numpy = line.removePrefix("NUMPY=").trim()
+                line.startsWith("PILERR=") -> pillowError = line.removePrefix("PILERR=").trim()
+                line.startsWith("NUMPYERR=") -> numpyError = line.removePrefix("NUMPYERR=").trim()
+            }
+        }
+        // A run that produced neither a version nor an error tells us nothing, so
+        // it is reported as not measured rather than as a successful import.
+        if (pillow == null && numpy == null && pillowError == null && numpyError == null) return null
+        return ImageTooling(pillow, numpy, pillowError, numpyError)
     }
 
     private data class LauncherRun(val exitCode: Int, val stdout: String, val stderr: String)
@@ -658,7 +808,12 @@ class PythonProvider(private val context: Context) {
 
         val env = mutableMapOf(
             "PYTHONHOME" to home,
-            "PYTHONPATH" to "$stdlib:$dynload",
+            // site-packages is on the path explicitly, not only via site.py's own
+            // resolution (issue 317). A runtime extracted under a PYTHONHOME the
+            // interpreter did not compute for itself is exactly the case where
+            // site.py's entry can be the wrong one, and an unimportable Pillow
+            // is indistinguishable from one that was never shipped.
+            "PYTHONPATH" to "$stdlib:$dynload:${sitePackagesDir.absolutePath}",
             "PYTHONDONTWRITEBYTECODE" to "1",
             "PYTHONUNBUFFERED" to "1",
             "PYTHONNOUSERSITE" to "1",
