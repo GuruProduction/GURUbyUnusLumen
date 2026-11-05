@@ -63,6 +63,15 @@ dependencies {
     testImplementation(libs.mockk)
     testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("androidx.test.ext:junit:1.2.1")
+    /*
+     * THE TEST DISPATCHER, for the diary's coroutines.
+     *
+     * The diary launches a collect when it opens a day and an IO write when a sheet is
+     * saved, so a test that asserts on either needs a Main dispatcher it controls. Without
+     * this the view model's init throws "Module with the Main dispatcher had failed to
+     * initialize" on the JVM, which reads as a broken room rather than a missing dependency.
+     */
+    testImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 

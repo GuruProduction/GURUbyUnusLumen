@@ -7,7 +7,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
-import androidx.core.app.AlarmManagerCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -20,9 +19,9 @@ import kotlinx.coroutines.launch
  * chain's own alarms can land here.
  *
  * On an alarm fire the receiver does, in strict order:
- *  a) Booking FIRST: book the next slot at now + INTERVAL_MILLIS with the same
- *     gated exact call shape used everywhere in this chain. If every later step
- *     failed, the grid would still hold from this single synchronous booking.
+ *  a) Booking FIRST, through [HeartbeatScheduler.schedule], which is the single booking
+ *     authority. If every later step failed, the grid would still hold from that one
+ *     synchronous call.
  *  b) Payload kickoff via startForegroundService to HeartbeatRunService —
  *     UNCONDITIONAL. Every fire runs the beat. The old booked-at identity check
  *     (payload only when the carry matched a DataStore value) is retired: when
@@ -30,6 +29,14 @@ import kotlinx.coroutines.launch
  *     forever, which on a real device reads as "the heartbeat never fires".
  *     One booking authority (the scheduler), one payload rule (always run),
  *     zero drift-prone second sources.
+ *
+ * WHY THE BOOKING NOW GOES THROUGH THE SCHEDULER RATHER THAN BEING WRITTEN HERE AGAIN.
+ * This file used to build its own AlarmManager call, which meant two copies of the
+ * booking rule and — worse — a copy that did not ask whether the owner had switched the
+ * chain off. A fire that arrived from a booking made before the switch was turned off
+ * would rebook itself from here and the chain would carry on regardless. Routing through
+ * the scheduler gives the switch one place to speak, and gives the diary one place to be
+ * reconciled on every rebook.
  *
  * On the RELAYED time-set action only (a) runs: book-from-now, never a payload.
  */
@@ -59,25 +66,17 @@ class HeartbeatAlarmReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         scope.launch {
             try {
-                // (a) rebook FIRST, always, before any payload work. The gated
-                // exact call shape and the runCatching are the booking of record.
-                val alarmManager =
-                    appContext.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
-                val next = System.currentTimeMillis() + HeartbeatScheduler.INTERVAL_MILLIS
-                val nextPi = HeartbeatScheduler.buildPendingIntent(appContext, next)
+                /*
+                 * (a) REBOOK FIRST, ALWAYS, BEFORE ANY PAYLOAD WORK.
+                 *
+                 * Through the scheduler, so the booking rule lives in one place, the
+                 * switch is honoured here exactly as it is on boot, and the diary is
+                 * reconciled on the same call. The scheduler wraps its own AlarmManager
+                 * work in runCatching, so a refused rebook cannot cost this fire.
+                 */
                 runCatching {
-                    if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S ||
-                        alarmManager.canScheduleExactAlarms()
-                    ) {
-                        AlarmManagerCompat.setExactAndAllowWhileIdle(
-                            alarmManager, android.app.AlarmManager.RTC_WAKEUP, next, nextPi
-                        )
-                    } else {
-                        AlarmManagerCompat.setAndAllowWhileIdle(
-                            alarmManager, android.app.AlarmManager.RTC_WAKEUP, next, nextPi
-                        )
-                    }
-                }.onFailure { Log.w(TAG, "Fire rebook attempt failed: ${it.message}") }
+                    HeartbeatScheduler.schedule(appContext)
+                }.onFailure { Log.w(TAG, "Fire rebook failed: ${it.message}") }
 
                 // (b) payload kick-off, ALWAYS. The book keeping of the fire
                 // rides the carried extra purely as telemetry now.
