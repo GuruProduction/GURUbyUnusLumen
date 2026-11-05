@@ -61,8 +61,18 @@ interface HeartbeatBookingRepository {
 
     // ---------- occurrences ----------
 
-    /** The occurrences for one day, ordered by slot. */
+    /** The occurrences for one day, ordered by slot, as a live flow. */
     fun observeDay(dayStart: Long, dayEnd: Long): Flow<List<HeartbeatEntry>>
+
+    /**
+     * The occurrences for one day, read once.
+     *
+     * WHY BOTH THIS AND THE FLOW. The flow is what keeps the timeline live. This is what the
+     * room uses to redraw the day the instant a booking is saved, without waiting for the
+     * database to notify a collector: a save must land on screen immediately, and a rebuild
+     * that had to wait for an emission is the lag that made a booking look unsaved.
+     */
+    suspend fun day(dayStart: Long, dayEnd: Long): List<HeartbeatEntry>
 
     /** Which half hours in a window have anything on them, for the week strip. */
     fun observeSlotsBetween(fromMillis: Long, toMillis: Long): Flow<List<Long>>

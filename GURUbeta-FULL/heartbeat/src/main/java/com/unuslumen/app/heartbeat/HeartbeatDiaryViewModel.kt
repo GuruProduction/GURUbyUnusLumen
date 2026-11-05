@@ -50,8 +50,16 @@ data class BookingSheet(
     val editingId: String? = null,
     val name: String = "",
     val instruction: String = "",
-    val repeat: RepeatKind = RepeatKind.WEEKDAYS,
-    val chosenDays: Set<Int> = setOf(0, 1, 2, 3, 4),
+    /**
+     * ONCE BY DEFAULT, because a new booking was opened from one half hour on one day.
+     *
+     * It used to default to WEEKDAYS with Monday to Friday ticked, so pressing an empty
+     * half hour on a Thursday offered to repeat the thing every weekday, and the day grid
+     * arrived with five cells already filled. A person booking nine o'clock on a Thursday
+     * means Thursday until they say otherwise.
+     */
+    val repeat: RepeatKind = RepeatKind.ONCE,
+    val chosenDays: Set<Int> = emptySet(),
     val combine: BookingCombine = BookingCombine.ALONGSIDE,
     val saving: Boolean = false,
     val error: String? = null,
@@ -63,6 +71,22 @@ data class BookingSheet(
     val validDays: Boolean get() = repeat != RepeatKind.CHOSEN || chosenDays.isNotEmpty()
 
     val isEdit: Boolean get() = editingId != null
+
+    /**
+     * Which days the sheet's grid should show as filled.
+     *
+     * IT SHOWS WHAT THE BOOKING ACTUALLY COVERS, not what somebody has ticked. A ONCE
+     * booking covers one date, so its own weekday is the honest answer and the grid reads
+     * as "this Thursday". DAILY fills all seven, WEEKDAYS fills Monday to Friday, and
+     * CHOSEN shows the picked set. Showing the raw tick set instead meant a new sheet
+     * arrived with five cells lit and no explanation of why.
+     */
+    fun displayDays(zone: TimeZone = TimeZone.getDefault()): Set<Int> = when (repeat) {
+        RepeatKind.ONCE -> setOf(HeartbeatSlot.weekdayIndex(slotAt, zone))
+        RepeatKind.DAILY -> setOf(0, 1, 2, 3, 4, 5, 6)
+        RepeatKind.WEEKDAYS -> setOf(0, 1, 2, 3, 4)
+        RepeatKind.CHOSEN -> chosenDays
+    }
 }
 
 /**
@@ -178,17 +202,19 @@ class HeartbeatDiaryViewModel(
             is DiaryEvent.EditInstruction ->
                 updateSheet { it.copy(instruction = event.text, error = null) }
             is DiaryEvent.SetRepeat -> updateSheet { sheet ->
-                // Choosing days seeds the mask with the weekdays, so a person pressing
-                // "Days" sees a sensible week rather than seven empty cells.
-                sheet.copy(
-                    repeat = event.repeat,
-                    chosenDays = when {
-                        event.repeat == RepeatKind.CHOSEN && sheet.chosenDays.isEmpty() ->
-                            setOf(0, 1, 2, 3, 4)
-                        else -> sheet.chosenDays
-                    },
-                    error = null,
-                )
+                /*
+                 * CHOOSING DAYS DOES NOT PRE-FILL ANYTHING ANY MORE.
+                 *
+                 * It used to seed Monday to Friday the moment CHOSEN was pressed, which
+                 * looked helpful and was not: pressing a single half hour on a Thursday
+                 * arrived at a form already claiming five days a week, and the grid read as
+                 * though somebody had made choices they had not made. A tick set that a
+                 * person did not tick is a lie about their own diary.
+                 *
+                 * Tapping a day still switches the repeat to CHOSEN, so the way to pick days
+                 * is one tap rather than two, and nothing is claimed until a day is tapped.
+                 */
+                sheet.copy(repeat = event.repeat, error = null)
             }
             is DiaryEvent.ToggleDay -> updateSheet { sheet ->
                 val days = if (event.dayIndex in sheet.chosenDays) {
@@ -235,11 +261,21 @@ class HeartbeatDiaryViewModel(
         }
     }
 
+    /**
+     * Re-read the rules, then rebuild the day so the change is on screen immediately.
+     *
+     * THE REBUILD IS THE POINT. Refreshing the booking list alone updated a field nothing
+     * drew from until the next emission, which is exactly the lag a person saw after a
+     * save. This reads the rules and then redraws the day from them in the same coroutine,
+     * so there is no window in which the diary is showing a booking it no longer believes
+     * in.
+     */
     private fun refreshBookings() {
         viewModelScope.launch {
             val bookings = runCatching { bookingRepository.bookings() }.getOrDefault(emptyList())
             _state.update { it.copy(bookings = bookings) }
             refreshWeekMarks()
+            rebuildSlots()
         }
     }
 
@@ -283,7 +319,6 @@ class HeartbeatDiaryViewModel(
         dayJob?.cancel()
         dayJob = viewModelScope.launch {
             val dayEnd = HeartbeatSlot.endOfDay(dayStart)
-            val bookings = _state.value.bookings
             val entries = runCatching { bookingRepository.observeDay(dayStart, dayEnd) }
                 .getOrDefault(kotlinx.coroutines.flow.flowOf(emptyList()))
 
@@ -296,7 +331,11 @@ class HeartbeatDiaryViewModel(
                 // derived from the rules first, and the dated entry is attached where one
                 // exists.
                 val bySlot = dayEntries.associateBy { it.slotAt }
-                val owners = HeartbeatExpansion.slotOwners(bookings, dayStart, dayEnd)
+                val owners = HeartbeatExpansion.slotOwners(
+                    _state.value.bookings,
+                    dayStart,
+                    dayEnd,
+                )
                 val slots = (0 until HeartbeatSlot.SLOTS_PER_DAY).map { index ->
                     val slotAt = dayStart + index * HeartbeatSlot.SLOT_MILLIS
                     val booking = owners[slotAt]
@@ -320,6 +359,45 @@ class HeartbeatDiaryViewModel(
                 _state.update { it.copy(slots = slots) }
             }
         }
+    }
+
+    /**
+     * Rebuild the day's slots from the CURRENT bookings and the current entries.
+     *
+     * THIS IS THE FIX FOR THE TIMELINE NOT REDRAWING. The day's collector runs when the flow
+     * emits, and it used to read the booking list through a local captured when the
+     * collector started. A booking saved a second later changed the state's booking list
+     * but did not re-run that collector, so the timeline kept drawing the world as it was
+     * before the save and a person had to leave the tab and come back.
+     *
+     * Reading the bookings from the state at build time makes the rebuild a pure function of
+     * what is on screen: call it after a save, after a delete, after a toggle, and the
+     * timeline is correct without any flow having to emit.
+     */
+    private suspend fun rebuildSlots() {
+        val selectedDay = _state.value.selectedDayStart
+        if (selectedDay == 0L) return
+        val dayEnd = HeartbeatSlot.endOfDay(selectedDay)
+        val dayEntries = runCatching { bookingRepository.day(selectedDay, dayEnd) }
+            .getOrDefault(emptyList())
+        val bySlot = dayEntries.associateBy { it.slotAt }
+        val owners = HeartbeatExpansion.slotOwners(_state.value.bookings, selectedDay, dayEnd)
+
+        val slots = (0 until HeartbeatSlot.SLOTS_PER_DAY).map { index ->
+            val slotAt = selectedDay + index * HeartbeatSlot.SLOT_MILLIS
+            val booking = owners[slotAt]
+            DiarySlot(
+                slotAt = slotAt,
+                booking = booking,
+                entry = bySlot[slotAt] ?: if (booking != null) {
+                    HeartbeatEntry(id = "", bookingId = booking.id, slotAt = slotAt)
+                } else {
+                    null
+                },
+            )
+        }
+        claimedSlots = owners.keys
+        _state.update { it.copy(slots = slots) }
     }
 
     // ---------- the sheet ----------
@@ -448,6 +526,16 @@ class HeartbeatDiaryViewModel(
                             },
                         )
                     }
+                    /*
+                     * THE SAVE MUST LAND ON SCREEN BEFORE THE SHEET CLOSES.
+                     *
+                     * refreshBookings re-reads the rules and rebuilds the day from them, so
+                     * the card is there the instant the sheet goes away. observeDay is
+                     * restarted afterwards so the live collector is watching the new
+                     * bookings rather than the set it captured when it began: leaving it
+                     * running would let the next emission redraw the day from the old list
+                     * and undo the rebuild.
+                     */
                     refreshBookings()
                     observeDay(_state.value.selectedDayStart)
                 },

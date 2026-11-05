@@ -294,13 +294,10 @@ class HeartbeatDiaryViewModelTest {
         model.onEvent(DiaryEvent.EditInstruction("Do nothing."))
         model.onEvent(DiaryEvent.SetRepeat(RepeatKind.CHOSEN))
 
-        // Choosing days seeds the weekdays, so the empty state is reached by turning off
-        // whichever days are currently on rather than by pressing all seven blindly: a
-        // blind seven would switch the seeded ones back on.
-        val seeded = model.state.value.sheet!!.chosenDays.toList()
-        seeded.forEach { model.onEvent(DiaryEvent.ToggleDay(it)) }
+        // Choosing days no longer pre-fills anything, so the empty state is already the
+        // state a person arrives in. This asserts that rather than manufacturing it.
         assertTrue(
-            "the sheet is genuinely empty of days: ${model.state.value.sheet!!.chosenDays}",
+            "choosing days claims none of its own: ${model.state.value.sheet!!.chosenDays}",
             model.state.value.sheet!!.chosenDays.isEmpty(),
         )
 
@@ -576,6 +573,118 @@ class HeartbeatDiaryViewModelTest {
 
         assertEquals(RepeatKind.CHOSEN, sheet.repeat)
         assertTrue("the picked day is on", 5 in sheet.chosenDays)
+    }
+
+    /**
+     * A SAVE MUST REACH THE TIMELINE WITHOUT LEAVING THE TAB.
+     *
+     * This is the fault he found on the emulator: the booking saved, the sheet did not close
+     * on screen and the card did not appear until he left the room and came back. The cause
+     * was a collector that captured the booking list when it started, so a later save
+     * changed the state without re-running the thing that draws the day.
+     */
+    @Test
+    fun `a saved booking appears on the timeline in the same pass, with no reload`() =
+        runTest(dispatcher) {
+            val model = started()
+            advanceUntilIdle()
+            model.onEvent(DiaryEvent.SelectDay(dayStart()))
+            advanceUntilIdle()
+            assertTrue("the day starts empty", model.state.value.slots.none { it.isBooked })
+
+            model.onEvent(DiaryEvent.OpenSheet(slotAt = at(11, 0)))
+            model.onEvent(DiaryEvent.EditName("Straight away"))
+            model.onEvent(DiaryEvent.EditInstruction("Prove the card is drawn."))
+            model.onEvent(DiaryEvent.SaveBooking)
+            advanceUntilIdle()
+
+            assertNull("the sheet closes on the save", model.state.value.sheet)
+            val slot = model.state.value.slots.first { it.slotAt == at(11, 0) }
+            assertEquals(
+                "the card is on the timeline without a reload",
+                "Straight away",
+                slot.booking?.name,
+            )
+            assertEquals("and the day counts it", 1, model.state.value.bookedCount)
+        }
+
+    @Test
+    fun `two bookings on one day both draw, which the first build got wrong`() = runTest(dispatcher) {
+        val model = started()
+        advanceUntilIdle()
+        model.onEvent(DiaryEvent.SelectDay(dayStart()))
+        advanceUntilIdle()
+
+        model.onEvent(DiaryEvent.OpenSheet(slotAt = at(11, 0)))
+        model.onEvent(DiaryEvent.EditName("First"))
+        model.onEvent(DiaryEvent.EditInstruction("One."))
+        model.onEvent(DiaryEvent.SaveBooking)
+        advanceUntilIdle()
+
+        model.onEvent(DiaryEvent.OpenSheet(slotAt = at(13, 0)))
+        model.onEvent(DiaryEvent.EditName("Second"))
+        model.onEvent(DiaryEvent.EditInstruction("Two."))
+        model.onEvent(DiaryEvent.SaveBooking)
+        advanceUntilIdle()
+
+        val slots = model.state.value.slots
+        assertEquals(2, slots.count { it.isBooked })
+        assertEquals("First", slots.first { it.slotAt == at(11, 0) }.booking?.name)
+        assertEquals("Second", slots.first { it.slotAt == at(13, 0) }.booking?.name)
+        assertEquals(2, repository.bookings.size)
+    }
+
+    /**
+     * A FRESH SHEET IS ONE DATE, NOT FIVE WEEKDAYS.
+     *
+     * He booked a single half hour on a Thursday and the form arrived with Monday to Friday
+     * already lit and WEEKDAYS already chosen. A booking started from one half hour means
+     * that half hour until the person says otherwise.
+     */
+    @Test
+    fun `a new sheet defaults to once on the day that was pressed`() = runTest(dispatcher) {
+        val model = started()
+        advanceUntilIdle()
+        model.onEvent(DiaryEvent.OpenSheet(slotAt = at(11, 0)))
+
+        val sheet = model.state.value.sheet!!
+        assertEquals("a new booking is a once-off", RepeatKind.ONCE, sheet.repeat)
+        assertTrue("and it claims no days of its own", sheet.chosenDays.isEmpty())
+
+        // Thursday the 5th of November 2026, which is index 3.
+        assertEquals(
+            "the grid lights the day that was pressed and nothing else",
+            setOf(3),
+            sheet.displayDays(london),
+        )
+    }
+
+    @Test
+    fun `the day grid follows the repeat rather than stale ticks`() = runTest(dispatcher) {
+        val model = started()
+        advanceUntilIdle()
+        model.onEvent(DiaryEvent.OpenSheet(slotAt = at(11, 0)))
+
+        model.onEvent(DiaryEvent.SetRepeat(RepeatKind.DAILY))
+        assertEquals(
+            "daily covers the whole week",
+            setOf(0, 1, 2, 3, 4, 5, 6),
+            model.state.value.sheet!!.displayDays(london),
+        )
+
+        model.onEvent(DiaryEvent.SetRepeat(RepeatKind.WEEKDAYS))
+        assertEquals(
+            "weekdays covers monday to friday",
+            setOf(0, 1, 2, 3, 4),
+            model.state.value.sheet!!.displayDays(london),
+        )
+
+        model.onEvent(DiaryEvent.ToggleDay(5))
+        assertEquals(
+            "picking a day shows exactly the picked days",
+            setOf(5),
+            model.state.value.sheet!!.displayDays(london),
+        )
     }
 
     @Test
