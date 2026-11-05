@@ -226,6 +226,86 @@ class PortalViewModel(
         }
     }
 
+    /**
+     * Pick up turns that landed in the store while the portal was not looking.
+     *
+     * THE FAULT THIS FIXES. The beat really runs: the alarm delivers, the booking is read,
+     * the instruction is sent and the model replies, and the log proves all of it. But the
+     * portal loads the newest conversation once and never re-reads, so a beat that arrived
+     * while the app was elsewhere existed in the database and never on screen. From the
+     * owner's side that is indistinguishable from a heartbeat that never fired, which is
+     * exactly what he reported twice.
+     *
+     * WHY IT MERGES RATHER THAN REPLACES. A reload that rebuilt the list would drop any
+     * streaming message mid-turn, and any turn this screen is in the middle of sending. So
+     * it keeps the live list and adds only the stored messages whose ids are not already
+     * present, newest-first like the rest of this class.
+     *
+     * IT IS SILENT BY DESIGN: no loading state, no scroll, no notice. A beat arriving is
+     * GURU doing its job, not an event that needs announcing.
+     */
+    fun refreshFromStore() {
+        // Never touch the list mid-send: the streaming frames are ahead of the store and a
+        // merge during them would interleave a turn with itself.
+        if (_uiState.value.loading) return
+        if (_messages.value.any { it is AiMessage.StreamingAssistant || it is AiMessage.StreamingToolCall }) return
+
+        val conversationId = _currentConversationId.value ?: return
+        viewModelScope.launch {
+            val persisted = runCatching {
+                memoryRepository.getMessagesByConversation(conversationId)
+            }.getOrDefault(emptyList())
+            if (persisted.isEmpty()) return@launch
+
+            /*
+             * ORDERED BEFORE THE MAPPING, NOT AFTER IT.
+             *
+             * `timestamp` is on the stored row; the mapped AiMessage carries the same
+             * instant as `time`. Sorting the mapped list would need a field that only
+             * exists on the other type, so the sort happens here where the field is.
+             */
+            val restored = persisted.sortedBy { it.timestamp }.mapNotNull { msg ->
+                when (msg.role) {
+                    "user" -> AiMessage.UserMessage(
+                        uuid = msg.id,
+                        content = msg.content,
+                        time = msg.timestamp,
+                        attachments = emptyList(),
+                        attachmentsText = ""
+                    )
+                    "assistant" -> AiMessage.AssistantMessage(
+                        content = msg.content,
+                        time = msg.timestamp,
+                        uuid = msg.id
+                    )
+                    "tool" -> AiMessage.ToolCall(
+                        uuid = msg.id,
+                        id = msg.toolCallId.ifBlank { null },
+                        name = msg.toolName,
+                        rawContent = msg.toolCalls.ifBlank { msg.content },
+                        resultRawContent = msg.toolResults.ifBlank { msg.content },
+                        time = msg.timestamp
+                    )
+                    else -> null
+                }
+            }
+            if (restored.isEmpty()) return@launch
+
+            val known = _messages.value.map { it.uuid }.toSet()
+            val arriving = restored.filter { it.uuid !in known }
+            if (arriving.isEmpty()) return@launch
+
+            // Newest-first, matching the order every other write in this class uses. The
+            // arriving list is already chronological from the sort above, so reversing it
+            // puts a beat's reply in front of its own instruction.
+            _messages.value = arriving.reversed() + _messages.value
+            Log.d(
+                "PortalViewModel",
+                "Picked up ${arriving.size} stored message(s) the portal had not shown yet",
+            )
+        }
+    }
+
     fun startNewConversation() {
         // Persist the current conversation to DB before clearing so context is NEVER lost
         val conversationId = _currentConversationId.value

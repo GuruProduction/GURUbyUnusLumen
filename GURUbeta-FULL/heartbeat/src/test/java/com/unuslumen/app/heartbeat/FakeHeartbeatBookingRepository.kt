@@ -106,6 +106,9 @@ class FakeHeartbeatBookingRepository(
         return flowOf(entries.filter { it.slotAt >= dayStart && it.slotAt < dayEnd })
     }
 
+    override suspend fun day(dayStart: Long, dayEnd: Long): List<HeartbeatEntry> =
+        entries.filter { it.slotAt >= dayStart && it.slotAt < dayEnd }
+
     override fun observeSlotsBetween(fromMillis: Long, toMillis: Long): Flow<List<Long>> =
         flowOf(entries.map { it.slotAt }.filter { it in fromMillis until toMillis }.distinct())
 

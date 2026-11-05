@@ -190,6 +190,47 @@ private fun PortalScreenScoped(
         viewModel.onEvent(PortalEvent.SendMessage(content = handedOver, attachments = emptyList()))
     }
 
+    /*
+     * PICK UP WHAT LANDED WHILE THE SCREEN WAS NOT LOOKING.
+     *
+     * A scheduled heartbeat beat really runs: the alarm delivers, the booking is read, the
+     * instruction is sent and the model replies. That reply is stored, but this screen loads
+     * the conversation once and never re-reads, so a beat that arrived while the owner was
+     * elsewhere in the app was invisible and looked like a heartbeat that never fired.
+     *
+     * The read happens on every resume and every recomposition of the prompt, which covers
+     * the two ways a person meets a beat: coming back to the app, and coming to the portal.
+     * It is cheap, it never touches the list mid-send, and it adds only messages this screen
+     * has not already shown.
+     */
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshFromStore()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    /*
+     * AND A SLOW POLL WHILE THE PORTAL IS OPEN.
+     *
+     * Resume alone misses one case: the beat lands while the portal is already on screen,
+     * which is exactly when a person would expect to watch it arrive. A watch on the
+     * message count cannot do this job, because this screen's own sends grow the list too
+     * and the watcher would re-enter on its own additions.
+     *
+     * Every twenty seconds, and only while there is nothing in flight, so a long reply is
+     * never interrupted and an idle chat costs one small database read a minute.
+     */
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(20_000)
+            viewModel.refreshFromStore()
+        }
+    }
+
     PortalScreenContent(
         uiState = uiState,
         messages = messages,

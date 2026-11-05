@@ -146,6 +146,13 @@ class HeartbeatBookingRepositoryImpl(
     override fun observeDay(dayStart: Long, dayEnd: Long): Flow<List<HeartbeatEntry>> =
         dao.observeDay(dayStart, dayEnd).map { rows -> rows.map { it.toModel() } }
 
+    override suspend fun day(dayStart: Long, dayEnd: Long): List<HeartbeatEntry> =
+        withContext(Dispatchers.IO) {
+            runCatching { dao.day(dayStart, dayEnd).map { it.toModel() } }
+                .onFailure { Log.w(TAG, "Day read failed: ${it.message}") }
+                .getOrDefault(emptyList())
+        }
+
     override fun observeSlotsBetween(fromMillis: Long, toMillis: Long): Flow<List<Long>> =
         dao.observeSlotsBetween(fromMillis, toMillis)
 
