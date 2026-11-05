@@ -3,6 +3,7 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.heartbeat
 
+import com.unuslumen.app.domain.repository.HeartbeatBookingRepository
 import com.unuslumen.app.domain.repository.HeartbeatPromptRepository
 import com.unuslumen.app.preferences.domain.use_case.GetPreferenceUseCase
 import io.mockk.coEvery
@@ -40,6 +41,7 @@ class HeartbeatModuleTest {
             heartbeatModule,
             module {
                 single<HeartbeatPromptRepository> { mockk(relaxed = true) }
+                single<HeartbeatBookingRepository> { FakeHeartbeatBookingRepository() }
                 single<GetPreferenceUseCase> { mockk(relaxed = true) }
             },
         )
@@ -58,6 +60,60 @@ class HeartbeatModuleTest {
             "HeartbeatViewModel did not resolve from heartbeatModule: the room would crash on open",
             resolved,
         )
+    }
+
+    /**
+     * The diary's view model must resolve too, and for the same reason.
+     *
+     * THE ROOM NOW HAS TWO VIEW MODELS AND THE SCREEN ASKS FOR BOTH. A missing definition
+     * for either one throws at composition, which is a crash on open rather than an empty
+     * tab. This is the second half of the same guard.
+     */
+    @Test
+    fun `the diary view model resolves from the heartbeat module`() {
+        val resolved = try {
+            container().get<HeartbeatDiaryViewModel>()
+            true
+        } catch (e: NoDefinitionFoundException) {
+            false
+        }
+
+        assertTrue(
+            "HeartbeatDiaryViewModel did not resolve from heartbeatModule: the diary tab " +
+                "would crash the room on open",
+            resolved,
+        )
+    }
+
+    /**
+     * The diary's repository must be the real binding, not a default.
+     *
+     * A missing binding here is an empty diary rather than a crash, which is the quieter
+     * and worse failure: the tab would open, show forty-eight open half hours, and refuse
+     * every booking because the write went nowhere.
+     */
+    @Test
+    fun `the diary's repository is present and can hold a booking`() = runBlocking {
+        val repository = container().get<HeartbeatBookingRepository>()
+        val result = repository.book(
+            com.unuslumen.app.domain.model.HeartbeatBooking(
+                id = "probe",
+                name = "Probe",
+                instruction = "Prove the binding is real.",
+                repeat = com.unuslumen.app.domain.model.RepeatKind.DAILY,
+                // Noon on a fixed date, so the probe is on a half hour in any time zone.
+                startsAt = java.util.Calendar.getInstance().apply {
+                    clear()
+                    set(2026, 10, 5, 12, 0, 0)
+                }.timeInMillis,
+            )
+        )
+
+        assertTrue(
+            "the diary repository did not accept a booking: ${result.exceptionOrNull()?.message}",
+            result.isSuccess,
+        )
+        assertTrue("and it kept it", repository.bookings().isNotEmpty())
     }
 
     /**
