@@ -300,12 +300,35 @@
     <uses-permission android:name="android.permission.BIND_VIRTUAL_DEVICE_SERVICE" />
 
 
+    <!--
+        android:largeHeap — measured necessity, not a convenience.
+
+        GURU holds things no ordinary app does, and the default 192 MB heap is not
+        enough for the work it is asked to do:
+
+          - The Termux bootstrap is a 29 MB compressed archive that is streamed to
+            disk and then passed through several hundred patchelf processes. That
+            path died with OutOfMemoryError inside ProcessBuilder.environment() on
+            an API 37 emulator, halfway through a prefix rebuild, which left the
+            tree worse than before it started.
+          - Pillow opens a 4000x3000 JPEG, which is 36 MB as an RGB array, and a
+            4x enlargement of a crop is five times that again. The handset already
+            produced an 8 MB PNG from one, so this work is real and in use.
+          - The Python runtime extraction is a 33 MB archive with a 1.7k-file
+            stdlib.
+
+        None of those is a leak; they are the app doing what it advertises. Asking
+        for the larger heap is the honest fix, and it costs nothing on a device
+        that never touches those paths because the limit is a ceiling rather than
+        a reservation.
+    -->
     <application
         android:name=".GuruApplication"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:enableOnBackInvokedCallback="true"
         android:extractNativeLibs="true"
+        android:largeHeap="true"
         android:fullBackupContent="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"

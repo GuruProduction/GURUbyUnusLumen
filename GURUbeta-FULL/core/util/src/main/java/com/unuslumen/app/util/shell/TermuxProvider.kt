@@ -143,6 +143,14 @@ class TermuxProvider(private val context: Context) {
         private const val EXEC_HEALTH_VERSION = 1
 
         /**
+         * The exit status a process gets when the dynamic linker refuses it:
+         * 128 + SIGSEGV (11). Measured on the handset as the shape of EVERY
+         * failure in issue 317, and the one number that decides the fallback in
+         * [execWithEnv].
+         */
+        private const val EXIT_SIGSEGV = 139
+
+        /**
          * How many consecutive recovery attempts a single process may make.
          *
          * A re-extract is the expensive recovery: 29 MB of bootstrap, several
@@ -200,6 +208,19 @@ class TermuxProvider(private val context: Context) {
         if (initialized) return@withContext available
 
         try {
+            /*
+             * Read the tree's state BEFORE any pass touches it.
+             *
+             * Every step below can legitimately repair the prefix — copyBundledLibs
+             * restores missing libraries, createLibrarySymlinks recreates the
+             * versioned links — so a measurement taken after them cannot tell a
+             * healthy tree from one that was just repaired into looking healthy.
+             * The device test caught exactly that: libraries were removed, the
+             * passes put them back, the marker matched, the probe was skipped and
+             * the damaged tree was never measured.
+             */
+            val libsAtEntry = libraryFingerprint()
+
             termuxRoot.mkdirs()
 
             // Corruption detection (the audit's stage-3 wiped tree): canonicalised tree
@@ -354,7 +375,7 @@ class TermuxProvider(private val context: Context) {
              * of being trusted forever, and the probe result is kept on
              * [execHealth] so the status surface can say what actually happened.
              */
-            if (!execHealthIsCurrent()) {
+            if (!execHealthIsCurrent(libsAtEntry)) {
                 val measured = probePrefixExecution()
                 execHealth = measured
                 if (measured.allRan) {
@@ -403,8 +424,32 @@ class TermuxProvider(private val context: Context) {
     /** The last measured execution health, or null before the first probe. */
     @Volatile private var execHealth: ExecHealth? = null
 
-    /** The last measured execution health for a caller that wants to report it. */
-    fun executionHealth(): ExecHealth? = execHealth
+    /**
+     * The measured execution health, NEVER null once the prefix is installed.
+     *
+     * THE BUG THIS FIXES, and it is exactly what the v3.46 handset report showed:
+     * every binary reported RUNS, and prefixExecutes was null.
+     *
+     * The marker gate exists so a healthy tree is not re-probed on every cold
+     * start. But when the marker IS current, the probe is skipped — and `execHealth`
+     * is an INSTANCE field, so a provider constructed after the marker was written
+     * has never measured anything and answers null. TermuxToolExecutor builds its
+     * own provider, so on a warm install the status surface got null, reported it,
+     * and the field vanished from the JSON.
+     *
+     * "I did not measure it" and "it does not work" are different answers, and
+     * neither belongs in a field whose whole job is to say whether the tree runs.
+     * So a caller asking for the verdict gets one: if this instance has not
+     * measured the tree, measure it now. The four probes are a few milliseconds
+     * and a status call is not a hot path.
+     */
+    fun executionHealth(): ExecHealth {
+        execHealth?.let { return it }
+        val measured = probePrefixExecution()
+        execHealth = measured
+        if (measured.allRan) writeExecHealthMarker(measured)
+        return measured
+    }
 
     /**
      * The versionCode this APK belongs to, used to decide whether a proven tree
@@ -429,16 +474,53 @@ class TermuxProvider(private val context: Context) {
      * what the probe means re-runs it, and the package versionCode, so an
      * upgrade re-proves rather than inheriting a claim made by different code.
      */
-    private fun execHealthIsCurrent(): Boolean {
+    /**
+     * Whether the marker proves this exact tree, under this exact build, runs.
+     *
+     * THE FINGERPRINT MUST BE TAKEN BEFORE ANY REPAIR PASS, and that is not a
+     * detail. The device test proved it: the libraries were removed, initialize()
+     * then ran copyBundledLibs and createLibrarySymlinks as it always does, those
+     * passes PUT THE LIBRARIES BACK, and by the time this check ran the count
+     * matched the marker again. The probe was skipped, health stayed null, and a
+     * tree that had been damaged on entry was never measured.
+     *
+     * So the caller reads [libraryFingerprint] at the top of initialize() and
+     * passes it in. Comparing against the state on ENTRY is the only version of
+     * this check that can notice damage, because everything after that point may
+     * legitimately repair it.
+     */
+    private fun execHealthIsCurrent(libsAtEntry: Int): Boolean {
         val recorded = runCatching { execHealthMarker().readText() }.getOrNull() ?: return false
         return recorded.contains("version=$EXEC_HEALTH_VERSION") &&
-            recorded.contains("app=${packageVersionCode()}")
+            recorded.contains("app=${packageVersionCode()}") &&
+            recorded.contains("libs=$libsAtEntry")
     }
+
+    /**
+     * How many shared libraries the prefix holds, as a cheap fingerprint of the
+     * tree the marker was written against.
+     *
+     * WHY THE MARKER NEEDED A THIRD FACT. The device test proved the hole: a tree
+     * whose libraries were removed still carried a marker written when they were
+     * present, the versionCode had not changed, and so [execHealthIsCurrent]
+     * answered true, [initialize] skipped the probe, and a prefix that could not
+     * execute reported itself healthy. That is issue 317 exactly, one layer in.
+     *
+     * A count is enough for the shape that actually happens — libraries removed,
+     * truncated or never extracted — and it costs one directory listing rather
+     * than a hash over a hundred megabytes. A count cannot detect a library
+     * replaced by a different file of the same name, and that limit is stated
+     * rather than implied: the per-run probe is what catches real corruption, and
+     * this is only the cheap gate in front of it.
+     */
+    private fun libraryFingerprint(): Int =
+        libDir.listFiles()?.count { it.isFile } ?: 0
 
     private fun writeExecHealthMarker(health: ExecHealth) {
         runCatching {
             execHealthMarker().writeText(
                 "version=$EXEC_HEALTH_VERSION;app=${packageVersionCode()};" +
+                    "libs=${libraryFingerprint()};" +
                     "ran=${listOf(health.bash, health.git, health.curl, health.apt).count { it?.state == CommandProbe.RUNS }}" +
                     ";bash=${health.bash?.output?.lineSequence()?.firstOrNull()?.take(80)}\n",
             )
@@ -519,7 +601,32 @@ class TermuxProvider(private val context: Context) {
         copyBundledLibs()
         createLibrarySymlinks()
         copyLibsToReToolsDir()
-        patchElfBinaries()
+
+        /*
+         * THE RPATH SWEEP IS SKIPPED DURING A REBUILD, deliberately.
+         *
+         * It was here and it crashed the rebuild on the device test with an
+         * OutOfMemoryError inside ProcessBuilder.environment(), reached from
+         * runPatchelf. The reason is arithmetic: the sweep spawns one patchelf
+         * process for every ELF in usr/bin, usr/libexec and usr/sbin — several
+         * hundred — and each spawn builds a fresh environment map plus its
+         * ProcessEnvironment bookkeeping inside an app heap that is already
+         * holding a 29 MB compressed bootstrap extract. The sweep is a cold-start
+         * convenience, not a correctness step, and a rebuild that dies halfway
+         * through it leaves the tree worse than before.
+         *
+         * WHAT IS LOST BY SKIPPING IT. The sweep repoints DT_RUNPATH from the
+         * upstream com.termux path to this prefix's lib. The binaries still
+         * resolve without it because every launch goes through linker64 with
+         * LD_LIBRARY_PATH set, which is the same mechanism that makes them run in
+         * the first place. The sweep only matters for a binary launched some
+         * OTHER way, which nothing in the app does.
+         *
+         * The marker is deleted here so the sweep still runs once on the next
+         * ordinary init, where the heap is not holding an extraction, which keeps
+         * the original behaviour without putting it on the recovery path.
+         */
+        runCatching { File(usrPrefix, RPATH_SWEEP_MARKER).delete() }
         val bashBinary = File(binDir, "bash")
         symlinksCreated = bashBinary.exists() && bashBinary.length() > 0 && bashBinary.canRead()
         installGitRuntime()
@@ -646,7 +753,7 @@ class TermuxProvider(private val context: Context) {
      * refusal should ask this one, because a prefix that cannot exec is a
      * rebuild waiting to happen rather than a missing install.
      */
-    fun isUsable(): Boolean = isAvailable() && execHealth?.allRan != false
+    fun isUsable(): Boolean = isAvailable() && executionHealth().allRan
 
     fun isInitialized(): Boolean = initialized || isAvailable()
 
@@ -1238,10 +1345,98 @@ class TermuxProvider(private val context: Context) {
         cmd: List<String>,
         extraEnv: Map<String, String> = emptyMap(),
     ): ShellResult {
+        val first = execOnce(cmd, buildEnv(), extraEnv)
+
+        /*
+         * SIGSEGV MEANS THE PRELOAD CHAIN KILLED IT, so try again without it.
+         *
+         * THE MEASUREMENT THIS IS BUILT ON, from the handset on issue 317. Every
+         * binary exited 139 through the app's exec path, and the operator got the
+         * same binaries to print their versions with a wrapper of his own:
+         *
+         *   LD_LIBRARY_PATH=<prefix>/lib  PREFIX=<prefix>
+         *   /system/bin/linker64 <prefix>/bin/bash -c 'echo alive'
+         *
+         * That is the SAME launch the app already performs — linker64, the same
+         * LD_LIBRARY_PATH, the same PREFIX — with one difference: it sets no
+         * LD_PRELOAD. The app sets two libraries there, libtermux-exec and
+         * libpathshim, and both are injected into every process. A library that
+         * faults inside the linker before main() is reached produces exactly
+         * 128+SIGSEGV with no output, which is precisely the 139 and empty stderr
+         * of the report.
+         *
+         * So the fallback is the operator's own working invocation, run
+         * automatically. A first result of 139 is retried once with LD_PRELOAD
+         * removed; if that produces output, that is the answer and the caller
+         * never learns the preload was the problem — which is right, because from
+         * the caller's side the binary either works or it does not.
+         *
+         * WHY NOT JUST DROP THE PRELOADS. libpathshim is load-bearing for a
+         * compiled-in com.termux path: figlet's font directory is the smallest
+         * case, and apt's config tree is the large one. libtermux-exec routes
+         * app-data execs through linker64, which is what lets a script with a
+         * shebang run at all. Removing them permanently would trade one broken
+         * behaviour for another. Trying WITH them first, and falling back only on
+         * a hard fault, keeps both: the shim works wherever it is safe, and a
+         * device where it cannot load still has a working prefix.
+         *
+         * The fallback is recorded on the result rather than hidden, so a caller
+         * that wants to know the prefix is running degraded can ask.
+         */
+        if (looksLikeThePreloadFailed(first)) {
+            val withoutPreloads = execOnce(cmd, buildEnv(), extraEnv, stripPreloads = true)
+            if (!looksLikeThePreloadFailed(withoutPreloads)) {
+                return withoutPreloads
+            }
+            // Both shapes failed the same way, so the preload was not the cause
+            // and the original result is the honest one to report.
+            return first
+        }
+        return first
+    }
+
+    /**
+     * The two shapes a preload fault takes, both measured on the handset.
+     *
+     *  - EXIT 139 (SIGSEGV). apt, git and curl all reported this. The process
+     *    dies inside the linker, before main(), which is why stderr is empty.
+     *
+     *  - EXIT 0 WITH NO OUTPUT AT ALL. bash reported exactly this: "bash
+     *    produced no output and exited 0". A binary that exits cleanly and says
+     *    nothing did not run its own code, and treating that as success is how a
+     *    broken tool gets called working.
+     *
+     * Both mean "the launch was refused", and both are retried without
+     * LD_PRELOAD. A tool that legitimately prints nothing and exits 0 — a `true`
+     * or a silent write — pays one extra process here, which is a fair price for
+     * a prefix that works.
+     */
+    private fun looksLikeThePreloadFailed(result: ShellResult): Boolean =
+        result.exitCode == EXIT_SIGSEGV ||
+            (result.exitCode == 0 && result.stdout.isBlank() && result.stderr.isBlank())
+
+    /**
+     * One launch, with the preload set optionally stripped.
+     *
+     * Split out of [execWithEnv] so the fallback is the same code path rather than
+     * a second copy of the ProcessBuilder plumbing that can drift from it.
+     */
+    private fun execOnce(
+        cmd: List<String>,
+        baseEnv: Map<String, String>,
+        extraEnv: Map<String, String>,
+        stripPreloads: Boolean = false,
+    ): ShellResult {
         return try {
             val pb = ProcessBuilder(cmd)
-            pb.environment().putAll(buildEnv())
+            pb.environment().putAll(baseEnv)
             pb.environment().putAll(extraEnv)
+            if (stripPreloads) {
+                // Only LD_PRELOAD goes. The shim's own variables are harmless
+                // without the library, and removing them would be a second change
+                // inside what is meant to be a single-variable test.
+                pb.environment().remove("LD_PRELOAD")
+            }
             pb.directory(homeDir)
             pb.redirectErrorStream(false)
 

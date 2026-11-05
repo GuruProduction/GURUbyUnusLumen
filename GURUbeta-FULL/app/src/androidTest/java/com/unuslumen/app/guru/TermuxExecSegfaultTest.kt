@@ -309,4 +309,122 @@ print("MEAN", round(mean, 3))
         }
         assertTrue("These binaries the issue names did not run: $failures", failures.isEmpty())
     }
+
+    /**
+     * THE REGRESSION TEST FOR THE ACTUAL HAND-REPORTED FAULT, and the one that
+     * would have caught the first attempt at this fix.
+     *
+     * WHAT IT SIMULATES. The handset reported 416 binaries present and every one
+     * exiting 139, which is a prefix that is INSTALLED and cannot execute. This
+     * reproduces exactly that shape: every file stays on disk, and the loader is
+     * made to refuse them by removing the shared libraries the binaries name.
+     * isAvailable() is still true — the bin directory is full — so this is the
+     * state that used to be reported as healthy forever.
+     *
+     * WHAT IT PROVES, in order:
+     *
+     *  1. the damage really lands, so a pass cannot be a false green: probeCommand
+     *     reports bash as not-RUNS after the libs are moved away.
+     *  2. a fresh provider detects it, because initialize() now always runs its
+     *     execution probe instead of trusting a populated bin directory.
+     *  3. the provider REBUILDS the tree by itself, from the bundled payload,
+     *     with no operator action.
+     *  4. after the rebuild the same binaries RUN again, which is the only
+     *     outcome a user cares about.
+     *
+     * The libs are moved aside rather than deleted so this test is reversible on a
+     * device whose prefix cannot be re-extracted for any reason, and they are put
+     * back in a finally block.
+     */
+    @Test
+    fun aPrefixThatCannotExecuteIsDetectedAndRebuiltWithoutHelp() = runBlocking {
+        val probeProvider = TermuxProvider(context)
+        probeProvider.initialize()
+
+        // 1. Damage it: move every shared library out of the prefix. The binaries
+        //    stay exactly where they are, so isAvailable() keeps answering true —
+        //    that is the whole point of the simulation.
+        val libDir = File(probeProvider.getLibPath())
+
+        /*
+         * BOTH library locations have to be emptied, and the first version of this
+         * test learned that the hard way.
+         *
+         * Parking only the prefix's lib/ left bash running, because
+         * copyLibsToReToolsDir puts a second copy of every .so into
+         * <files>/re-tools/lib and buildEnv puts that on LD_LIBRARY_PATH too. The
+         * test then failed its own "did the damage land" assertion rather than
+         * passing on an unbroken tree, which is the assertion doing its job: a
+         * green result there would have proved nothing at all.
+         *
+         * So the damage covers both places the loader looks.
+         */
+        val reToolsLibDir = File(probeProvider.getRootPath()).parentFile?.let { File(it, "re-tools/lib") }
+        val parked = File(context.cacheDir, "guru_317_parked_libs")
+        parked.deleteRecursively()
+        parked.mkdirs()
+        var moved = 0
+        fun park(dir: File?, into: File) {
+            dir?.listFiles()?.forEach { f ->
+                if (f.isFile && runCatching { f.renameTo(File(into, f.name)) }.getOrDefault(false)) moved++
+            }
+        }
+        park(libDir, File(parked, "prefix").also { it.mkdirs() })
+        park(reToolsLibDir, File(parked, "retools").also { it.mkdirs() })
+        println("PARKED $moved libraries from ${libDir.absolutePath} and ${reToolsLibDir?.absolutePath}")
+
+        try {
+            // 2. The damage must be real. A test that "detects" an undamaged tree
+            //    proves nothing, so this asserts the break before asserting the fix.
+            val broken = TermuxProvider(context).probeCommand("bash")
+            println("AFTER_DAMAGE bash=${broken.state} exit=${broken.exitCode} out=[${broken.output.take(200)}]")
+            assertTrue(
+                "The simulation did not break anything: bash still reports ${broken.state}. " +
+                    "This test would give a false green, so it fails instead.",
+                broken.state != TermuxProvider.CommandProbe.RUNS,
+            )
+
+            // 3 & 4. A provider that has never run must notice and repair it.
+            val healer = TermuxProvider(context)
+            val ready = healer.initialize()
+            val health = healer.executionHealth()
+            println("AFTER_HEAL available=$ready health=${health?.describe()}")
+
+            val after = healer.probeCommand("bash")
+            println("AFTER_HEAL bash=${after.state} exit=${after.exitCode} out=[${after.output.take(200)}]")
+
+            assertTrue(
+                "initialize() did not rebuild a prefix that cannot execute. health=" +
+                    "${health?.describe()} available=$ready",
+                after.state == TermuxProvider.CommandProbe.RUNS,
+            )
+            assertTrue(
+                "The rebuilt prefix still has no shared libraries, so the rebuild did " +
+                    "not really restore the tree: ${libDir.listFiles()?.size ?: 0} files",
+                (libDir.listFiles()?.size ?: 0) > 0,
+            )
+
+            // The four binaries the issue names must all be back, not just bash.
+            val stillBroken = listOf("bash", "git", "curl", "apt").filter {
+                healer.probeCommand(it).state != TermuxProvider.CommandProbe.RUNS
+            }
+            assertTrue("Still broken after the rebuild: $stillBroken", stillBroken.isEmpty())
+        } finally {
+            // Put back anything the rebuild did not restore, so a failed run does
+            // not leave the device with a half-parked library set. Both locations
+            // are restored from their own subdirectory, in that order, because a
+            // library that exists in both must not overwrite the prefix copy.
+            listOf(
+                File(parked, "prefix") to libDir,
+                File(parked, "retools") to reToolsLibDir,
+            ).forEach { (from, to) ->
+                if (to == null) return@forEach
+                from.listFiles()?.forEach { f ->
+                    val dest = File(to, f.name)
+                    if (!dest.exists()) runCatching { f.copyTo(dest) }
+                }
+            }
+            parked.deleteRecursively()
+        }
+    }
 }
