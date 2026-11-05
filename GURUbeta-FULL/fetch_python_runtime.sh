@@ -97,7 +97,45 @@ PACKAGES=(
   "libsqlite|pool/main/libs/libsqlite/libsqlite_3.54.1-1_aarch64.deb|661fb995f7215845007b222a85266ae99d9443e87e0604f8677edfd738e6b81a"
   "zlib|pool/main/z/zlib/zlib_1.3.2_aarch64.deb|75e7d0af17fcc3b40004309fdc00a1ddb9ae08346dce5e269902c34ac3966ac9"
   "zstd|pool/main/z/zstd/zstd_1.5.7-1_aarch64.deb|e1b4a5113648da8de189620ba1fce74c48b2d0833d9043391b9a1c91fb606fd3"
+
+  # ---------------------------------------------------------------- IMAGE WORK
+  # Issue 317's second half: pixel work had no path at all. processFile returned
+  # dimensions and OCR text, so image handling looked supported, and the moment a
+  # task needed the actual pixels — crop, zoom, tile, compare, downscale a
+  # 4000x3000 JPEG — there was nothing to call. PIL, numpy and cv2 were all
+  # ModuleNotFoundError, and termuxInstall("python-pillow") was the only route to
+  # one, which meant image work depended on the component that was broken.
+  #
+  # So Pillow ships INSIDE the runtime. Measured before adding: every one of its
+  # seven compiled extensions has all LOAD segments at 0x4000, so a 16 KB device
+  # loads them. That check is repeated by this script and fails the build if a
+  # repository update ever breaks it.
+  #
+  # numpy is here for the arithmetic that PixelSense-style work needs and Pillow
+  # does not do: per-channel statistics, masks, thresholding, differencing two
+  # frames. It is one ABI-matched wheel against the same interpreter, so it can
+  # load the private symbols libpython defines.
+  "python-pillow|pool/main/p/python-pillow/python-pillow_13.0.0_aarch64.deb|6aabed29cc98cec8ea380214194297d95f861f9a27c0f5486b0a82c6a4799050"
+  "python-numpy|pool/main/p/python-numpy/python-numpy_2.5.4_aarch64.deb|a99ae20cd33c77553cc94d402aefc4bed96b7ec9f18e9fb6e2e5a7943693c802"
 )
+
+# The roots whose FULL transitive dependency closure is resolved from the
+# repository index.
+#
+# WHY THIS IS COMPUTED AND NOT LISTED. Hand-listing Pillow's dependencies took
+# four build iterations, each one failing on a layer further down: the four
+# image codecs first, then the AV1 encoders libavif pulls, then harfbuzz's own
+# glib and libgraphite. Every one of those was a real missing library the check
+# caught, and every one cost a full re-run to discover. Walking `Depends`
+# transitively asks the repository the question it already knows the answer to,
+# so the list is complete before the first download rather than after the fifth
+# failure.
+#
+# The two roots stay pinned in PACKAGES because their versions are
+# load-bearing: a Pillow or numpy built for a different Python minor cannot
+# load into this interpreter, so a silent upgrade must fail the build rather
+# than ship.
+CLOSURE_ROOTS=(python-pillow python-numpy)
 
 sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -125,7 +163,187 @@ mkdir -p "$ASSETS_DIR"
 rm -rf "$TEMP_DIR"
 mkdir -p "$TEMP_DIR"
 
-echo "[1/4] Downloading ${#PACKAGES[@]} pinned packages..."
+echo "[1/5] Resolving the full dependency closure of ${CLOSURE_ROOTS[*]} ..."
+INDEX="$TEMP_DIR/Packages"
+if [ ! -f "$INDEX" ]; then
+    curl -L --fail --silent --show-error --max-time 300 -o "$INDEX" \
+        "$REPO/dists/stable/main/binary-aarch64/Packages"
+fi
+
+# One program, one pass, the whole transitive closure.
+#
+# THREE THINGS THIS HAS TO GET RIGHT, and each was a real failure while it was
+# being written:
+#
+#  1. A Depends field is a comma-separated list of ALTERNATIVES, and each
+#     alternative may carry a version constraint: "python (>= 3.11.1-1)". Only
+#     the first alternative is taken, because installing every branch of an
+#     "a | b" choice pulls in two packages that provide the same symbol.
+#  2. Packages already satisfied by the pinned list or by the Android platform
+#     must not be re-added, or the closure walks back into libc and tries to
+#     download an entire userland.
+#  3. A dependency name that is not in the index has to FAIL the build with its
+#     name. Silently skipping it is how a runtime ships that cannot import its
+#     own image extension.
+#
+# PLATFORM_BACKED lists what Android itself provides, so the walk stops there.
+#
+# The resolver is run to a FILE, not through a process substitution.
+#
+# WHY: `while ... done < <(cmd)` runs cmd in a background subshell whose exit
+# status the loop cannot see, so `$?` afterwards reports the last `read`, which
+# is always 0. That made every failure look like success. Writing to a file
+# first gives the resolver's real status, which is the whole point of it
+# refusing to continue.
+#
+# AND WHY `set +e` AROUND IT. This script runs under `set -e`, which exits on
+# the first non-zero status. Without the guard, a resolver failure killed the
+# script before the error handler below could NAME the unresolved packages, so
+# the useful message never printed. The status is captured explicitly instead,
+# which is the point of having an error path at all.
+set +e
+python3 - "$INDEX" "${CLOSURE_ROOTS[@]}" "${PACKAGES[@]}" > "$TEMP_DIR/closure.txt" 2> "$TEMP_DIR/closure.err" <<'PY'
+import sys
+index = sys.argv[1]
+roots = sys.argv[2:4]
+already = set()
+for entry in sys.argv[4:]:
+    already.add(entry.split('|', 1)[0])
+
+# Names the platform supplies. Walking past these would pull an entire Linux
+# userland into an Android app.
+PLATFORM_BACKED = {
+    'libc', 'libm', 'libdl', 'liblog', 'libandroid', 'libstdc++',
+    'libz', 'libzstd', 'libbz2', 'liblzma',           # platform + already bundled
+    'python', 'libffi', 'openssl', 'libexpat', 'gdbm',
+    'ncurses', 'ncurses-ui-libs', 'readline', 'libsqlite',
+    'libandroid-support', 'libandroid-posix-semaphore',
+}
+
+# NOT RUNTIME DEPENDENCIES, and the distinction is load-bearing.
+#
+# A `.deb`'s Depends lists what the PACKAGE MANAGER needs for the package to be
+# installable, which is a wider set than what the compiled code links against.
+# python-pillow Depends on python-pip because you would normally pip-install
+# into it — but pip ships no library any extension here names, and following it
+# drags pip, its vendored dependencies and a certifi symlink into
+# site-packages, where it collides with the stdlib copy and adds megabytes of
+# installer to a runtime that never installs anything.
+#
+# This is an exclusion list with a reason per entry, not a convenience. The ELF
+# closure check below remains the authority on what is actually REQUIRED: it
+# walks DT_NEEDED from the real binaries and fails the build on anything it
+# cannot find, so excluding a package that genuinely provides a needed library
+# surfaces as that named library, not as a silent absence.
+NOT_RUNTIME = {
+    'python-pip',        # package installer; Pillow's Depends names it for pip use
+}
+
+paras = {}
+para = []
+with open(index, encoding='utf-8', errors='replace') as fh:
+    for line in fh:
+        line = line.rstrip('\n')
+        if line.strip():
+            para.append(line)
+            continue
+        if para:
+            d = dict(l.split(': ', 1) for l in para if ': ' in l)
+            if 'Package' in d:
+                paras.setdefault(d['Package'], d)
+            para = []
+if para:
+    d = dict(l.split(': ', 1) for l in para if ': ' in l)
+    if 'Package' in d:
+        paras.setdefault(d['Package'], d)
+
+
+def dep_names(depends):
+    """The first alternative of each comma-separated clause, without a version."""
+    out = []
+    for clause in depends.split(','):
+        clause = clause.strip()
+        if not clause:
+            continue
+        first = clause.split('|')[0].strip()
+        name = first.split('(')[0].strip()
+        name = name.split(':')[0].strip()          # drop a :any / :native suffix
+        if name:
+            out.append(name)
+    return out
+
+
+missing = []
+# THE ROOTS ARE SEEDED AS DEPENDENCIES, NOT AS PACKAGES.
+#
+# Both roots are already in PACKAGES — they are the two pinned entries — so
+# `already` contains them. Seeding the queue with the root NAMES therefore
+# matches `name in seen` on the first hop and walks nothing at all, which is a
+# resolver that silently resolves zero dependencies and looks like success.
+# Starting from each root's Depends is the correct walk: the roots are fetched
+# from the pinned list, and everything they pull in is what this computes.
+seen = set(already)
+queue = []
+for root in roots:
+    d = paras.get(root)
+    if d is None:
+        missing.append(root)
+    else:
+        queue.extend(dep_names(d.get('Depends', '')))
+resolved = []
+while queue:
+    name = queue.pop(0)
+    if name in seen or name in PLATFORM_BACKED or name in NOT_RUNTIME:
+        continue
+    seen.add(name)
+    d = paras.get(name)
+    if d is None:
+        missing.append(name)
+        continue
+    resolved.append(name)
+    queue.extend(dep_names(d.get('Depends', '')))
+
+if missing:
+    # Report every unresolved name at once rather than one per build.
+    sys.stderr.write("MISSING:" + ",".join(sorted(set(missing))) + "\n")
+    sys.exit(3)
+
+for name in resolved:
+    d = paras[name]
+    print(f"{name}|{d.get('Filename', '')}|{d.get('SHA256', '')}")
+PY
+
+resolve_status=$?
+set -e
+if [ "$resolve_status" -ne 0 ]; then
+    echo "  ERROR: the dependency closure names packages the repository index does not have:"
+    # The resolver writes MISSING:name,name on stderr. Split it with parameter
+    # expansion rather than an external tool, so the names are printed plainly
+    # and this stays one piece of logic. A name that is wrong or retired is a
+    # real gap; shipping past it would produce a runtime whose image extension
+    # fails to import on a phone.
+    missing_line="$(while IFS= read -r l; do case "$l" in MISSING:*) printf '%s' "${l#MISSING:}" ;; esac; done < "$TEMP_DIR/closure.err")"
+    old_ifs="$IFS"; IFS=','
+    for missing_name in $missing_line; do
+        echo "         $missing_name"
+    done
+    IFS="$old_ifs"
+    exit 1
+fi
+
+while IFS='|' read -r rname rfile rhash; do
+    [ -z "$rname" ] && continue
+    if [ -z "$rfile" ] || [ -z "$rhash" ]; then
+        echo "  ERROR: '$rname' has no Filename or SHA256 in the repository index."
+        echo "         Either the name is wrong or the repository moved it."
+        exit 1
+    fi
+    PACKAGES+=("$rname|$rfile|$rhash")
+    echo "  -> $rname"
+done < "$TEMP_DIR/closure.txt"
+
+echo ""
+echo "[2/5] Downloading ${#PACKAGES[@]} packages..."
 for entry in "${PACKAGES[@]}"; do
     IFS='|' read -r name filename expected <<< "$entry"
     dest="$TEMP_DIR/$(basename "$filename")"
@@ -144,7 +362,7 @@ for entry in "${PACKAGES[@]}"; do
 done
 
 echo ""
-echo "[2/4] Extracting every payload into one staging prefix..."
+echo "[3/5] Extracting every payload into one staging prefix..."
 rm -rf "$TEMP_DIR/stage"
 mkdir -p "$TEMP_DIR/stage"
 for entry in "${PACKAGES[@]}"; do
@@ -178,7 +396,7 @@ for entry in "${PACKAGES[@]}"; do
 done
 
 echo ""
-echo "[3/4] Assembling the runtime tree..."
+echo "[4/5] Assembling the runtime tree..."
 python3 - "$TEMP_DIR/stage" "$TEMP_DIR/runtime" <<'PY'
 import os, shutil, sys
 
@@ -218,10 +436,46 @@ for root, dirs, _files in os.walk(out_stdlib):
 
 module_count = sum(len(files) for _r, _d, files in os.walk(out_stdlib))
 print(f"  stdlib:      {module_count} files")
+
+# ------------------------------------------------------------------ IMAGE WORK
+# site-packages is where a wheel-installed package lives, and CPython's own
+# getpath puts it at <stdlib>/site-packages. It is copied here because the
+# runtime now carries Pillow and numpy (issue 317): without this directory the
+# imports fail with ModuleNotFoundError exactly as they did before, and the
+# archives would be in the APK achieving nothing.
+#
+# A .pth file is written for the same reason it exists at all: site.py processes
+# every *.pth in site-packages at startup and appends each listed directory to
+# sys.path. numpy's own package layout expects that, so dropping the tree in
+# without it produces "No module named numpy.core._multiarray_umath".
+src_site = os.path.join(src_stdlib, 'site-packages')
+out_site = os.path.join(out_stdlib, 'site-packages')
+if os.path.isdir(src_site):
+    # dirs_exist_ok=True because the stdlib copytree above already carried the
+    # directory across: site-packages ships inside the python package as an
+    # empty container, and the installed packages are merged into it. Without
+    # this flag the copy raises FileExistsError and the whole build stops here.
+    shutil.copytree(src_site, out_site, symlinks=True, dirs_exist_ok=True)
+    # Byte-code trees are rebuilt on the device and only bloat the APK.
+    for root, dirs, _files in os.walk(out_site):
+        for cache in [d for d in dirs if d == '__pycache__']:
+            shutil.rmtree(os.path.join(root, cache), ignore_errors=True)
+            dirs.remove(cache)
+    pkgs = sorted(d for d in os.listdir(out_site)
+                  if os.path.isdir(os.path.join(out_site, d)))
+    print(f"  site-packages: {len(pkgs)} packages -> {', '.join(pkgs)}")
+else:
+    # Not optional any more. A runtime without site-packages cannot do image
+    # work, and shipping silently without it is what made this a gap nobody
+    # could see from the outside.
+    print("  ERROR: site-packages is not in the assembled tree, which means the")
+    print("         Pillow or numpy payload did not land. Image work would be")
+    print("         absent again. Check PACKAGES and RESOLVED_PACKAGES.")
+    sys.exit(1)
 PY
 
 echo ""
-echo "[4/4] Computing the library closure and checking every ELF for 16 KB alignment..."
+echo "[5/5] Computing the library closure and checking every ELF for 16 KB alignment..."
 python3 - "$TEMP_DIR/stage" "$TEMP_DIR/runtime" <<'PY'
 import os, shutil, struct, subprocess, sys
 
@@ -291,6 +545,19 @@ dynload = os.path.join(out_lib, 'python3.14', 'lib-dynload')
 for name in sorted(os.listdir(dynload)):
     if name.endswith('.so'):
         seeds.append(os.path.join(dynload, name))
+
+# Pillow's and numpy's compiled extensions are seeds too (issue 317). Each names
+# libraries the stdlib never touches — libjpeg, libtiff, libwebp, libpng,
+# libopenblas — and if they are not walked into the closure the whole build
+# succeeds and the first `import PIL` on a phone fails with "cannot locate
+# symbol". That is the exact class of fault this script exists to catch here
+# rather than three releases later.
+site_packages = os.path.join(out_lib, 'python3.14', 'site-packages')
+if os.path.isdir(site_packages):
+    for root, _dirnames, filenames in os.walk(site_packages):
+        for name in filenames:
+            if name.endswith('.so'):
+                seeds.append(os.path.join(root, name))
 
 missing = set()
 queue = list(seeds)

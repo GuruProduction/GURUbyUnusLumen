@@ -18,9 +18,33 @@ class TermuxToolExecutor(private val context: Context) : ToolExecutor {
     private val termuxProvider by lazy { TermuxProvider(context) }
     private val shellExecutor by lazy { ShellExecutor(context) }
 
+    /**
+     * Bring the prefix up and prove it can execute, or say exactly what failed.
+     *
+     * WHY initialize() IS NOW ALWAYS CALLED (issue 317). This used to read
+     * `if (!isAvailable()) initialize()`, so a prefix whose files were present
+     * was never initialised again. `isAvailable` is a filesystem fact — "a
+     * populated bin directory" — so a tree of 416 binaries that segfault on
+     * every invocation answered "available", and the only code that can rebuild
+     * a tree was never entered.
+     *
+     * initialize() is cheap once it has run: its latch returns immediately and
+     * its execution probe is marker-gated by the package versionCode. So calling
+     * it unconditionally costs nothing on a healthy device and is the only thing
+     * that can notice a broken one.
+     *
+     * Afterwards [TermuxProvider.isUsable] keeps the two answers apart. "Termux
+     * not available" for a prefix that is present and cannot run would be the
+     * same collapse of two facts this class exists to prevent.
+     */
     private suspend fun ensureReady(): String? = withContext(Dispatchers.IO) {
-        if (!termuxProvider.isAvailable()) { termuxProvider.initialize() }
+        if (!termuxProvider.isInitialized()) { termuxProvider.initialize() }
         if (!termuxProvider.isAvailable()) return@withContext "Termux not available"
+        if (!termuxProvider.isUsable()) {
+            val health = termuxProvider.executionHealth()
+            return@withContext "Termux is installed but its binaries will not execute" +
+                (health?.let { ": ${it.describe()}" } ?: "")
+        }
         val reTools = shellExecutor.reTools; if (!reTools.isInitialized) { reTools.initialize() }
         null
     }
@@ -36,7 +60,12 @@ class TermuxToolExecutor(private val context: Context) : ToolExecutor {
                 // a false latch, even with a verified prefix on disk. A status call
                 // is a read, and a read should not be able to claim the app cannot
                 // do something it can install itself.
-                if (!termuxProvider.isAvailable()) { runCatching { termuxProvider.initialize() } }
+                //
+                // Issue 317: always entered, for the same reason ensureReady is.
+                // A status call is precisely the call that must be able to notice
+                // a tree that is present and cannot run, and gating the probe on
+                // "is anything installed" is what made that impossible.
+                if (!termuxProvider.isInitialized()) { runCatching { termuxProvider.initialize() } }
                 if (!termuxProvider.isAvailable()) {
                     val r = TermuxStatusResult(false, "", "", "", "", 0, emptyMap())
                     ToolExecutionResult.success(r, json.encodeToString(TermuxStatusResult.serializer(), r))
@@ -72,6 +101,19 @@ class TermuxToolExecutor(private val context: Context) : ToolExecutor {
                         }
                     }
 
+                    /*
+                     * The prefix-level verdict, stated separately from the eleven
+                     * per-tool booleans (issue 317).
+                     *
+                     * A reader of the maps alone has to infer "the whole prefix is
+                     * broken" from eleven separate failures, and the report that
+                     * opened this issue was exactly that: a wall of false values
+                     * with no sentence saying whether the install was broken or
+                     * merely incomplete. prefixExecutes is that sentence, and
+                     * prefixHealth is the observed reason rather than a guess.
+                     */
+                    val health = termuxProvider.executionHealth()
+
                     val r = TermuxStatusResult(
                         initialized = true,
                         rootPath = termuxProvider.getRootPath(),
@@ -82,6 +124,8 @@ class TermuxToolExecutor(private val context: Context) : ToolExecutor {
                         availableTools = tools,
                         toolStates = states,
                         toolDetails = details,
+                        prefixExecutes = health?.allRan,
+                        prefixHealth = health?.describe(),
                     )
                     ToolExecutionResult.success(r, json.encodeToString(TermuxStatusResult.serializer(), r))
                 }

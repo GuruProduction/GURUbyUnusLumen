@@ -61,6 +61,15 @@ class ShellTierOnDeviceTest {
         val appUid = android.os.Process.myUid().toString()
         when (result.tier) {
             ShellTier.ROOT -> assertEquals("ROOT must mean uid 0", "0", reportedUid)
+            // Shizuku and ADB are the same UID 2000 and the same answer, so they
+            // get the same assertion. They stay separate branches so the failure
+            // message names the tier that actually ran, which is the whole point
+            // of this test.
+            ShellTier.SHIZUKU -> assertEquals(
+                "SHIZUKU must mean the shell uid 2000",
+                "2000",
+                reportedUid,
+            )
             ShellTier.ADB -> assertEquals("ADB must mean the shell uid", "2000", reportedUid)
             ShellTier.APP_UID -> assertEquals(
                 "APP_UID must mean this app's own uid. The field agreed with itself " +
