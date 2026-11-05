@@ -26,6 +26,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -73,13 +74,35 @@ fun HeartbeatScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
+    /*
+     * OPEN THE PORTAL WHEN A BEAT IS FIRED BY HAND.
+     *
+     * The view model hands the prompt to the portal's shared holder and reports
+     * success; the navigation belongs here because this composable is the one holding
+     * the NavHostController. Navigation stays out of the DI module on purpose: a module
+     * that routes would need to know the app's whole screen graph, and the room is
+     * meant to be a room rather than a second router.
+     *
+     * The prompt is already waiting by the time this runs, and the portal consumes it
+     * on entry, so the beat arrives as a real streaming turn.
+     */
+    LaunchedEffect(state.firedAt) {
+        if (state.firedAt > 0L) {
+            navController.navigate(com.unuslumen.app.ui.navigation.Screen.PortalScreen) {
+                launchSingleTop = true
+            }
+        }
+    }
+
     Scaffold(
         containerColor = Color.Transparent,
         topBar = {
             guruAppBar(
                 title = "Heartbeat",
-                stamp = if (state.edited) "edited" else "shipped",
-                stampColor = if (state.edited) Memphis.Yellow else Memphis.Cyan,
+                // The stamp states the switch, because that is the first thing a
+                // person needs to know about a chain that is silent by design.
+                stamp = if (state.enabled) "on" else "off",
+                stampColor = if (state.enabled) Memphis.Yellow else Memphis.Lilac,
             )
         },
     ) { paddingValues ->
@@ -94,10 +117,66 @@ fun HeartbeatScreen(
                         modifier = Modifier.weight(1f),
                         contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 16.dp),
                     ) {
+                        /*
+                         * THE SWITCH COMES FIRST, ABOVE EVERYTHING.
+                         *
+                         * It decides whether the clock below means anything at all,
+                         * and a person opening this room has one question before any
+                         * other: is it running. Putting the prompt above it would bury
+                         * the control that governs the whole screen.
+                         */
+                        /*
+                         * THE SWITCH, AND ITS REFUSAL, AS ONE BLOCK OF PRINTED TEXT.
+                         *
+                         * There is no separate warning bar. A slab under the switch drew
+                         * its hard shadow outside its own bounds and landed on the
+                         * sentence beneath it, and it also said the same thing twice: the
+                         * switch cannot be on without a prompt, so the reason belongs
+                         * inside the switch rather than floating below it.
+                         */
+                        item(key = "switch") {
+                            ChainSwitch(
+                                enabled = state.enabled,
+                                toggling = state.toggling,
+                                canEnable = state.canEnable,
+                                promptRequired = state.promptRequired,
+                                onToggle = { viewModel.onEvent(HeartbeatEvent.SetEnabled(it)) },
+                            )
+                        }
+
+                        /*
+                         * THE PROMPT PANEL.
+                         *
+                         * A dismissible sheet that tells the owner a heartbeat master
+                         * prompt has to be written before the chain can be switched on.
+                         * It sits in the list flow with its own padding so the printed
+                         * drop stays inside its own cell, which a bar pinned under the
+                         * switch did not: that one drew its shadow onto the sentence
+                         * below it.
+                         */
+                        if (state.promptRequired) {
+                            item(key = "prompt-required") {
+                                PromptRequiredPanel(
+                                    onDismiss = {
+                                        viewModel.onEvent(HeartbeatEvent.DismissPromptRequired)
+                                    },
+                                )
+                            }
+                        }
+
                         item(key = "intro") {
                             Text(
-                                "GURU wakes every thirty minutes and sends itself this. " +
-                                    "Change it and the next beat uses your words.",
+                                when {
+                                    state.enabled ->
+                                        "GURU wakes every thirty minutes and sends itself the " +
+                                            "prompt below. Change it and the next beat uses your words."
+                                    state.draft.isBlank() ->
+                                        "A prompt has to exist before the heartbeat can be switched " +
+                                            "on, because that prompt is what every beat sends."
+                                    else ->
+                                        "GURU is not waking. Switch the heartbeat on above and it " +
+                                            "will fire every thirty minutes with the prompt below."
+                                },
                                 style = bodyText(),
                             )
                         }
@@ -176,7 +255,8 @@ fun HeartbeatScreen(
                         }
                     }
 
-                    // THE FOOT. Save is the commit, Reset puts the shipped prompt back.
+                    // THE FOOT. Save is the commit. Reset clears the prompt, because
+                    // there is no shipped one to go back to.
                     Box(Modifier.fillMaxWidth().height(3.dp).background(Memphis.Ink))
                     Row(
                         Modifier
@@ -373,8 +453,133 @@ private fun Band(label: String, note: String?) {
     }
 }
 
+/**
+ * The switch, printed rather than slid.
+ *
+ * WHY A PRESSED BLOCK AND NOT A TOGGLE. The Memphis language in this app is printed
+ * blocks with hard ink outlines: nothing here glides, springs or fades, so a Material
+ * switch would be the one soft object on a poster. It reads as one control with two
+ * stated states, and the state is a word rather than a knob position.
+ *
+ * THE THIRD LINE IS THE REFUSAL, AND IT LIVES HERE. When there is no prompt the block
+ * says so in its own caption rather than in a warning bar underneath, because the
+ * reason the switch will not move is a property of the switch. Pressing it while
+ * there is no prompt sets [promptRequired] on the view model, which lights this line
+ * up and draws the border in coral; the switch itself never moves.
+ *
+ * IT CANNOT BE PRESSED WHILE A WRITE IS IN FLIGHT, which is the same guard the rest of
+ * the room uses for Save. A double tap on a switch that books an alarm is not a thing
+ * to leave possible.
+ */
 @Composable
-private fun Notice(message: String, ink: Color) {
+private fun ChainSwitch(
+    enabled: Boolean,
+    toggling: Boolean,
+    canEnable: Boolean,
+    promptRequired: Boolean,
+    onToggle: (Boolean) -> Unit,
+) {
+    // A refused press is stated in the block itself: coral ink so the refusal is
+    // unmistakable, ink otherwise so a normal off state stays quiet.
+    val refused = promptRequired && !canEnable && !enabled
+    Column(Modifier.fillMaxWidth().padding(bottom = 14.dp)) {
+        MemphisSurface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(
+                    if (toggling) Modifier else Modifier.clickable { onToggle(!enabled) }
+                ),
+            color = when {
+                enabled -> Memphis.Yellow
+                refused -> Memphis.Coral.copy(alpha = 0.18f)
+                else -> Memphis.Paper
+            },
+            borderWidth = 2.5.dp,
+            shadowOffset = 4.dp,
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
+                Text(
+                    if (enabled) "HEARTBEAT ON" else "HEARTBEAT OFF",
+                    style = posterStyle(15f),
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    when {
+                        toggling -> "SAVING…"
+                        enabled -> "FIRES EVERY 30 MINUTES. TAP TO STOP IT."
+                        refused -> "NEEDS A PROMPT FIRST. WRITE ONE BELOW AND SAVE IT."
+                        !canEnable -> "WRITE AND SAVE A PROMPT, THEN THIS TURNS ON."
+                        else -> "NOTHING IS SCHEDULED. TAP TO START IT."
+                    },
+                    style = captionStyle(
+                        8.5f,
+                        if (refused) Memphis.Coral else Memphis.Ink.copy(alpha = 0.65f),
+                    ),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The prompt the owner must now write, and the way to close it.
+ *
+ * WHY A PANEL AND NOT A BAR. A warning printed as a permanent strip under the switch
+ * covered the sentence beneath it and could not be put away. This is a printed sheet
+ * that says what is required, offers one action that closes it, and leaves the rest of
+ * the page alone.
+ *
+ * IT DOES NOT WRITE ANYTHING. Dismissing closes the sheet. The switch has not moved and
+ * the prompt is still missing, which is the honest state: the owner has been told what
+ * is needed and decides when to do it.
+ */
+@Composable
+private fun PromptRequiredPanel(onDismiss: () -> Unit) {
+    Box(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+        MemphisSurface(
+            modifier = Modifier.fillMaxWidth(),
+            color = Memphis.Sun,
+            borderWidth = 2.5.dp,
+            shadowOffset = 5.dp,
+        ) {
+            Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                Text("A MASTER PROMPT IS NEEDED", style = posterStyle(15f))
+
+                Spacer(Modifier.height(7.dp))
+                Text(
+                    "The heartbeat cannot be switched on without one. A master prompt is " +
+                        "what GURU sends itself every thirty minutes, so with nothing " +
+                        "written there would be nothing to run.",
+                    style = bodyText(),
+                )
+
+                Spacer(Modifier.height(9.dp))
+                Text(
+                    "Write one in the editor below, save it, then the switch will turn on.",
+                    style = captionStyle(9f, Memphis.Ink.copy(alpha = 0.75f)),
+                )
+
+                Spacer(Modifier.height(13.dp))
+                MemphisSurface(
+                    modifier = Modifier.fillMaxWidth().clickable { onDismiss() },
+                    color = Memphis.Ink,
+                    borderWidth = 2.5.dp,
+                    shadowOffset = 3.dp,
+                ) {
+                    Box(
+                        Modifier.fillMaxWidth().padding(vertical = 11.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("GOT IT", style = captionStyle(9.5f, Memphis.Paper))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun Notice(message: String, ink: Color, label: Color = Memphis.Paper) {
     MemphisSurface(
         Modifier.fillMaxWidth().padding(top = 12.dp),
         color = ink,
@@ -383,7 +588,7 @@ private fun Notice(message: String, ink: Color) {
     ) {
         Text(
             message,
-            style = captionStyle(9f, Memphis.Paper),
+            style = captionStyle(9f, label),
             modifier = Modifier.fillMaxWidth().padding(11.dp),
         )
     }

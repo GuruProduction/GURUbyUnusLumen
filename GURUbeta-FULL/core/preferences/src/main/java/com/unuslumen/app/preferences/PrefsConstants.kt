@@ -86,6 +86,23 @@ object PrefsConstants {
     /* Heartbeat grid: exact AlarmManager booking chain 2026-10-03 */
     const val HEARTBEAT_NEXT_BOOKED_AT_KEY = "heartbeat_next_booked_at"
 
+    /* Whether the heartbeat chain runs at all. THE OWNER'S SWITCH, AND NOTHING ELSE
+       TURNS IT OFF.
+
+       Off means off: no alarm is booked, nothing fires, and an alarm already booked
+       is cancelled. A wake-up that fires only to decide not to work is a battery
+       cost with no purpose, and it is the wrong meaning of a switch.
+
+       It defaults to FALSE on a fresh install, because there is no prompt yet and
+       the chain must not run without one. The owner turns it on from the Heartbeat
+       room, which asks for a prompt at the same moment.
+
+       NOTHING AUTO-DISABLES IT. Not a missing prompt, not a failed beat, not an
+       empty outcome. If it switched itself off, the switch would stop meaning what
+       it says, and a dead chain would look identical to a switched-off one. A beat
+       with no prompt ends, records why, and leaves the switch alone. */
+    const val HEARTBEAT_ENABLED_KEY = "heartbeat_enabled"
+
     /* The last fire on the wall clock, so the room can say when the chain last moved.
        A booking alone proves nothing: an alarm can be booked and never delivered, and
        a beat can be delivered and end before it reaches a model. This is written by

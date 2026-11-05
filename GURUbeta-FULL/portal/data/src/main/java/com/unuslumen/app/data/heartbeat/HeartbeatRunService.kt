@@ -62,7 +62,7 @@ class HeartbeatRunService : Service(), KoinComponent {
     private val aiRepository: AiRepository by inject()
     private val memoryRepository: MemoryRepository by inject()
     private val getPreference: GetPreferenceUseCase by inject()
-    /** The prompt in force: the owner's saved one, or the bundled text. */
+    /** The prompt in force: the owner's saved one. There is no other source. */
     private val promptRepository: HeartbeatPromptRepository by inject()
 
     private val serviceScope = CoroutineScope(Job() + Dispatchers.Default)
@@ -166,6 +166,30 @@ class HeartbeatRunService : Service(), KoinComponent {
             return START_NOT_STICKY
         }
 
+        /*
+         * THE SWITCH IS CHECKED AGAIN HERE, BEFORE THE WAKE LOCK.
+         *
+         * The scheduler refuses to book while the chain is off, so in a healthy
+         * install this branch is never reached by an alarm. It exists because an
+         * alarm booked before the switch was turned off can still be delivered, and
+         * on that one delivery this must not hold a ten-minute wake lock and run a
+         * full agent turn the owner has switched off.
+         *
+         * It is checked BEFORE acquireWakeLock so a refused beat costs a notification
+         * and nothing else.
+         */
+        if (!HeartbeatChainState.isEnabled()) {
+            Log.d(TAG, "Heartbeat is switched off: beat refused, no wake lock taken")
+            HeartbeatScheduler.recordOutcome(
+                applicationContext,
+                "A beat arrived but the heartbeat is switched off, so nothing ran. " +
+                    "Turn it on in the Heartbeat room when you want it running again.",
+            )
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         acquireWakeLock()
 
         val currentJob = serviceScope.launch {
@@ -180,13 +204,13 @@ class HeartbeatRunService : Service(), KoinComponent {
 
                     // --- 2. The prompt in force ---
                     //
-                    // READ FROM THE REPOSITORY, WHICH IS THE WHOLE POINT OF THE
-                    // HEARTBEAT ROOM. It answers with the owner's saved prompt, or the
-                    // bundled text when nothing has been saved, so a fresh install
-                    // behaves exactly as it did when this was a compiled asset.
+                    // ONE SOURCE: THE DATABASE. The prompt is the owner's, written in
+                    // the Heartbeat room, and there is no shipped fallback any more.
+                    // A beat with no saved prompt ends and says so rather than
+                    // injecting words nobody chose.
                     //
                     // The tokens are substituted through HeartbeatPrompts.substitute so
-                    // a stored prompt and the bundled one honour the same contract: a
+                    // the room's preview and the real injection honour one contract: a
                     // second substitution rule here would let the two drift apart.
                     val rawPrompt = promptRepository.current()
                     val prompt = if (rawPrompt.isBlank()) {
@@ -195,11 +219,11 @@ class HeartbeatRunService : Service(), KoinComponent {
                         HeartbeatPrompts.substitute(rawPrompt, humanName)
                     }
                     if (prompt.isNullOrBlank()) {
-                        Log.w(TAG, "Prompt unavailable: beat ends, next fire runs it")
+                        Log.w(TAG, "No prompt is saved: beat ends without sending")
                         HeartbeatScheduler.recordOutcome(
                             applicationContext,
-                            "The beat fired but there was no prompt to send: neither a saved one " +
-                                "nor a readable bundled one.",
+                            "The beat fired but no heartbeat prompt has been written yet, so " +
+                                "there was nothing to send. Write one in the Heartbeat room.",
                         )
                         return@withTimeoutOrNull
                     }

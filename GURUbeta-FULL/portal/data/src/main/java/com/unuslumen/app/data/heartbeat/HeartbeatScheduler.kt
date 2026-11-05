@@ -82,7 +82,35 @@ object HeartbeatScheduler : KoinComponent {
         )
     }
 
+    /**
+     * Book the next beat, unless the owner has switched the chain off.
+     *
+     * THE GUARD IS HERE, IN THE BOOKING AUTHORITY, AND THAT IS THE WHOLE POINT.
+     *
+     * Every path into the chain — boot, the alarm receiver's rebook, the time-set
+     * relay and the end block of a run — arrives through this one function. Putting
+     * the switch here is what makes "off" mean off everywhere at once. A guard that
+     * lived only in the room would be undone by the next alarm, because a fire that
+     * was already booked would rebook itself and the chain would carry on as though
+     * nobody had touched the switch.
+     *
+     * WHEN OFF THIS ALSO CANCELS. A booking made before the switch was turned off
+     * is still sitting in AlarmManager, and leaving it there means one more wake-up
+     * for nothing. Cancelling on the schedule path rather than only in the room
+     * means a boot after an off also clears it.
+     *
+     * The booking code below is untouched. This is a guard in front of it, not a
+     * rewrite of it: the exact-alarm call, the WorkManager purge and the booked-at
+     * write all run exactly as they always have when the switch is on.
+     */
     fun schedule(context: Context) {
+        if (!HeartbeatChainState.isEnabled()) {
+            Log.d(TAG, "Heartbeat is switched off: no booking written, any existing booking cancelled")
+            cancelBookingOnly(context)
+            clearBookedAt()
+            return
+        }
+
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val next = System.currentTimeMillis() + INTERVAL_MILLIS
         val pi = buildPendingIntent(context, next)
@@ -204,6 +232,19 @@ object HeartbeatScheduler : KoinComponent {
     }
 
     fun cancel(context: Context) {
+        cancelBookingOnly(context)
+        clearBookedAt()
+        Log.d(TAG, "Heartbeat AlarmManager booking cancelled, legacy record purged")
+    }
+
+    /**
+     * Remove the booking and the retired WorkManager record, and say nothing else.
+     *
+     * Split out of [cancel] so the switched-off path can clear the alarm without
+     * logging a cancellation a person did not ask for, while both still go through
+     * the identical AlarmManager call. One place removes a booking in this file.
+     */
+    private fun cancelBookingOnly(context: Context) {
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         runCatching {
             alarmManager.cancel(buildPendingIntent(context, 0L))
@@ -211,6 +252,23 @@ object HeartbeatScheduler : KoinComponent {
         runCatching {
             WorkManager.getInstance(context).cancelUniqueWork(LEGACY_WORK_NAME)
         }
-        Log.d(TAG, "Heartbeat AlarmManager booking cancelled, legacy record purged")
+    }
+
+    /**
+     * Clear the recorded booking, because there no longer is one.
+     *
+     * THE ROOM READS THIS TO SAY WHEN THE NEXT BEAT IS DUE, and a stale future
+     * timestamp sitting there while the chain is off would tell a person the opposite
+     * of the truth. Writing an empty string is the honest answer: nothing is booked.
+     */
+    private fun clearBookedAt() {
+        applicationScope.launch {
+            runCatching {
+                savePreference(
+                    stringPreferencesKey(PrefsConstants.HEARTBEAT_NEXT_BOOKED_AT_KEY),
+                    "",
+                )
+            }.onFailure { Log.w(TAG, "Booked-state clear failed: ${it.message}") }
+        }
     }
 }

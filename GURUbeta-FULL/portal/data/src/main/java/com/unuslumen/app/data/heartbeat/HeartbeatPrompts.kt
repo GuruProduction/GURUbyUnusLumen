@@ -3,67 +3,39 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.data.heartbeat
 
-import android.content.Context
-import android.util.Log
-
 /**
- * The bundled heartbeat prompt, and the token contract it is written against.
+ * The token contract a heartbeat prompt is written against.
  *
- * THIS IS NOW THE FLOOR RATHER THAN THE WHOLE STORY. The prompt is edited in the
- * Heartbeat room and stored in the database, and [HeartbeatPromptRepositoryImpl]
- * falls back to what is here when nothing has been saved. Both paths substitute the
- * same tokens through [substitute], so a saved prompt and the bundled one behave
- * identically.
+ * THE PROMPT ITSELF IS NOT HERE, AND IS NOT ANYWHERE IN THE SOURCE TREE. It used to
+ * be: it shipped as `assets/heartbeat/HEARTBEAT_PROMPT.md`, and this object loaded
+ * it, and `HeartbeatPromptRepositoryImpl` fell back to it whenever nothing had been
+ * saved. The asset, its loader and the fallback are all deleted. The heartbeat
+ * prompt is the owner's, written in the Heartbeat room and stored in the database,
+ * and nothing else answers for it.
  *
- * THE ASSET PATH STAYS. The Android build packs everything under
- * `portal/data/src/main/assets/`, the file is authored by the founder, and the app
- * never writes to it.
+ * WHAT SURVIVES IS THE SUBSTITUTION RULE, because it is a shared contract rather than
+ * a default. The room previews exactly what a beat will inject and the beat injects
+ * it, and both go through this one function, so the preview cannot stop being true.
+ *
+ * TWO SPELLINGS, AND THE ONE THAT WAS SILENTLY BROKEN. The old loader knew
+ * `{{human_name}}` and `{{time}}` while the shipped asset was written with
+ * `${human}`. Nothing matched it, so every beat in every released build injected the
+ * literal text `${human}` where a name belonged. Nobody saw it, because a prompt is
+ * read by a model rather than by a person, and the model simply did what the literal
+ * text said. Both spellings are accepted here, so a token a person might reasonably
+ * type cannot fail to substitute.
  */
 object HeartbeatPrompts {
 
-    private const val TAG = "guru_heartbeat"
-    private const val ASSET_PATH = "heartbeat/HEARTBEAT_PROMPT.md"
-
-    /**
-     * THE TOKENS, AND THE SECOND SPELLING THAT WAS SILENTLY BROKEN.
-     *
-     * The loader knew `{{human_name}}` and `{{time}}`, but the shipped asset is
-     * written with `${human}`. Nothing matched it, so every beat in every released
-     * build injected the literal text `${human}` where a name belonged. Both
-     * spellings are accepted here: a token a person might reasonably type should not
-     * fail to substitute just because the app happened to standardise on the other.
-     */
     private val HUMAN_TOKENS = listOf("{{human_name}}", "{{human}}", "\${human}", "\${human_name}")
     private val TIME_TOKENS = listOf("{{time}}", "\${time}")
 
-    /** The bundled prompt, unsubstituted. Null when the asset cannot be read. */
-    fun bundledText(context: Context): String? = try {
-        val raw = context.assets.open(ASSET_PATH).bufferedReader().use { it.readText() }
-        raw.takeIf { it.isNotBlank() }
-    } catch (e: Exception) {
-        Log.w(TAG, "Bundled heartbeat prompt unavailable: ${e.message}")
-        null
-    }
-
     /**
-     * Load the bundled prompt, substitute and return it, or null when it cannot be
-     * injected.
+     * Replace every token in a prompt.
      *
-     * Kept because it is the honest name for "read the shipped file", and because a
-     * beat must never be injected with an empty or broken prompt: every failure here
-     * returns null rather than an empty string, and the caller ends the beat.
-     */
-    fun load(context: Context, humanName: String): String? {
-        val raw = bundledText(context) ?: return null
-        return substitute(raw, humanName).ifBlank { null }
-    }
-
-    /**
-     * Replace every token in a prompt, bundled or stored.
-     *
-     * Exposed because the Heartbeat room previews exactly what a beat will inject,
-     * and a preview that substituted tokens its own way would be a second contract
-     * that could disagree with the real one.
+     * Exposed because the Heartbeat room previews exactly what a beat will inject. A
+     * preview that substituted tokens its own way would be a second contract, and the
+     * two would drift the first time a token was added.
      */
     fun substitute(raw: String, humanName: String): String {
         val effectiveName = humanName.ifBlank { "your human" }
