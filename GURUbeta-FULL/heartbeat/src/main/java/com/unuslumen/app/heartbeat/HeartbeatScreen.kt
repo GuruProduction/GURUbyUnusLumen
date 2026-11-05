@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -369,10 +370,42 @@ private fun DiaryTabBody(diary: DiaryState, diaryViewModel: HeartbeatDiaryViewMo
     val dayFormat = remember { SimpleDateFormat("EEE d MMM", Locale.UK) }
     val weekdayFormat = remember { SimpleDateFormat("EEE", Locale.UK) }
     val dayNumber = remember { SimpleDateFormat("d", Locale.UK) }
+    val listState = rememberLazyListState()
+
+    /*
+     * OPEN ON THE CURRENT HALF HOUR, NOT ON MIDNIGHT.
+     *
+     * A diary that opens at 00:00 makes a person scroll past eleven empty hours every single
+     * time to reach the part of the day they are actually in. The scroll happens once when
+     * the tab opens and once whenever the day changes; it is not re-run on every state
+     * change, because that would drag the list back under somebody's finger while they were
+     * reading it.
+     *
+     * THE INDEX IS COMPUTED FROM THE SAME STATE THE LIST IS BUILT FROM. The header rows are a
+     * fixed set with two optional notices, so counting them is exact rather than a guess,
+     * and it stays exact if a notice appears later because the count comes from the same
+     * values the list is composed with.
+     */
+    LaunchedEffect(diary.selectedDayStart, diary.isLoading) {
+        if (diary.isLoading || diary.slots.isEmpty()) return@LaunchedEffect
+        val nowMinute = minuteOfDayNow()
+        val slotIndex = diary.slots.indexOfFirst { slot ->
+            val at = Calendar.getInstance().apply { timeInMillis = slot.slotAt }
+            at.get(Calendar.HOUR_OF_DAY) * 60 + at.get(Calendar.MINUTE) >= nowMinute
+        }.let { if (it < 0) diary.slots.lastIndex else it }
+
+        // One band, the week strip, the day line, and a notice each for a message and an
+        // error. Counted rather than hardcoded so an appearing notice cannot shift the aim.
+        val headerCount = 3 +
+            (if (diary.notice != null) 1 else 0) +
+            (if (diary.error != null) 1 else 0)
+        listState.scrollToItem(headerCount + slotIndex)
+    }
 
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             LazyColumn(
+                state = listState,
                 modifier = Modifier.weight(1f),
                 contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 16.dp),
             ) {
@@ -854,10 +887,17 @@ private fun BookingSheetOverlay(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(5.dp),
                         ) {
+                            val shownDays = sheet.displayDays()
                             DAY_LETTERS.forEachIndexed { index, letter ->
                                 ChoiceCell(
                                     label = letter,
-                                    selected = index in sheet.chosenDays,
+                                    // THE GRID SHOWS WHAT THE BOOKING COVERS, not what has
+                                    // been ticked. A once-off on a Thursday lights Thursday
+                                    // alone, weekdays lights Monday to Friday, and only a
+                                    // chosen-days booking reflects arbitrary ticks. Reading
+                                    // the raw tick set made a fresh sheet arrive with five
+                                    // cells filled for a booking that was one date.
+                                    selected = index in shownDays,
                                     modifier = Modifier.weight(1f),
                                     onClick = { onEvent(DiaryEvent.ToggleDay(index)) },
                                 )
@@ -1366,3 +1406,14 @@ private fun bodyText() = androidx.compose.ui.text.TextStyle(
     lineHeight = 17.sp,
     color = Memphis.Ink,
 )
+
+/**
+ * Minutes past midnight right now, so the diary can open on the half hour a person is in.
+ *
+ * READ ONCE PER SCROLL rather than kept in state. A clock held in state would be a second
+ * definition of "now" that drifts from the one the bookings use, and this only needs to be
+ * right at the moment the list is positioned.
+ */
+private fun minuteOfDayNow(): Int = Calendar.getInstance().let {
+    it.get(Calendar.HOUR_OF_DAY) * 60 + it.get(Calendar.MINUTE)
+}
