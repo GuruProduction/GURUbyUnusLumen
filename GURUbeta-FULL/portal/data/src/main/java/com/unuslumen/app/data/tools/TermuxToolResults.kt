@@ -26,6 +26,14 @@ import kotlinx.serialization.Serializable
  *
  * `toolDetails` carries the real output for every tool that did not run, so the
  * caller never has to guess why. Empty for tools that run.
+ *
+ * `prefixExecutes` is the one fact those maps cannot express on their own
+ * (issue 317): whether the prefix as a whole was proven to run. A tree can have
+ * files, a non-zero binCount and even a working `sh` while its core binaries
+ * segfault, and a reader looking at eleven booleans has no way to tell that from
+ * a healthy install. It is nullable because "not measured yet" is a different
+ * answer from "measured and broken", and reporting the first as the second is
+ * the guessing this whole surface exists to remove.
  */
 @Serializable data class TermuxStatusResult(
     val initialized: Boolean,
@@ -37,6 +45,8 @@ import kotlinx.serialization.Serializable
     val availableTools: Map<String, Boolean>,
     val toolStates: Map<String, String> = emptyMap(),
     val toolDetails: Map<String, String> = emptyMap(),
+    val prefixExecutes: Boolean? = null,
+    val prefixHealth: String? = null,
 ) : ToolResultData
 @Serializable data class TermuxHasCommandResult(val command: String, val available: Boolean, val message: String) : ToolResultData
 @Serializable data class TermuxDiagnoseResult(val environmentReady: Boolean, val binCount: Int, val executableCount: Int, val aptWorking: Boolean, val aptError: String?, val linkerPath: String, val bashWorks: Boolean, val bashError: String?, val diagnostics: List<String>) : ToolResultData

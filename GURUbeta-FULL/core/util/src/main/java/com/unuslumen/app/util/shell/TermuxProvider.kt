@@ -118,6 +118,41 @@ class TermuxProvider(private val context: Context) {
         private const val RPATH_SWEEP_MARKER = ".rpath-swept"
         private const val RPATH_SWEEP_VERSION = 1
 
+        /**
+         * Record of the last time this prefix was proven to EXECUTE, and its
+         * version.
+         *
+         * WHY A SECOND MARKER EXISTS AT ALL (issue 317). [isAvailable] answers
+         * "is a prefix installed" from a populated bin directory, and that is
+         * the correct answer to that question. It is NOT the answer to "can this
+         * prefix run anything", and until now nothing anywhere asked the second
+         * question on a tree that already had files.
+         *
+         * The measured consequence, reported against v3.45 as exit 139 on bash,
+         * git, curl and apt with 416 binaries present. The payload on disk was
+         * fine — a clean extract of the same bootstrap ran all four — so the
+         * install on the handset had drifted into a state where the files were
+         * there and the loader refused them, and no code path would ever notice
+         * because `initialize()` only rebuilds when usr/bin holds nothing at all.
+         *
+         * This marker is written only after the whole prefix has been proven by
+         * execution, and it records the app's versionCode, so an upgrade
+         * re-proves the tree rather than trusting the one an older build left.
+         */
+        private const val EXEC_HEALTH_MARKER = ".prefix-executes"
+        private const val EXEC_HEALTH_VERSION = 1
+
+        /**
+         * How many consecutive recovery attempts a single process may make.
+         *
+         * A re-extract is the expensive recovery: 29 MB of bootstrap, several
+         * hundred chmods and a few hundred patchelf processes. If the first one
+         * does not fix the tree, a second will not either, and looping would
+         * turn a broken install into a boot storm. One attempt, then the surface
+         * reports the failure with its real output.
+         */
+        private const val MAX_RECOVERY_ATTEMPTS = 1
+
         /*
          * Exact modes, as issue 175 requires. Kotlin has no octal literal, so
          * each is written in binary grouped three bits to one octal digit —
@@ -158,8 +193,8 @@ class TermuxProvider(private val context: Context) {
     private var available = false
     private var symlinksCreated = false
 
-    /** True only during a recovery re-extract pass this process runs deliberately. */
-    @Volatile private var recoveryRebootstrap = false
+    /** How many recovery re-extracts this process has already performed. */
+    private var recoveryAttempts = 0
 
     suspend fun initialize(): Boolean = withContext(Dispatchers.IO) {
         if (initialized) return@withContext available
@@ -301,12 +336,213 @@ class TermuxProvider(private val context: Context) {
 
             available = binDir.exists() && binDir.listFiles()?.isNotEmpty() == true
             initialized = true
+
+            /*
+             * Prove the tree by EXECUTION, and rebuild it once if it cannot run
+             * (issue 317).
+             *
+             * This runs last because every step above can leave the tree in a
+             * state where files exist and nothing loads; measuring earlier would
+             * measure a half-installed prefix. It is skipped entirely when the
+             * marker already records a proven tree for this versionCode, because
+             * the probe costs a few process spawns and the answer cannot change
+             * until the prefix or the build does.
+             *
+             * A failure here is NOT reported as "Termux is not installed" —
+             * [isAvailable] keeps answering the install question truthfully. What
+             * changes is that the tree is rebuilt from the bundled payload instead
+             * of being trusted forever, and the probe result is kept on
+             * [execHealth] so the status surface can say what actually happened.
+             */
+            if (!execHealthIsCurrent()) {
+                val measured = probePrefixExecution()
+                execHealth = measured
+                if (measured.allRan) {
+                    writeExecHealthMarker(measured)
+                } else {
+                    Log.w(TAG, "TermuxProvider: prefix is installed but CANNOT EXECUTE — ${measured.describe()}")
+                    recoverOnce()
+                }
+            }
+
             Log.d(TAG, "TermuxProvider: initialized — available=$available, bin=${binDir.absolutePath}, lib=${libDir.absolutePath}")
         } catch (e: Exception) {
             Log.e(TAG, "TermuxProvider: initialization failed", e)
             initialized = true
         }
         available
+    }
+
+    /**
+     * What a real execution of the prefix's core binaries showed.
+     *
+     * The four names are the four the issue measured, and they are chosen for a
+     * reason: each one fails for a different missing library. bash needs
+     * libreadline and libandroid-support, curl needs libssl and libnghttp2, apt
+     * needs its whole config tree, and git needs libcurl and libpcre2. A library
+     * the sweep missed shows up in at least one of them.
+     */
+    data class ExecHealth(
+        val allRan: Boolean,
+        val bash: CommandProbeResult?,
+        val git: CommandProbeResult?,
+        val curl: CommandProbeResult?,
+        val apt: CommandProbeResult?,
+    ) {
+        /** One line a person can act on, naming only what was observed. */
+        fun describe(): String {
+            val broken = listOf("bash" to bash, "git" to git, "curl" to curl, "apt" to apt)
+                .filter { (_, probe) -> probe != null && probe.state != CommandProbe.RUNS }
+            if (broken.isEmpty()) return "every probed binary ran"
+            return broken.joinToString("; ") { (name, probe) ->
+                "$name=${probe?.state} exit=${probe?.exitCode} ${probe?.output?.take(120).orEmpty()}"
+            }
+        }
+    }
+
+    /** The last measured execution health, or null before the first probe. */
+    @Volatile private var execHealth: ExecHealth? = null
+
+    /** The last measured execution health for a caller that wants to report it. */
+    fun executionHealth(): ExecHealth? = execHealth
+
+    /**
+     * The versionCode this APK belongs to, used to decide whether a proven tree
+     * belongs to this build.
+     *
+     * A marker recording a tree proven by an OLDER build is not evidence about
+     * the tree this build is running against, because an upgrade can change the
+     * bootstrap, the libs or the passes while leaving the extracted files in
+     * place. Reading it from the package manager is the only way to know, and a
+     * failure to read it falls back to 0, which simply re-probes.
+     */
+    private fun packageVersionCode(): Long = runCatching {
+        context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode
+    }.getOrDefault(0L)
+
+    private fun execHealthMarker(): File = File(usrPrefix, EXEC_HEALTH_MARKER)
+
+    /**
+     * Whether the marker proves this exact tree, under this exact build, runs.
+     *
+     * Both facts are checked: the marker's own schema version, so a change to
+     * what the probe means re-runs it, and the package versionCode, so an
+     * upgrade re-proves rather than inheriting a claim made by different code.
+     */
+    private fun execHealthIsCurrent(): Boolean {
+        val recorded = runCatching { execHealthMarker().readText() }.getOrNull() ?: return false
+        return recorded.contains("version=$EXEC_HEALTH_VERSION") &&
+            recorded.contains("app=${packageVersionCode()}")
+    }
+
+    private fun writeExecHealthMarker(health: ExecHealth) {
+        runCatching {
+            execHealthMarker().writeText(
+                "version=$EXEC_HEALTH_VERSION;app=${packageVersionCode()};" +
+                    "ran=${listOf(health.bash, health.git, health.curl, health.apt).count { it?.state == CommandProbe.RUNS }}" +
+                    ";bash=${health.bash?.output?.lineSequence()?.firstOrNull()?.take(80)}\n",
+            )
+        }.onFailure { Log.w(TAG, "TermuxProvider: could not write $EXEC_HEALTH_MARKER: ${it.message}") }
+    }
+
+    /**
+     * Run the four binaries the issue measured and report what the kernel did.
+     *
+     * A probe result is reused rather than reimplemented: [probeCommand] already
+     * distinguishes ABSENT from WILL_NOT_LOAD from RUNS and attaches the real
+     * output, so this class keeps ONE definition of "this binary works" instead
+     * of growing a second one that can disagree.
+     */
+    private fun probePrefixExecution(): ExecHealth {
+        val bash = probeCommand("bash")
+        val git = probeCommand("git")
+        val curl = probeCommand("curl")
+        val apt = probeCommand("apt")
+        val allRan = listOf(bash, git, curl, apt).all { it.state == CommandProbe.RUNS }
+        return ExecHealth(allRan, bash, git, curl, apt)
+    }
+
+    /**
+     * Rebuild the prefix from the bundled payload, once, because it is installed
+     * and cannot execute.
+     *
+     * The distinction from the wiped-tree case matters. A wiped tree has no
+     * files, so re-extraction is obviously correct. A tree that HAS files and
+     * cannot run them is the harder case: something about the extract on this
+     * device is wrong, and the bundled payload is the only known-good copy. So
+     * the whole tree is discarded and rebuilt rather than patched, because a
+     * partial repair of an unknown drift is how a prefix ends up in a state
+     * nobody can explain twice.
+     *
+     * `home/` survives: it holds the operator's own scripts and notes, which no
+     * part of this rebuild owns.
+     */
+    private suspend fun recoverOnce() {
+        if (recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
+            Log.w(
+                TAG,
+                "TermuxProvider: recovery already attempted $recoveryAttempts time(s) this process; " +
+                    "leaving the tree for the next cold start rather than looping",
+            )
+            return
+        }
+        recoveryAttempts++
+
+        Log.w(TAG, "TermuxProvider: rebuilding the prefix from the bundled payload (issue 317)")
+        val rebuilt = fullCleanAndExtract()
+        if (!rebuilt) {
+            Log.w(TAG, "TermuxProvider: rebuild could not extract the bundled payload")
+            return
+        }
+
+        // Every post-extract pass is marker-gated, so the markers that belong to
+        // the tree just deleted must go with it. fullCleanAndExtract removes the
+        // whole tree except home/, which already takes them; this states the
+        // requirement rather than relying on it, because a surviving marker would
+        // make the next init skip the pass that produces the missing library.
+        listOf(RPATH_SWEEP_MARKER, GIT_RUNTIME_MARKER, RE_TOOLCHAIN_MARKER, EXEC_HEALTH_MARKER)
+            .forEach { runCatching { File(usrPrefix, it).delete() } }
+
+        canonicaliseTreeLayout()
+        applyBootstrapSymlinks()
+        homeDir.mkdirs()
+        usrDir.mkdirs()
+        File(usrDir, "tmp").mkdirs()
+        File(usrDir, "var").mkdirs()
+        File(etcDir, "apt").mkdirs()
+
+        // The same post-install chain initialize() runs, in the same order and for
+        // the same reasons. It is repeated rather than re-entered because
+        // initialize() short-circuits on its own latch, and clearing that latch
+        // mid-call would recurse into the probe that called this.
+        symlinksCreated = false
+        copyBundledLibs()
+        createLibrarySymlinks()
+        copyLibsToReToolsDir()
+        patchElfBinaries()
+        val bashBinary = File(binDir, "bash")
+        symlinksCreated = bashBinary.exists() && bashBinary.length() > 0 && bashBinary.canRead()
+        installGitRuntime()
+        installReToolchain()
+        relocatePrefixPaths()
+        ensureCompatibilityRoot()
+        initAptConfig()
+        fixAptMethods()
+        removeOldAptWrappers()
+        applyPrefixPermissions()
+
+        // Measure the rebuild by the only thing that counts.
+        execHealth = probePrefixExecution()
+        if (execHealth?.allRan == true) {
+            writeExecHealthMarker(execHealth!!)
+            Log.d(TAG, "TermuxProvider: rebuild fixed the prefix — every probed binary runs")
+        } else {
+            Log.w(
+                TAG,
+                "TermuxProvider: rebuild complete but the prefix still cannot execute — " +
+                    "${execHealth?.describe()}",
+            )
+        }
     }
 
     /** Canonicalise root-level package dirs into the Termux-standard usr/ prefix layout. */
@@ -378,6 +614,18 @@ class TermuxProvider(private val context: Context) {
      * "Is it installed" is a fact about the filesystem, not about which object
      * asked. The latch stays for cheap short-circuiting inside [initialize], but
      * any caller asking the public question gets the real answer.
+     *
+     * WHAT THIS DELIBERATELY DOES NOT ANSWER (issue 317). "Installed" is not
+     * "working". Every caller in the app gates on this function before running
+     * anything, so a true answer here is what stops [initialize] from ever being
+     * called — and [initialize] is the only place the execution probe and the
+     * rebuild live. A prefix with 416 binaries that segfault on every invocation
+     * therefore reported itself installed and healthy forever.
+     *
+     * The answer stays true for the question it asks, because a false negative
+     * here would make every tool refuse to even try. What fixes the trap is that
+     * [initialize] now proves the tree by execution whenever it is entered, and
+     * [executionHealth] reports the measured result separately.
      */
     fun isAvailable(): Boolean {
         if (available) return true
@@ -389,6 +637,16 @@ class TermuxProvider(private val context: Context) {
         if (installed) available = true
         return installed
     }
+
+    /**
+     * Whether the prefix is installed AND was last measured to execute.
+     *
+     * The distinction callers need: [isAvailable] is "the files are here",
+     * [isUsable] is "the files run". A tool that is about to give a person a
+     * refusal should ask this one, because a prefix that cannot exec is a
+     * rebuild waiting to happen rather than a missing install.
+     */
+    fun isUsable(): Boolean = isAvailable() && execHealth?.allRan != false
 
     fun isInitialized(): Boolean = initialized || isAvailable()
 
