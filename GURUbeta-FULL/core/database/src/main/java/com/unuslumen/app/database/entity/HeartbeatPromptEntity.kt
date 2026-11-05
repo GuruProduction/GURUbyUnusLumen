@@ -14,12 +14,12 @@ import androidx.room.PrimaryKey
  * assets/heartbeat/HEARTBEAT_PROMPT.md, authored by the founder and never writable
  * from the app. That made it a piece of behaviour nobody but a developer could
  * change, which is backwards: what GURU says to itself every half hour is exactly
- * the sort of thing its owner should be able to tune, and it is the sort of thing
- * that should not need a release to adjust.
+ * the sort of thing its owner should be able to tune, and it should not need a
+ * release to adjust.
  *
- * SO IT LIVES HERE. One row, edited from the Heartbeat room. The shipped text is
- * seeded on first open so a fresh install behaves exactly as it did before, and
- * from then on the row is the truth.
+ * SO IT LIVES HERE, AND NOWHERE ELSE. The asset is deleted and nothing is seeded on
+ * first open, so a fresh install has no prompt until its owner writes one. That is
+ * the point: the app has no opinion about what GURU should say to itself.
  *
  * [id] is a constant rather than random because there is exactly one prompt. A
  * fixed key means an edit is an update to the same row rather than a new row
