@@ -1,0 +1,50 @@
+name: Lux
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [opened, assigned]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  lux:
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@lux')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@lux')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@lux')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@lux') || contains(github.event.issue.title, '@lux')))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+      actions: read # Required for Lux to read CI results on PRs
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Lux
+        id: lux
+        uses: unuslumen/lux-action@v1
+        with:
+          lux_api_key: ${{ secrets.LUX_API_KEY }}
+
+          # Optional: allow Lux to read CI results on PRs
+          additional_permissions: |
+            actions: read
+
+          # Optional: custom prompt. If unspecified, Lux performs the
+          # instructions in the comment that tagged it.
+          # prompt: 'Update the pull request description to include a summary of changes.'
+
+          # Optional: lux_args to customize behavior and configuration
+          # See https://github.com/unuslumen/lux-action/blob/main/docs/usage.md
+          # lux_args: '--allowed-tools Bash(gh pr:*)'
+
