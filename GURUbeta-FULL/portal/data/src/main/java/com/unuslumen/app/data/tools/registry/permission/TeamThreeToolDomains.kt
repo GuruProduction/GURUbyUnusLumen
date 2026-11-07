@@ -11,6 +11,7 @@ import com.unuslumen.app.data.fabric.net.NetworkDomainModule
 import com.unuslumen.app.data.fabric.smart.SmartHomeDomainModule
 import com.unuslumen.app.data.fabric.tv.TvDomainModule
 import com.unuslumen.app.data.tools.permission.AccountsCalendarDomainModule
+import com.unuslumen.app.data.tools.permission.AppUsageNotifyDomainModule
 import com.unuslumen.app.data.tools.permission.AppsManagementDomainModule
 import com.unuslumen.app.data.tools.permission.CallLogContactsDomainModule
 import com.unuslumen.app.data.tools.permission.DevicePowerIntrospectDomainModule
@@ -62,9 +63,13 @@ object TeamThreeToolDomains {
         // GURU's own event list and every result says so, because conflating them is a real bug
         // this project has had.
         AccountsCalendarDomainModule,
-        // The apps domain first because its id sorts first, and because its names say what
-        // actually happens: requestInstallApp and requestUninstallApp, not silent, because a
-        // silent install needs a privilege this build does not hold.
+        // App usage and notifications. Its dndControl deliberately declares no permission,
+        // because reading the Do Not Disturb filter needs none and refusing a true reading to
+        // keep a uniform declaration would be the wrong trade.
+        AppUsageNotifyDomainModule,
+        // The apps domain, whose names say what actually happens: requestInstallApp and
+        // requestUninstallApp, not silent, because a silent install needs a privilege this build
+        // does not hold.
         AppsManagementDomainModule,
         BluetoothDomainModule,
         // The personal-data domain: the call log and the address book. Named here
