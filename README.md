@@ -138,24 +138,32 @@ Watch GURU work, live:
 - [GURU external control demo](videos/GURU-external-control-demo.mp4)
 - [GURU images rendering](videos/GURU-images-rendering.mp4)
 
-## Screenshots
+## Ottio, the agent market
 
-A real app, running on a real phone. All images captured live from GURU:
+Ottio is the marketplace where GURU users publish agents and buy each other's. It runs inside the app: browse the shelf, read exactly what an agent is allowed to use, buy it once, and keep it even if the author withdraws it later. Captured live on a phone.
 
-| | | | | | |
-|---|---|---|---|---|---|
-| ![](screenshots/GURU%20banter.jpeg) **GURU banter** | ![](screenshots/GURU%20banter%20not%20edward%201.jpeg) **GURU banter not edward 1** | ![](screenshots/GURU%20banter%20not%20edward%202.jpeg) **GURU banter not edward 2** | ![](screenshots/GURU%20Earn%20bug%20bounties.jpeg) **GURU Earn bug bounties** | ![](screenshots/GURU%20Tennis%20betting.jpeg) **GURU Tennis betting** | ![](screenshots/GURU%20automation.jpeg) **GURU automation** |
-| ![](screenshots/GURU%20batch%20tool%20call.jpeg) **GURU batch tool call** | ![](screenshots/GURU%20betting%20.jpeg) **GURU betting** | ![](screenshots/GURU%20brain%20part%202.jpeg) **GURU brain part 2** | ![](screenshots/GURU%20brain.jpeg) **GURU brain** | ![](screenshots/GURU%20browsing%20capabilities.jpeg) **GURU browsing capabilities** | ![](screenshots/GURU%20browsing.jpeg) **GURU browsing** |
-| ![](screenshots/GURU%20device%20control%20%22my%20body%22.jpeg) **GURU device control "my body"** | ![](screenshots/GURU%20device%20control%20more.jpeg) **GURU device control more** | ![](screenshots/GURU%20device%20control.jpeg) **GURU device control** | ![](screenshots/GURU%20dpa.jpeg) **GURU dpa** | ![](screenshots/GURU%20earn%20arbitrage.jpeg) **GURU earn arbitrage** | ![](screenshots/GURU%20earn%20ethical%20hacking.jpeg) **GURU earn ethical hacking** |
-| ![](screenshots/GURU%20earn%20match%20betting.jpeg) **GURU earn match betting** | ![](screenshots/GURU%20earn%20render.jpeg) **GURU earn render** | ![](screenshots/GURU%20earn%20trading.jpeg) **GURU earn trading** | ![](screenshots/GURU%20esports%20betting.jpeg) **GURU esports betting** | ![](screenshots/GURU%20exchange%20trading.jpeg) **GURU exchange trading** | ![](screenshots/GURU%20football%20betting.jpeg) **GURU football betting** |
-| ![](screenshots/GURU%20fresh%20portal.jpeg) **GURU fresh portal** | ![](screenshots/GURU%20full%20apps.jpeg) **GURU full apps** | ![](screenshots/GURU%20fun.jpeg) **GURU fun** | ![](screenshots/GURU%20gambeling%20%28casino%29.jpeg) **GURU gambeling (casino)** | ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%201.jpeg) **GURU installing kodi on my firestick 1** | ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%202.jpeg) **GURU installing kodi on my firestick 2** |
-| ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%203.jpeg) **GURU installing kodi on my firestick 3** | ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%20tools%20calls.jpeg) **GURU installing kodi on my firestick tools calls** | ![](screenshots/GURU%20installing%20kodi%20on%20my%20firestick%20tools%20ui.jpeg) **GURU installing kodi on my firestick tools ui** | ![](screenshots/GURU%20live%20dashboards.jpeg) **GURU live dashboards** | ![](screenshots/GURU%20local%20memory.jpeg) **GURU local memory** | ![](screenshots/GURU%20media%20engine%20no%20JS%20permissions%20%28intentional%29.jpeg) **GURU media engine no JS permissions (intentional)** |
-| ![](screenshots/GURU%20mini%20apps%20in%20app.jpeg) **GURU mini apps in app** | ![](screenshots/GURU%20mini%20games%20demo.jpeg) **GURU mini games demo** | ![](screenshots/GURU%20notification.jpeg) **GURU notification** | ![](screenshots/GURU%20permissions%20intent.jpeg) **GURU permissions intent** | ![](screenshots/GURU%20permissions%20ui%20boolean%20off.jpeg) **GURU permissions ui boolean off** | ![](screenshots/GURU%20permissions%20ui%20boolean%20on.jpeg) **GURU permissions ui boolean on** |
-| ![](screenshots/GURU%20photobook%20portal%20render%202.jpeg) **GURU photobook portal render 2** | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%201.jpeg) **GURU photobook portal render bristol 1** | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%2012.jpeg) **GURU photobook portal render bristol 12** | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%2013.jpeg) **GURU photobook portal render bristol 13** | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%2014.jpeg) **GURU photobook portal render bristol 14** | ![](screenshots/GURU%20photobook%20portal%20render%20bristol%205.jpeg) **GURU photobook portal render bristol 5** |
-| ![](screenshots/GURU%20photobook%20portal%20render%20bristol%20more.jpeg) **GURU photobook portal render bristol more** | ![](screenshots/GURU%20test%20photo%20album%20cats%201.jpeg) **GURU test photo album cats 1** | ![](screenshots/GURU%20test%20photo%20album%20cats%202.jpeg) **GURU test photo album cats 2** | ![](screenshots/GURU%20test%20photo%20album%20cats%203.jpeg) **GURU test photo album cats 3** | ![](screenshots/GURU%20test%20photo%20album%20cats%204.jpeg) **GURU test photo album cats 4** | ![](screenshots/GURU%20test%20photo%20album%20cats%205.jpeg) **GURU test photo album cats 5** |
-| ![](screenshots/GURU%20thinking%2C%20streaming%20%26%20responding.jpeg) **GURU thinking, streaming & responding** | ![](screenshots/GURU%20tool%20ui%20result%20ui.jpeg) **GURU tool ui result ui** | ![](screenshots/GURU%20tools%20ui%20level%202%20%28notification%29.jpeg) **GURU tools ui level 2 (notification)** | ![](screenshots/GURU%20web.jpeg) **GURU web** | ![](screenshots/Guru%20being%20Guru.jpeg) **Guru being Guru** | ![](screenshots/Guru%20intro%20showing%20loading%20state.jpeg) **Guru intro showing loading state** |
-| ![](screenshots/Guru%27s%20thinking.jpeg) **Guru's thinking** | ![](screenshots/More%20GURU%20Device%20Control.jpeg) **More GURU Device Control** | ![](screenshots/More%20GURU%20permissions%20boolean%20ui.jpeg) **More GURU permissions boolean ui** | ![](screenshots/More%20GURU%20thinking.jpeg) **More GURU thinking** | ![](screenshots/More%20GURU%20tools%20UI.jpeg) **More GURU tools UI** | ![](screenshots/More%20tools%20ui%20GURU.jpeg) **More tools ui GURU** |
-| ![](screenshots/What%20can%20GURU%20do%3F.jpeg) **What can GURU do?** | ![](screenshots/more%20GURU%20tools%20ui%20.jpeg) **more GURU tools ui** | | | | |
+<table>
+<tr>
+<td width="33%"><img src="screenshots/marketplace/01-market.png" alt="The Ottio market front"><br><b>The market</b><br>Search, categories, editor's pick, and everything published.</td>
+<td width="33%"><img src="screenshots/marketplace/02-agent-archivist.png" alt="An agent's detail page"><br><b>An agent's page</b><br>What it does, what it may use, who made it, and what it costs.</td>
+<td width="33%"><img src="screenshots/marketplace/03-checkout.png" alt="Checkout"><br><b>Checkout</b><br>One price, VAT shown, paid once through Stripe.</td>
+</tr>
+<tr>
+<td width="33%"><img src="screenshots/marketplace/04-purchase-done.png" alt="Purchase confirmation"><br><b>Yours</b><br>Switched on and in your agents, ready for work straight away.</td>
+<td width="33%"><img src="screenshots/marketplace/05-your-agents.png" alt="Your agents"><br><b>Your agents</b><br>Updates waiting, things you bought, things you got free.</td>
+<td width="33%"><img src="screenshots/marketplace/06-shelf.png" alt="Your shelf"><br><b>Your shelf</b><br>What you have published, what is in review, what is retired.</td>
+</tr>
+<tr>
+<td width="33%"><img src="screenshots/marketplace/07-publish.png" alt="Publishing an agent"><br><b>Publishing</b><br>One line, a category, a price. You keep 80 percent.</td>
+<td width="33%"><img src="screenshots/marketplace/11-earnings.png" alt="Earnings"><br><b>Earnings</b><br>What sold, what you keep, and when Stripe pays out.</td>
+<td width="33%"><img src="screenshots/marketplace/10-maker-profile.png" alt="A maker's profile"><br><b>A maker's profile</b><br>Who built it, what else they made, and whether it was reviewed.</td>
+</tr>
+<tr>
+<td width="33%"><img src="screenshots/marketplace/08-market-offline.png" alt="The market unreachable"><br><b>Nothing hidden</b><br>When the market cannot be reached it says so, and everything you own still works.</td>
+<td width="33%"><img src="screenshots/marketplace/09-search-empty.png" alt="An empty search"><br><b>An honest empty</b><br>No results means no results, not a broken connection.</td>
+<td width="33%"></td>
+</tr>
+</table>
 
 ## The Spirit
 
