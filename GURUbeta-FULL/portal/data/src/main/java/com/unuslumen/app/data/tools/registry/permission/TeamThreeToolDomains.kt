@@ -10,6 +10,7 @@ import com.unuslumen.app.data.fabric.ir.IrDomainModule
 import com.unuslumen.app.data.fabric.net.NetworkDomainModule
 import com.unuslumen.app.data.fabric.smart.SmartHomeDomainModule
 import com.unuslumen.app.data.fabric.tv.TvDomainModule
+import com.unuslumen.app.data.tools.permission.AccountsCalendarDomainModule
 import com.unuslumen.app.data.tools.permission.AppsManagementDomainModule
 import com.unuslumen.app.data.tools.permission.CallLogContactsDomainModule
 import com.unuslumen.app.data.tools.permission.DevicePowerIntrospectDomainModule
@@ -57,6 +58,10 @@ object TeamThreeToolDomains {
      * Ordered by id so a merge never reorders another agent's line.
      */
     val domains: List<DomainToolModule> = listOf(
+        // The calendar and accounts domain. The device calendar is a different database from
+        // GURU's own event list and every result says so, because conflating them is a real bug
+        // this project has had.
+        AccountsCalendarDomainModule,
         // The apps domain first because its id sorts first, and because its names say what
         // actually happens: requestInstallApp and requestUninstallApp, not silent, because a
         // silent install needs a privilege this build does not hold.

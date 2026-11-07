@@ -86,6 +86,10 @@ class SensesDomainHonestyTest {
         // here is the fix, and this assertion is what proves they are named.
         assertEquals(
             listOf(
+                // The calendar and accounts domain. The device calendar is a different database
+                // from GURU's own event list and every result says so, because conflating the two
+                // is a bug this project has already had.
+                "accounts_calendar",
                 // The apps domain: storage per app, stopping one, opening one, and handing an
                 // install or a removal to the system's own dialog. Its names say request rather
                 // than silent, because a silent install needs a privilege this build lacks.
