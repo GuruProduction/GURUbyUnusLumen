@@ -465,6 +465,474 @@ object TeamThreePermissions {
         grantRoute = "Settings > Apps > GURU > Alarms & reminders > Allow",
     )
 
+    // ------------------------------------------------------------------
+    // Network, wifi and VPN (#95 to #103)
+    // ------------------------------------------------------------------
+
+    val ACCESS_NETWORK_STATE = PermissionSpec(
+        permission = Manifest.permission.ACCESS_NETWORK_STATE,
+        tier = PermissionTier.INSTALL,
+        label = "Network state",
+        why = "GURU can tell whether the phone is online and on what kind of connection",
+        grantRoute = null,
+    )
+
+    val CHANGE_NETWORK_STATE = PermissionSpec(
+        permission = Manifest.permission.CHANGE_NETWORK_STATE,
+        tier = PermissionTier.INSTALL,
+        label = "Network state",
+        why = "GURU can ask the phone to bring its data connection up or down, which the platform usually refuses to an app",
+        grantRoute = null,
+    )
+
+    val ACCESS_WIFI_STATE = PermissionSpec(
+        permission = Manifest.permission.ACCESS_WIFI_STATE,
+        tier = PermissionTier.INSTALL,
+        label = "Wi-Fi state",
+        why = "GURU can name the network you are on and how strong the link is",
+        grantRoute = null,
+    )
+
+    val CHANGE_WIFI_STATE = PermissionSpec(
+        permission = Manifest.permission.CHANGE_WIFI_STATE,
+        tier = PermissionTier.INSTALL,
+        label = "Wi-Fi state",
+        why = "GURU can ask for Wi-Fi to be switched on or off, which Android blocks for an ordinary app since version 10",
+        grantRoute = null,
+    )
+
+    val NEARBY_WIFI_DEVICES = PermissionSpec(
+        permission = Manifest.permission.NEARBY_WIFI_DEVICES,
+        tier = PermissionTier.RUNTIME,
+        label = "Nearby devices",
+        why = "GURU can see the Wi-Fi networks around you without needing your location",
+        grantRoute = "Settings > Apps > GURU > Permissions > Nearby devices > Allow",
+    )
+
+    val CONTROL_VPN = PermissionSpec(
+        permission = "android.permission.CONTROL_VPN",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Control VPN",
+        why = "GURU could bring the system VPN up and down for you",
+        grantRoute = null,
+    )
+
+    val MANAGE_IPSEC_TUNNELS = PermissionSpec(
+        permission = "android.permission.MANAGE_IPSEC_TUNNELS",
+        tier = PermissionTier.PRIVILEGED,
+        label = "IPsec tunnels",
+        why = "GURU could set up a private network tunnel the rest of the phone uses",
+        grantRoute = null,
+    )
+
+    // ------------------------------------------------------------------
+    // Media library (#107)
+    // ------------------------------------------------------------------
+
+    val READ_MEDIA_IMAGES = PermissionSpec(
+        permission = Manifest.permission.READ_MEDIA_IMAGES,
+        tier = PermissionTier.RUNTIME,
+        label = "Photos and videos",
+        why = "GURU can find and open the photos on your phone when you ask it to",
+        grantRoute = "Settings > Apps > GURU > Permissions > Photos and videos > Allow",
+    )
+
+    val READ_MEDIA_VIDEO = PermissionSpec(
+        permission = Manifest.permission.READ_MEDIA_VIDEO,
+        tier = PermissionTier.RUNTIME,
+        label = "Photos and videos",
+        why = "GURU can find and open the videos on your phone when you ask it to",
+        grantRoute = "Settings > Apps > GURU > Permissions > Photos and videos > Allow",
+    )
+
+    val READ_MEDIA_AUDIO = PermissionSpec(
+        permission = Manifest.permission.READ_MEDIA_AUDIO,
+        tier = PermissionTier.RUNTIME,
+        label = "Music and audio",
+        why = "GURU can find and play the audio files on your phone",
+        grantRoute = "Settings > Apps > GURU > Permissions > Music and audio > Allow",
+    )
+
+    val READ_MEDIA_VISUAL_USER_SELECTED = PermissionSpec(
+        permission = Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
+        tier = PermissionTier.RUNTIME,
+        label = "Photos and videos",
+        why = "GURU can read the specific photos you picked for it rather than your whole library",
+        grantRoute = "Settings > Apps > GURU > Permissions > Photos and videos > Allow limited access",
+    )
+
+    // ------------------------------------------------------------------
+    // NFC (#93, #94)
+    // ------------------------------------------------------------------
+
+    val NFC = PermissionSpec(
+        permission = Manifest.permission.NFC,
+        tier = PermissionTier.INSTALL,
+        label = "NFC",
+        why = "GURU can read a tag or talk to a contactless device when you hold the phone to it",
+        grantRoute = null,
+    )
+
+    val NFC_TRANSACTION_EVENT = PermissionSpec(
+        permission = "android.permission.NFC_TRANSACTION_EVENT",
+        tier = PermissionTier.PRIVILEGED,
+        label = "NFC transaction events",
+        why = "GURU could watch raw contactless transactions as they happen",
+        grantRoute = null,
+    )
+
+    // ------------------------------------------------------------------
+    // Apps and packages (#108 to #121)
+    // ------------------------------------------------------------------
+
+    val GET_PACKAGE_SIZE = PermissionSpec(
+        permission = Manifest.permission.GET_PACKAGE_SIZE,
+        tier = PermissionTier.INSTALL,
+        label = "App sizes",
+        why = "GURU can tell you how much space each app is using",
+        grantRoute = null,
+    )
+
+    val PACKAGE_USAGE_STATS = PermissionSpec(
+        permission = Manifest.permission.PACKAGE_USAGE_STATS,
+        tier = PermissionTier.APPOP,
+        label = "Usage access",
+        why = "GURU can see which apps you have been using and for how long",
+        grantRoute = "Settings > Apps > GURU > Usage access > Allow",
+    )
+
+    val GET_TASKS = PermissionSpec(
+        permission = Manifest.permission.GET_TASKS,
+        tier = PermissionTier.PRIVILEGED,
+        label = "Running tasks",
+        why = "GURU could list every task running on the phone, which a normal app is not allowed to see",
+        grantRoute = null,
+    )
+
+    val REAL_GET_TASKS = PermissionSpec(
+        permission = "android.permission.REAL_GET_TASKS",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Running tasks",
+        why = "GURU could see every running task without the platform filtering the list",
+        grantRoute = null,
+    )
+
+    val REORDER_TASKS = PermissionSpec(
+        permission = Manifest.permission.REORDER_TASKS,
+        tier = PermissionTier.INSTALL,
+        label = "Reorder tasks",
+        why = "GURU can bring an app back to the front instead of asking you to find it",
+        grantRoute = null,
+    )
+
+    // FORCE_STOP_PACKAGES, MANAGE_USERS and CREATE_USERS are absent from
+    // Manifest.permission in recent SDKs while remaining live in the platform's own
+    // permission database, so the literal strings are used for the same reason the
+    // account trio and the capture pair above use them.
+    val FORCE_STOP_PACKAGES = PermissionSpec(
+        permission = "android.permission.FORCE_STOP_PACKAGES",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Force stop apps",
+        why = "GURU could stop another app outright when it is misbehaving",
+        grantRoute = null,
+    )
+
+    val KILL_BACKGROUND_PROCESSES = PermissionSpec(
+        permission = Manifest.permission.KILL_BACKGROUND_PROCESSES,
+        tier = PermissionTier.INSTALL,
+        label = "Background processes",
+        why = "GURU can ask the system to close another app's background work, which it may decline",
+        grantRoute = null,
+    )
+
+    val CLEAR_APP_CACHE = PermissionSpec(
+        permission = "android.permission.CLEAR_APP_CACHE",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Clear app cache",
+        why = "GURU could clear another app's cache to free space",
+        grantRoute = null,
+    )
+
+    val INSTALL_PACKAGES = PermissionSpec(
+        permission = "android.permission.INSTALL_PACKAGES",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Install apps",
+        why = "GURU could install an app without you tapping through the installer",
+        grantRoute = null,
+    )
+
+    val DELETE_PACKAGES = PermissionSpec(
+        permission = "android.permission.DELETE_PACKAGES",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Uninstall apps",
+        why = "GURU could remove an app without you tapping through the uninstaller",
+        grantRoute = null,
+    )
+
+    val START_ANY_ACTIVITY = PermissionSpec(
+        permission = "android.permission.START_ANY_ACTIVITY",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Start any screen",
+        why = "GURU could open any screen inside any app on the phone",
+        grantRoute = null,
+    )
+
+    val START_ACTIVITIES_FROM_BACKGROUND = PermissionSpec(
+        permission = "android.permission.START_ACTIVITIES_FROM_BACKGROUND",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Start screens in the background",
+        why = "GURU could open an app while GURU itself is not on screen",
+        grantRoute = null,
+    )
+
+    val MANAGE_APP_OPS_MODES = PermissionSpec(
+        permission = "android.permission.MANAGE_APP_OPS_MODES",
+        tier = PermissionTier.PRIVILEGED,
+        label = "App operations",
+        why = "GURU could read and change what any app is permitted to do",
+        grantRoute = null,
+    )
+
+    // ------------------------------------------------------------------
+    // Settings and system (#122 to #125)
+    // ------------------------------------------------------------------
+
+    val WRITE_SETTINGS = PermissionSpec(
+        permission = Manifest.permission.WRITE_SETTINGS,
+        tier = PermissionTier.APPOP,
+        label = "Modify system settings",
+        why = "GURU can change brightness, ringtone and screen timeout for you",
+        grantRoute = "Settings > Apps > GURU > Modify system settings > Allow",
+    )
+
+    val WRITE_SECURE_SETTINGS = PermissionSpec(
+        permission = "android.permission.WRITE_SECURE_SETTINGS",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Secure settings",
+        why = "GURU could change protected settings such as the location mode",
+        grantRoute = null,
+    )
+
+    val SET_TIME = PermissionSpec(
+        permission = "android.permission.SET_TIME",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Clock",
+        why = "GURU could set the phone's clock",
+        grantRoute = null,
+    )
+
+    val SET_TIME_ZONE = PermissionSpec(
+        permission = "android.permission.SET_TIME_ZONE",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Time zone",
+        why = "GURU could change the phone's time zone when you travel",
+        grantRoute = null,
+    )
+
+    val CHANGE_CONFIGURATION = PermissionSpec(
+        permission = "android.permission.CHANGE_CONFIGURATION",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Device configuration",
+        why = "GURU could change the phone's locale or display density",
+        grantRoute = null,
+    )
+
+    val SYSTEM_ALERT_WINDOW = PermissionSpec(
+        permission = Manifest.permission.SYSTEM_ALERT_WINDOW,
+        tier = PermissionTier.APPOP,
+        label = "Display over other apps",
+        why = "GURU can keep a small window on screen while you use something else",
+        grantRoute = "Settings > Apps > GURU > Display over other apps > Allow",
+    )
+
+    val EXPAND_STATUS_BAR = PermissionSpec(
+        permission = Manifest.permission.EXPAND_STATUS_BAR,
+        tier = PermissionTier.INSTALL,
+        label = "Status bar",
+        why = "GURU can open the notification shade for you",
+        grantRoute = null,
+    )
+
+    val SET_WALLPAPER = PermissionSpec(
+        permission = "android.permission.SET_WALLPAPER",
+        tier = PermissionTier.INSTALL,
+        label = "Wallpaper",
+        why = "GURU can change your wallpaper",
+        grantRoute = null,
+    )
+
+    val INJECT_EVENTS = PermissionSpec(
+        permission = "android.permission.INJECT_EVENTS",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Simulate input",
+        why = "GURU could tap and type on your behalf without the accessibility service",
+        grantRoute = null,
+    )
+
+    val ACCESS_NOTIFICATION_POLICY = PermissionSpec(
+        permission = Manifest.permission.ACCESS_NOTIFICATION_POLICY,
+        tier = PermissionTier.APPOP,
+        label = "Do Not Disturb access",
+        why = "GURU can silence the phone for you at bedtime or in a meeting",
+        grantRoute = "Settings > Apps > GURU > Do Not Disturb access > Allow",
+    )
+
+    val USE_BIOMETRIC = PermissionSpec(
+        permission = Manifest.permission.USE_BIOMETRIC,
+        tier = PermissionTier.INSTALL,
+        label = "Biometrics",
+        why = "GURU can ask for your fingerprint or face before it does something you cannot undo",
+        grantRoute = null,
+    )
+
+    val VIBRATE = PermissionSpec(
+        permission = Manifest.permission.VIBRATE,
+        tier = PermissionTier.INSTALL,
+        label = "Vibration",
+        why = "GURU can vibrate the phone to get your attention",
+        grantRoute = null,
+    )
+
+    val WAKE_LOCK = PermissionSpec(
+        permission = Manifest.permission.WAKE_LOCK,
+        tier = PermissionTier.INSTALL,
+        label = "Wake lock",
+        why = "GURU can keep working while the screen is off instead of being frozen mid-task",
+        grantRoute = null,
+    )
+
+    // ------------------------------------------------------------------
+    // Power, users and diagnostics (#126 to #136)
+    // ------------------------------------------------------------------
+
+    val DEVICE_POWER = PermissionSpec(
+        permission = "android.permission.DEVICE_POWER",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Device power",
+        why = "GURU could control the screen state and power the phone down directly",
+        grantRoute = null,
+    )
+
+    val REBOOT = PermissionSpec(
+        permission = Manifest.permission.REBOOT,
+        tier = PermissionTier.PRIVILEGED,
+        label = "Reboot",
+        why = "GURU could restart the phone for you",
+        grantRoute = null,
+    )
+
+    val SHUTDOWN = PermissionSpec(
+        permission = "android.permission.SHUTDOWN",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Power off",
+        why = "GURU could switch the phone off for you",
+        grantRoute = null,
+    )
+
+    val SET_PROCESS_LIMIT = PermissionSpec(
+        permission = "android.permission.SET_PROCESS_LIMIT",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Process limit",
+        why = "GURU could limit how many apps the system keeps alive in the background",
+        grantRoute = null,
+    )
+
+    val BATTERY_STATS = PermissionSpec(
+        permission = "android.permission.BATTERY_STATS",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Battery statistics",
+        why = "GURU could read the detailed battery breakdown rather than the summary",
+        grantRoute = null,
+    )
+
+    val READ_LOGS = PermissionSpec(
+        permission = Manifest.permission.READ_LOGS,
+        tier = PermissionTier.PRIVILEGED,
+        label = "System log",
+        why = "GURU could read the system log to work out why something on the phone failed",
+        grantRoute = null,
+    )
+
+    val DUMP = PermissionSpec(
+        permission = "android.permission.DUMP",
+        tier = PermissionTier.PRIVILEGED,
+        label = "System dump",
+        why = "GURU could read the system's own internal state to diagnose a fault properly",
+        grantRoute = null,
+    )
+
+    val DIAGNOSTIC = PermissionSpec(
+        permission = "android.permission.DIAGNOSTIC",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Vendor diagnostics",
+        why = "GURU could run the manufacturer's own hardware diagnostics",
+        grantRoute = null,
+    )
+
+    val FACTORY_TEST = PermissionSpec(
+        permission = "android.permission.FACTORY_TEST",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Factory test",
+        why = "GURU could run factory test mode, which only a manufacturer build ever holds",
+        grantRoute = null,
+    )
+
+    val MASTER_CLEAR = PermissionSpec(
+        permission = "android.permission.MASTER_CLEAR",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Factory reset",
+        why = "GURU could wipe the phone back to factory state, which nothing but Device Owner should ever do",
+        grantRoute = null,
+    )
+
+    val INTERACT_ACROSS_USERS = PermissionSpec(
+        permission = "android.permission.INTERACT_ACROSS_USERS",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Other user profiles",
+        why = "GURU could act inside a second profile such as a work account",
+        grantRoute = null,
+    )
+
+    val INTERACT_ACROSS_USERS_FULL = PermissionSpec(
+        permission = "android.permission.INTERACT_ACROSS_USERS_FULL",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Other user profiles",
+        why = "GURU could act inside another profile without the platform's normal restrictions",
+        grantRoute = null,
+    )
+
+    val MANAGE_USERS = PermissionSpec(
+        permission = "android.permission.MANAGE_USERS",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Manage profiles",
+        why = "GURU could create and remove user profiles on the phone",
+        grantRoute = null,
+    )
+
+    val CREATE_USERS = PermissionSpec(
+        permission = "android.permission.CREATE_USERS",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Create profiles",
+        why = "GURU could set up a new user profile",
+        grantRoute = null,
+    )
+
+    // ------------------------------------------------------------------
+    // Alarms (#146, #147)
+    // ------------------------------------------------------------------
+
+    // SET_ALARM is the one permission in this catalogue that does not live under
+    // android.permission: the platform declares it as com.android.alarm.permission.
+    // Written literally so the namespace is visible, because a reader who assumes
+    // the usual prefix would "fix" this into a permission that does not exist.
+    val SET_ALARM = PermissionSpec(
+        permission = "com.android.alarm.permission.SET_ALARM",
+        tier = PermissionTier.PRIVILEGED,
+        label = "Set alarms",
+        why = "GURU could put an alarm into the system clock app, which setAlarmClock already reaches without this",
+        grantRoute = null,
+    )
+
     /**
      * Every spec in this team's scope, keyed by platform permission string.
      *
@@ -488,6 +956,24 @@ object TeamThreePermissions {
         // Declared by other tool sets, catalogued so the dispatcher's refusal can
         // explain them instead of calling them unknown.
         POST_NOTIFICATIONS, SCHEDULE_EXACT_ALARM,
+        // The second wave: the permission groups that had a registry entry naming
+        // an owning tool but no catalogue entry, so every tool built for #95 to #147
+        // would have refused with "unknown permission" and read as a broken app.
+        ACCESS_NETWORK_STATE, CHANGE_NETWORK_STATE, ACCESS_WIFI_STATE, CHANGE_WIFI_STATE,
+        NEARBY_WIFI_DEVICES, CONTROL_VPN, MANAGE_IPSEC_TUNNELS,
+        READ_MEDIA_IMAGES, READ_MEDIA_VIDEO, READ_MEDIA_AUDIO, READ_MEDIA_VISUAL_USER_SELECTED,
+        NFC, NFC_TRANSACTION_EVENT,
+        GET_PACKAGE_SIZE, PACKAGE_USAGE_STATS, GET_TASKS, REAL_GET_TASKS, REORDER_TASKS,
+        FORCE_STOP_PACKAGES, KILL_BACKGROUND_PROCESSES, CLEAR_APP_CACHE, INSTALL_PACKAGES,
+        DELETE_PACKAGES, START_ANY_ACTIVITY, START_ACTIVITIES_FROM_BACKGROUND,
+        MANAGE_APP_OPS_MODES,
+        WRITE_SETTINGS, WRITE_SECURE_SETTINGS, SET_TIME, SET_TIME_ZONE, CHANGE_CONFIGURATION,
+        SYSTEM_ALERT_WINDOW, EXPAND_STATUS_BAR, SET_WALLPAPER, INJECT_EVENTS,
+        ACCESS_NOTIFICATION_POLICY, USE_BIOMETRIC, VIBRATE, WAKE_LOCK,
+        DEVICE_POWER, REBOOT, SHUTDOWN, SET_PROCESS_LIMIT, BATTERY_STATS, READ_LOGS, DUMP,
+        DIAGNOSTIC, FACTORY_TEST, MASTER_CLEAR, INTERACT_ACROSS_USERS,
+        INTERACT_ACROSS_USERS_FULL, MANAGE_USERS, CREATE_USERS,
+        SET_ALARM,
     ).associateBy { it.permission }
 
     fun forPermission(permission: String): PermissionSpec? = all[permission]

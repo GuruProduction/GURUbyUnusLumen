@@ -299,9 +299,39 @@ class GrantCheckTest {
         // The last two are declared by tool sets outside this batch. The dispatcher
         // now builds its pre-flight refusal from this catalogue, so a permission it
         // has never heard of would come back as "unknown" and read as a broken app.
-        assertEquals("catalogue size", 45, TeamThreePermissions.all.size)
+        //
+        // SECOND WAVE. The catalogue grew past the original 45 when the remaining
+        // permission issues (#95 to #147) were built. PermissionRegistry already
+        // named an owning tool for each of them, which means the registry and the
+        // catalogue disagreed: a tool declaring ACCESS_WIFI_STATE would have been
+        // refused as an unknown permission and read to a person as a broken app.
+        // The count is asserted exactly so that drift shows up here rather than on
+        // a phone, and the named entries below pin the ones the new tools declare.
+        assertEquals("catalogue size", 99, TeamThreePermissions.all.size)
         expected.forEach {
             assertNotNull("missing from catalogue: $it", TeamThreePermissions.forPermission(it))
+        }
+        // The second wave, one representative per domain group.
+        listOf(
+            "android.permission.ACCESS_WIFI_STATE",
+            "android.permission.NEARBY_WIFI_DEVICES",
+            "android.permission.READ_MEDIA_IMAGES",
+            "android.permission.NFC",
+            "android.permission.GET_PACKAGE_SIZE",
+            "android.permission.PACKAGE_USAGE_STATS",
+            "android.permission.WRITE_SETTINGS",
+            "android.permission.SYSTEM_ALERT_WINDOW",
+            "android.permission.ACCESS_NOTIFICATION_POLICY",
+            "android.permission.USE_BIOMETRIC",
+            "android.permission.WAKE_LOCK",
+            "android.permission.REBOOT",
+            "android.permission.READ_LOGS",
+            "android.permission.MANAGE_USERS",
+            // SET_ALARM is the only permission in the catalogue outside the
+            // android.permission namespace, which is why it is spelled out here.
+            "com.android.alarm.permission.SET_ALARM",
+        ).forEach {
+            assertNotNull("second-wave permission missing from catalogue: $it", TeamThreePermissions.forPermission(it))
         }
         assertNotNull(
             "READ_CELL_BROADCASTS exists on GitHub as #63 and must be catalogued",
