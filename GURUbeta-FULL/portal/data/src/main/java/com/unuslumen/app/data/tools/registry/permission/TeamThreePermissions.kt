@@ -635,6 +635,41 @@ object TeamThreePermissions {
         grantRoute = null,
     )
 
+    /**
+     * App visibility, which on Android 11 and later is what decides whether GURU can name an
+     * app at all. protectionLevel=normal, so it is held from install.
+     */
+    val QUERY_ALL_PACKAGES = PermissionSpec(
+        permission = Manifest.permission.QUERY_ALL_PACKAGES,
+        tier = PermissionTier.INSTALL,
+        label = "App visibility",
+        why = "GURU can see every app on the phone rather than only the ones Android deems " +
+            "visible, which is what lets it open or describe an app you named",
+        grantRoute = null,
+    )
+
+    /**
+     * The route to the system installer. This is the permission that makes the installer
+     * dialog appear at all; it does not make an install silent, and no ordinary app can.
+     */
+    val REQUEST_INSTALL_PACKAGES = PermissionSpec(
+        permission = Manifest.permission.REQUEST_INSTALL_PACKAGES,
+        tier = PermissionTier.APPOP,
+        label = "Install unknown apps",
+        why = "GURU can hand an APK to the system installer, which then asks you to confirm " +
+            "before anything is installed",
+        grantRoute = "Settings > Apps > GURU > Install unknown apps > Allow",
+    )
+
+    val REQUEST_DELETE_PACKAGES = PermissionSpec(
+        permission = Manifest.permission.REQUEST_DELETE_PACKAGES,
+        tier = PermissionTier.INSTALL,
+        label = "Uninstall apps",
+        why = "GURU can open the system uninstaller for an app, which then asks you to confirm " +
+            "before anything is removed",
+        grantRoute = null,
+    )
+
     val REORDER_TASKS = PermissionSpec(
         permission = Manifest.permission.REORDER_TASKS,
         tier = PermissionTier.INSTALL,
@@ -982,6 +1017,7 @@ object TeamThreePermissions {
         READ_MEDIA_IMAGES, READ_MEDIA_VIDEO, READ_MEDIA_AUDIO, READ_MEDIA_VISUAL_USER_SELECTED,
         NFC, NFC_TRANSACTION_EVENT,
         GET_PACKAGE_SIZE, PACKAGE_USAGE_STATS, GET_TASKS, REAL_GET_TASKS, REORDER_TASKS,
+        QUERY_ALL_PACKAGES, REQUEST_INSTALL_PACKAGES, REQUEST_DELETE_PACKAGES,
         FORCE_STOP_PACKAGES, KILL_BACKGROUND_PROCESSES, CLEAR_APP_CACHE, INSTALL_PACKAGES,
         DELETE_PACKAGES, START_ANY_ACTIVITY, START_ACTIVITIES_FROM_BACKGROUND,
         MANAGE_APP_OPS_MODES,
