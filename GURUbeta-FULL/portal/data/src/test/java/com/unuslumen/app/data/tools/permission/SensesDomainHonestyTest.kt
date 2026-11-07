@@ -98,6 +98,10 @@ class SensesDomainHonestyTest {
                 "location",
                 // Seeing and reaching every host on the wifi, not only televisions.
                 "network",
+                // The connection itself rather than host discovery: the link state, the radio,
+                // the two toggles the platform mostly refuses, and the multicast lock that
+                // mDNS and SSDP replies cannot happen without.
+                "network_wifi",
                 "phone",
                 "privileged_capture",
                 "sensors",

@@ -200,7 +200,7 @@ class PermissionGrantsAndroidTest {
         println("catalogue=${TeamThreePermissions.all.size}")
         assertEquals(
             "the catalogue changed size, which changes what every refusal in the app says",
-            99,
+            100,
             TeamThreePermissions.all.size,
         )
     }
