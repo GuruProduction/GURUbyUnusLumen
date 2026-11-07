@@ -14,6 +14,7 @@ import com.unuslumen.app.data.tools.permission.AppsManagementDomainModule
 import com.unuslumen.app.data.tools.permission.CallLogContactsDomainModule
 import com.unuslumen.app.data.tools.permission.DevicePowerIntrospectDomainModule
 import com.unuslumen.app.data.tools.permission.NetworkWifiDomainModule
+import com.unuslumen.app.data.tools.permission.NfcMediaDomainModule
 import com.unuslumen.app.data.tools.permission.SettingsControlDomainModule
 import com.unuslumen.app.data.tools.phone.PhoneDomainModule
 import com.unuslumen.app.data.tools.senses.BluetoothDomainModule
@@ -90,6 +91,11 @@ object TeamThreeToolDomains {
         // discovery cannot work without. Distinct from `network` above, which is host
         // discovery rather than the connection itself.
         NetworkWifiDomainModule,
+        // NFC and the media library. NFC has a physical limit no grant can cross, because
+        // reading a tag needs a tag present and a foreground session; the media library has
+        // the partial-access subtlety, where Android may grant only the selected photos and a
+        // naive count reports a small library that is not small.
+        NfcMediaDomainModule,
         LocationDomainModule,
         PhoneDomainModule,
         PrivilegedCaptureDomainModule,
