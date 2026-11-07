@@ -87,17 +87,40 @@ class PermissionGrantsAndroidTest {
      * is the only evidence that counts for it.
      *
      * What is still worth checking here is the shape of every string, because a
-     * typo in a literal is a live risk for the five permissions whose Manifest
-     * constants are deprecated. A malformed name cannot match anything anywhere.
+     * typo in a literal is a live risk for the permissions whose Manifest constants
+     * are deprecated. A malformed name cannot match anything anywhere.
+     *
+     * THE ONE NAMESPACE EXCEPTION. SET_ALARM is not under android.permission: the
+     * platform declares it as com.android.alarm.permission.SET_ALARM. That is a real
+     * platform fact rather than a typo, so it is named here as the single allowed
+     * exception. Any second one appearing means somebody typed a name that does not
+     * exist, which is exactly what this test is for.
      */
     @Test
     fun everyCataloguedPermissionNameIsWellFormed() {
+        val allowedForeignNamespace = setOf("com.android.alarm.permission.SET_ALARM")
+
         val malformed = TeamThreePermissions.all.values
             .map { it.permission }
-            .filter { !it.startsWith("android.permission.") || it.contains(' ') || it.endsWith('.') }
+            .filter { name ->
+                name !in allowedForeignNamespace && (
+                    !name.startsWith("android.permission.") ||
+                        name.contains(' ') ||
+                        name.endsWith('.')
+                    )
+            }
 
         println("catalogued=${TeamThreePermissions.all.size} malformed=$malformed")
         assertTrue("malformed permission names: $malformed", malformed.isEmpty())
+
+        // A name in the allow-list that is no longer catalogued is a stale exception,
+        // and a stale exception is how an allowance quietly widens over time.
+        allowedForeignNamespace.forEach { name ->
+            assertTrue(
+                "the namespace exception $name is no longer catalogued, so remove it",
+                TeamThreePermissions.all.containsKey(name),
+            )
+        }
 
         // And the names must be distinct, because a duplicate would silently shadow
         // one entry in the map the helpers look up.
@@ -155,22 +178,31 @@ class PermissionGrantsAndroidTest {
     }
 
     /**
-     * The catalogue must cover this batch's scope exactly, plus the two extra
-     * permissions added so the dispatcher can explain them.
+     * The catalogue size is pinned deliberately.
      *
-     * The count is pinned deliberately. It is not decoration: a permission silently
-     * added or dropped changes what every refusal in the app says, and a test that
-     * let the number drift would let a whole capability disappear without a word.
-     * POST_NOTIFICATIONS and SCHEDULE_EXACT_ALARM are catalogued because other tool
-     * sets legitimately declare them and the dispatcher would otherwise report a
-     * grantable permission as a tool defect.
+     * It is not decoration: a permission silently added or dropped changes what every
+     * refusal in the app says, and a test that let the number drift would let a whole
+     * capability disappear without a word.
+     *
+     * WHY IT IS NO LONGER 45. The first wave catalogued this batch's 43 plus
+     * POST_NOTIFICATIONS and SCHEDULE_EXACT_ALARM, because other tool sets declare
+     * both and the dispatcher would otherwise call a grantable permission a tool
+     * defect. The second wave added the permissions behind issues #95 to #147, which
+     * PermissionRegistry already named an owning tool for: without a catalogue entry
+     * every one of those tools would have refused as "unknown permission" and read to
+     * a person as a broken app rather than a missing grant.
+     *
+     * The number is asserted rather than a lower bound so that an addition has to be a
+     * decision somebody made, which is the whole point of pinning it.
      */
     @Test
     fun theCatalogueCoversTheBatchScopeExactly() {
-        val scope = TeamThreePermissions.all.size - 2
-        println("catalogue=${TeamThreePermissions.all.size} batchScope=$scope")
-        assertEquals("this batch owns 43 permissions", 43, scope)
-        assertEquals("two extras make 45", 45, TeamThreePermissions.all.size)
+        println("catalogue=${TeamThreePermissions.all.size}")
+        assertEquals(
+            "the catalogue changed size, which changes what every refusal in the app says",
+            99,
+            TeamThreePermissions.all.size,
+        )
     }
 
     // ------------------------------------------------------------------

@@ -10,6 +10,7 @@ import com.unuslumen.app.data.fabric.ir.IrDomainModule
 import com.unuslumen.app.data.fabric.net.NetworkDomainModule
 import com.unuslumen.app.data.fabric.smart.SmartHomeDomainModule
 import com.unuslumen.app.data.fabric.tv.TvDomainModule
+import com.unuslumen.app.data.tools.permission.CallLogContactsDomainModule
 import com.unuslumen.app.data.tools.phone.PhoneDomainModule
 import com.unuslumen.app.data.tools.senses.BluetoothDomainModule
 import com.unuslumen.app.data.tools.senses.CameraAudioDomainModule
@@ -52,6 +53,11 @@ object TeamThreeToolDomains {
      */
     val domains: List<DomainToolModule> = listOf(
         BluetoothDomainModule,
+        // The personal-data domain: the call log and the address book. Named here
+        // because a domain that is not in this list does not exist in the running
+        // app at all, which is how the smart-home fabric once shipped tools that
+        // answered nothing.
+        CallLogContactsDomainModule,
         CameraAudioDomainModule,
         // The smart home fabric's five generic tools (#182) and the IR transport's
         // three (#187. Both live here because the fabric was merged but never
