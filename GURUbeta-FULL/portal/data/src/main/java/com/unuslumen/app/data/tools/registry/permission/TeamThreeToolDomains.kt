@@ -12,6 +12,7 @@ import com.unuslumen.app.data.fabric.smart.SmartHomeDomainModule
 import com.unuslumen.app.data.fabric.tv.TvDomainModule
 import com.unuslumen.app.data.tools.permission.AppsManagementDomainModule
 import com.unuslumen.app.data.tools.permission.CallLogContactsDomainModule
+import com.unuslumen.app.data.tools.permission.DevicePowerIntrospectDomainModule
 import com.unuslumen.app.data.tools.permission.NetworkWifiDomainModule
 import com.unuslumen.app.data.tools.permission.SettingsControlDomainModule
 import com.unuslumen.app.data.tools.phone.PhoneDomainModule
@@ -66,6 +67,10 @@ object TeamThreeToolDomains {
         // answered nothing.
         CallLogContactsDomainModule,
         CameraAudioDomainModule,
+        // Battery, the screen, the system log, a service dump and the one destructive
+        // operation GURU can reach. Four of the five are privileged, so the domain's rule is
+        // that an absent privilege reports what IS observable rather than an empty result.
+        DevicePowerIntrospectDomainModule,
         // The smart home fabric's five generic tools (#182) and the IR transport's
         // three (#187. Both live here because the fabric was merged but never
         // named, so its tools did not exist in the running app at all: that is why a
