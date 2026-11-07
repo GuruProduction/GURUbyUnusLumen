@@ -1,0 +1,60 @@
+#!/bin/sh
+# GURU by Unus Lumen — an AI framework that gives a language model real hands on an Android phone.
+# Copyright (C) 2026 Steven Newman, Founder and Developer, Unus Lumen Ltd, Bristol UK.
+# Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
+#
+# THE PRIVACY GATE, IN FRONT OF EVERY COMMIT.
+#
+# Every rule in this project has required this gate since the dev loop was written, and the
+# script it named was never on any machine, so the gate has never run. The owner's home
+# addresses reached a public repository four times because a required step that cannot execute
+# is not a step.
+#
+# WHAT IT REFUSES. A commit whose staged changes would publish an IP address that is not a
+# documentation address, a MAC address that looks like real hardware, a credential, a private
+# key, a machine path, or a file whose whole existence is a secret.
+#
+# HOW TO BYPASS IT. You do not. If the gate is wrong, the rule is wrong, and the rule is fixed
+# in scripts/privacy-scan.mjs with the reason in the commit message. --no-verify is banned by
+# the same rule that bans force-pushing main.
+#
+# WHY IT FAILS CLOSED. A missing Node binary, a missing scanner or a scanner crash all exit
+# non-zero. The alternative, a gate that silently passes when its own machinery is broken, is
+# the failure mode this project has already lived through four times.
+
+set -u
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  printf '\nprivacy gate: not inside a git work tree, refusing the commit.\n\n' >&2
+  exit 1
+}
+
+scanner="$root/scripts/privacy-scan.mjs"
+if [ ! -f "$scanner" ]; then
+  printf '\nprivacy gate: %s is missing, so nothing could be scanned.\n' "$scanner" >&2
+  printf 'Refusing the commit rather than publishing unscanned changes.\n\n' >&2
+  exit 1
+fi
+
+if command -v node >/dev/null 2>&1; then
+  runner=node
+elif command -v bun >/dev/null 2>&1; then
+  # Bun runs the same ESM file. The scanner's own imports are standard library only.
+  runner=bun
+else
+  printf '\nprivacy gate: neither node nor bun is on PATH, so nothing could be scanned.\n' >&2
+  printf 'Refusing the commit rather than publishing unscanned changes.\n\n' >&2
+  exit 1
+fi
+
+"$runner" "$scanner"
+status=$?
+
+if [ "$status" -ne 0 ]; then
+  # The scanner already explained itself on stderr. This line exists so the failure is the
+  # last thing on screen rather than scrolling away above git's own output.
+  printf 'privacy gate: commit refused.\n\n' >&2
+  exit 1
+fi
+
+exit 0
