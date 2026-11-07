@@ -11,6 +11,7 @@ import com.unuslumen.app.data.fabric.net.NetworkDomainModule
 import com.unuslumen.app.data.fabric.smart.SmartHomeDomainModule
 import com.unuslumen.app.data.fabric.tv.TvDomainModule
 import com.unuslumen.app.data.tools.permission.AccountsCalendarDomainModule
+import com.unuslumen.app.data.tools.permission.AlarmsMiscDomainModule
 import com.unuslumen.app.data.tools.permission.AppUsageNotifyDomainModule
 import com.unuslumen.app.data.tools.permission.AppsManagementDomainModule
 import com.unuslumen.app.data.tools.permission.CallLogContactsDomainModule
@@ -63,6 +64,10 @@ object TeamThreeToolDomains {
         // GURU's own event list and every result says so, because conflating them is a real bug
         // this project has had.
         AccountsCalendarDomainModule,
+        // Alarms and the automation health check. Two of its four tools declare no permission at
+        // all, because reporting which grant is switched off needs none, and one all-clear
+        // boolean would hide the one that is actually missing.
+        AlarmsMiscDomainModule,
         // App usage and notifications. Its dndControl deliberately declares no permission,
         // because reading the Do Not Disturb filter needs none and refusing a true reading to
         // keep a uniform declaration would be the wrong trade.
