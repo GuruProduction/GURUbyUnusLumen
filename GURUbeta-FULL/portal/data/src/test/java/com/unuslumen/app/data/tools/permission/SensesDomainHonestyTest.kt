@@ -110,6 +110,11 @@ class SensesDomainHonestyTest {
                 // the two toggles the platform mostly refuses, and the multicast lock that
                 // mDNS and SSDP replies cannot happen without.
                 "network_wifi",
+                // NFC and the media library. NFC has a physical limit no grant crosses, because
+                // reading a tag needs a tag present and a foreground session. The media library
+                // has the partial-access subtlety, where Android may grant only the selected
+                // photos and a naive count reports a small library that is not small.
+                "nfc_media",
                 "phone",
                 "privileged_capture",
                 "sensors",
