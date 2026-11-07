@@ -98,6 +98,10 @@ class SensesDomainHonestyTest {
                 // page.
                 "calllog_contacts",
                 "camera_audio",
+                // Battery, the screen, the system log, a service dump and factory reset. Four of
+                // the five need a privilege this build lacks, so the domain reports what IS
+                // observable rather than returning an empty result that reads as a measurement.
+                "device_power_introspect",
                 "ir",
                 "location",
                 // Seeing and reaching every host on the wifi, not only televisions.
