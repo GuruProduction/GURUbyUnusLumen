@@ -307,7 +307,10 @@ class GrantCheckTest {
         // refused as an unknown permission and read to a person as a broken app.
         // The count is asserted exactly so that drift shows up here rather than on
         // a phone, and the named entries below pin the ones the new tools declare.
-        assertEquals("catalogue size", 99, TeamThreePermissions.all.size)
+        // 100 now, not 99. The multicast permission joined with the network_wifi domain:
+        // protectionLevel=normal, so it needs no dialog, but a tool that reaches for the
+        // lock needs a refusal sentence capable of naming it.
+        assertEquals("catalogue size", 100, TeamThreePermissions.all.size)
         expected.forEach {
             assertNotNull("missing from catalogue: $it", TeamThreePermissions.forPermission(it))
         }

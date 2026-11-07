@@ -11,6 +11,7 @@ import com.unuslumen.app.data.fabric.net.NetworkDomainModule
 import com.unuslumen.app.data.fabric.smart.SmartHomeDomainModule
 import com.unuslumen.app.data.fabric.tv.TvDomainModule
 import com.unuslumen.app.data.tools.permission.CallLogContactsDomainModule
+import com.unuslumen.app.data.tools.permission.NetworkWifiDomainModule
 import com.unuslumen.app.data.tools.phone.PhoneDomainModule
 import com.unuslumen.app.data.tools.senses.BluetoothDomainModule
 import com.unuslumen.app.data.tools.senses.CameraAudioDomainModule
@@ -73,6 +74,11 @@ object TeamThreeToolDomains {
         // inventory of every host on the wifi, not a television list, so this is its own
         // domain with its own names.
         NetworkDomainModule,
+        // The connection and Wi-Fi domain: what the link is, what the radio sees, the two
+        // toggles the platform mostly refuses, and the multicast lock that mDNS and SSDP
+        // discovery cannot work without. Distinct from `network` above, which is host
+        // discovery rather than the connection itself.
+        NetworkWifiDomainModule,
         LocationDomainModule,
         PhoneDomainModule,
         PrivilegedCaptureDomainModule,

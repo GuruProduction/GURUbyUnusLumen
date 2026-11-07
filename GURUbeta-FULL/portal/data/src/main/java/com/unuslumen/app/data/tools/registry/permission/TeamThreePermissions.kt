@@ -501,6 +501,24 @@ object TeamThreePermissions {
         grantRoute = null,
     )
 
+    /**
+     * The multicast lock, which needs no dialog but which no discovery tool works without.
+     *
+     * protectionLevel=normal, so it is held from install and a denial would mean the
+     * manifest lost the line. It belongs in the catalogue anyway because a network tool
+     * that reaches for it needs the refusal sentence to be capable of naming it, and
+     * because leaving it out made the senses test report an "unreasoned" permission the
+     * moment a tool declared it.
+     */
+    val CHANGE_WIFI_MULTICAST_STATE = PermissionSpec(
+        permission = Manifest.permission.CHANGE_WIFI_MULTICAST_STATE,
+        tier = PermissionTier.INSTALL,
+        label = "Wi-Fi multicast",
+        why = "GURU can receive the discovery replies that mDNS and SSDP send, which the Wi-Fi " +
+            "driver otherwise drops so that a scan of a busy network comes back looking empty",
+        grantRoute = null,
+    )
+
     val NEARBY_WIFI_DEVICES = PermissionSpec(
         permission = Manifest.permission.NEARBY_WIFI_DEVICES,
         tier = PermissionTier.RUNTIME,
@@ -960,7 +978,7 @@ object TeamThreePermissions {
         // an owning tool but no catalogue entry, so every tool built for #95 to #147
         // would have refused with "unknown permission" and read as a broken app.
         ACCESS_NETWORK_STATE, CHANGE_NETWORK_STATE, ACCESS_WIFI_STATE, CHANGE_WIFI_STATE,
-        NEARBY_WIFI_DEVICES, CONTROL_VPN, MANAGE_IPSEC_TUNNELS,
+        CHANGE_WIFI_MULTICAST_STATE, NEARBY_WIFI_DEVICES, CONTROL_VPN, MANAGE_IPSEC_TUNNELS,
         READ_MEDIA_IMAGES, READ_MEDIA_VIDEO, READ_MEDIA_AUDIO, READ_MEDIA_VISUAL_USER_SELECTED,
         NFC, NFC_TRANSACTION_EVENT,
         GET_PACKAGE_SIZE, PACKAGE_USAGE_STATS, GET_TASKS, REAL_GET_TASKS, REORDER_TASKS,
