@@ -87,6 +87,12 @@ class SensesDomainHonestyTest {
         assertEquals(
             listOf(
                 "bluetooth",
+                // The personal-data domain: the call log and the address book. Its id is
+                // deliberately not `phone`, because it is governed by a different
+                // permission group and a refusal therefore names a different Settings
+                // screen. Splitting it is what keeps each refusal pointing at the right
+                // page.
+                "calllog_contacts",
                 "camera_audio",
                 "ir",
                 "location",
