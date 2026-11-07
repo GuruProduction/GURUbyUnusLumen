@@ -86,6 +86,10 @@ class SensesDomainHonestyTest {
         // here is the fix, and this assertion is what proves they are named.
         assertEquals(
             listOf(
+                // The apps domain: storage per app, stopping one, opening one, and handing an
+                // install or a removal to the system's own dialog. Its names say request rather
+                // than silent, because a silent install needs a privilege this build lacks.
+                "apps_management",
                 "bluetooth",
                 // The personal-data domain: the call log and the address book. Its id is
                 // deliberately not `phone`, because it is governed by a different

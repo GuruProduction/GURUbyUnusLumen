@@ -10,6 +10,7 @@ import com.unuslumen.app.data.fabric.ir.IrDomainModule
 import com.unuslumen.app.data.fabric.net.NetworkDomainModule
 import com.unuslumen.app.data.fabric.smart.SmartHomeDomainModule
 import com.unuslumen.app.data.fabric.tv.TvDomainModule
+import com.unuslumen.app.data.tools.permission.AppsManagementDomainModule
 import com.unuslumen.app.data.tools.permission.CallLogContactsDomainModule
 import com.unuslumen.app.data.tools.permission.NetworkWifiDomainModule
 import com.unuslumen.app.data.tools.permission.SettingsControlDomainModule
@@ -54,6 +55,10 @@ object TeamThreeToolDomains {
      * Ordered by id so a merge never reorders another agent's line.
      */
     val domains: List<DomainToolModule> = listOf(
+        // The apps domain first because its id sorts first, and because its names say what
+        // actually happens: requestInstallApp and requestUninstallApp, not silent, because a
+        // silent install needs a privilege this build does not hold.
+        AppsManagementDomainModule,
         BluetoothDomainModule,
         // The personal-data domain: the call log and the address book. Named here
         // because a domain that is not in this list does not exist in the running

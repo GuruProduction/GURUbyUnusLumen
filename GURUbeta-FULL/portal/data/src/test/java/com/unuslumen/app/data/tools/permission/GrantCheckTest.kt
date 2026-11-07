@@ -307,10 +307,12 @@ class GrantCheckTest {
         // refused as an unknown permission and read to a person as a broken app.
         // The count is asserted exactly so that drift shows up here rather than on
         // a phone, and the named entries below pin the ones the new tools declare.
-        // 100 now, not 99. The multicast permission joined with the network_wifi domain:
-        // protectionLevel=normal, so it needs no dialog, but a tool that reaches for the
-        // lock needs a refusal sentence capable of naming it.
-        assertEquals("catalogue size", 100, TeamThreePermissions.all.size)
+        // 103 now. Each addition arrived with a domain that declares it: the multicast state
+        // for network_wifi, then QUERY_ALL_PACKAGES, REQUEST_INSTALL_PACKAGES and
+        // REQUEST_DELETE_PACKAGES for apps_management. Two of those are protectionLevel=normal
+        // and belong here anyway, because a tool that needs a permission must be able to name
+        // it in a refusal and the dispatcher builds refusals from this catalogue.
+        assertEquals("catalogue size", 103, TeamThreePermissions.all.size)
         expected.forEach {
             assertNotNull("missing from catalogue: $it", TeamThreePermissions.forPermission(it))
         }
