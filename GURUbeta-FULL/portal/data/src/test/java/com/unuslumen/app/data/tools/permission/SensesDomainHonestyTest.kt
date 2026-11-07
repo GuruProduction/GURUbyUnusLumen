@@ -90,6 +90,10 @@ class SensesDomainHonestyTest {
                 // from GURU's own event list and every result says so, because conflating the two
                 // is a bug this project has already had.
                 "accounts_calendar",
+                // Alarms and the automation health check. Two of its four tools declare no
+                // permission at all, because reporting which grant is switched off needs none, and
+                // one all-clear boolean would hide the one that is actually missing.
+                "alarms_misc",
                 // App usage and notifications. Its dndControl declares no permission on purpose,
                 // because reading the Do Not Disturb filter needs none and refusing a true
                 // reading to keep a uniform declaration would be the wrong trade.
