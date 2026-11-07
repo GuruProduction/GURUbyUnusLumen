@@ -90,6 +90,10 @@ class SensesDomainHonestyTest {
                 // from GURU's own event list and every result says so, because conflating the two
                 // is a bug this project has already had.
                 "accounts_calendar",
+                // App usage and notifications. Its dndControl declares no permission on purpose,
+                // because reading the Do Not Disturb filter needs none and refusing a true
+                // reading to keep a uniform declaration would be the wrong trade.
+                "app_usage_notify",
                 // The apps domain: storage per app, stopping one, opening one, and handing an
                 // install or a removal to the system's own dialog. Its names say request rather
                 // than silent, because a silent install needs a privilege this build lacks.
