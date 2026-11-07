@@ -12,6 +12,7 @@ import com.unuslumen.app.data.fabric.smart.SmartHomeDomainModule
 import com.unuslumen.app.data.fabric.tv.TvDomainModule
 import com.unuslumen.app.data.tools.permission.CallLogContactsDomainModule
 import com.unuslumen.app.data.tools.permission.NetworkWifiDomainModule
+import com.unuslumen.app.data.tools.permission.SettingsControlDomainModule
 import com.unuslumen.app.data.tools.phone.PhoneDomainModule
 import com.unuslumen.app.data.tools.senses.BluetoothDomainModule
 import com.unuslumen.app.data.tools.senses.CameraAudioDomainModule
@@ -83,6 +84,11 @@ object TeamThreeToolDomains {
         PhoneDomainModule,
         PrivilegedCaptureDomainModule,
         SensorsDomainModule,
+        // Settings and device control: the settings tables, the clock, density, floating
+        // overlays, the status bar, the wallpaper, biometric availability, vibration and a
+        // wake lock. Every write here reports the value read back afterwards rather than the
+        // value sent, because a setting that did not change is a visible lie.
+        SettingsControlDomainModule,
     )
 
     /** Every registration from every domain, in domain order. */

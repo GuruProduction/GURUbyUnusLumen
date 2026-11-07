@@ -105,6 +105,10 @@ class SensesDomainHonestyTest {
                 "phone",
                 "privileged_capture",
                 "sensors",
+                // Settings and device control: the settings tables, the clock, density, floating
+                // overlays, the status bar, the wallpaper, biometric availability, vibration and
+                // a wake lock. Every write here reports the value read back, not the value sent.
+                "settings_control",
                 "smart_home",
                 // Network television control: the transport that actually drives a modern
                 // set, because it needs no emitter and speaks each maker's own protocol.
