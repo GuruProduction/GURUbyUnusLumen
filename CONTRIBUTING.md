@@ -1,106 +1,69 @@
 # Contributing to GURU
 
-## The Short Version
+GURU is an Android application that gives a language model real control of a phone: the tools, the permissions, the memory and the network policy all live on the handset. It is licensed under the GNU AGPL v3.0-or-later, and the text is in `LICENSE`. There is no proprietary half.
 
-GURU is AGPL-3.0, open source, and built by one person. I'm asking the community to help make it better, safer, and more private. If you can code, submit a PR. If you can't code, file issues, test features, write docs, spread the word. Everything helps.
+## Layout
 
-## Building GURU
+`GURUbeta-FULL` is the Android build and the Rust brain. `factory` is a Bun and TypeScript harness that boots emulators and replays recorded failures. `scripts` holds the privacy gate and its git hook.
 
-Clone the repo, open GURUbeta-FULL in Android Studio, and build:
+The Gradle wrapper is at `GURUbeta-FULL/gradlew`, never at the repository root. Every Gradle command runs from inside `GURUbeta-FULL`.
+
+Before your first build, copy `GURUbeta-FULL/local.properties` from an existing checkout. It is gitignored and holds the SDK path plus the release signing credentials, and Gradle cannot find the Android SDK without it.
+
+## Building and testing
+
+Gradle is the bottleneck, so one build runs at a time and every build goes through the lock wrapper:
 
 ```
-cd GURUbeta-FULL && ./gradlew assembleDebug 2>&1 | tail -500
+guru-build-lock run /path/to/GURUbeta-FULL -- ./gradlew :portal:data:testDebugUnitTest
+guru-build-lock run release /path/to/GURUbeta-FULL -- ./gradlew assembleRelease
 ```
 
-Min SDK 26 (Android 8.0). Target SDK 35. Compile SDK 37. Kotlin with Jetpack Compose throughout. Koin for dependency injection. Room for the database. Native C/C++ via CMake. Rust cerebrum server in the cerebrum directory.
+The wrapper is at `$HOME/.local/bin/guru-build-lock` and it releases the lock on success, on failure, on Ctrl-C and on SIGTERM. Do not take the lock by hand with `mkdir`. The owner file records a PID so a dead holder can be identified, and reclaiming one is a `mv` so two waiters cannot both win. `guru-build-lock status` says who holds it.
 
-If the build fails, check that you have the right NDK version (27.0.12077973) and that your local.properties points at a valid Android SDK path.
+Verification has three layers, and you pick the cheapest one that can actually answer the question.
 
-## Project Structure
+JVM tests live beside the code, for example `portal/data/src/test/java/com/unuslumen/app/data/tor/EgressClassifierTest.kt`. Put decision logic in an Android-free object and test that. These run in seconds.
 
-30 Gradle modules. Each feature module follows Clean Architecture with three layers:
+Robolectric covers anything that genuinely needs the Android framework: permission checks, `PackageManager` lookups, sensor presence, `Context` services. The dependencies are already wired in `portal/data/build.gradle.kts`. Two traps cost time once and should not cost it again. `grantPermissions` and `denyPermissions` are public on `ShadowContextWrapper`, and Robolectric ships only part of the permission database, so never assert that the framework declares a permission or that a tier matches it. Those facts need a real device.
 
-- data: repositories, implementations, database DAOs
-- domain: models, use cases, repository interfaces
-- presentation: Compose screens, view models, UI components
+The emulator is allowed and it is last. Use it when the subject is the device: permission grants landing, exec and file modes, SELinux refusals, sockets, accessibility, MediaProjection, or a tool returning real data. One emulator at a time, never one per parallel agent. Start it through Terminal.app with `osascript`, because a GUI process started from a shell dies with the shell.
 
-The core modules: database, alarm, notification, preferences, UI, util, DI, widget.
+The factory harness runs with `bun run src/cli/main.ts` from `factory`. `bun run typecheck` checks it.
 
-The portal module is the AI and tool system. This is where most of the action happens. Tools, brain engines, memory, streaming, Tor, Luxify skills, automation, hooks, jobs, prompts, discovery.
+## What gets a pull request merged
 
-The app module ties everything together and owns the AndroidManifest, the native code, the accessibility service, and the navigation graph.
+Claim the issue before you start, and say so on the issue. One branch per piece of work, cut from `main`. Work happens in a worktree, never in a shared checkout, and each worktree needs its own `local.properties`.
 
-## Adding a New Tool Set
+Read a file in full before you edit it, and read the files it calls and the files that call it. A partial read is how a change breaks something three modules away. Do not use shell tools to read or edit code; use the editor and the search tools.
 
-GURU's tool system is extensible. Every tool set follows the same pattern with four files:
+No stubs, no `TODO` comments standing in for work, no placeholder returns, no empty catch blocks, and no hardcoded value pretending to be logic. If you cannot finish something, say what is missing rather than shipping something that looks finished.
 
-1. ToolDefinitions: The JSON schema definitions that get sent to the LLM. This tells the model what tools exist and what parameters they accept.
-2. ToolExecutor: The implementation. This is where the actual work happens. It receives parameters from the LLM and returns results.
-3. ToolResults: The result data classes. What the tool returns to the LLM after execution.
-4. ToolSet: The registration. This wires the definitions, executor, and results together and registers them with the ToolRegistry.
+Handle the error paths. A tool that reports a refusal as an empty result is a defect, which is why `GrantCheck` separates a denial from a privileged permission, absent hardware, a build fault and a permission outside the catalogue.
 
-Look at any existing tool set (e.g. AlarmToolSet, ShellToolSet, CameraToolSet) for the pattern. Copy it, rename it, implement your logic, register it. The ToolRegistry handles the rest.
+A green Gradle task proves nothing about the artefact. `UP-TO-DATE` means it did not compile. Verify the thing you claim to have verified.
 
-Follow the naming convention: {Name}ToolDefinitions, {Name}ToolExecutor, {Name}ToolResults, {Name}ToolSet.
+## The pull request body
 
-## Coding Standards
+The body states what you ran and what you did not. That statement is the basis for the release test, so overstating it breaks the only gate that exists. Name the modules you changed, the tests you ran, and the paths you could not prove, with the reason.
 
-Kotlin. Compose for all UI. Clean Architecture. No fragments, no XML layouts. Everything is Compose.
+Detekt is configured in `GURUbeta-FULL/config/detekt` with a baseline, and the root build declares the plugin as `apply false` so each module can opt in with `alias(libs.plugins.detekt)`. No module opts in yet, so detekt does not run today. Do not treat it as a gate until a module enables it.
 
-Use Koin for dependency injection. Define your modules in the relevant DI file (e.g. AiDataModule, MainPresentationModule). Don't use Hilt or Dagger. Koin only.
+## The privacy gate
 
-Room for database. Every new table needs an entity, a DAO, a migration if the schema version bumps, and registration in the Room database class. Check RoomMigrations.kt for the pattern.
+Git runs `scripts/hooks/pre-commit` on every commit, and that hook runs `scripts/privacy-scan.mjs`. The scanner refuses a commit that would publish an IP address that is not a documentation address, a MAC address, a credential, a private key or a path that names your machine.
 
-Use coroutines and Flow for async. No RxJava. No callbacks. Coroutines throughout.
+Install it in your checkout before your first commit:
 
-Keep the layers clean. Data doesn't know about presentation. Domain doesn't know about data implementations. Presentation talks to domain through use cases and repository interfaces. This is not optional. If you cross a layer, your PR will be rejected.
+```
+scripts/install-hooks.sh
+scripts/install-hooks.sh --all-worktrees
+```
 
-## Filing Issues
+The hook fails closed. A missing scanner or a missing Node and Bun binary refuses the commit rather than allowing an unscanned one. `--no-verify` is banned. If the gate is wrong, fix the rule in `scripts/privacy-scan.mjs` and explain why in the commit message.
 
-Found a bug? File an issue. Include:
+The allowlist inside the scanner is the only place a documented exception belongs.
 
-- What happened
-- What you expected to happen
-- Steps to reproduce
-- Device and Android version
-- Log output if you have it
+## Questions
 
-Found a security issue? Don't file a public issue. Email steven@unuslumen.com .
-
-## Pull Requests
-
-1. Fork the repo
-2. Create a branch named after what you're doing (e.g. fix-heartbeat-cold-fire, add-new-tool-set, improve-tor-stability)
-3. Make your changes. Keep commits clean and descriptive.
-4. Build and test: `./gradlew assembleDebug 2>&1 | tail -500` must pass
-5. Open a PR with a clear description of what you changed and why
-6. Reference any related issues
-
-Keep PRs focused. One thing per PR. If you're fixing three things, open three PRs. Makes review faster and rollback cleaner.
-
-## What Needs Help
-
-- Heartbeat cold-fire defect: the alarm chain works but first fire after cold boot has a silent issue
-- Vosk transcription: the pipeline is built but transcription is broken on real audio clips
-- Device protection: blocking other apps from data farming at the OS level
-- Ottio marketplace: the backend, the transaction system, the UI
-- Masks: the mask system needs completion before masks can be sold through Ottio
-- Privacy hardening: anything that makes GURU more private is welcome
-- Documentation: if something isn't clear, fix it or flag it
-- Testing: the current test coverage is minimal. Writing tests is a massive help.
-
-## License
-
-By contributing, you agree that your contributions are licensed under AGPL-3.0. Everything in this repo is AGPL. Your PR is AGPL. No exceptions.
-
-## The Spirit
-
-GURU exists because one person was sick of being data farmed, lied to, and told no by AI products that charge extortionate amounts for substandard experiences. The whole point is to hand power back to people. Every contribution, no matter how small, moves that forward.
-
-Don't gatekeep. Don't elitist. Don't be a dick. If someone's PR isn't great, help them improve it. If someone's question seems basic, answer it. The community this builds is the community this becomes.
-
-Category defining tech should be community driven. Open source is the only road now. Let's build something that belongs to everyone.
-
-**GURU: founded and built by Steven Newman, Unus Lumen, Bristol UK.**
-
-Steven Newman | Bristol, UK
+Open an issue. Say what you were trying to do, what happened, and what you expected. A report with the exact wording of an error and the build number is worth ten without.
