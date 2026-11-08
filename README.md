@@ -4,7 +4,7 @@
 
 # GURU by Unus Lumen
 
-**An intelligence with hands. Your phone, your house, your network, your rules.**
+**A self evolving AI framework. Your phone, your house, your network, your rules.**
 
 ![Status](https://img.shields.io/badge/status-public%20beta-e8c9ff)
 ![Version](https://img.shields.io/github/v/release/GuruProduction/GURUbyUnusLumen?label=version&color=FFD60A)
