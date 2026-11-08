@@ -19,7 +19,7 @@
 
 GURU is not a chat app. It is a numen, an on-device agent framework that turns a language model into something with real hands on an Android phone.
 
-The model is the least interesting part of what I built, because any model can be powerful when it is given the substrate to act through. GURU is that substrate. It ships its own Unix userland, so bash, git, Python, ffmpeg, sqlite, tesseract, curl, ssh, tmux and a proper shell are already on your phone the moment you install it. It holds 390 tools across 55 categories, all reachable through native Android APIs and 167 permissions you control. It keeps its memory in an encrypted Rust engine on the device, and it sends every outbound packet through Tor.
+The model is the least interesting part of what I built, because any model can be powerful when it is given the substrate to act through. GURU is that substrate. It ships its own Unix userland, so bash, git, Python, ffmpeg, sqlite, tesseract, curl, ssh, tmux and a proper shell are already on your phone the moment you install it. It currently holds 390 tools across 55 categories and counting, all reachable through native Android APIs and 160+ permissions you control. It keeps its memory in an encrypted Rust engine on the device, and it sends every outbound packet through Tor.
 
 You bring the brain. GURU is the house that brain lives in, and the house comes with hands, memory, tools and a way out that does not go through anybody else.
 
