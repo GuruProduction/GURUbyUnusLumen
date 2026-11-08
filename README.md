@@ -17,17 +17,17 @@
 
 ---
 
-DISCLAIMER: This is NOT another helpful assistant app! This is incredibly powerful technology that has never been publicly available in this form. Please read this repo carefully before downloading the release, [[here [current release]] 
+**DISCLAIMER:** this is not another helpful assistant app. It is powerful software that has not existed in this form before, and it does exactly what you ask it to. Read this page in full before you install anything from the [latest release](../../releases/latest).
 
-GURU  reaches your phone, your television, your console, your lights, your speakers, your router and the machines in the cupboard, and it does the work. Not by describing what you could do. By doing it.
+GURU reaches your phone, your television, your console, your lights, your speakers, your router and the machines in the cupboard, and it does the work. Not by describing what you could do. By doing it.
 
-And it is not fixed. GURU writes its own tools, its own skills, its own automations and its own rooms. When it meets something it cannot do, it builds the capability and keeps it. That is the whole design: a super inteligence that gets more useful the longer you own it, rather than one that waits for me to ship an update.
+And it is not fixed. GURU writes its own tools, its own skills, its own automations and its own rooms. When it meets something it cannot do, it builds the capability and keeps it. That is the whole design: a superintelligence that gets more useful the longer you own it, rather than one that waits for me to ship an update.
 
 Any model is powerful when you give it reach. GURU is the reach.
 
 ## What GURU actually is
 
-It is not a chat app. it's a permission layer across 160+ Android permissions, a tool registry of around 390 tools and growing, an encrypted memory engine written in Rust, a full Unix userland bundled inside the APK, and a marketplace where people sell what they build.
+It is not a chat app. It is a permission layer across 167 Android permissions, a tool registry of around 390 tools and growing, an encrypted memory engine written in Rust, a full Unix userland bundled inside the APK, twelve rooms in one lobby, and a marketplace where people sell what they build.
 
 You only ever open one app.
 
@@ -40,7 +40,7 @@ Televisions, Fire Sticks, consoles, lights, speakers, blinds, doors, sensors, th
 
 Every capability is a protocol implemented properly, which is why coverage keeps widening instead of stopping at the brands somebody paid me to support.
 
-**And it verifies.** Every write is followed by a read, and the value the device reports is compared against the value that was written. A transport saying it worked is not evidence. The device's own answer is. A command against a capability the device does not report is refused with a reason naming both, never quietly ignored — because a silent no and a success look identical to you, and one of them is a lie.
+**And it verifies.** Every write is followed by a read, and the value the device reports is compared against the value that was written. A transport saying it worked is not evidence. The device's own answer is. A command against a capability the device does not report is refused with a reason naming both, never quietly ignored, because a silent no and a success look identical to you and one of them is a lie.
 </details>
 
 <details>
@@ -50,7 +50,7 @@ A network map is only worth having if it is honest, and most scanners are not. T
 
 GURU sweeps every port rather than a curated list, because a curated list is the bug. It reads mDNS and SSDP properly, with the multicast lock arranged rather than assumed. It fingerprints endpoints by their HTTP responses, their certificates, their DIAL description and their UPnP device document, so it can tell you what a thing *is* rather than that something answered. It walks the whole house, keeps the map, and notices what is new.
 
-When it cannot reach something, it says so, and it tells a refusal apart from an absence. An empty list is never allowed to mean "I did not check".
+When it cannot reach something it says so, and it tells a refusal apart from an absence. An empty list is never allowed to mean "I did not check".
 </details>
 
 <details>
@@ -58,7 +58,7 @@ When it cannot reach something, it says so, and it tells a refusal apart from an
 
 The brain is a Rust engine running in-process, sealed in an encrypted vault with a passphrase generated on first run and never shown. There is no server in the path and no port open to the world.
 
-Inside it is a real cognitive architecture rather than a vector table. Facts enter a BUFFER layer, get promoted to EPISODIC when they are recalled enough, and settle into SEMANTIC once they are strong and repeated. Strength decays exponentially with a seven-day half-life, recalling something strengthens it, a daily consolidation pass merges duplicates and prunes what is weak, and a graph records typed edges between memories — semantic, temporal, causal, and cross-references that mark two memories as contradicting, superseding or duplicating each other.
+Inside it is a real cognitive architecture rather than a vector table. Facts enter a BUFFER layer, get promoted to EPISODIC when they are recalled enough, and settle into SEMANTIC once they are strong and repeated. Strength decays exponentially with a seven-day half-life, recalling something strengthens it, a daily consolidation pass merges duplicates and prunes what is weak, and a graph records typed edges between memories: semantic, temporal, causal, and cross-references that mark two memories as contradicting, superseding or duplicating each other.
 
 Nothing is really deleted. Deleting archives, because a memory trail you can rewrite is not a trail.
 
@@ -90,17 +90,17 @@ No root. No setup. No tutorial. No "now go and install Termux". The tools are th
 
 The lobby is a page of tiles you drag into any order you like, and you can ask GURU to reorder them by voice. Make a new room by naming it; it appears immediately and you compose it by conversation.
 
-**Portal** is the chat: streaming replies, tool calls you can watch happen, a canvas, attachments, and slash commands — `/help`, `/status`, `/whoami`, `/usage`, `/tasks`, `/tools`, `/think`, `/stop`, `/clear`.
+**Portal** is the chat: streaming replies, tool calls you can watch happen, a canvas, attachments, and slash commands (`/help`, `/status`, `/whoami`, `/usage`, `/tasks`, `/tools`, `/think`, `/stop`, `/clear`).
 
-**Agents** is where you make your own. Give one a name, instructions and the tools it may use, and it will take work off you in the background while your chat carries on. An agent with no tools still reasons; an agent with a tool can change something on your phone, and the picker tells you exactly which tools it has and nothing else is even offered to it. One press grants all of them or none.
+**Agents** is where you make your own. Give one a name, instructions and the tools it may use, and it takes work off you in the background while your chat carries on. An agent with no tools still reasons; an agent with a tool can change something on your phone, and the picker shows exactly which tools it holds and offers nothing else. One press grants all of them or none.
 
-**Ottio** is the market. **Inner Mind** is a living graph of everything GURU holds about you — memories, conversations, tasks, notes, projects, agents, skills, thoughts, people and every device it has found — drawn as one tissue you can explore rather than a list you scroll.
+**Otio** is the market. **Inner Mind** is a living graph of everything GURU holds about you, covering memories, conversations, tasks, notes, projects, agents, skills, thoughts, people and every device it has found, drawn as one tissue you explore rather than a list you scroll.
 
 **Heartbeat** is the clock. **Skills** are imported capabilities. **Notes**, **Journal**, **Projects**, **Calendar** and **Thoughts** are the rooms you will live in, each one a full workspace with its own home-screen widgets, and **Settings** is where the brain and the model are configured.
 
 **Media** ingests, probes, transcribes and indexes everything you throw at it, including OCR and keyframe extraction on video.
 
-**Ad Space** is the one place I sell anything, and it is a canvas inside the app that runs animated packs the server pushes. It never interrupts your work.
+**Ad Space** is the one place I sell anything: a canvas inside the app that runs animated packs the server pushes, and it never interrupts your work.
 </details>
 
 <details>
@@ -108,7 +108,7 @@ The lobby is a page of tiles you drag into any order you like, and you can ask G
 
 The heartbeat is the difference between an assistant and a presence.
 
-It fires every thirty minutes into your newest conversation with a prompt you write yourself. Not a shipped default — yours, stored in the database, editable, with a live preview of exactly what a beat will inject, tokens and all.
+It fires every thirty minutes into your newest conversation with a prompt you write yourself. Not a shipped default, but yours, stored in the database, editable, with a live preview of exactly what a beat will inject, tokens and all.
 
 The room shows you the chain's own pulse: when a beat last actually arrived, and when the next one is booked for. A booking proves only that an alarm was written. Firing proves one was delivered. Without both numbers, "scheduled and dead" and "scheduled and working" look identical.
 
@@ -120,9 +120,9 @@ There is also a Fire Now button, and it hands the beat to the portal so you watc
 <details>
 <summary><strong>Everything through Tor, and it fails closed</strong></summary>
 
-Every model call, every search, every request goes through an embedded Tor engine. Nobody sees what you ask.
+Every model call, every search and every request goes through an embedded Tor engine. Nobody sees what you ask.
 
-When the circuit is not ready, the request throws rather than quietly going out over your own connection. That matters more than it sounds: the previous version returned an empty proxy list under a comment claiming it refused clearnet, and the HTTP stack reads an empty list as "no proxy", so "fail closed" was in fact a direct connection to the public internet. It throws now because throwing is what actually stops it.
+When the circuit is not ready the request throws rather than quietly going out over your own connection. That matters more than it sounds: the previous version returned an empty proxy list under a comment claiming it refused clearnet, and the HTTP stack reads an empty list as "no proxy", so "fail closed" was in fact a direct connection to the public internet. It throws now because throwing is what actually stops it.
 
 Loopback and LAN addresses stay direct, so your own model keeps working with zero configuration. One policy, in one place, enforced in code rather than promised in a document.
 </details>
@@ -141,9 +141,9 @@ Otio is where GURU users publish agents and buy each other's work. It is a room 
 
 Search it, filter by free, paid or owned, browse by category, look up the maker, read every tool the agent is allowed to use before you pay, buy it once, and keep it even if the author withdraws it later. Publishing is one line, a category and a price, and you keep the majority of every sale.
 
-Every fact on the screen is served rather than invented. Counts come from real install and rating tables, makers come from real publisher records, prices come from the catalogue. Where the server has nothing to say the screen says nothing, so a rating nobody has given shows no stars at all instead of a fake zero. When the market cannot be reached it says so plainly and tells you everything you already own still works — because "could not ask" and "nothing exists" are different answers, and one of them is a lie about your phone.
+Every fact on the screen is served rather than invented. Counts come from real install and rating tables, makers come from real publisher records, prices come from the catalogue. Where the server has nothing to say the screen says nothing, so a rating nobody has given shows no stars at all instead of a fake zero. When the market cannot be reached it says so plainly and tells you everything you already own still works, because "could not ask" and "nothing exists" are different answers and one of them is a lie about your phone.
 
-**Payments are not switched on yet.** A priced agent will tell you so rather than quietly giving it to you for free and implying the price was never real.
+**Payments are not switched on yet.** A priced agent will tell you so rather than quietly giving itself to you for free and implying the price was never real.
 
 Every image below was captured live on a phone.
 
