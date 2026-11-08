@@ -19,7 +19,6 @@
 ![Model](https://img.shields.io/badge/model-bring%20your%20own-0A84FF)
 ![Tools](https://img.shields.io/badge/tools-390%20and%20growing-98ff7e)
 ![Permissions](https://img.shields.io/badge/permissions-167-98ff7e)
-![Rooms](https://img.shields.io/badge/rooms-12-98ff7e)
 ![Memory](https://img.shields.io/badge/memory-Rust%2C%20on%20device-e8c9ff)
 ![Userland](https://img.shields.io/badge/userland-bundled-e8c9ff)
 ![Self-evolving](https://img.shields.io/badge/self--evolving-yes-e8c9ff)
