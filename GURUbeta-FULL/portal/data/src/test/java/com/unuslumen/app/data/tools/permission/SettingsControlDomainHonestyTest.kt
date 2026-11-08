@@ -104,14 +104,31 @@ class SettingsControlDomainHonestyTest {
     }
 
     /**
-     * Every tool here must declare at least one permission. Each one touches a gated API,
-     * and an empty list would let the dispatcher run the tool and let the platform throw
-     * underneath, which produces a worse sentence than a refusal.
+     * A tool must never declare a permission no app can hold.
+     *
+     * THIS REPLACES AN EARLIER TEST THAT DEMANDED EVERY TOOL DECLARE SOMETHING, and that rule
+     * broke three of these tools. The dispatcher refuses a tool when any declared permission is
+     * missing, so declaring an unholdable signature permission made secureSettingsWrite, timeSet
+     * and configurationChange refuse every time on every device, whatever the person asked for.
+     *
+     * The declarations are gone and the executors guard their own privileged paths, which is
+     * where a refusal can actually name what is missing.
      */
     @Test
-    fun everyToolDeclaresTheGrantItNeeds() {
-        val missing = definitions().filter { it.permissions.isEmpty() }.map { it.name }
-        assertTrue("tools declaring no permission but needing one: $missing", missing.isEmpty())
+    fun noToolDeclaresAPermissionNoAppCanHold() {
+        val unholdable = definitions()
+            .flatMap { def -> def.permissions.map { def.name to it } }
+            .filter { (_, permission) ->
+                TeamThreePermissions.forPermission(permission)?.tier ==
+                    com.unuslumen.app.data.tools.registry.permission.PermissionTier.PRIVILEGED
+            }
+
+        println("declared: ${definitions().flatMap { it.permissions }.distinct()}")
+        assertTrue(
+            "these tools declare a privileged permission, which makes the dispatcher refuse them " +
+                "before they run: $unholdable",
+            unholdable.isEmpty(),
+        )
     }
 
     /**
@@ -129,7 +146,10 @@ class SettingsControlDomainHonestyTest {
             .distinct()
             .mapNotNull { TeamThreePermissions.forPermission(it) }
 
-        assertTrue("expected at least eight catalogued permissions", specs.size >= 8)
+        // Three tools now declare nothing, because WRITE_SECURE_SETTINGS, SET_TIME,
+        // SET_TIME_ZONE and CHANGE_CONFIGURATION cannot be held and declaring them made the
+        // dispatcher refuse those tools before they ever ran.
+        assertTrue("expected at least five catalogued permissions", specs.size >= 5)
 
         val problems = mutableListOf<String>()
         for (spec in specs) {

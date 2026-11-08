@@ -119,17 +119,36 @@ class NetworkWifiDomainHonestyTest {
     }
 
     /**
-     * Every tool here must declare at least one permission.
+     * A tool must never declare a permission that no app can hold.
      *
-     * Each of the eight touches a platform API that is gated: even networkState, which reads
-     * only, needs ACCESS_NETWORK_STATE. An empty list on one of these would let the
-     * dispatcher run the tool and let the platform throw underneath, which produces a worse
-     * sentence than a refusal.
+     * THIS REPLACES AN EARLIER TEST THAT DEMANDED EVERY TOOL DECLARE SOMETHING, and the earlier
+     * one was wrong in a way that broke the features. The dispatcher refuses a tool when any
+     * declared permission is missing, so declaring a signature permission turned a working tool
+     * into one that refuses every single time, on every device, whatever the person asked for.
+     *
+     * vpnControl and ipsecTunnels both did exactly that: CONTROL_VPN and MANAGE_IPSEC_TUNNELS
+     * are unholdable, so the tools could never run. The declarations are gone and the tools now
+     * report what they can observe, which is what they were written to do.
+     *
+     * So the rule is the opposite of the old one: a permission may only be declared when a
+     * person can actually grant it, and a privileged permission is guarded inside the executor
+     * where the refusal can name what is really missing.
      */
     @Test
-    fun everyToolDeclaresTheGrantItNeeds() {
-        val missing = definitions().filter { it.permissions.isEmpty() }.map { it.name }
-        assertTrue("tools declaring no permission but needing one: $missing", missing.isEmpty())
+    fun noToolDeclaresAPermissionNoAppCanHold() {
+        val unholdable = definitions()
+            .flatMap { def -> def.permissions.map { def.name to it } }
+            .filter { (_, permission) ->
+                val spec = TeamThreePermissions.forPermission(permission)
+                spec?.tier == com.unuslumen.app.data.tools.registry.permission.PermissionTier.PRIVILEGED
+            }
+
+        println("declared: ${definitions().flatMap { it.permissions }.distinct()}")
+        assertTrue(
+            "these tools declare a privileged permission, which makes the dispatcher refuse them " +
+                "before they ever run: $unholdable",
+            unholdable.isEmpty(),
+        )
     }
 
     /**
@@ -175,7 +194,9 @@ class NetworkWifiDomainHonestyTest {
                     ?: return@mapNotNull null
             }
 
-        assertTrue("expected at least four catalogued permissions", specs.size >= 4)
+        // Two of the eight now declare nothing, because CONTROL_VPN and MANAGE_IPSEC_TUNNELS
+        // cannot be held and declaring them made the dispatcher refuse those tools outright.
+        assertTrue("expected at least two catalogued permissions", specs.size >= 2)
 
         val problems = mutableListOf<String>()
         for (spec in specs) {

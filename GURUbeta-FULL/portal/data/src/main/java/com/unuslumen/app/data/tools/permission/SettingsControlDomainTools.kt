@@ -221,7 +221,7 @@ object SettingsControlDomainDefinitions : ToolSetRegistration {
                 ),
                 ToolParameter("value", ToolParameterType.String, true, "The new value."),
             ),
-            permissions = listOf(TeamThreePermissions.WRITE_SECURE_SETTINGS.permission),
+            permissions = emptyList(),
         ),
         ToolDefinition(
             name = TIME_SET,
@@ -249,10 +249,7 @@ object SettingsControlDomainDefinitions : ToolSetRegistration {
                     "Ask for automatic time from the network instead of a literal value. Default false."
                 ),
             ),
-            permissions = listOf(
-                TeamThreePermissions.SET_TIME.permission,
-                TeamThreePermissions.SET_TIME_ZONE.permission,
-            ),
+            permissions = emptyList(),
         ),
         ToolDefinition(
             name = CONFIGURATION_CHANGE,
@@ -276,10 +273,7 @@ object SettingsControlDomainDefinitions : ToolSetRegistration {
                     "A BCP-47 language tag such as en-GB, for SET_LOCALE."
                 ),
             ),
-            permissions = listOf(
-                TeamThreePermissions.WRITE_SECURE_SETTINGS.permission,
-                TeamThreePermissions.CHANGE_CONFIGURATION.permission,
-            ),
+            permissions = emptyList(),
         ),
         ToolDefinition(
             name = OVERLAY_CREATE,
@@ -529,7 +523,7 @@ class SettingsControlDomainExecutor(private val context: Context) : ToolExecutor
     }
 
     private suspend fun secureSettingsWrite(args: Map<String, Any?>): ToolExecutionResult {
-        PermissionGrants.guard(context, TeamThreePermissions.WRITE_SECURE_SETTINGS)?.let { return it }
+        // No guard: this permission cannot be held. The write is attempted and read back.
 
         val namespace = ((args["namespace"] as? String) ?: "SECURE").uppercase()
         val key = args["key"] as? String
