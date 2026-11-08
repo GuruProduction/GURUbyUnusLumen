@@ -327,7 +327,7 @@ object NetworkWifiDomainDefinitions : ToolSetRegistration {
                     listOf("STATUS", "PREPARE"),
                 ),
             ),
-            permissions = listOf(TeamThreePermissions.CONTROL_VPN.permission),
+            permissions = emptyList(),
         ),
         ToolDefinition(
             name = IPSEC_TUNNELS,
@@ -338,7 +338,7 @@ object NetworkWifiDomainDefinitions : ToolSetRegistration {
                 "the tool does not pretend there is one.",
             category = "network",
             parameters = emptyList(),
-            permissions = listOf(TeamThreePermissions.MANAGE_IPSEC_TUNNELS.permission),
+            permissions = emptyList(),
         ),
         ToolDefinition(
             name = MULTICAST_LOCK,

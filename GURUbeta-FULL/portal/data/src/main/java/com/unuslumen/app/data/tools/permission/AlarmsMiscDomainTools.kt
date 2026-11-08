@@ -183,7 +183,7 @@ object AlarmsMiscDomainDefinitions : ToolSetRegistration {
                     "Comma-separated weekdays for a repeating alarm, such as MON,WED,FRI."
                 ),
             ),
-            permissions = listOf(TeamThreePermissions.SET_ALARM.permission),
+            permissions = emptyList(),
         ),
         ToolDefinition(
             name = AUTOMATION_STATUS,

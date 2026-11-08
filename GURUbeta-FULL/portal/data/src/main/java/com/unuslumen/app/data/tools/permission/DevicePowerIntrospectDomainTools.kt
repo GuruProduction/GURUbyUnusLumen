@@ -146,9 +146,11 @@ object DevicePowerIntrospectDomainDefinitions : ToolSetRegistration {
                     listOf("STATUS", "SCREEN_ON", "SCREEN_OFF"),
                 ),
             ),
-            // Declared because SCREEN_OFF genuinely needs it. The STATUS path runs before the
-            // guard, so a person without the privilege still gets a real reading.
-            permissions = listOf(TeamThreePermissions.DEVICE_POWER.permission),
+            // NOT DECLARED. The dispatcher refuses a tool when any declared permission is
+            // missing, and DEVICE_POWER cannot be held by an ordinary app, so declaring it made
+            // STATUS unreachable even though reading the power state needs no permission at all.
+            // The executor guards the privileged path itself and reports it honestly.
+            permissions = emptyList(),
         ),
         ToolDefinition(
             name = BATTERY_DETAIL,
@@ -166,7 +168,10 @@ object DevicePowerIntrospectDomainDefinitions : ToolSetRegistration {
                         "when the privilege is genuinely held.",
                 ),
             ),
-            permissions = listOf(TeamThreePermissions.BATTERY_STATS.permission),
+            // NOT DECLARED. BATTERY_STATS is privileged, so declaring it blocked the whole tool.
+            // The unprivileged readings need no permission and the executor reports which
+            // privileged parts are absent.
+            permissions = emptyList(),
         ),
         ToolDefinition(
             name = READ_LOGS,
@@ -188,7 +193,9 @@ object DevicePowerIntrospectDomainDefinitions : ToolSetRegistration {
                     "How many of the most recent matching lines to return, 1 to 2000. Default 200."
                 ),
             ),
-            permissions = listOf(TeamThreePermissions.READ_LOGS.permission),
+            // NOT DECLARED. READ_LOGS is privileged and unholdable, so declaring it blocked the
+            // tool. The executor reports the absence of a reader honestly.
+            permissions = emptyList(),
         ),
         ToolDefinition(
             name = SYSTEM_DUMP,
@@ -209,7 +216,9 @@ object DevicePowerIntrospectDomainDefinitions : ToolSetRegistration {
                     "How many lines of output to return, 1 to 5000. Default 500."
                 ),
             ),
-            permissions = listOf(TeamThreePermissions.DUMP.permission),
+            // NOT DECLARED. DUMP is privileged and unholdable, so declaring it blocked the tool.
+            // The executor runs the command and inspects the output for a denial itself.
+            permissions = emptyList(),
         ),
         ToolDefinition(
             name = FACTORY_RESET,
@@ -217,21 +226,32 @@ object DevicePowerIntrospectDomainDefinitions : ToolSetRegistration {
                 "device and cannot be undone from the phone afterwards. It requires both a confirm " +
                 "flag set true and a confirm phrase matching exactly WIPE THIS PHONE, because one " +
                 "flag is something a model can pass by accident while a literal phrase is not. The " +
-                "wipe itself is only reachable when this app is Device Owner; otherwise the tool " +
-                "reports that and names the Settings screen the person can use themselves. There is " +
-                "no partial version of this operation and no undo.",
+                "wipe itself runs through the Device Owner API; a device that is not provisioned as " +
+                "Device Owner reports that plainly and names the Settings screen the person can use " +
+                "themselves. There is no partial version of this operation and no undo.",
             category = "device_power",
             parameters = listOf(
                 ToolParameter(
                     "confirm", ToolParameterType.Boolean, true,
-                    "Must be true. Anything else refuses without wiping."
+                    "Must be true. Anything else does nothing."
                 ),
                 ToolParameter(
                     "alsoConfirmText", ToolParameterType.String, true,
-                    "Must be exactly WIPE THIS PHONE. Anything else refuses without wiping."
+                    "Must be exactly WIPE THIS PHONE. Anything else does nothing."
                 ),
             ),
-            permissions = listOf(TeamThreePermissions.MASTER_CLEAR.permission),
+            // NO PERMISSION IS DECLARED, AND THAT IS THE FIX.
+            //
+            // The earlier version declared MASTER_CLEAR here. That declaration made the
+            // dispatcher refuse the tool before the executor ever ran, because MASTER_CLEAR is
+            // a signature permission no ordinary app can hold, so the tool was unreachable on
+            // every device that was not already privileged enough not to need it.
+            //
+            // A Device Owner wipe through DevicePolicyManager needs no such permission: being the
+            // Device Owner IS the authority. Declaring MASTER_CLEAR built a refusal into a tool
+            // whose real gate is the two confirmations plus the ownership check, which is where
+            // the guard belongs.
+            permissions = emptyList(),
         ),
     )
 
@@ -350,7 +370,8 @@ class DevicePowerIntrospectDomainExecutor(private val context: Context) : ToolEx
             }
 
             "SCREEN_OFF" -> {
-                PermissionGrants.guard(context, TeamThreePermissions.DEVICE_POWER)?.let { return it }
+                // No permission guard: DEVICE_POWER cannot be held, and the Device Owner check below
+        // is the real gate for forcing the screen off.
 
                 val locked = runCatching {
                     val admin = context.getSystemService(Context.DEVICE_POLICY_SERVICE)
@@ -486,7 +507,8 @@ class DevicePowerIntrospectDomainExecutor(private val context: Context) : ToolEx
     // ------------------------------------------------------------------
 
     private suspend fun readLogs(args: Map<String, Any?>): ToolExecutionResult {
-        PermissionGrants.guard(context, TeamThreePermissions.READ_LOGS)?.let { return it }
+        // No permission guard: READ_LOGS cannot be held, so the absence of a reader is what
+        // this reports rather than a permission refusal.
 
         val maxLines = ((args["maxLines"] as? Number)?.toInt() ?: 200).coerceIn(1, 2000)
         val tag = (args["tag"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
@@ -513,7 +535,8 @@ class DevicePowerIntrospectDomainExecutor(private val context: Context) : ToolEx
     }
 
     private suspend fun systemDump(args: Map<String, Any?>): ToolExecutionResult {
-        PermissionGrants.guard(context, TeamThreePermissions.DUMP)?.let { return it }
+        // No permission guard: DUMP cannot be held. The command is attempted and its output is
+        // inspected for a denial, which is the only reliable test.
 
         val service = (args["service"] as? String)?.trim()
         if (service.isNullOrBlank()) {
@@ -629,17 +652,20 @@ class DevicePowerIntrospectDomainExecutor(private val context: Context) : ToolEx
             )
         }
 
-        PermissionGrants.guard(context, TeamThreePermissions.MASTER_CLEAR)?.let { return it }
-
+        // NO PERMISSION GUARD HERE, deliberately. The earlier version guarded MASTER_CLEAR,
+        // which no ordinary app can hold, so this function could never proceed past it. The
+        // authority for a Device Owner wipe is being the Device Owner, not a permission, so the
+        // gates that remain are the two confirmations above and the ownership check below.
         if (!isOwner) {
             val r = FactoryResetResult(
                 success = false,
                 wipeIssued = false,
                 isDeviceOwner = false,
-                route = "none available",
-                error = "Nothing was wiped. A factory reset is only reachable by an app that is " +
-                    "Device Owner, and this build is not. The person can reset the phone from " +
-                    "Settings > System > Reset options > Erase all data, which is the screen for it.",
+                route = "DevicePolicyManager.wipeData, which needs this app to be Device Owner",
+                error = "Nothing was wiped. A factory reset through the Device Owner API needs this " +
+                    "app to be Device Owner, and it is not on this device. The person can reset the " +
+                    "phone from Settings > System > Reset options > Erase all data, which is the screen " +
+                    "for it.",
             )
             return emit(json, FactoryResetResult.serializer(), r)
         }

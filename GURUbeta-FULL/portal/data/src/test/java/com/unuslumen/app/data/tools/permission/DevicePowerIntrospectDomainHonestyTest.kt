@@ -133,18 +133,18 @@ class DevicePowerIntrospectDomainHonestyTest {
     }
 
     /**
-     * THE SAFETY ASSERTION. Both confirmations are correct and the permission is
-     * held, and the only thing standing between this call and an erased phone is
-     * that the app is not Device Owner. That must be a refusal, and it must never
-     * be reported as a wipe that was issued.
+     * THE SAFETY ASSERTION. Both confirmations are correct, and the only thing standing
+     * between this call and an erased phone is that the app is not Device Owner. That must be
+     * reported and must never be a wipe that was issued.
      *
-     * The grant is applied deliberately: without it the permission guard would be
-     * what refuses, and the Device Owner branch would never be reached.
+     * NO GRANT IS APPLIED, and that is the fix. This test used to grant MASTER_CLEAR, which no
+     * app can actually hold, so it was exercising a permission that made the tool unreachable
+     * in the real build. The declaration and the guard are both gone now, which means this call
+     * reaches the Device Owner check exactly as it would on a real phone. The tool no longer
+     * refuses before it runs.
      */
     @Test
     fun factoryResetOnANonOwnerDeviceFailsClosedWithoutIssuingAWipe() {
-        shadowContext.grantPermissions(TeamThreePermissions.MASTER_CLEAR.permission)
-
         val result = runBlocking {
             executor.execute(
                 DevicePowerIntrospectDomainDefinitions.FACTORY_RESET,
@@ -173,30 +173,41 @@ class DevicePowerIntrospectDomainHonestyTest {
     }
 
     /**
-     * A denial is the default state under Robolectric, but it is denied explicitly
-     * so the test cannot pass because someone granted it elsewhere.
+     * readLogs must report the ABSENCE OF A READER rather than a permission refusal.
+     *
+     * THE OLD ASSERTION HERE WAS WRONG. It denied READ_LOGS and asserted a refusal, and the
+     * tool passed only because the dispatcher blocked it on a permission no app can hold. That
+     * is not the tool working, it is the tool being unreachable.
+     *
+     * With the declaration gone the tool runs, and what it must report is the truth: this build
+     * carries no reader for the system log, so an empty list is the absence of a reader and not
+     * an empty log. That sentence is the whole value of the tool.
      */
     @Test
-    fun readLogsReportsARefusalWhenThePermissionIsDenied() = runBlocking {
-        shadowContext.denyPermissions(TeamThreePermissions.READ_LOGS.permission)
-
+    fun readLogsReportsTheAbsenceOfAReaderRatherThanAPermissionRefusal() = runBlocking {
         val result = executor.execute(DevicePowerIntrospectDomainDefinitions.READ_LOGS, emptyMap())
-        val error = result.error.orEmpty()
-        println("readLogs denied: success=${result.success} error=$error")
+        val note = result.resultData?.let { (it as? LogReadResult)?.note }.orEmpty()
+        println("readLogs: success=${result.success} note=$note")
 
-        assertFalse("a denied log read must not claim success", result.success)
-        assertTrue("the refusal must say something: '$error'", error.isNotBlank())
+        assertFalse(
+            "readLogs must not refuse on a permission no app can hold: ${result.error}",
+            result.error.orEmpty().contains("Permission denied", ignoreCase = true),
+        )
+        assertTrue(
+            "it must say the empty list is the absence of a reader: $note",
+            note.contains("no reader", ignoreCase = true) ||
+                note.contains("absence of a reader", ignoreCase = true),
+        )
     }
 
     /**
-     * A dump with no service name must be refused on its own terms. The grant is
-     * applied so the service validation is what refuses, and the sentence naming
-     * the missing service is asserted, rather than accepting any refusal at all.
+     * A dump with no service name must be refused on its own terms, naming the missing service.
+     *
+     * No grant is applied: DUMP cannot be held, its declaration is gone, and the argument check
+     * is what refuses. That is the behaviour a person actually meets.
      */
     @Test
     fun systemDumpRefusesWithoutAServiceName() {
-        shadowContext.grantPermissions(TeamThreePermissions.DUMP.permission)
-
         val blank = runBlocking {
             executor.execute(
                 DevicePowerIntrospectDomainDefinitions.SYSTEM_DUMP,

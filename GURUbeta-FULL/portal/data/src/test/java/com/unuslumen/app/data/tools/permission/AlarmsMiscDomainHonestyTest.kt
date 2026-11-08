@@ -117,32 +117,30 @@ class AlarmsMiscDomainHonestyTest {
         )
     }
 
+    /**
+     * NO TOOL HERE DECLARES A PERMISSION, and that is now correct for all three.
+     *
+     * setSystemAlarm used to declare SET_ALARM, which is a privileged permission no app can
+     * hold. The dispatcher refuses a tool when any declared permission is missing, so that
+     * declaration made the alarm refuse every time even though the alarm INTENT it actually
+     * uses needs no privilege at all. The declaration is gone.
+     *
+     * The two health tools never declared anything, because reading which grant is off needs no
+     * grant. So the domain declares nothing at all, and a test that demanded otherwise would be
+     * demanding the bug back.
+     */
     @Test
-    fun everyPermissionThisDomainDeclaresHasAUsableRefusal() {
-        val specs = definitions()
-            .flatMap { it.permissions }
-            .distinct()
-            .mapNotNull { TeamThreePermissions.forPermission(it) }
+    fun theDomainDeclaresNoPermissionAtAll() {
+        val declaring = definitions()
+            .filter { it.permissions.isNotEmpty() }
+            .map { it.name to it.permissions }
 
-        // ONE catalogued permission now: SET_ALARM, for setSystemAlarm. The multicast tool moved
-        // out to the network domain, so its permission is no longer declared here, and the two
-        // health tools declare none at all because reading a grant's state needs no grant.
-        assertTrue("expected the alarm permission to be catalogued", specs.size >= 1)
-
-        val problems = mutableListOf<String>()
-        for (spec in specs) {
-            val check = GrantCheck.of(spec, granted = false)
-            val sentence = check.sentence()
-            if (!sentence.trim().endsWith(".")) problems += "${spec.permission}: no full stop"
-            if (sentence.contains("  ")) problems += "${spec.permission}: doubled space"
-            if (sentence.contains("android.permission")) {
-                problems += "${spec.permission}: raw constant in prose"
-            }
-            if (check.state == GrantState.NOT_GRANTED && !sentence.contains("Grant it in")) {
-                problems += "${spec.permission}: a denial with no route"
-            }
-        }
-        assertTrue("unusable refusals: $problems", problems.isEmpty())
+        println("declared: ${definitions().flatMap { it.permissions }.distinct()}")
+        assertTrue(
+            "no tool here may declare a permission: the alarm intent needs none, the health " +
+                "checks need none, and SET_ALARM cannot be held at all: $declaring",
+            declaring.isEmpty(),
+        )
     }
 
     // ------------------------------------------------------------------
@@ -151,8 +149,8 @@ class AlarmsMiscDomainHonestyTest {
 
     @Test
     fun anAlarmWithAnImpossibleHourIsRefused() = runBlocking {
-        grant(TeamThreePermissions.SET_ALARM.permission)
-
+        // No grant needed: the alarm intent carries no permission requirement, and the tool no
+        // longer declares SET_ALARM, which no app can hold.
         val result = executor.execute(
             AlarmsMiscDomainDefinitions.SET_SYSTEM_ALARM,
             mapOf("hour" to 26, "minute" to 10),
@@ -167,8 +165,6 @@ class AlarmsMiscDomainHonestyTest {
 
     @Test
     fun anAlarmWithAnImpossibleMinuteIsRefused() = runBlocking {
-        grant(TeamThreePermissions.SET_ALARM.permission)
-
         val result = executor.execute(
             AlarmsMiscDomainDefinitions.SET_SYSTEM_ALARM,
             mapOf("hour" to 7, "minute" to 75),
@@ -179,8 +175,6 @@ class AlarmsMiscDomainHonestyTest {
 
     @Test
     fun anAlarmWithNoTimeAtAllIsRefused() = runBlocking {
-        grant(TeamThreePermissions.SET_ALARM.permission)
-
         val result = executor.execute(AlarmsMiscDomainDefinitions.SET_SYSTEM_ALARM, emptyMap())
         assertFalse("an alarm with no time must not succeed", result.success)
         assertTrue("it must say why", !result.error.isNullOrBlank())
