@@ -1,158 +1,84 @@
-# GURU by Unus Lumen — Architecture
+# Architecture
 
-<p align="center">
-<img src="GURUlogo.png" alt="GURU by Unus Lumen" width="400"/>
-</p>
+GURU is an Android application that gives a language model working control of a phone, backed by a memory engine written in Rust, with a TypeScript harness in the repository that drives devices and emulators for automated testing.
 
-**GURU is a personal AGI that lives on your phone.** This document describes how the system is actually built: its real modules, the technologies behind each, and the design constraints they obey. It is a structural overview published for transparency, and it sits beside the full app source, which is public in this repository. Read the two together.
+This document describes the parts and the rules between them. It does not describe features, and it does not track versions.
 
----
+## The three halves
 
-## The Project, In Numbers
+**The Android app** lives in `GURUbeta-FULL`. It is a Gradle multi-module build in Kotlin and Jetpack Compose, one application module plus twenty-seven library modules. Every user-facing surface, every tool the model can call, and all on-device persistence live here.
 
-- **880+ Kotlin source files** across a modular Android architecture
-- **64 Rust source crates**, split between the on-device cognitive system and the server engine
-- **20+ native toolchains** embedded in the app, compiled for four CPU architectures
-- **9 standalone feature modules**, each with data, domain and presentation layers
+**The brain** lives in `GURUbeta-FULL/cerebrum`. It is a Rust workspace of twenty-three crates. `cerebrum-android` is the only one built as a `cdylib`, and it is the single library the app links and reaches through JNI. The rest are libraries plus the CLI and server binaries, used outside the app.
 
-## The Project Tree (Top Levels)
+**The factory** lives in `factory`. It is a Bun and TypeScript program that boots emulators, replays recorded failures against a build, runs mutation and stub gates, and refuses to hand a repairer a bug it has not reproduced itself. It is a development tool and ships in nothing.
 
-The real shape of the source tree, top two levels, with what each part owns. Every level below this is in the repo, go walk it.
+The repository also holds `scripts` (the privacy scanner, the pre-commit hook and its installer), `screenshots`, `videos`, and the top-level prose documents.
 
-```
-guru/
-├── cerebrum/            The mind. A Rust workspace of 22+ cognitive crates:
-│   │                    episodic memory, embeddings, decay, dream consolidation,
-│   │                    knowledge graph, reinforcement learning, prefetch, curation.
-│   ├── cerebrum-core    Shared logic: the memory traits and types every crate builds on
-│   ├── cerebrum-server  The on-device memory server the app talks to
-│   └── cerebrum-*       19 more specialised crates, each one cognitive subsystem
-│
-├── app/                 The Android application shell. Main entry, dependency
-│   │                    injection wiring, background services, app-lock and auth,
-│   │                    plus embedded toolchains in assets (Python, busybox, toybox,
-│   │                    OpenSSH, QuickJS) and native JNI libraries for four CPU
-│   │                    architectures (arm64, armv7, x86, x86_64)
-│
-├── portal/              The conversation surface. Where the human talks to GURU.
-│   │                    Contains the prompt assembly pipeline: identity,
-│   │                    capabilities, decision framework, context and reflection,
-│   │                    with the amendment system that lets the brain rewrite
-│   │                    its own instructions
-│
-├── calendar/            Calendar feature module: full device calendar control
-├── journal/             Journal feature module
-├── notes/               Notes feature module
-├── tasks/               Tasks feature module: priorities, deadlines, recurring
-├── Projects/            Project workspaces: sandboxed AI environments
-├── settings/            Settings feature module
-├── widget/              Home-screen widget
-├── adspace/             Ad space module
-│
-├── core/                Shared capability modules used by every feature:
-│   │                    database, alarm scheduling, notifications, preferences,
-│   │                    UI toolkit, utilities, dependency injection, and the
-│   │                    Luxify skill engine (bundled + dynamic skills)
-│
-├── native/              Source for compiled native toolchains: OpenSSH, OpenSSL
-├── toybox-build/        The full Unix userland, built from source: toybox,
-│                        busybox, curl, rsync, dropbear SSH, tmux, jq, sqlite
-│
-├── server/              The Unus Lumen server engine, in Rust: guru-core with
-│   │                    specialist intelligence, request engine, protocol
-│   │                    definitions, authentication and database layers
-│   │                    (stays closed source — see note below)
-│
-└── fastlane/            Build, signing and publishing automation
-```
+## Module layout
 
-Every feature module follows the same internal discipline: a data layer (repositories, storage, APIs), a domain layer (business logic, entities, use cases), and a presentation layer (UI, state, viewmodels). That's why features stay isolated and composable, and why adding a new capability to GURU means adding a module, not tangling the monolith.
+The Gradle build is organised by concern and, in most places, by layer.
 
-## The Shape of the System
+`core` holds the shared floor: `util` (the shell runtimes, the accessibility service, the Adb client), `database` (Room, forty-four DAOs, migrations), `di`, `preferences`, `alarm`, `notification`, `ui`, `widget`.
 
-GURU is a multi-module Android application backed by a Rust cognitive core and a Rust server engine. The major parts:
+`portal` is the engine room and the largest module family. `portal:domain` holds models, repository interfaces and use cases. `portal:data` holds every implementation: the AI send path, the tool registry and all tool executors, the brain bridge, Tor egress, skills, agents, jobs, hooks, media ingestion, the web services, and prompt assembly. `portal:presentation` holds the chat surfaces, the conversation history and the memory screen.
 
-- **Cerebrum** — the mind. A Rust workspace of 22+ crates implementing biological-style memory and cognition
-- **The Guru App** — an Android multi-module application where every feature is a proper module
-- **Core Services** — alarms, notifications, database, preferences, dependency injection
-- **Portal** — the user-facing surface, including the prompt assembly pipeline
-- **The Unus Lumen Server** — a Rust engine providing specialist intelligence to the app
-- **Native Toolkit** — full Unix userland shipped inside the app
-- **Luxify** — the skills system, bundled and dynamic
+The rooms are `tasks`, `notes`, `calendar`, `journal`, `Projects`, `settings`, `thoughts` and `onboarding`, each split into `domain`, `data` and `presentation`. The newer rooms are single modules that carry their own three layers internally: `adspace`, `agents`, `heartbeat`, `innermind` and `ottio`.
 
-## Cerebrum: The Cognitive Architecture
+`app` is the shell. It owns `MainActivity`, the lobby, the navigation graph, the permission gate screen, the media screens and the app lock, and it is the only module that assembles everything.
 
-This is the brain, written entirely in Rust, structured as a workspace of specialised crates that mirror biological memory systems:
+### Two structural facts worth knowing before you depend on them
 
-| Crate | Role |
-|---|---|
-| cerebrum-episodic | Episodic memory: events as the brain experiences them |
-| cerebrum-embeddings | Vector embeddings for semantic recall |
-| cerebrum-decay | Memory decay: what fades when it doesn't matter |
-| cerebrum-dream | Sleep-time consolidation, merging and strengthening |
-| cerebrum-graph | Knowledge graph of facts and relationships |
-| cerebrum-rl | Reinforcement learning: strengthening what works |
-| cerebrum-prefetch | Predictive preloading of relevant memory |
-| cerebrum-curate | Curation of what deserves to be remembered |
-| cerebrum-policy | Rules governing how memory behaves |
-| cerebrum-events | The event bus everything talks through |
-| cerebrum-signatures | Content signatures for deduplication |
-| cerebrum-cluster | Clustering of related memories |
-| cerebrum-query | Query engine over all memory stores |
-| cerebrum-http, cerebrum-mcp | Interfaces between crates and the outside |
-| cerebrum-token, cerebrum-dwm, cerebrum-node, cerebrum-storage | Token tracking, working-memory management, node graph, storage engine |
-| cerebrum-cli, cerebrum-server, cerebrum-core | Entry points and shared core logic |
+**Every room is its own module.** A room is not a screen inside `portal`; the lobby's ability to scale to a hundred rooms depends on each one being a self-contained unit the shell can mount or leave out. Where a room is still a package inside another module, that is unfinished extraction, not a licence to add the next one the same way.
 
-The on-device memory engine builds on a structure inspired by the hippocampus and cortex, with a retriever for recall and a byte-rover for low-level storage operations. This is what replaces the vector database: a brain-shaped system written in a systems language, running on your phone.
+**The layering is not clean at the foot.** `core:database` implements DAOs for the tasks, notes, Projects and journal domains and therefore depends on those domain modules; `core:ui` depends on the tasks, notes and settings domains; `core:notification` depends on the tasks domain. The shared floor is not a floor for the rooms. Adding another upward dependency here deepens the inversion rather than being consistent with it.
 
-## The Android Application
+## The runtime spine
 
-Not a monolith. GURU's app is a multi-module Kotlin architecture where every feature is a self-contained module with three layers: data, domain, and presentation. Features shipped as proper modules include Calendar, Tasks, Notes, Journal, Projects, Settings, Portal and more. Shared capabilities live in core modules: database, alarm, notification, preferences, widget, utilities, dependency injection.
+Six paths carry almost all the behaviour, and almost every bug in this codebase is a fault in one of them.
 
-The main application package wires everything together with dependency injection, a service layer for background work, and presentation layers per feature. App-lock, authentication and theming are built in at the shell level.
+**Boot.** `GuruApplication.onCreate` starts Koin, registers modules by hand, registers every tool into the registry, initialises the four shell runtimes (Busybox, Python, Toybox, Termux), schedules the brain, the heartbeat, the thought cycle, the job runner and the hive-mind worker, and defers anything needing a foreground process to the first `onActivityResumed`, because Android 12 and later refuse a foreground service started from `Application.onCreate`.
 
-## The Portal and the Prompt Assembly Pipeline
+**Injection.** Koin binds everything. Most bindings are generated by KSP from annotations. A room in its own Gradle module gets an empty generated module, so its view models are declared explicitly and its module is listed by hand in `GuruApplication`. This is what crashed both Ottio and Agents with "No definition found for type" on first open, and the comment at that registration point is the standing warning.
 
-The Portal is where everything happens, and its intelligence is assembled, not hardcoded. GURU's system prompt is built at runtime from five documented sections stored in a local database: Identity, Capabilities, Decision Framework, Context and Reflection. Each section is structured Kotlin with an amendment pipeline layered on top, meaning the AI's own behaviour can be extended and refined without recompiling the app. Identity defines who the AI is and how it speaks. Capabilities document the nearly 400 tools. The decision framework defines how GURU chooses between acting, building a tool, creating a skill, spawning an agent or scheduling a job. Context handles continuity across sessions. Reflection handles fact extraction, thread discovery, deduplication and conversation titling.
+**Tool dispatch.** A model asks for a tool by name. `ToolDispatcher` resolves the name, checks the declared Android permissions and refuses with a sentence naming the route to a fix rather than a platform string, runs the security policy, repairs malformed arguments, executes, extracts a typed result, and records the failure if there was one. Registration happens once at boot from `ToolSetRegistration` implementations; the shared list lives in `GeneratedToolRegistrations`, which despite the name is hand-maintained, and the device-senses domains arrive through `TeamThreeToolDomains`, which is the only file that changes when a domain is added.
 
-This is the mechanical truth behind self-evolution: the brain can re-write its own instruction set through an amendment pipeline, safely.
+**Prompt assembly.** The system prompt is authored on the server, fetched at startup over Tor, cached in SharedPreferences, and re-read on every send. `${human}` is substituted at read time from the name saved in settings. A second, independent injection path exists on the device: notes to self authored by GURU through the `noteToSelf` tool family, matched against the user's message by keyword and injected for that turn, stored in `guru_notes_to_self` and never synced. So prompt text has two authors, the owner through the server and GURU itself on the handset.
 
-## The Unus Lumen Server
+**Egress.** `TorEgress` is the single policy for every outbound connection. Loopback, link-local, carrier-grade NAT and LAN names go direct, because Tor cannot reach them. Everything else must ride the SOCKS proxy, and when Tor is not ready the request throws rather than falling back to a direct connection. That last part is load-bearing: OkHttp treats an empty proxy selector as "no proxy", so the previous fail-closed code was in fact a direct connection to the public internet.
 
-A Rust server-side engine powers the heavy lifting: the guru-core crate with specialist models, a request engine, protocol definitions, authentication and database layers. The app stays private and local; the server provides exchange-intelligence specialists that the earning layer and analysis tools draw on.
+**Memory.** Cerebrum boots in-process, generates a passphrase on first run, seals it in the keystore, and restores state from the encrypted vault on every subsequent boot. Its only transport is a socket under `filesDir` owned by the same uid, so there is no port and no egress. Room's four memory tables are migrated into the brain once, idempotently by deterministic id, and conversation history stays in Room.
 
-**The server engine stays closed source.** Two honest reasons: publishing it ships a complete map of every endpoint and auth path guarding the master-write API, whose single admin credential becomes load-bearing the day the fleet goes public; and the review pipeline and editorial catalog are Unus Lumen's operational layer. The privacy posture is unaffected: the server is stateless by design and sees requests, never memory — nothing user-owned ever flows to it. But make the dependency honest: the publisher is the app's supply line. Prompt sections, skills, tool definitions, agent templates, canvas packs and config defaults flow over sync, and **a GURU cut off from every publisher boots but does not work as intended** — running it that way means being technical enough to operate your own compatible publisher (the app↔server protocol is plain documented HTTP) or hand-install the content. Publisher privacy and user privacy are separate claims: ours sees requests, never memory. The hippocampus stays home either way.
+## The invariants
 
-## Native Toolkit
+These are the decisions a newcomer cannot recover by reading the folder tree, so each carries its reason.
 
-GURU ships a real Unix environment inside the APK, compiled for arm64, armv7, x86 and x86_64: OpenSSH, toybox, busybox, curl, rsync, dropbear, jq, tmux, sqlite, make, ncurses, openssl, and an embedded Python runtime, plus a QuickJS JavaScript engine through JNI. That's how shell access, scripting and remote control are real capabilities, not emulations.
+**Tor sits under the network layer, not beside it as a feature.** Any new HTTP client goes through `TorEgress.newEngine()`. A client built directly is an IP leak no matter how harmless the destination looks.
 
-## Luxify: The Skills System
+**The brain keeps one vault and needs no network.** Nothing about memory depends on a server being up, and nothing about it leaves the device.
 
-Two registries: bundled skills shipped with the app, and dynamic skills that GURU can search for, download, modify and install at runtime. Skills are methodology packages that wire straight into the prompt assembly pipeline, giving GURU permanent new professional capabilities. New skills arrive and install over sync, and a GURU can also author and install its own at runtime.
+**A tool's definition and its behaviour live in the same file.** The older arrangement declared definitions in one list and bound executors in another, which is how issues 40 and 44 shipped tools whose description did not match their code. A domain module declares both and registers both, so drift is a compile error instead of a support ticket.
 
-## Privacy By Architecture
+**A permission refusal is a sentence, not a denial.** `GrantState` distinguishes a plain denial, a privileged permission, absent hardware, a build fault and a permission outside the catalogue. A tool returning an empty result when it was refused is the defect the permission work exists to remove, because empty is never a valid answer to "I could not check".
 
-- The entire cognitive system runs on-device. Memory lives in local storage, governed by cerebrum-decay and cerebrum-dream, no cloud copy exists
-- All external traffic routes through an embedded Tor engine and fails closed: when Tor is not ready, remote requests are refused rather than leaking. Loopback and private LAN addresses stay direct so local model servers work with zero setup; browsing runs through a full JavaScript-capable browser over the same circuit
-- AES-256-GCM encryption with fresh IVs from Java's SecureRandom on every operation; keys never leave the device
-- The non-custodial wallet keeps private keys on the phone, profit from trades, bounties and gigs lands with the user
-- The companion server sees requests, never memory. The hippocampus stays home
+**Behaviour is configured at runtime, addresses are not.** Prompt text, model configuration, the agent and skill catalogues and the ad packs all come from the server, so a behaviour change is a server-side edit with a rollback path rather than a shipped binary. The server address itself is the exception and the honest one to state: `https://api.unuslumen.com` is compiled into the fetchers as a constant, with a runtime override preference on the skills library only. Moving the API means a new build.
 
-## Design Constraints
+**The signing key never changes.** Every release is signed with the same keystore, read from the gitignored `local.properties`, with v1, v2, v3 and v4 all enabled so an installer that rejects one scheme has another to try. A build signed with a different key cannot install over an existing GURU.
 
-- **No root. Ever.** Nothing may depend on root access. It is 2026 and nobody roots their phone. A capability that only works with `su` is not a capability, it is a demo that fails for every real user. If a feature needs root, it is not finished.
-- **No adb. Ever.** Nothing may depend on adb, a host machine, or a debug bridge. The app must do everything it does from the phone by itself, with no cable and no companion computer.
-- **No workarounds, only real builds.** When something does not work, the answer is a proper implementation, never a shim that hides the breakage or a mechanism that only functions in a debug harness.
-- **No cloud storage** — memories, files, conversations, all live and die on the device
-- **Keys on device** — non-custodial wallet, private keys never leave the phone
-- **Tor by default** — external requests route through the fail-closed Tor policy; sync fetches fall back to cached content until Tor is ready
-- **App source open** — full app source is published at this repo under AGPL-3.0; the publisher server engine stays closed (reasoning above)
+**No secret, address or machine path reaches a public repository.** `scripts/privacy-scan.mjs` refuses a commit that would publish one, and `scripts/hooks/pre-commit` runs it and fails closed when the scanner or its runtime is missing. The allowlist inside the scanner is the only place a documented exception may be written.
 
-These three are absolute and each one has already cost real work to learn. A root-only symlink and proot were both attempted and both were dead ends: proot needs `ptrace`, which Android's seccomp filter blocks for ordinary apps, and root does not exist on a user's phone. The answer that survived is `libpathshim.so`, an LD_PRELOAD library that rewrites a compiled-in upstream path at the libc boundary. It needs no root and no adb, which is exactly why it is the one that ships.
+**The build gate is local.** There are no CI workflows in this repository; `.github` holds only a funding file. A merge is gated on a green local build, a green unit suite and a PR body that states what was and was not verified, which is why that body must never overstate its evidence.
 
----
+## External systems
 
-**GURU: designed and engineered by Steven Newman — Founder, Unus Lumen, Bristol UK**
+The app has one server dependency, `api.unuslumen.com`, which on this machine is the `guru-server` container behind `guru-cloudflared-v2`, with `guru-console` as its operator interface and `guru-postgres` as its database. That stack lives outside this repository.
 
-steven@unuslumen.com
+Its content tables at the time of writing hold 116 prompt sections, 20 agents, 1 skill and 390 tools. The app reads prompt sections, model configuration, catalogues and ad packs from it. The app also writes to it: agent submissions through `POST /v1/submit/agent`, installs through `/v1/agents/{slug}/install`, and ratings through `/v1/agents/{slug}/rating`. A submitted agent waits in a review queue server-side before it appears in the catalogue, so the server, not the device, is what makes a submission public.
+
+## Where to look first
+
+`GURUbeta-FULL/app/src/main/java/com/unuslumen/app/guru/GuruApplication.kt` is the boot order and therefore the map of what depends on what. `portal/data/.../tools/registry/ToolDispatcher.kt` is the whole tool contract in one file. `portal/data/.../tor/TorEgress.kt` is the whole egress policy in one file. `cerebrum/cerebrum-android/src/lib.rs` is the entire boundary between Kotlin and Rust.
+
+## Known lies in the code's own comments
+
+`PromptFetcher` says the hardcoded prompts in `GuruPrompts.kt` are the fallback when the server is unreachable. They are not: `PromptRepositoryImpl` reads the cache and falls back to an empty string. `GeneratedToolRegistrations` says it is generated by KSP and will replace the manual list; it is the manual list. Both are worth fixing at source rather than believing.
+
