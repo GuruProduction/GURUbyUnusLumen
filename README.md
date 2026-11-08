@@ -7,10 +7,26 @@
 **An intelligence with hands. Your phone, your house, your network, your rules.**
 
 ![Status](https://img.shields.io/badge/status-public%20beta-e8c9ff)
+![Version](https://img.shields.io/github/v/release/GuruProduction/GURUbyUnusLumen?label=version&color=FFD60A)
+![Downloads](https://img.shields.io/github/downloads/GuruProduction/GURUbyUnusLumen/total?label=downloads&color=FF9F0A)
+![Stars](https://img.shields.io/github/stars/GuruProduction/GURUbyUnusLumen?color=FF375F)
+![Last commit](https://img.shields.io/github/last-commit/GuruProduction/GURUbyUnusLumen?color=0A84FF)
 ![Licence](https://img.shields.io/badge/licence-AGPL--3.0-98ff7e)
 ![Platform](https://img.shields.io/badge/platform-Android-00C7BE)
+![Android](https://img.shields.io/badge/android-8.0%2B-00C7BE)
 ![Privacy](https://img.shields.io/badge/privacy-on%20device%20only-FF375F)
+![Tor](https://img.shields.io/badge/egress-Tor%2C%20fail--closed-7D4698)
 ![Model](https://img.shields.io/badge/model-bring%20your%20own-0A84FF)
+![Tools](https://img.shields.io/badge/tools-390%20and%20growing-98ff7e)
+![Permissions](https://img.shields.io/badge/permissions-167-98ff7e)
+![Rooms](https://img.shields.io/badge/rooms-12-98ff7e)
+![Memory](https://img.shields.io/badge/memory-Rust%2C%20on%20device-e8c9ff)
+![Userland](https://img.shields.io/badge/userland-bundled-e8c9ff)
+![Self-evolving](https://img.shields.io/badge/self--evolving-yes-e8c9ff)
+![Kotlin](https://img.shields.io/badge/Kotlin-2.3.10-7F52FF)
+![Rust](https://img.shields.io/badge/Rust-cerebrum-DEA584)
+![Compose](https://img.shields.io/badge/Jetpack-Compose-4285F4)
+![PRs](https://img.shields.io/badge/PRs-welcome-98ff7e)
 ![Built by](https://img.shields.io/badge/built%20by-Unus%20Lumen%2C%20Bristol%20UK-0A84FF)
 
 </div>
@@ -27,7 +43,7 @@ Any model is powerful when you give it reach. GURU is the reach.
 
 ## What GURU actually is
 
-It is not a chat app. It is a permission layer across 167 Android permissions, a tool registry of around 390 tools and growing, an encrypted memory engine written in Rust, a full Unix userland bundled inside the APK, twelve rooms in one lobby, and a marketplace where people sell what they build.
+It is not a chat app. It is a permission layer across 167 Android permissions, a tool registry of around 390 tools and growing, an encrypted memory engine written in Rust, a full Unix userland bundled inside the APK, twelve rooms in one lobby, and Otio, the economy where your own output becomes something you can sell.
 
 You only ever open one app.
 
@@ -94,7 +110,7 @@ The lobby is a page of tiles you drag into any order you like, and you can ask G
 
 **Agents** is where you make your own. Give one a name, instructions and the tools it may use, and it takes work off you in the background while your chat carries on. An agent with no tools still reasons; an agent with a tool can change something on your phone, and the picker shows exactly which tools it holds and offers nothing else. One press grants all of them or none.
 
-**Otio** is the market. **Inner Mind** is a living graph of everything GURU holds about you, covering memories, conversations, tasks, notes, projects, agents, skills, thoughts, people and every device it has found, drawn as one tissue you explore rather than a list you scroll.
+**Otio** is the economy. **Inner Mind** is a living graph of everything GURU holds about you, covering memories, conversations, tasks, notes, projects, agents, skills, thoughts, people and every device it has found, drawn as one tissue you explore rather than a list you scroll.
 
 **Heartbeat** is the clock. **Skills** are imported capabilities. **Notes**, **Journal**, **Projects**, **Calendar** and **Thoughts** are the rooms you will live in, each one a full workspace with its own home-screen widgets, and **Settings** is where the brain and the model are configured.
 
@@ -135,11 +151,29 @@ Every prompt GURU runs on is pulled from the publisher, saved onto your phone in
 If you want to know why GURU did something, go and look. If you disagree with how it behaves, change it. There is no intellectual property I am protecting in those files, because you could do all of this yourself if you tried hard enough. I did it first, and you are welcome to it.
 </details>
 
-## Otio, the market
+## Otio
 
-Otio is where GURU users publish agents and buy each other's work. It is a room of its own, not a sub-screen of the agents room, because a market is where you go to find what somebody else made and an agent is what you make for yourself.
+Otio is where everything you make with your GURU turns into something you can own, sell, or share. It is not an app store, and it is not a second-hand marketplace bolted onto a chat app. It is three layers, and only the first one is live.
 
-Search it, filter by free, paid or owned, browse by category, look up the maker, read every tool the agent is allowed to use before you pay, buy it once, and keep it even if the author withdraws it later. Publishing is one line, a category and a price, and you keep the majority of every sale.
+**Layer one, the creator market.** You sell whatever you build: skills, tools, agents, masks, and also games, websites, apps, books, NFTs, services and any other digital thing you make. That list is deliberately open. I have named the kinds I have thought of and I am not going to pretend that is the whole of it.
+
+What ships today is the agent market, because agents are what exist so far. The rest of the layer is the same machinery with more item types in front of it.
+
+**Layer two, the data marketplace.** This is the one I care about most and the one that does not exist yet.
+
+The idea is that GURU stops other apps farming your data, the way a VPN would, and absorbs that traffic itself instead. You see your own captured data, categorised and readable, and you decide what, if anything, to sell. The buyers are the companies already buying that data today, except they buy it straight off you instead of off big tech.
+
+That is the same complaint GURU started from, turned into a business instead of a grievance. Right now the deal is you get spied on for free. Layer two is me offering a version where you get paid. It gets switched on when there are enough backers to do it properly, because it is a big job and I will not ship a half version of it.
+
+**Layer three, the social network.** A decentralised social layer inside the app, used by both you and your GURUs. Least specified of the three, because it comes last.
+
+**Identity is a wallet, not an account.** No sign-up, no login, no email capture, no profile the server can attach to a person. You trade under a pseudonym and the server never learns your name.
+
+**The money is held by Unus Lumen.** I take the funds, hold them, and pay creators out to their accounts. It is not per-transaction settlement and it is not on-chain, and I would rather say that plainly than let anyone assume a decentralised payout that does not exist. The split is 80 percent to the maker, 20 percent plus payment costs to Unus Lumen.
+
+### The agent market, as it stands today
+
+Search it, filter by free, paid or owned, browse by category, look up the maker, read every tool an agent is allowed to use before you pay, buy it once, and keep it even if the author withdraws it later. Publishing is one line, a category and a price.
 
 Every fact on the screen is served rather than invented. Counts come from real install and rating tables, makers come from real publisher records, prices come from the catalogue. Where the server has nothing to say the screen says nothing, so a rating nobody has given shows no stars at all instead of a fake zero. When the market cannot be reached it says so plainly and tells you everything you already own still works, because "could not ask" and "nothing exists" are different answers and one of them is a lie about your phone.
 
@@ -214,7 +248,7 @@ GURU already works. It runs daily, it drives real hardware in my house, and it d
 
 What it becomes is bigger. Every app on your phone becomes a dependency of GURU, and you only ever need to open one app. Your messages, email, calendar, smart home, searches, bookings, finance and creative work, all of it behind one intelligence that already knows the rest of your life.
 
-Inside that ecosystem, people create. They build toolkits and skills and masks and agents and games, sell them on Otio, and sell their own data on their own terms. Unus Lumen takes a small cut of every transaction and keeps the lights on. The economy runs itself.
+Inside that ecosystem, people create. They build toolkits and skills and masks and agents and games, sell them on Otio, and eventually sell their own data on their own terms. Unus Lumen takes a small cut of every transaction and keeps the lights on. The economy runs itself.
 
 Masks will let you change the personality of your numen entirely. Serious and professional, funny and crude, dark and twisted, warm and gentle. Whoever you need it to be.
 
