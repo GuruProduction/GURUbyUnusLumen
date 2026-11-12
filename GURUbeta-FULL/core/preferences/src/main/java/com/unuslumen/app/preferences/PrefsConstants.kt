@@ -80,6 +80,19 @@ object PrefsConstants {
     // Vision: Guru sees the user's current screen with every message
     const val VISION_ENABLED_KEY = "vision_enabled"
 
+    /* The owner's egress posture, stored as one of the EgressMode ids.
+
+       WHY IT IS A SETTING. Tor cannot reach a private address, so the LAN half of the
+       routing is arithmetic and belongs in the classifier. Whether a PUBLIC request may
+       travel unproxied is a different question: it trades privacy for reach, and only the
+       owner may make that trade. So it is a preference he sets with /clearnet and /tor,
+       it defaults to AUTO, and every outbound path reads it rather than carrying its own
+       flag, because a rule half the tools forget is the bug this replaces.
+
+       A blank or unrecognised value reads as AUTO, which fails closed. A corrupt setting
+       must never widen egress. */
+    const val EGRESS_MODE_KEY = "egress_mode"
+
     // Permission gate first-launch tracking
     const val PERMISSION_GATE_SHOWN_KEY = "permission_gate_shown"
 

@@ -3,6 +3,7 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.domain.slashcommands
 
+import com.unuslumen.app.domain.slashcommands.commands.ClearnetCommand
 import com.unuslumen.app.domain.slashcommands.commands.ClearCommand
 import com.unuslumen.app.domain.slashcommands.commands.CommandsCommand
 import com.unuslumen.app.domain.slashcommands.commands.HelpCommand
@@ -11,6 +12,7 @@ import com.unuslumen.app.domain.slashcommands.commands.StopCommand
 import com.unuslumen.app.domain.slashcommands.commands.TasksCommand
 import com.unuslumen.app.domain.slashcommands.commands.ThinkCommand
 import com.unuslumen.app.domain.slashcommands.commands.ToolsCommand
+import com.unuslumen.app.domain.slashcommands.commands.TorCommand
 import com.unuslumen.app.domain.slashcommands.commands.UsageCommand
 import com.unuslumen.app.domain.slashcommands.commands.WhoamiCommand
 import com.unuslumen.app.preferences.domain.use_case.GetPreferenceUseCase
@@ -39,6 +41,11 @@ class SlashCommandActionMap(
         UsageCommand(),
         TasksCommand(),
         ToolsCommand(),
+        // The two egress commands. Both read and write the one posture key that every
+        // outbound path honours, so the setting has a single source of truth rather than
+        // being a switch some tools obey and the rest never heard of.
+        TorCommand(getPreference, savePreference),
+        ClearnetCommand(getPreference, savePreference),
     ).associateBy { it.key }
 }
 

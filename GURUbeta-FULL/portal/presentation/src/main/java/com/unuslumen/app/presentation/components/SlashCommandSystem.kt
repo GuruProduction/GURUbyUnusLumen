@@ -104,7 +104,7 @@ data class CommandArgMenuResult(
 // ─── Command Categories & Tiers ───
 
 enum class CommandCategory {
-    SESSION, OPTIONS, STATUS, MANAGEMENT, MEDIA, TOOLS
+    SESSION, OPTIONS, STATUS, MANAGEMENT, MEDIA, TOOLS, NETWORK
 }
 
 enum class CommandTier {
@@ -734,6 +734,11 @@ object GuruSlashCommandRegistry {
                 tier = CommandTier.ESSENTIAL,
             ),
         )
+
+        // Every group outside this file registers here, so this block stays a list of
+        // what exists rather than the definition of each thing. A new family of commands
+        // goes in its own package and adds one line below, which is the whole point.
+        registerAll(*com.unuslumen.app.presentation.commands.egress.EgressCommands.all.toTypedArray())
     }
 }
 
