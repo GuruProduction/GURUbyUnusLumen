@@ -28,9 +28,14 @@
     them would arrive on the new phone as a brain with no settings, which reads as a
     corrupted restore to the person holding it.
 
-    CACHE AND EXTERNAL STORAGE STAY EXCLUDED. Cache is regenerable by definition, and
-    external storage is shared with other apps, so neither belongs in a transfer of this
-    app's own state.
+    CACHE AND EXTERNAL STORAGE ARE EXCLUDED BY OMISSION, WHICH IS THE ONLY WAY IT WORKS.
+
+    This element supports inclusion mode: once any <include> is present, everything not
+    included is left out. So listing the three domains that should travel IS the statement
+    that cache and external storage do not, and a literal <exclude domain="cache"> is not
+    just redundant but invalid, because `cache` is not a domain this element knows and an
+    exclude outside an included path means nothing. Lint refuses both, which is how this was
+    established rather than assumed.
 -->
 <data-extraction-rules>
     <cloud-backup>
@@ -41,10 +46,9 @@
         <exclude domain="external"  path="."/>
     </cloud-backup>
     <device-transfer>
+        <!-- Inclusion mode: these three travel, everything else stays behind. -->
         <include domain="database" path="." />
         <include domain="sharedpref" path="." />
         <include domain="file" path="." />
-        <exclude domain="cache" path="." />
-        <exclude domain="external" path="." />
     </device-transfer>
 </data-extraction-rules>
