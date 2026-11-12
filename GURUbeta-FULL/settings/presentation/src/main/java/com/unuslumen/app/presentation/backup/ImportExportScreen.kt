@@ -45,6 +45,7 @@ import com.unuslumen.app.preferences.domain.model.PrefsKey.BooleanKey
 import com.unuslumen.app.preferences.domain.model.PrefsKey.IntKey
 import com.unuslumen.app.presentation.backup.components.AutoBackupCard
 import com.unuslumen.app.presentation.backup.components.BackupFormatCard
+import com.unuslumen.app.presentation.backup.components.BrainSnapshotCard
 import com.unuslumen.app.presentation.backup.components.BackupStatusMessage
 import com.unuslumen.app.presentation.backup.components.ExportTypesCard
 import com.unuslumen.app.presentation.backup.components.SectionHeader
@@ -130,6 +131,42 @@ fun ImportExportScreen(
             viewModel.onEvent(BackupEvent.SelectAutoBackupFolder(folderUri = file.uri.toString()))
         }
     }
+
+    // The brain snapshot needs the passphrase the owner typed in the card, so the picker's
+    // callback carries it alongside the tree URI it hands back. The passphrase is held in a
+    // plain field for the few seconds between the button press and the picker returning, and
+    // cleared the moment the work is started: it is never written to preferences, a
+    // database, or a log.
+    var pendingSnapshotPassphrase by remember { mutableStateOf<String?>(null) }
+    var pendingRestorePassphrase by remember { mutableStateOf<String?>(null) }
+
+    val chooseSnapshotFolderLauncher = rememberFilePickerLauncher(
+        FilePickerFileType.Folder,
+        selectionMode = FilePickerSelectionMode.Single
+    ) { files ->
+        val passphrase = pendingSnapshotPassphrase
+        files.firstOrNull()?.let { folder ->
+            if (passphrase != null) {
+                viewModel.createSnapshot(folder.uri.toString(), passphrase)
+            }
+        }
+        pendingSnapshotPassphrase = null
+    }
+
+    val chooseSnapshotFileLauncher = rememberFilePickerLauncher(
+        FilePickerFileType.Document,
+        selectionMode = FilePickerSelectionMode.Single
+    ) { files ->
+        val passphrase = pendingRestorePassphrase
+        files.firstOrNull()?.let { file ->
+            if (passphrase != null) {
+                viewModel.restoreSnapshot(file.uri.toString(), passphrase)
+            }
+        }
+        pendingRestorePassphrase = null
+    }
+
+    val brainSnapshotState by viewModel.brainSnapshot.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = { guruAppBar(stringResource(R.string.export_import)) }
@@ -247,6 +284,32 @@ fun ImportExportScreen(
                 },
                 chooseDirectoryLauncher = chooseAutoBackupDirectoryLauncher
             )
+
+            Spacer(Modifier.height(20.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+            Spacer(Modifier.height(20.dp))
+
+            // The whole-brain section sits after the content export on purpose: the export
+            // above is a readable copy of notes and tasks, while this one is the only thing
+            // that can bring a GURU back on a different handset, so it reads last and
+            // heaviest rather than as another export option.
+            SectionHeader(
+                title = stringResource(R.string.brain_snapshot_title),
+                iconRes = R.drawable.ic_export
+            )
+            Spacer(Modifier.height(8.dp))
+            BrainSnapshotCard(
+                state = brainSnapshotState,
+                onRequestCreate = { passphrase ->
+                    pendingSnapshotPassphrase = passphrase
+                    chooseSnapshotFolderLauncher.launch()
+                },
+                onRequestRestore = { passphrase ->
+                    pendingRestorePassphrase = passphrase
+                    chooseSnapshotFileLauncher.launch()
+                },
+            )
+
             Spacer(Modifier.height(24.dp))
         }
         if (openImportDialog)

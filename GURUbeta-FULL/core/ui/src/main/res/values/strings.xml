@@ -303,6 +303,20 @@
     <string name="export_types">Export content</string>
     <string name="export_format_json">JSON file</string>
     <string name="export_format_markdown">Markdown files</string>
+
+    <!-- The whole-brain snapshot. Distinct from Export above, which writes notes, tasks,
+         journal entries and bookmarks as readable files. This one seals the entire
+         database and is the only artefact that restores a GURU onto a new phone. -->
+    <string name="brain_snapshot_title">The whole brain</string>
+    <string name="brain_snapshot_subtitle">A sealed copy of everything GURU knows, for a new phone or a fresh install.</string>
+    <string name="brain_snapshot_passphrase_warning">The passphrase is not stored anywhere and cannot be recovered. Without it the snapshot can never be opened, so write it somewhere safe before pressing the button.</string>
+    <string name="brain_snapshot_passphrase">Passphrase for this snapshot</string>
+    <string name="brain_snapshot_create">Choose a folder and snapshot the brain</string>
+    <string name="brain_snapshot_working">Working</string>
+    <string name="brain_restore_title">Restore from a snapshot</string>
+    <string name="brain_restore_description">This replaces everything on this phone with the snapshot\'s contents. The current brain is only removed once the restore has completed, and GURU must be restarted afterwards.</string>
+    <string name="brain_restore_passphrase">Passphrase the snapshot was sealed with</string>
+    <string name="brain_restore_choose">Choose a snapshot file to restore</string>
     <string name="tool_call_limit_exceeded">The portal has stopped after many consecutive actions. If you expect this, you can send "Continue" to the portal.</string>
     <string name="ask_portal">Ask Portal…</string>
     <string name="ask_assistant">Ask Assistant…</string>
