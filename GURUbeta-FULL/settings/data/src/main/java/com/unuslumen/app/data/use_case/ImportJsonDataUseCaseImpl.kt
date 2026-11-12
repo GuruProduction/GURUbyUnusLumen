@@ -7,7 +7,6 @@ import android.content.Context
 import androidx.core.net.toUri
 import androidx.core.text.isDigitsOnly
 import androidx.room.withTransaction
-import com.unuslumen.app.data.model.JsonBackupData
 import com.unuslumen.app.database.guruDatabase
 import com.unuslumen.app.database.entity.toTask
 import com.unuslumen.app.domain.exception.BackupDataException
@@ -15,10 +14,6 @@ import com.unuslumen.app.domain.use_case.UpsertTaskUseCase
 import com.unuslumen.app.domain.use_case.`interface`.ImportJsonDataUseCase
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.ExperimentalSerializationApi
-import kotlinx.serialization.SerializationException
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.decodeFromStream
 import org.koin.core.annotation.Factory
 import org.koin.core.annotation.Named
 import kotlin.uuid.Uuid
@@ -31,20 +26,24 @@ class ImportJsonDataUseCaseImpl(
     @Named("ioDispatcher") private val ioDispatcher: CoroutineDispatcher
 ): ImportJsonDataUseCase {
 
-    @OptIn(ExperimentalSerializationApi::class)
-    override suspend fun invoke(
-        fileUri: String,
-        encrypted: Boolean,
-        password: String?
-    ) {
+    override suspend fun invoke(fileUri: String) {
         withContext(ioDispatcher) {
             try {
-                val json = Json {
-                    ignoreUnknownKeys = true
-                }
-                val backupData = context.contentResolver.openInputStream(fileUri.toUri())?.use {
-                        json.decodeFromStream<JsonBackupData>(it)
-                    } ?: throw BackupDataException.CouldNotReadFile
+                // READ THE TEXT, THEN DECIDE WHETHER IT IS OURS. This used to decode straight
+                // into JsonBackupData, whose five lists all default to empty, so EVERY valid
+                // JSON object decoded successfully: a config file, a contacts dump, the sealed
+                // snapshot's manifest. The import then wrote nothing and the screen said
+                // "Successfully imported data". Somebody could believe their journal was
+                // restored and delete the file it came from.
+                //
+                // The decision itself lives in ContentExportDocument, where it is pure and can
+                // be proved with a string. This method keeps only the parts that need a content
+                // resolver and a database.
+                val text = context.contentResolver.openInputStream(fileUri.toUri())?.use {
+                    it.readBytes().decodeToString()
+                } ?: throw BackupDataException.CouldNotReadFile
+
+                val backupData = ContentExportDocument.parse(text)
 
                 database.withTransaction {
                     val noteFolderIdMap = HashMap<String, String>()
@@ -84,9 +83,10 @@ class ImportJsonDataUseCaseImpl(
                     }
                     database.bookmarkDao().upsertBookmarks(updatedBookmarks)
                 }
-            } catch (_: SerializationException) {
-                throw BackupDataException.CouldNotReadFile
             } catch (e: BackupDataException) {
+                // Kept as its own clause so a refusal reaches the screen with the reason it
+                // carries. Without it, a file that is not an export would be reported as a
+                // generic failure and the person would have no idea which file to pick instead.
                 throw e
             } catch (_: Exception) {
                 throw BackupDataException.GenericError()

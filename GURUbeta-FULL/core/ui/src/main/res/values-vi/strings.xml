@@ -180,8 +180,6 @@
     <string name="importing">Đang nhập....</string>
     <string name="recurring">Định kỳ</string>
     <string name="repeats_every">Lặp lại mỗi</string>
-    <string name="encrypted">Đã mã hóa</string>
-    <string name="password">Mật khẩu</string>
     <string name="every_hour">Mỗi giờ</string>
     <string name="every_minute">Mỗi phút</string>
     <string name="lock_app">Lock app</string>

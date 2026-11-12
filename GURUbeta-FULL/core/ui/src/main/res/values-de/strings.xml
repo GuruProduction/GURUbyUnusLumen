@@ -180,8 +180,6 @@
     <string name="importing">Importiere…</string>
     <string name="recurring">Wiederholend</string>
     <string name="repeats_every">Wiederholt sich alle</string>
-    <string name="encrypted">Verschlüsselt</string>
-    <string name="password">Passwort</string>
     <string name="every_hour">Stündlich</string>
     <string name="every_minute">Jede Minute</string>
     <string name="lock_app">App sperren</string>

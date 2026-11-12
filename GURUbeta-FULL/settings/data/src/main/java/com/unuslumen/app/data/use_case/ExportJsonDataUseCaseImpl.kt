@@ -32,16 +32,17 @@ class ExportJsonDataUseCaseImpl(
         exportTasks: Boolean,
         exportJournal: Boolean,
         exportBookmarks: Boolean,
-        encrypted: Boolean,
-        password: String?
     ) {
         withContext(ioDispatcher) {
             try {
                 val fileName = "guru_Backup_${System.currentTimeMillis()}.json"
                 val pickedDir = DocumentFile.fromTreeUri(context, directoryUri.toUri())
-                    ?: throw BackupDataException.GenericError()
+                    ?: throw BackupDataException.InvalidBackupLocation(directoryUri)
                 val destination = pickedDir.createFile("application/json", fileName)
-                    ?: throw BackupDataException.GenericError()
+                    ?: throw BackupDataException.CouldNotCreateFile(
+                        fileName = fileName,
+                        parent = pickedDir.name ?: directoryUri,
+                    )
 
                 val notes = if (exportNotes) database.noteDao().getAllFullNotes() else emptyList()
                 val noteFolders =
@@ -56,10 +57,20 @@ class ExportJsonDataUseCaseImpl(
                 val backupData = JsonBackupData(notes, noteFolders, tasks, journal, bookmarks)
 
                 val outputStream = context.contentResolver.openOutputStream(destination.uri)
-                    ?: throw BackupDataException.GenericError()
+                    ?: throw BackupDataException.CouldNotWriteFile(
+                        fileName = destination.name ?: fileName,
+                        parent = pickedDir.name ?: directoryUri,
+                    )
 
                 outputStream.use {
-                    Json.encodeToStream(backupData, it)
+                    // ENCODE_DEFAULTS IS LOAD-BEARING, and its absence was a bug waiting to
+                    // happen. Every field of JsonBackupData has an empty default, and with
+                    // defaults omitted an export where the owner chose nothing, or chose only
+                    // content they have none of, serialises to "{}". The import refuses a
+                    // document with none of the five keys, which is correct, but it must not
+                    // refuse a file this app just wrote. Emitting all five keys always keeps
+                    // the writer and the reader agreeing about what a valid export looks like.
+                    EXPORT_JSON.encodeToStream(backupData, it)
                 }
             } catch (e: BackupDataException) {
                 throw e
@@ -67,5 +78,16 @@ class ExportJsonDataUseCaseImpl(
                 throw BackupDataException.GenericError()
             }
         }
+    }
+
+    companion object {
+        /**
+         * The writer's encoder, built once.
+         *
+         * A Json instance carries lookup tables that are expensive to build, so creating one per
+         * export writes the same configuration repeatedly for one file. Held here so the
+         * configuration is stated once and the cost is paid once.
+         */
+        val EXPORT_JSON: Json = Json { encodeDefaults = true }
     }
 }

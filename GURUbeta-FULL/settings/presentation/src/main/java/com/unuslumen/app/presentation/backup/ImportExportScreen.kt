@@ -64,8 +64,6 @@ fun ImportExportScreen(
 ) {
     val backupResult by viewModel.backupResult.collectAsStateWithLifecycle()
 
-    val encrypted by remember { mutableStateOf(false) }
-    val password by remember { mutableStateOf("") }
     var exportNotes by remember { mutableStateOf(true) }
     var exportTasks by remember { mutableStateOf(true) }
     var exportJournal by remember { mutableStateOf(true) }
@@ -116,8 +114,6 @@ fun ImportExportScreen(
                     exportJournal = exportJournal,
                     exportBookmarks = exportBookmarks,
                     format = exportFormat,
-                    encrypted = encrypted,
-                    password = password
                 )
             )
         }
@@ -330,10 +326,8 @@ fun ImportExportScreen(
                             pendingImportPath?.let { path ->
                                 viewModel.onEvent(
                                     BackupEvent.ImportData(
-                                        path,
-                                        importFormat,
-                                        encrypted,
-                                        password
+                                        fileUri = path,
+                                        format = importFormat,
                                     )
                                 )
                             }

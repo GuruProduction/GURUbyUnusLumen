@@ -8,6 +8,13 @@ import com.unuslumen.app.domain.use_case.`interface`.ExportJsonDataUseCase
 import com.unuslumen.app.domain.use_case.`interface`.ExportMarkdownDataUseCase
 import org.koin.core.annotation.Factory
 
+/**
+ * Route a content export to the format the owner chose.
+ *
+ * The parameters are named at every call site rather than passed positionally. Five booleans in
+ * a row can be transposed without the compiler noticing, and a transposition here writes the
+ * wrong tables to a file the owner believes is their whole journal.
+ */
 @Factory
 class ExportDataUseCase(
     private val exportJsonData: ExportJsonDataUseCase,
@@ -16,30 +23,25 @@ class ExportDataUseCase(
     suspend operator fun invoke(
         directoryUri: String,
         exportNotes: Boolean,
-        exportTasks: Boolean ,
+        exportTasks: Boolean,
         exportJournal: Boolean,
         exportBookmarks: Boolean,
         format: BackupFormat,
-        encrypted: Boolean,
-        password: String?,
-    ) = when(format) {
+    ) = when (format) {
         BackupFormat.JSON -> exportJsonData(
-            directoryUri,
-            exportNotes,
-            exportTasks,
-            exportJournal,
-            exportBookmarks,
-            encrypted,
-            password
+            directoryUri = directoryUri,
+            exportNotes = exportNotes,
+            exportTasks = exportTasks,
+            exportJournal = exportJournal,
+            exportBookmarks = exportBookmarks,
         )
+
         BackupFormat.MARKDOWN -> exportMarkdownData(
-            directoryUri,
-            exportNotes,
-            exportTasks,
-            exportJournal,
-            exportBookmarks,
-            encrypted,
-            password
+            directoryUri = directoryUri,
+            exportNotes = exportNotes,
+            exportTasks = exportTasks,
+            exportJournal = exportJournal,
+            exportBookmarks = exportBookmarks,
         )
     }
 }

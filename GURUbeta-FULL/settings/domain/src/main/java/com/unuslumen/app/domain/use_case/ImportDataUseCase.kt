@@ -15,12 +15,14 @@ class ImportDataUseCase(
     suspend operator fun invoke(
         fileUri: String,
         format: BackupFormat,
-        encrypted: Boolean,
-        password: String
     ) = when (format) {
-        BackupFormat.JSON -> importJsonData(fileUri, encrypted, password)
-        BackupFormat.MARKDOWN -> throw BackupDataException.GenericError(
-            details = "Markdown import is not supported",
+        BackupFormat.JSON -> importJsonData(fileUri)
+
+        // Named as its own refusal rather than a generic error. The import picker offers only
+        // JSON, so reaching this is a programming mistake rather than something the owner did,
+        // and the message says which format was asked for so the mistake is visible.
+        BackupFormat.MARKDOWN -> throw BackupDataException.ImportFormatNotSupported(
+            format = BackupFormat.MARKDOWN.name,
         )
     }
 }

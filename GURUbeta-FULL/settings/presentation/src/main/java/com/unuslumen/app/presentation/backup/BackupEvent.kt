@@ -7,13 +7,19 @@ import com.unuslumen.app.domain.model.BackupFormat
 import com.unuslumen.app.domain.model.BackupFrequency
 
 sealed class BackupEvent {
+    /**
+     * Import a content export.
+     *
+     * No passphrase: the import reads exactly what the JSON export writes, which is plaintext.
+     * The pair this carried was never read by anything, and an event that accepts a secret it
+     * cannot use invites a caller to believe the file is sealed when it is not.
+     */
     data class ImportData(
         val fileUri: String,
         val format: BackupFormat,
-        val encrypted: Boolean,
-        val password: String
     ) : BackupEvent()
 
+    /** Export the chosen content as readable JSON or Markdown. Deliberately unsealed. */
     data class ExportData(
         val directoryUri: String,
         val exportNotes: Boolean,
@@ -21,8 +27,6 @@ sealed class BackupEvent {
         val exportJournal: Boolean,
         val exportBookmarks: Boolean,
         val format: BackupFormat,
-        val encrypted: Boolean,
-        val password: String
     ) : BackupEvent()
 
     data class SetAutoBackupEnabled(

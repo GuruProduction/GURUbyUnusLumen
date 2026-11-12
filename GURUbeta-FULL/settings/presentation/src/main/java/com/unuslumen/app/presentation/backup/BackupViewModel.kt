@@ -73,10 +73,8 @@ class BackupViewModel(
     fun onEvent(event: BackupEvent) {
         when (event) {
             is BackupEvent.ImportData -> importDatabase(
-                event.fileUri,
-                event.format,
-                event.encrypted,
-                event.password
+                uri = event.fileUri,
+                format = event.format,
             )
 
             is BackupEvent.ExportData -> exportDatabase(
@@ -86,8 +84,6 @@ class BackupViewModel(
                 exportJournal = event.exportJournal,
                 exportBookmarks = event.exportBookmarks,
                 format = event.format,
-                encrypted = event.encrypted,
-                password = event.password
             )
 
             is BackupEvent.SetAutoBackupEnabled -> {
@@ -219,16 +215,12 @@ class BackupViewModel(
     private fun importDatabase(
         uri: String,
         format: BackupFormat,
-        encrypted: Boolean,
-        password: String
     ) {
         viewModelScope.launch(exceptionHandler) {
             _backupResult.update { BackupResult.Loading }
             importData(
                 fileUri = uri,
                 format = format,
-                encrypted = encrypted,
-                password = password
             )
             _backupResult.update { BackupResult.ImportSuccess }
         }
@@ -241,8 +233,6 @@ class BackupViewModel(
         exportJournal: Boolean,
         exportBookmarks: Boolean,
         format: BackupFormat,
-        encrypted: Boolean,
-        password: String
     ) {
         viewModelScope.launch(exceptionHandler) {
             _backupResult.update { BackupResult.Loading }
@@ -254,8 +244,6 @@ class BackupViewModel(
                 exportJournal = exportJournal,
                 exportBookmarks = exportBookmarks,
                 format = format,
-                encrypted = encrypted,
-                password = password
             )
             _backupResult.update { BackupResult.ExportSuccess }
         }
