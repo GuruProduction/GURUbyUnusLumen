@@ -160,23 +160,19 @@ class DatabaseSnapshotEngine(private val context: Context) {
             foldWalIntoMain(staged)
 
             progress?.invoke("Sealing the snapshot with AES-256-GCM")
+            // The manifest is built from the STAGED DATABASE, not from the staging directory.
+            // Passing the directory produced a manifest describing a folder, which then failed
+            // its own verification on every write. The unit test that asserts a snapshot is
+            // taken at all is what caught it, which is why that test exists.
             val manifest = buildManifest(
                 createdAtMillis = System.currentTimeMillis(),
                 schemaVersion = schemaVersion,
                 counts = counts,
-                staged = staging,
+                stagedDatabase = staged,
                 sourceBytes = source.length(),
             )
 
-            val payload = ByteArrayFile(staged)
-            val payloadEntry = SnapshotFileEntry(
-                name = SnapshotFormat.DATABASE_ENTRY,
-                sizeBytes = staged.length(),
-                sha256 = hashFile(staged),
-            )
-            val files = listOf(payloadEntry)
-
-            val archive = buildArchive(payload, manifest)
+            val archive = buildArchive(ByteArrayFile(staged), manifest)
             val sealed = seal(archive, passphrase)
 
             progress?.invoke("Opening the snapshot again to prove it restores")
@@ -656,17 +652,25 @@ class DatabaseSnapshotEngine(private val context: Context) {
         return ArchiveEntries(manifest, database)
     }
 
+    /**
+     * Describe the seal's content.
+     *
+     * The file's size and hash are taken here, from the file that is about to be sealed, so
+     * the manifest cannot describe a different artefact from the one behind it. They are
+     * also the values a reader re-derives on restore, which is what makes a swapped file
+     * detectable rather than merely suspicious.
+     */
     private fun buildManifest(
         createdAtMillis: Long,
         schemaVersion: Int,
         counts: Map<String, Long>,
-        staged: File,
+        stagedDatabase: File,
         sourceBytes: Long,
     ): SnapshotManifest {
         val entry = SnapshotFileEntry(
             name = SnapshotFormat.DATABASE_ENTRY,
-            sizeBytes = staged.length(),
-            sha256 = hashFile(staged),
+            sizeBytes = stagedDatabase.length(),
+            sha256 = hashFile(stagedDatabase),
         )
         return SnapshotManifest(
             createdAtMillis = createdAtMillis,
