@@ -264,7 +264,7 @@ class BrainBackupDomainExecutor(private val context: Context) : ToolExecutor {
                 }
                 val result = BrainSnapshotResult(
                     success = true,
-                    filePath = outcome.file.absolutePath,
+                    filePath = outcome.file?.absolutePath ?: destination.absolutePath,
                     bytes = outcome.bytes,
                     tables = outcome.manifest.tableRowCounts.size,
                     totalRows = outcome.manifest.totalRows,
@@ -356,7 +356,7 @@ class BrainBackupDomainExecutor(private val context: Context) : ToolExecutor {
 
             is SnapshotExtractOutcome.Extracted -> Unit
         }
-        val manifest = (extract as SnapshotExtractOutcome.Extracted).manifest
+        val manifest = extract.manifest
 
         val install = withContext(Dispatchers.IO) { engine.installStaged(staged) }
         return when (install) {

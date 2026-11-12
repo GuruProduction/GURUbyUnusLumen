@@ -71,15 +71,62 @@ class DatabaseSnapshotEngine(private val context: Context) {
     // ------------------------------------------------------------------
 
     /**
-     * Take a verified, encrypted snapshot into [destination].
+     * Take a verified, encrypted snapshot and write it to [destination].
      *
-     * The order is deliberate: copy, count, seal, re-open the seal and verify it,
-     * then and only then move it to [destination]. A snapshot that cannot be opened
-     * is worse than no snapshot, because it is discovered at the worst possible
-     * moment, so the file the person is given has already been round-tripped.
+     * A thin wrapper over [sealSnapshot] for callers that have a real filesystem path.
+     * Settings hands the owner a Storage Access Framework folder instead, which has no
+     * path and is written through a stream, so the artefact is produced by one method and
+     * stored by whoever owns the destination. That split is why this class has no
+     * knowledge of content resolvers and why the tool and the screen cannot drift.
      */
     suspend fun writeSnapshot(
         destination: File,
+        passphrase: CharArray,
+        progress: ((String) -> Unit)? = null,
+    ): SnapshotWriteOutcome {
+        val outcome = sealSnapshot(passphrase, progress)
+        if (outcome !is SnapshotWriteOutcome.Written) return outcome
+
+        return try {
+            // Written to a sibling first and renamed, so a failure here cannot leave a
+            // half-file at the destination that looks like a valid snapshot.
+            val temp = File(destination.absolutePath + ".partial")
+            temp.parentFile?.mkdirs()
+            temp.writeBytes(outcome.sealed)
+            if (!temp.renameTo(destination)) {
+                temp.copyTo(destination, overwrite = true)
+                temp.delete()
+            }
+            outcome.copy(
+                file = destination,
+                bytes = destination.length(),
+                message = buildString {
+                    append("Snapshot written to ${destination.name} (")
+                    append("${destination.length()} bytes). ")
+                    append(outcome.verification.message)
+                },
+            )
+        } catch (e: Exception) {
+            Log.w("guru_backup", "Snapshot could not be stored at ${destination.absolutePath}: ${e.message}")
+            SnapshotWriteOutcome.Failed(
+                "The snapshot was built and verified but could not be written to " +
+                    "${destination.absolutePath}: ${e.message}.",
+            )
+        }
+    }
+
+    /**
+     * Build, seal and self-verify a snapshot in memory.
+     *
+     * The order is deliberate: copy, count, seal, re-open the seal and verify it, and
+     * only then hand the bytes back. A snapshot that cannot be opened is worse than no
+     * snapshot, because it is discovered at the worst possible moment, so the bytes a
+     * caller stores have already been round-tripped through their own reader.
+     *
+     * The returned [SnapshotWriteOutcome.Written] carries the sealed bytes, which is what
+     * a Storage Access Framework destination needs: a tree URI has no path to rename to.
+     */
+    suspend fun sealSnapshot(
         passphrase: CharArray,
         progress: ((String) -> Unit)? = null,
     ): SnapshotWriteOutcome {
@@ -141,26 +188,14 @@ class DatabaseSnapshotEngine(private val context: Context) {
                 )
             }
 
-            // Written to a sibling first and renamed, so a failure here cannot leave a
-            // half-file at the destination that looks like a valid snapshot.
-            val temp = File(destination.absolutePath + ".partial")
-            temp.parentFile?.mkdirs()
-            temp.writeBytes(sealed)
-            if (!temp.renameTo(destination)) {
-                temp.copyTo(destination, overwrite = true)
-                temp.delete()
-            }
-
             return SnapshotWriteOutcome.Written(
-                file = destination,
+                file = null,
+                sealed = sealed,
+                verification = verification,
                 manifest = manifest,
-                bytes = destination.length(),
+                bytes = sealed.size.toLong(),
                 sealBytes = sealed.size,
-                message = buildString {
-                    append("Snapshot written to ${destination.name} (")
-                    append("${destination.length()} bytes). ")
-                    append(verification.message)
-                },
+                message = verification.message,
             )
         } catch (e: Exception) {
             Log.w("guru_backup", "Snapshot write failed: ${e.message}")
@@ -737,15 +772,45 @@ class DatabaseSnapshotEngine(private val context: Context) {
     }
 }
 
-/** What a snapshot write did. */
+/**
+ * What a snapshot write did.
+ *
+ * [Written.file] is null when the snapshot was sealed but not yet stored, which is the
+ * shape a Storage Access Framework destination needs: it has no path, so the caller
+ * writes [Written.sealed] through a stream and never sees a File.
+ *
+ * [Written.verification] is carried rather than reduced to a sentence because the writer
+ * refuses to store anything that did not verify, so a Written always means the row counts
+ * and hashes already matched. Stating that here means no caller has to re-check.
+ */
 sealed class SnapshotWriteOutcome {
-    data class Written(
-        val file: File,
+    /**
+     * A plain class rather than a data class because it carries a ByteArray.
+     *
+     * A generated equals on an array compares references, so two snapshots of identical
+     * content would be unequal and two references to one would be equal, which is the
+     * wrong answer in both directions. Nothing compares these values, and copy() is
+     * written out by hand so the shape stays a value with a readable modifier.
+     */
+    class Written(
+        val file: File?,
+        val sealed: ByteArray,
+        val verification: SnapshotVerification,
         val manifest: SnapshotManifest,
         val bytes: Long,
         val sealBytes: Int,
         val message: String,
-    ) : SnapshotWriteOutcome()
+    ) : SnapshotWriteOutcome() {
+        fun copy(
+            file: File? = this.file,
+            sealed: ByteArray = this.sealed,
+            verification: SnapshotVerification = this.verification,
+            manifest: SnapshotManifest = this.manifest,
+            bytes: Long = this.bytes,
+            sealBytes: Int = this.sealBytes,
+            message: String = this.message,
+        ): Written = Written(file, sealed, verification, manifest, bytes, sealBytes, message)
+    }
 
     data class Failed(val message: String) : SnapshotWriteOutcome()
 
