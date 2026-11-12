@@ -183,15 +183,17 @@
     <string name="backup_error_invalid_location">Couldn\'t access backup location \"%1$s\"</string>
     <string name="backup_error_create_directory">Couldn\'t create folder \"%1$s\"</string>
     <string name="backup_error_create_file">Couldn\'t create file \"%1$s\"</string>
-    <string name="backup_error_read_file">Couldn\'t read the selected file</string>
+    <string name="backup_error_read_file">Couldn\'t read the selected file. It is not a GURU export, or it is damaged.</string>
+    <!-- A valid JSON document that carries none of the export\'s five lists. Saying so is the
+         difference between "the wrong file" and a generic failure the owner cannot act on. -->
+    <string name="backup_error_not_a_content_export">That file is not a GURU content export. Import accepts the JSON file written by Export data. To restore a sealed brain snapshot, use the whole-brain section below.</string>
+    <string name="backup_error_import_format_not_supported">Importing %1$s files is not supported. Choose JSON, or restore a brain snapshot instead.</string>
     <string name="backup_error_write_file">Couldn\'t write file \"%1$s\"</string>
     <string name="backup_error_generic">Something went wrong while processing the backup data</string>
     <string name="grant_permission_to_export">Grant permission to export</string>
     <string name="importing">Importing....</string>
     <string name="recurring">Recurring</string>
     <string name="repeats_every">Repeats every</string>
-    <string name="encrypted">Encrypted</string>
-    <string name="password">Password</string>
     <string name="every_hour">Every hour</string>
     <string name="every_minute">Every minute</string>
     <string name="lock_app">Lock app</string>

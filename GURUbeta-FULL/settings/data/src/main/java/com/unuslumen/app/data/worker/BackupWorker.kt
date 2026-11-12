@@ -40,8 +40,6 @@ class BackupWorker(
                 exportJournal = true,
                 exportBookmarks = true,
                 format = BackupFormat.JSON,
-                encrypted = false,
-                password = null
             )
             Result.success()
         } catch (_: BackupDataException) {

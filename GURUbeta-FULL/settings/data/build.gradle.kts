@@ -48,6 +48,8 @@ dependencies {
     implementation(project(":tasks:domain"))
     implementation(project(":journal:domain"))
 
+    // No Robolectric or device needed for the export contract: the rejection decision was
+    // extracted into ContentExportDocument precisely so it is a pure function of a string.
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
 

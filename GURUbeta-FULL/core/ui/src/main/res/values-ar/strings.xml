@@ -181,8 +181,6 @@
     <string name="importing">يتم الاستيراد....</string>
     <string name="recurring">متكرر</string>
     <string name="repeats_every">يتكرر كل</string>
-    <string name="encrypted">مشفر</string>
-    <string name="password">كلمة السر</string>
     <string name="every_hour">كل ساعة</string>
     <string name="every_minute">كل دقيقة</string>
     <string name="lock_app">قفل التطبيق</string>

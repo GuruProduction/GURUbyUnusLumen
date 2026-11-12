@@ -180,8 +180,6 @@
     <string name="importing">Импортирование....</string>
     <string name="recurring">Recurring</string>
     <string name="repeats_every">Repeats every</string>
-    <string name="encrypted">Зашифровано</string>
-    <string name="password">Пароль</string>
     <string name="every_hour">Каждый час</string>
     <string name="every_minute">Каждую минуту</string>
     <string name="lock_app">Блокировать приложение</string>

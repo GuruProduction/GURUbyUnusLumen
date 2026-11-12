@@ -42,8 +42,6 @@ class ExportMarkdownDataUseCaseImpl(
         exportTasks: Boolean,
         exportJournal: Boolean,
         exportBookmarks: Boolean,
-        encrypted: Boolean,
-        password: String?
     ) {
         withContext(ioDispatcher) {
             try {

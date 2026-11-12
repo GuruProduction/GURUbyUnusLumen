@@ -23,6 +23,11 @@ fun BackupDataException.toUiMessage(): String = when (this) {
         path(parent, fileName)
     )
     BackupDataException.CouldNotReadFile -> stringResource(R.string.backup_error_read_file)
+    BackupDataException.NotAContentExport -> stringResource(R.string.backup_error_not_a_content_export)
+    is BackupDataException.ImportFormatNotSupported -> stringResource(
+        R.string.backup_error_import_format_not_supported,
+        format
+    )
     is BackupDataException.CouldNotWriteFile -> stringResource(
         R.string.backup_error_write_file,
         path(parent, fileName)
