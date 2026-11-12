@@ -28,6 +28,12 @@ class WebSearchService(
 
     companion object {
         private const val TAG = "WebSearch"
+
+        /** How long a search waits for a circuit before giving up on it. */
+        private const val CIRCUIT_WAIT_MS = 30_000L
+
+        /** How often the wait re-reads Tor's readiness. */
+        private const val CIRCUIT_POLL_MS = 100L
     }
 
     data class SearchResult(
@@ -50,33 +56,52 @@ class WebSearchService(
         }
 
     /**
-     * The proxy to use, or null for a direct connection, or a refusal.
+     * The proxy to use, or null for a direct connection, and whether that is an exposure.
      *
-     * WHAT WAS WRONG. This returned a SOCKS proxy on port 9050 whenever Tor was not ready,
-     * under a log line claiming it was "trying direct". It was not direct: it was a SOCKS
-     * connection to a listener that is not running, which fails every time. So search could
-     * not work at all without a circuit and the message pointing at it was false.
+     * WHAT WAS WRONG, TWICE. This first returned a SOCKS proxy on port 9050 whenever Tor was
+     * not ready, under a log line claiming it was "trying direct". It was not direct: it was a
+     * SOCKS connection to a listener that is not running, which fails every time. Then it
+     * returned a refusal, which told a person to change a setting because a circuit was missing.
      *
-     * Now the posture decides. Tor up means the circuit. Tor down under AUTO or TOR_ONLY is a
-     * refusal with the policy's own sentence. Tor down with clearnet on means a real direct
-     * connection, which is the whole point of the override.
+     * Now it WAITS for the circuit, because Tor is infrastructure that recovers on its own. The
+     * posture still decides one thing: with clearnet on, an unavailable circuit is not a reason
+     * to hold a search, so the override goes direct and says so.
      */
-    private fun proxyOrRefusal(): Triple<Proxy?, String?, Boolean> {
+    private fun proxyForSearch(): Pair<Proxy?, Boolean> {
         val mode = currentEgressMode()
-        if (torManager.isReady.value) return Triple(torManager.getSocksProxy(), null, false)
+        if (awaitCircuit()) return torManager.getSocksProxy() to false
         return when (mode) {
-            com.unuslumen.app.preferences.domain.model.EgressMode.CLEARNET ->
-                Triple(null, null, true)
+            com.unuslumen.app.preferences.domain.model.EgressMode.CLEARNET -> null to true
             com.unuslumen.app.preferences.domain.model.EgressMode.AUTO,
-            com.unuslumen.app.preferences.domain.model.EgressMode.TOR_ONLY ->
-                Triple(
-                    null,
-                    "Tor is not running, so the search was not attempted. Search engines ride " +
-                        "Tor and never fall back to a direct connection. Turn clearnet on with " +
-                        "/clearnet on to allow this, or bring Tor up.",
-                    false,
-                )
+            com.unuslumen.app.preferences.domain.model.EgressMode.TOR_ONLY -> null to false
         }
+    }
+
+    /**
+     * Block, bounded, until Tor is ready, and report whether it is.
+     *
+     * Every caller is already inside `withContext(Dispatchers.IO)`, so blocking costs a worker
+     * thread that has nothing else to do. The rebuild is coalesced by the manager, so a burst of
+     * search attempts produces one recovery rather than one each.
+     */
+    private fun awaitCircuit(): Boolean {
+        if (torManager.isReady.value) return true
+        torManager.requestCircuitRebuildAsync()
+        val deadline = System.currentTimeMillis() + CIRCUIT_WAIT_MS
+        while (System.currentTimeMillis() < deadline) {
+            if (torManager.isReady.value) {
+                Log.i(TAG, "A search waited for a Tor circuit and then proceeded")
+                return true
+            }
+            try {
+                Thread.sleep(CIRCUIT_POLL_MS)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return torManager.isReady.value
+            }
+        }
+        Log.w(TAG, "A search waited ${CIRCUIT_WAIT_MS}ms for a Tor circuit and did not get one")
+        return torManager.isReady.value
     }
 
     /**
@@ -87,11 +112,7 @@ class WebSearchService(
     private fun fetchRawThroughTor(url: String): String? {
         return try {
             Log.d(TAG, "Raw fetch: $url")
-            val (proxy, refusal, unproxied) = proxyOrRefusal()
-            if (refusal != null) {
-                Log.w(TAG, "Refused: $refusal")
-                return null
-            }
+            val (proxy, unproxied) = proxyForSearch()
             if (unproxied) {
                 Log.w(TAG, "Clearnet is on, so this search request goes direct rather than via Tor")
             }
@@ -125,11 +146,7 @@ class WebSearchService(
      * is why this builds the request in one place instead of duplicating it in each fetcher.
      */
     private fun jsoupConnection(url: String): org.jsoup.Connection? {
-        val (proxy, refusal, _) = proxyOrRefusal()
-        if (refusal != null) {
-            Log.w(TAG, "Refused: $refusal")
-            return null
-        }
+        val (proxy, _) = proxyForSearch()
         val connection = Jsoup.connect(url)
             .userAgent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36")
             .ignoreContentType(true)

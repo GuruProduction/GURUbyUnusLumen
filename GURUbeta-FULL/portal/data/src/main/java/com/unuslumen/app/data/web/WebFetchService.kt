@@ -40,6 +40,11 @@ class WebFetchService(
         // is almost certainly JS-rendered and we need to fall back to WebView.
         private const val MIN_CONTENT_LENGTH = 200
 
+        /** How long a public fetch waits for a circuit before reporting the wait. */
+        private const val CIRCUIT_WAIT_MS = 30_000L
+
+        /** How often the wait re-reads Tor's readiness. */
+        private const val CIRCUIT_POLL_MS = 100L
     }
 
     /** Delegates to the pure classifier so the decision is unit testable. */
@@ -52,14 +57,20 @@ class WebFetchService(
      * Issue #215: this used to return the Tor proxies for every URL and an
      * empty list whenever Tor was down. Both were wrong for a local address,
      * and the empty list meant a LAN fetch was never attempted at all. A local
-     * host now gets a single direct attempt, and a public host fails closed.
+     * host gets a single direct attempt.
+     *
+     * A PUBLIC HOST NOW WAITS FOR A CIRCUIT instead of returning an empty list. Returning
+     * nothing made a stopped Tor indistinguishable from an unreachable site, which is the
+     * behaviour the owner rejected: Tor is infrastructure and a fetch should survive a missing
+     * circuit rather than being turned into an error. He only ever sees the wait when the window
+     * actually runs out.
      */
     private fun getProxies(host: String): List<Proxy?> {
-        val torReady = torManager.isReady.value
+        val ready = awaitCircuitIfNeeded(host)
         val decision = EgressClassifier.decide(
             host = host,
             mode = currentEgressMode(),
-            torReady = torReady,
+            torReady = ready,
         )
         return when (decision.route) {
             // A refused decision yields no proxy, and the caller below reports the decision's
@@ -67,7 +78,7 @@ class WebFetchService(
             EgressClassifier.Route.DIRECT ->
                 if (decision.refused) emptyList() else listOf(null)
             EgressClassifier.Route.TOR -> {
-                if (torReady) {
+                if (ready) {
                     listOf(
                         torManager.getProxy(),       // HTTP tunnel port 8118
                         torManager.getSocksProxy(),  // SOCKS port 9050
@@ -77,6 +88,37 @@ class WebFetchService(
                 }
             }
         }
+    }
+
+    /**
+     * Block, bounded, until Tor can carry this host, and report whether it can.
+     *
+     * A LOCAL HOST RETURNS IMMEDIATELY, because a LAN fetch never rides Tor and waiting for a
+     * circuit to reach the router would be the #215 bug wearing a different hat.
+     *
+     * This runs on a background dispatcher (every caller is inside `withContext(Dispatchers.IO)`
+     * or a Jsoup call), so blocking here costs a worker thread that has nothing else to do.
+     */
+    private fun awaitCircuitIfNeeded(host: String): Boolean {
+        if (torManager.isReady.value) return true
+        if (!EgressClassifier.routeForHost(host).equals(EgressClassifier.Route.TOR)) return true
+
+        torManager.requestCircuitRebuildAsync()
+        val deadline = System.currentTimeMillis() + CIRCUIT_WAIT_MS
+        while (System.currentTimeMillis() < deadline) {
+            if (torManager.isReady.value) {
+                Log.i(TAG, "A fetch waited for a Tor circuit and then proceeded")
+                return true
+            }
+            try {
+                Thread.sleep(CIRCUIT_POLL_MS)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return torManager.isReady.value
+            }
+        }
+        Log.w(TAG, "A fetch waited ${CIRCUIT_WAIT_MS}ms for a Tor circuit and did not get one")
+        return torManager.isReady.value
     }
 
     /** The live posture, resolved from the container, falling back to the fail-closed one. */

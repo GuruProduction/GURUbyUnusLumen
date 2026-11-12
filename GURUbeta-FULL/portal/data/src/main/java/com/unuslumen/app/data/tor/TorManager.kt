@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import net.freehaven.tor.control.TorControlConnection
 import org.koin.core.annotation.Single
 import org.torproject.jni.TorService
@@ -45,8 +46,24 @@ class TorManager {
 
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var monitorJob: kotlinx.coroutines.Job? = null
+    private var reactionJob: kotlinx.coroutines.Job? = null
     private lateinit var appContext: Context
     private var started = false
+
+    /**
+     * Serialises rebuilds so concurrent requests do not each fire a NEWNYM.
+     *
+     * WHY THIS EXISTS. During an outage the proxy selector can have dozens of connection
+     * attempts blocked at once, and every one of them wants a circuit. Without coalescing each
+     * fires its own NEWNYM, the daemon throws away the circuit it was halfway through building,
+     * and the outage lasts longer than it needs to. One rebuild in flight is the correct shape:
+     * the first caller drives it and everyone else waits on the result it produces.
+     */
+    private val rebuildMutex = kotlinx.coroutines.sync.Mutex()
+
+    /** The rebuild currently in flight, if any, so callers can await it. */
+    @Volatile
+    private var rebuildInFlight: kotlinx.coroutines.Job? = null
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -76,6 +93,19 @@ class TorManager {
         }
     }
 
+    /**
+     * Watch circuits and react to a loss rather than waiting to notice it twice.
+     *
+     * TWO JOBS, DELIBERATELY SEPARATE.
+     *
+     * The first watches the health flag itself. The moment it drops, recovery starts, so a
+     * circuit that dies between two polls is rebuilt in milliseconds rather than up to a minute
+     * later. That is what keeps a waiting request short instead of the full window.
+     *
+     * The second is the existing 60-second poll. It is the floor for a daemon that has gone
+     * quiet without saying so, because a control connection can fail silently and leave the flag
+     * reading healthy when nothing is actually built.
+     */
     private fun startCircuitMonitor() {
         monitorJob?.cancel()
         monitorJob = applicationScope.launch {
@@ -83,6 +113,15 @@ class TorManager {
                 delay(60_000L)
                 if (!_isReady.value) continue
                 checkCircuitHealth()
+            }
+        }
+        reactionJob?.cancel()
+        reactionJob = applicationScope.launch {
+            _circuitsHealthy.collect { healthy ->
+                if (!healthy && _isReady.value) {
+                    Log.i(TAG, "Circuits reported unhealthy, starting recovery immediately")
+                    requestCircuitRebuildAsync()
+                }
             }
         }
     }
@@ -128,6 +167,76 @@ class TorManager {
         Log.w(TAG, "Circuit recovery failed after $attempts attempts")
         return false
     }
+
+    /**
+     * Start a rebuild if one is not already running, and return the one in flight.
+     *
+     * THE COALESCING POINT. Every caller that wants a circuit calls this and gets back a job it
+     * can await, so a hundred blocked requests produce one NEWNYM and one circuit build rather
+     * than a hundred. Safe to call from any thread, including the proxy selector, which is
+     * synchronous and cannot suspend.
+     */
+    fun requestCircuitRebuildAsync(): kotlinx.coroutines.Job {
+        rebuildInFlight?.takeIf { it.isActive }?.let { return it }
+        synchronized(this) {
+            rebuildInFlight?.takeIf { it.isActive }?.let { return it }
+            val job = applicationScope.launch {
+                try {
+                    rebuildMutex.withLock {
+                        // Re-check inside the lock: another caller may have recovered the circuit
+                        // while this one queued, in which case a NEWNYM now would throw away a
+                        // healthy circuit.
+                        if (!(_circuitsHealthy.value && _isReady.value)) {
+                            Log.i(TAG, "Proactive circuit rebuild starting")
+                            val recovered = requestNewCircuits()
+                            Log.i(TAG, "Proactive circuit rebuild finished, recovered=$recovered")
+                            if (!recovered && !_isReady.value) {
+                                // Tor is off rather than merely circuitless. Restart the
+                                // persistent service so the daemon comes back.
+                                Log.w(TAG, "Tor is not ready after a rebuild, restarting the service")
+                                restartService()
+                            }
+                        }
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "Proactive circuit rebuild failed: ${e.message}")
+                }
+            }
+            rebuildInFlight = job
+            return job
+        }
+    }
+
+    /**
+     * Bring the daemon back after it reported itself off.
+     *
+     * The persistent service is START_STICKY and normally outlives everything, so reaching this
+     * means it was killed or never started: a manual force-stop, an OEM battery killer, or a
+     * crash inside the service. Starting it again is the only recovery available, and it is the
+     * difference between Tor being down until the next app launch and coming back on its own.
+     */
+    private fun restartService() {
+        if (!::appContext.isInitialized) return
+        try {
+            TorPersistentService.start(appContext)
+        } catch (e: Exception) {
+            Log.w(TAG, "Tor service restart failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Whether circuit health is observable at all right now.
+     *
+     * CIRCUIT HEALTH IS A MEASUREMENT, NOT A FACT ABOUT TOR. It comes from
+     * `getInfo("circuit-status")` over the control connection. When that connection is absent
+     * every health check returns false, and false then means "could not ask" rather than "no
+     * circuit". A request must never be held for the full wait window on a Tor that is working,
+     * so the selector distinguishes the two: it requires a healthy circuit when health is
+     * observable, and trusts readiness alone when it is not.
+     */
+    fun canReportCircuitHealth(): Boolean = torService?.torControlConnection != null
 
     fun start(context: Context) {
         if (started) return

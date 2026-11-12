@@ -709,12 +709,11 @@ class AiRepositoryImpl(
     }
 
     /**
-     * The sovereign LLM client. Every HTTP request this app makes to any model
-     * endpoint rides TorEgress: the user's local/LAN endpoints go direct,
-     * everything else goes through Tor, and when Tor is down the request fails
-     * closed instead of leaking clearnet. Built on the TorEgress engine rather
-     * than the bare injected engine so the policy cannot be bypassed by a
-     * future construction site that forgets the selector.
+     * The sovereign LLM client. Every HTTP request this app makes to any model endpoint rides
+     * TorEgress: the user's local/LAN endpoints go direct, everything else goes through Tor, and
+     * a missing circuit is waited for rather than leaked or refused. Built on the TorEgress
+     * engine rather than the bare injected engine so the policy cannot be bypassed by a future
+     * construction site that forgets the selector.
      */
     private fun sharedLongTimeoutClient(): HttpClient = TorEgress.httpClient()
 
@@ -1627,19 +1626,17 @@ class AiRepositoryImpl(
     /**
      * Wait until the outbound path can actually carry a request.
      *
-     * THE COLD-START HALF OF THE REPORTED BUG. TorEgress fails CLOSED: when Tor
-     * is not ready it returns an empty proxy list, so the very first send after
-     * an app restart can leave before the daemon has a circuit and fail with no
-     * request ever reaching the model. Nothing retried it, which is exactly the
-     * "send it over and over until it picks up" behaviour: each attempt is a
-     * fresh roll against Tor's boot time, and the ones that land after the
-     * circuit is up work fine.
+     * THE COLD-START HALF OF THE REPORTED BUG. The very first send after an app restart could
+     * leave before the daemon had a circuit and fail with no request ever reaching the model.
+     * Nothing retried it, which is exactly the "send it over and over until it picks up"
+     * behaviour: each attempt was a fresh roll against Tor's boot time, and the ones that landed
+     * after the circuit was up worked fine.
      *
-     * This holds the send for a bounded window instead of losing it. Local and
-     * LAN endpoints skip the wait entirely because they never ride Tor. The
-     * wait is capped, silent on timeout (the request then fails honestly
-     * through the normal path rather than hanging), and costs nothing at all
-     * when Tor is already up.
+     * Tor is now infrastructure that never fails, so two mechanisms hold a request up rather
+     * than losing it: this function, which gives the daemon a head start before a dispatcher
+     * thread is spent on it, and the proxy selector's own bounded wait, which is where the
+     * request actually blocks until a circuit exists. Local and LAN endpoints skip both, because
+     * they never ride Tor.
      */
     private suspend fun awaitEgressReadiness(provider: AiProvider) {
         val targetHost = when (provider) {
@@ -1676,9 +1673,18 @@ class AiRepositoryImpl(
         val waited = withTimeoutOrNull(60_000L) {
             manager.isReady.first { it }
         }
+        // Tor recovers on its own as well, so reaching the timeout does not lose the request:
+        // the proxy selector blocks for its own bounded window and proceeds the moment a
+        // circuit appears. This wait exists so the send path does not occupy a thread while it
+        // can avoid it, which is why the sentence names the handover rather than a failure that
+        // no longer happens here.
         android.util.Log.i(
             "guru",
-            if (waited == true) "Egress: Tor became ready, sending" else "Egress: Tor still down after 60s, sending anyway to fail honestly"
+            if (waited == true) {
+                "Egress: Tor became ready, sending"
+            } else {
+                "Egress: Tor not ready after 60s; the request will now wait in the proxy selector for its own window"
+            }
         )
     }
 
@@ -2601,8 +2607,8 @@ internal fun AiProvider.getExecutor(key: String, customUrl: String, llModel: LLM
                 val trimmed = customUrl.trimEnd('/')
                 "$trimmed/"
             } else ""
-            // Sovereign egress: Tor for remote, direct for loopback/LAN,
-            // fail-closed when Tor is down.
+            // Sovereign egress: Tor for remote, direct for loopback/LAN, and a
+            // missing circuit is waited for rather than turned into a failure.
             val sharedClient = TorEgress.httpClient()
             if (url.isBlank()) UnusLumenClient(baseClient = sharedClient, timeoutConfig = NO_TIMEOUTS)
             else UnusLumenClient(url, baseClient = sharedClient, timeoutConfig = NO_TIMEOUTS)
@@ -2621,8 +2627,8 @@ internal fun AiProvider.getExecutor(key: String, customUrl: String, llModel: LLM
  * standard /v1/chat/completions wire with full streaming, tool-call and
  * structured-request support; the user's endpoint rides as the base URL
  * and their key as the bearer. The client rides TorEgress: local/LAN
- * endpoints go direct, remote endpoints go through Tor, fail-closed when
- * Tor is down — the rest of the app's socket stack never bypasses policy.
+ * endpoints go direct, remote endpoints go through Tor, and a missing
+ * circuit is waited for, so the app's socket stack never bypasses policy.
  */
 private fun openAICompatExecutor(apiKey: String, userUrl: String): PromptExecutor {
     val trimmed = userUrl.trimEnd('/')

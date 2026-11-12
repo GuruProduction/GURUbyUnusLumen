@@ -167,8 +167,8 @@ object EgressClassifier {
         // Suffixes that only ever name something on the local network. `.local`
         // is mDNS, `.lan` and `.home` are the usual router defaults, and
         // `.home.arpa` is the registered one for home networks.
-        for (suffix in LOCAL_SUFFIXES) {
-            if (h == suffix.removePrefix(".") || h.endsWith(suffix)) return true
+        for (index in LOCAL_SUFFIXES.indices) {
+            if (h == LOCAL_SUFFIXES_BARE[index] || h.endsWith(LOCAL_SUFFIXES[index])) return true
         }
 
         if (h == "host.docker.internal" || h == "gateway.docker.internal") return true
@@ -182,19 +182,39 @@ object EgressClassifier {
      * Letters, digits, hyphen and dot, with no space and no empty label. This
      * is deliberately permissive about what a valid name is and strict about
      * what it is not, because anything rejected here falls through to Tor.
+     *
+     * ALLOCATION-FREE BY CONSTRUCTION. The first version walked `h.split('.')`,
+     * which takes the `String` overload, which compiles a fresh `Pattern` and
+     * allocates a `List` plus a `String` per label. This function sits under
+     * `isLocalName`, which sits under `decide`, which sits under the proxy
+     * selector, which OkHttp calls once per connection attempt AND RETRIES FOR
+     * EVER while it treats a thrown selector as a route failure. That loop is
+     * what OOMed the app: 466 suppressed ProtocolExceptions from one fetch, then
+     * a 32-byte substring failed. Do not put a split, a regex or any other
+     * allocation back into this path.
      */
     private fun isPlausibleHostname(h: String): Boolean {
         if (h.isEmpty() || h.length > 253) return false
-        if (h.any { it.isWhitespace() }) return false
-        for (label in h.split('.')) {
-            if (label.isEmpty()) return false
-            if (label.length > 63) return false
-            for (c in label) {
-                val ok = c.isLetterOrDigit() || c == '-' || c == '_'
-                if (!ok) return false
+        var labelLength = 0
+        var i = 0
+        while (i < h.length) {
+            val c = h[i]
+            when {
+                c == '.' -> {
+                    if (labelLength == 0) return false
+                    labelLength = 0
+                }
+                c.isWhitespace() -> return false
+                c.isLetterOrDigit() || c == '-' || c == '_' -> {
+                    labelLength++
+                    if (labelLength > 63) return false
+                }
+                else -> return false
             }
+            i++
         }
-        return true
+        // A trailing dot leaves the last label empty, which is not a host.
+        return labelLength != 0
     }
 
     private val LOCAL_SUFFIXES = listOf(
@@ -207,6 +227,15 @@ object EgressClassifier {
     )
 
     /**
+     * The bare forms of [LOCAL_SUFFIXES], precomputed once.
+     *
+     * `suffix.removePrefix(".")` was evaluated inside the per-host loop on the
+     * proxy-selector path, which allocated a String per suffix per connection
+     * attempt. Six strings, once, removes that entirely.
+     */
+    private val LOCAL_SUFFIXES_BARE: List<String> = LOCAL_SUFFIXES.map { it.removePrefix(".") }
+
+    /**
      * Parse a dotted-quad strictly.
      *
      * A loose prefix test on `10.` or `192.168.` also matches a hostname like
@@ -215,16 +244,38 @@ object EgressClassifier {
      * as one, and anything else falls through to the name rules.
      */
     private fun parseIpv4(host: String): InetAddress? {
-        val parts = host.split('.')
-        if (parts.size != 4) return null
+        // 255.255.255.255 is 15 characters; anything shorter than 7 is not a quad.
+        if (host.length < 7 || host.length > 15) return null
+
         val octets = IntArray(4)
-        for (i in 0..3) {
-            val part = parts[i]
-            if (part.isEmpty() || part.length > 3) return null
-            val value = part.toIntOrNull() ?: return null
-            if (value !in 0..255) return null
-            octets[i] = value
+        var octetIndex = 0
+        var value = 0
+        var digits = 0
+        var i = 0
+        while (i < host.length) {
+            val c = host[i]
+            if (c == '.') {
+                if (digits == 0 || digits > 3) return null
+                octets[octetIndex] = value
+                octetIndex++
+                if (octetIndex > 3) return null
+                value = 0
+                digits = 0
+            } else {
+                if (c < '0' || c > '9') return null
+                // Leading zeros read as decimal, exactly as `toIntOrNull` did
+                // before this was rewritten. Only the allocation changed, so no
+                // string that was an address before has stopped being one.
+                value = value * 10 + (c - '0')
+                digits++
+                if (digits > 3 || value > 255) return null
+            }
+            i++
         }
+
+        if (octetIndex != 3 || digits == 0 || digits > 3) return null
+        octets[3] = value
+
         return try {
             InetAddress.getByAddress(byteArrayOf(
                 octets[0].toByte(),
@@ -268,16 +319,22 @@ object EgressClassifier {
      *
      *  1. A local or loopback host is DIRECT under every posture, because Tor cannot reach
      *     private space. Asking it to is a guaranteed failure, not a privacy win.
-     *  2. A public host under AUTO or TOR_ONLY rides TOR. With no circuit the request is
-     *     REFUSED rather than sent direct.
+     *  2. A public host under AUTO or TOR_ONLY rides TOR. With no circuit the decision says so
+     *     via [EgressDecision.awaitsCircuit] and the request WAITS for one. It is never sent
+     *     direct and it is never refused, because Tor is infrastructure rather than a feature.
      *  3. A public host under CLEARNET goes DIRECT on the owner's override, and the decision
      *     carries unproxied = true so no caller can report it as private.
      *  4. A credential-bearing path ([forcesTor]) ignores the override entirely and behaves
      *     as TOR_ONLY. A token over his own address identifies him to a service, which is a
      *     different act from fetching a public page, and it is not a trade this command makes.
      *
-     * [torReady] is passed in for the same purity reason, so a test can prove the fail-closed
+     * [torReady] is passed in for the same purity reason, so a test can prove the waiting
      * branch without a Tor daemon.
+     *
+     * THERE IS NO REFUSAL PATH HERE, AND THAT IS THE OWNER'S RULING. An earlier version refused
+     * a public host with no circuit and told the reader to turn clearnet on. He rejected it: a
+     * dead circuit is a bug to recover from, not a condition to hand back. So the no-circuit
+     * case now reports that the request will wait, and the recovery happens behind it.
      */
     fun decide(
         host: String?,
@@ -307,17 +364,18 @@ object EgressClassifier {
                         },
                     )
                 } else {
-                    EgressDecision.refuse(
+                    // WAIT, DO NOT REFUSE. Tor is infrastructure; a missing circuit is a condition
+                    // to recover from. The selector blocks for a bounded window and proceeds the
+                    // moment a circuit exists, and circuits are rebuilt in the background so that
+                    // window is normally short or not needed at all.
+                    EgressDecision.await(
                         mode = mode,
-                        sentence = if (forcesTor) {
-                            "Tor is not running, so ${host ?: "this address"} was not contacted. " +
-                                "This request carries a credential, so it only ever rides Tor and " +
-                                "will not be sent direct even with clearnet on. Bring Tor up."
+                        reason = if (forcesTor) {
+                            "This request carries a credential, so it rides Tor and never goes direct. " +
+                                "Tor has no circuit ready yet, so this waits for one."
                         } else {
-                            "Tor is not running, so ${host ?: "this address"} was not contacted. " +
-                                "Public addresses ride Tor in ${mode.label} and never fall back to a " +
-                                "direct connection. Turn clearnet on with /clearnet on to allow this, " +
-                                "or bring Tor up."
+                            "This is a public address, so it rides Tor. Tor has no circuit ready yet, " +
+                                "so this waits for one rather than falling back to a direct connection."
                         },
                     )
                 }
@@ -337,6 +395,15 @@ object EgressClassifier {
     private val SCHEME_URL = Regex("""[a-zA-Z][a-zA-Z0-9+.\-]*://([^/\s'"\\]+)""")
 
     /**
+     * Whitespace split for shell commands, compiled once.
+     *
+     * This was `command.split(Regex("\\s+"))` inline, so the pattern compiled on
+     * every call. `hostsInCommand` runs under `commandNeedsTor` for every shell
+     * command the app executes.
+     */
+    private val WHITESPACE = Regex("\\s+")
+
+    /**
      * Every host a shell command appears to target.
      *
      * Used to decide whether a `curl` or `wget` in `busyboxExec` needs Tor. The
@@ -354,7 +421,7 @@ object EgressClassifier {
 
         // No scheme, so look for bare addresses: an IPv4 literal or a
         // hostname:port token.
-        for (token in command.split(Regex("\\s+"))) {
+        for (token in command.split(WHITESPACE)) {
             val cleaned = token.trim('"', '\'', '`', ';', '&', '|', ')', '(')
             if (cleaned.isEmpty()) continue
             val withoutPort = cleaned.substringBefore(':')
