@@ -221,6 +221,15 @@ class GitHubClient(
      * Single HTTP path for all REST calls, egress enforced through Tor (fail closed).
      * Returns status code + body + error. Error bodies (rate limits, scope denials)
      * carry to the caller verbatim; never swallowed.
+     *
+     * THIS PATH DELIBERATELY DOES NOT CONSULT EgressPolicy. That is not an oversight and it
+     * must not be "fixed" into consistency later. The policy's clearnet override exists so a
+     * broken exit node stops breaking a public page fetch, which is a privacy trade the owner
+     * may make for public content. A GitHub token is a different thing: sent over his own
+     * address it identifies HIM to GitHub, rather than merely revealing that somebody made a
+     * request. So every call here is Tor or nothing, every posture, and the override cannot
+     * reach it. EgressClassifier.decide models this as forcesTor = true; this class is the
+     * credential case that flag exists for.
      */
     suspend fun apiRequest(
         path: String,

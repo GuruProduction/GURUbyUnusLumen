@@ -62,6 +62,23 @@ class ShellToolExecutor(
     private var rootAvailable: Boolean? = null
     private var hasManageExternalStorage: Boolean? = null
 
+    /**
+     * The live posture, resolved from the container.
+     *
+     * Resolved lazily rather than injected, because this executor is constructed in tests and
+     * in wiring that predates the policy. A missing container means a unit test, and the
+     * fallback is the fail-closed posture, which is the only safe guess.
+     */
+    private fun currentEgressMode(): com.unuslumen.app.preferences.domain.model.EgressMode =
+        try {
+            val policy: com.unuslumen.app.data.tor.EgressPolicy =
+                org.koin.java.KoinJavaComponent.getKoin()
+                    .get(com.unuslumen.app.data.tor.EgressPolicy::class)
+            policy.current()
+        } catch (_: Exception) {
+            com.unuslumen.app.preferences.domain.model.EgressMode.DEFAULT
+        }
+
     private fun hasFullStorageAccess(): Boolean {
         hasManageExternalStorage?.let { return it }
         val granted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) Environment.isExternalStorageManager() else true
@@ -299,14 +316,41 @@ class ShellToolExecutor(
                 return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r))
             }
 
+            // THE POSTURE DECIDES, not a bare check for a live circuit. A command aimed at a
+            // public address is refused under AUTO with no circuit, allowed direct with
+            // clearnet on, and always direct when the command only touches the LAN. This is
+            // the same classifier the rest of the app now uses, so curl cannot disagree with
+            // httpGet about what a public address is.
+            val mode = currentEgressMode()
             if (!torManager.isReady.value) {
+                if (mode != com.unuslumen.app.preferences.domain.model.EgressMode.CLEARNET) {
+                    val r = ShellCommandResult(
+                        -1,
+                        "",
+                        "Tor is not running, so this command was not run. It targets a public address " +
+                            "and public traffic rides Tor in ${mode.label}, so it will not be sent " +
+                            "direct. Turn clearnet on with /clearnet on to allow this, or bring Tor " +
+                            "up. Commands that only touch the local network do not need Tor and are " +
+                            "unaffected.",
+                        false,
+                    )
+                    return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r))
+                }
+
+                // Clearnet is on and there is no circuit, so the command runs with no proxy
+                // variables at all and the result says that it went direct.
+                val fullCommand = "export $caCert $noProxy; " +
+                    "PATH=$symlinkPath:$nativeLibPath:\$PATH; $command"
+                val result = shellExecutor.execute(fullCommand)
+                val note = "This command went direct, not through Tor, because clearnet is on. " +
+                    "Turn it off with /clearnet off to put public commands back through Tor."
                 val r = ShellCommandResult(
-                    -1,
-                    "",
-                    "Tor is not running, so this command was not run. It targets a public address and " +
-                        "public traffic rides Tor, so it will not be sent direct. Commands that only " +
-                        "touch the local network do not need Tor and are unaffected.",
-                    false,
+                    result.exitCode,
+                    result.stdout,
+                    (result.stderr.takeIf { it.isNotBlank() }?.plus("\n") ?: "") + "[$note]",
+                    result.success,
+                    denial = result.denial,
+                    advisory = result.advisory,
                 )
                 return@withContext ToolExecutionResult.success(r, json.encodeToString(ShellCommandResult.serializer(), r))
             }
@@ -414,26 +458,35 @@ class ShellToolExecutor(
         // all, because injecting one for a LAN address is what produced issue 215
         // where a request to the router read as a dead host.
         val needsTor = EgressClassifier.commandNeedsTor(script)
+        val pythonMode = currentEgressMode()
         val torPorts: PythonProvider.TorPorts? = if (needsTor) {
             if (!torManager.isReady.value) {
-                // Fail closed, exactly as curl does. A public script with no
-                // circuit is not run rather than run direct, because a silent
-                // clearnet connection is worse than a refusal.
-                val r = PythonExecResult(
-                    "",
-                    "Tor is not running, so this script was not run. It targets a public " +
-                        "address and public traffic rides Tor, so it will not be sent direct. " +
-                        "A script that only touches the local network is unaffected.",
-                    null,
-                    false,
-                    status = "LAUNCH_FAILED",
-                    reason = "TOR_UNAVAILABLE",
-                )
-                return@withContext ToolExecutionResult.success(r, json.encodeToString(PythonExecResult.serializer(), r))
+                if (pythonMode != com.unuslumen.app.preferences.domain.model.EgressMode.CLEARNET) {
+                    // Fail closed under a Tor posture. A public script with no circuit is not
+                    // run rather than run direct, because a silent clearnet connection is worse
+                    // than a refusal that names the way out.
+                    val r = PythonExecResult(
+                        "",
+                        "Tor is not running, so this script was not run. It targets a public " +
+                            "address and public traffic rides Tor in ${pythonMode.label}, so it " +
+                            "will not be sent direct. Turn clearnet on with /clearnet on to allow " +
+                            "this, or bring Tor up. A script that only touches the local network is " +
+                            "unaffected.",
+                        null,
+                        false,
+                        status = "LAUNCH_FAILED",
+                        reason = "TOR_UNAVAILABLE",
+                    )
+                    return@withContext ToolExecutionResult.success(r, json.encodeToString(PythonExecResult.serializer(), r))
+                }
+                // Clearnet is on and there is no circuit: run with no proxy variables, which is
+                // a real direct connection. null tells PythonProvider to inject nothing.
+                null
+            } else {
+                val socksPort = (torManager.getSocksProxy().address() as? InetSocketAddress)?.port ?: 9050
+                val httpPort = (torManager.getProxy().address() as? InetSocketAddress)?.port ?: 8118
+                PythonProvider.TorPorts(socksPort, httpPort)
             }
-            val socksPort = (torManager.getSocksProxy().address() as? InetSocketAddress)?.port ?: 9050
-            val httpPort = (torManager.getProxy().address() as? InetSocketAddress)?.port ?: 8118
-            PythonProvider.TorPorts(socksPort, httpPort)
         } else {
             null
         }
