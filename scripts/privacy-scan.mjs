@@ -221,6 +221,24 @@ function isStructuralFalsePositive(line, match, index) {
   // Rule 2: explicitly a version rather than a host.
   if (/(?:version|ver\.?|v|build)\s*$/i.test(before)) return true;
 
+  /**
+   * Rule 3: a browser version inside a user-agent string.
+   *
+   * WHY THIS IS NEEDED AND WHY IT IS SAFE. `Chrome/131.0.0.0` is a version number, and a
+   * dotted quad with a trailing .0 is not a routable host: the last octet of a real address
+   * is never written as a run of four identical digits in a UA. Every user agent in this
+   * codebase triggered this rule, which means the gate would refuse any change that touches
+   * a fetch path, and a gate that always fires is a gate people learn to bypass.
+   *
+   * The excuse is deliberately narrow. It requires a known product token immediately before
+   * the number AND a four-part version ending in .0, so a real host written after one of
+   * those tokens still has to look like an address to be excused, and it does not.
+   */
+  if (/(?:Chrome|CriOS|Firefox|FxiOS|Safari|Version|Edg|OPR|SamsungBrowser)\//.test(before)) {
+    const octets = match.split(".");
+    if (octets.length === 4 && octets[3] === "0") return true;
+  }
+
   return false;
 }
 
