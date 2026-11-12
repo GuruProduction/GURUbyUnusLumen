@@ -321,8 +321,21 @@ class SsdpDiscoveryManager(
     private fun fetchDeviceDescription(usn: String, location: String) {
         try {
             val url = URL(location)
-            val connection = url.openConnection() as HttpURLConnection
+
+            // THE LOCATION HEADER IS THE DEVICE'S OWN CHOICE, NOT OURS. This used to fetch
+            // whatever URL a device advertised with no check at all, so a device on the network
+            // could hand GURU a public address and have it fetched from the device's real one.
+            // A description belongs on this network, so anything else is refused outright rather
+            // than classified and routed: this path has no business reaching the internet.
+            if (!com.unuslumen.app.data.tor.EgressClassifier.isLocalName(url.host)) {
+                Log.d(TAG, "Description for $usn is not on this network, refusing to fetch it")
+                return
+            }
+
+            val connection = url.openConnection(java.net.Proxy.NO_PROXY) as HttpURLConnection
             connection.requestMethod = "GET"
+            connection.connectTimeout = 3000
+            connection.readTimeout = 3000
 
             val responseCode = connection.responseCode
             if (responseCode != 200) {

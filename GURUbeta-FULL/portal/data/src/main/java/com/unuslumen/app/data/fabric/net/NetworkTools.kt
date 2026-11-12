@@ -339,10 +339,27 @@ class NetworkToolExecutor(
     }
 
     private fun httpProbe(address: String, port: Int): ToolExecutionResult {
+        // A PROBE IS FOR A DEVICE ON THIS NETWORK, AND IT SAYS SO. This used to open a
+        // connection to any address it was handed, unproxied, so asking it about a public host
+        // sent the request from the device's own address with no decision behind it. A probe
+        // aimed off this network is refused rather than quietly answered.
+        if (!com.unuslumen.app.data.tor.EgressClassifier.isLocalName(address)) {
+            val r = HostProbeResult(
+                success = false,
+                address = address,
+                port = port,
+                error = "$address is not on this network, so nothing was sent to it. This tool " +
+                    "asks devices on the local network what they are; a public host is not one " +
+                    "of them.",
+            )
+            return emitPayload(json, json.encodeToString(HostProbeResult.serializer(), r), r, false, r.error)
+        }
+
         val result = runCatching {
             val scheme = if (port == 443 || port == 8443) "https" else "http"
-            val connection = java.net.URL("$scheme://$address:$port/").openConnection()
-                as java.net.HttpURLConnection
+            // An explicit NO_PROXY, because an omitted proxy defers to the JVM default.
+            val connection = java.net.URL("$scheme://$address:$port/")
+                .openConnection(java.net.Proxy.NO_PROXY) as java.net.HttpURLConnection
             try {
                 connection.connectTimeout = 3000
                 connection.readTimeout = 3000
