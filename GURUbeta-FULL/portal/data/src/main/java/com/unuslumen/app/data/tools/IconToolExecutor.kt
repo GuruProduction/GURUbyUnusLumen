@@ -98,8 +98,8 @@ class IconToolExecutor(private val context: Context) : ToolExecutor {
         }
 
         try {
-            // TorEgress.httpClient() installs the fail-closed proxy selector:
-            // Tor ready = through the circuit, Tor down = clear refusal.
+            // TorEgress.httpClient() installs the sovereign proxy selector: local goes direct,
+            // public rides the circuit, and a missing circuit is waited for rather than refused.
             val client = TorEgress.httpClient()
             val bytes = client.use { c ->
                 c.get(url).bodyAsBytes()

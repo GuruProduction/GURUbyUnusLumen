@@ -48,7 +48,7 @@ object EgressHttp {
         val parsed = try {
             URL(url)
         } catch (_: Exception) {
-            return refused(mode, "That is not a usable URL, so nothing was sent: $url")
+            return unavailable(mode, "That is not a usable URL, so nothing was sent: $url")
         }
 
         val decision = EgressClassifier.decide(
@@ -58,15 +58,19 @@ object EgressHttp {
             forcesTor = forcesTor,
         )
 
-        decision.refusal?.let { return Outcome.Refused(it, decision) }
-
-        // A Tor route with no proxy is impossible, because the decision above already
-        // refused. This is the belt to that braces: a future edit to the classifier must not
-        // be able to turn a Tor route into a silent direct dial.
+        // A Tor route with no proxy cannot be dialled, and this factory has no way to wait:
+        // it is synchronous, it holds no TorManager, and its callers ask it to build a
+        // connection rather than to hold one. So the caller gets the sentence and can retry.
+        //
+        // A CALLER THAT CAN WAIT SHOULD. The proxy selector does, for every OkHttp path, which
+        // is why a missing circuit is a delay rather than an error in the chat and web tools.
+        // This branch exists for the plain-URL callers that predate that and cannot block.
         if (decision.route == EgressClassifier.Route.TOR && torProxy == null) {
-            return refused(
+            return unavailable(
                 mode,
-                "Tor is not running and this request is classified for Tor, so it was not attempted.",
+                "Tor has no circuit ready yet, so this request was not sent. It rides Tor by " +
+                    "policy and will never fall back to a direct connection. Try again once Tor " +
+                    "has a circuit; nothing here needs a setting changed.",
             )
         }
 
@@ -94,8 +98,8 @@ object EgressHttp {
         return Outcome.Connected(connection, decision)
     }
 
-    private fun refused(mode: EgressMode, sentence: String): Outcome.Refused =
-        Outcome.Refused(sentence, EgressDecision.refuse(mode = mode, sentence = sentence))
+    private fun unavailable(mode: EgressMode, sentence: String): Outcome.Refused =
+        Outcome.Refused(sentence, EgressDecision.unavailable(mode = mode, sentence = sentence))
 
     /** Either a routed, usable connection or the sentence that stopped it. */
     sealed interface Outcome {

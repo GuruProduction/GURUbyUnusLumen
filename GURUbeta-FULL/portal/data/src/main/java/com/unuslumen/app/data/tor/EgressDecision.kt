@@ -26,7 +26,23 @@ data class EgressDecision(
     val unproxied: Boolean,
     /** Why this route, in one clause a caller can put in a result. */
     val reason: String,
-    /** The sentence to report instead of running, or null when the request may run. */
+    /**
+     * True when the request must be held until a circuit exists rather than sent now.
+     *
+     * THIS IS NOT A REFUSAL AND MUST NOT BE REPORTED AS ONE. The owner's ruling is that Tor is
+     * infrastructure which never fails, so a public request with no circuit waits for one instead
+     * of being handed back as an error. The selector blocks for a bounded window on the strength
+     * of this flag.
+     */
+    val awaitsCircuit: Boolean = false,
+    /**
+     * The sentence to report instead of running, or null when the request may run.
+     *
+     * NOTHING IN THE CLASSIFIER PRODUCES THIS ANY MORE, because there is no host-and-posture
+     * combination that refuses. It is kept as the one channel for a genuinely torn state that
+     * cannot be waited out, so that the selector has a single place to raise it rather than
+     * constructing sentences inline.
+     */
     val refusal: String? = null,
 ) {
     /** True when the request must not proceed because no acceptable route exists. */
@@ -50,6 +66,20 @@ data class EgressDecision(
         )
 
         /**
+         * A public host whose circuit is not ready yet, to be waited for rather than refused.
+         *
+         * The route stays TOR because that is where it will go once a circuit exists, and
+         * unproxied stays false because it will never be sent direct.
+         */
+        fun await(mode: EgressMode, reason: String): EgressDecision = EgressDecision(
+            route = EgressClassifier.Route.TOR,
+            mode = mode,
+            unproxied = false,
+            reason = reason,
+            awaitsCircuit = true,
+        )
+
+        /**
          * A public host allowed out direct because the owner overrode the default.
          *
          * The only constructor that sets [unproxied], so there is exactly one place the
@@ -62,8 +92,16 @@ data class EgressDecision(
             reason = reason,
         )
 
-        /** A request the policy will not run, with the sentence that explains why. */
-        fun refuse(mode: EgressMode, sentence: String): EgressDecision = EgressDecision(
+        /**
+         * A request that could not be carried and could not be waited for either.
+         *
+         * THIS IS NOT THE MISSING-CIRCUIT CASE, and that distinction is the whole point. A
+         * missing circuit is [await]ed, because Tor recovers and a request should survive that.
+         * This constructor is for a caller that has already waited, or that holds no way to
+         * wait at all, and still has nothing to dial. It is deliberately not reachable from
+         * [EgressClassifier.decide], so no host-and-posture combination can refuse.
+         */
+        fun unavailable(mode: EgressMode, sentence: String): EgressDecision = EgressDecision(
             route = EgressClassifier.Route.TOR,
             mode = mode,
             unproxied = false,

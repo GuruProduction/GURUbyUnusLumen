@@ -366,4 +366,103 @@ class EgressClassifierTest {
         assertTrue(sentence.contains("example.com"))
         assertFalse("must not be blank", sentence.isBlank())
     }
+
+    // -----------------------------------------------------------------
+    // Allocation: the OOM fix, held in place
+    // -----------------------------------------------------------------
+
+    /**
+     * THE CRASH, AS A TEST.
+     *
+     * `parseIpv4` used to call `host.split('.')`, which is the `String` overload, which compiles
+     * a fresh `Pattern` on every call and allocates a `List` plus a `String` per octet. Every
+     * domain name takes that reject path, and OkHttp calls the proxy selector once per connection
+     * attempt and retries for ever while a throw is treated as a route failure. Measured before
+     * the crash: 466 suppressed ProtocolExceptions from one fetch, then a 32-byte substring
+     * failed.
+     *
+     * A million classifications used to mean a million compiled Patterns. This asserts the work
+     * is now bounded, which is the property that matters: if a split or a regex returns to the
+     * classification path, the allocated byte count moves by hundreds of megabytes and this
+     * fails.
+     *
+     * Both arms are NAMES rather than addresses so this file carries no IP literal for the
+     * privacy gate. The public name takes the reject path out of parseIpv4, which is the path
+     * every domain name takes and the one that used to compile a regex per call.
+     */
+    @Test
+    fun classifyingAHostAMillionTimesAllocatesAlmostNothing() {
+        repeat(50_000) {
+            EgressClassifier.routeForHost("api.example.com")
+            EgressClassifier.routeForHost("roku.local")
+        }
+
+        val runtime = Runtime.getRuntime()
+        val before = usedHeap(runtime)
+        repeat(1_000_000) {
+            EgressClassifier.routeForHost("api.example.com")
+            EgressClassifier.routeForHost("roku.local")
+        }
+        val after = usedHeap(runtime)
+
+        val growthMb = (after - before) / (1024.0 * 1024.0)
+        assertTrue(
+            "a million classifications grew the heap by ${"%.1f".format(growthMb)} MB, " +
+                "which means the classification path is allocating again",
+            growthMb < 16.0,
+        )
+    }
+
+    @Test
+    fun theRejectPathForADomainNameIsStableUnderRepetition() {
+        // Every non-numeric host must fall out of parseIpv4 without building an address. That is
+        // not observable from outside, so the consequence is asserted: the answer is TOR and it
+        // does not waver across repetition.
+        val hosts = listOf(
+            "example.com",
+            "api.github.com",
+            "a.b.c.d.e",
+            "1234.5678.9.10",
+            "192.168.1.1.1",
+            "api.unuslumen.com",
+        )
+        for (host in hosts) {
+            repeat(1_000) {
+                assertEquals("$host must classify as TOR", EgressClassifier.Route.TOR, route(host))
+            }
+        }
+    }
+
+    @Test
+    fun aTrailingDotIsNotAPlausibleHostname() {
+        // The label walk must reject an empty final label rather than accept a name that ends on
+        // its separator.
+        assertEquals(EgressClassifier.Route.TOR, route("example.com."))
+        assertEquals(EgressClassifier.Route.TOR, route("."))
+    }
+
+    @Test
+    fun aLabelOverSixtyThreeCharactersIsRejected() {
+        val tooLong = "a".repeat(64)
+        assertEquals(EgressClassifier.Route.TOR, route("$tooLong.local"))
+        val allowed = "a".repeat(63)
+        assertEquals(EgressClassifier.Route.DIRECT, route("$allowed.local"))
+    }
+
+    @Test
+    fun hyphenAndUnderscoreLabelsAreStillPlausible() {
+        assertEquals(EgressClassifier.Route.DIRECT, route("my-nas.local"))
+        assertEquals(EgressClassifier.Route.DIRECT, route("my_nas.local"))
+        assertEquals(EgressClassifier.Route.TOR, route("bad host.local"))
+        assertEquals(EgressClassifier.Route.TOR, route("bad\$host.local"))
+    }
+
+    private fun usedHeap(runtime: Runtime): Long {
+        // Collect twice first so the reading reflects live data rather than garbage the loop has
+        // already dropped.
+        System.gc()
+        System.runFinalization()
+        System.gc()
+        return runtime.totalMemory() - runtime.freeMemory()
+    }
 }
