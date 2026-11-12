@@ -322,26 +322,26 @@
         that never touches those paths because the limit is a ceiling rather than
         a reservation.
     -->
+    <!--
+        android:allowBackup is TRUE, because false switches off BOTH routes and only one
+        of them should be off.
+
+        One boolean cannot express "never to a cloud, yes over a cable". While it is false
+        the data-extraction rules below are never consulted at all, so the device-transfer
+        decision this app wants to make cannot be made.
+
+        So the blanket switch is on and the rules do the real work: cloud-backup excludes
+        every domain, device-transfer includes the database, shared prefs and files. The
+        privacy promise is held where it can be stated per route, by rules that name the
+        domains, rather than by a boolean that cannot tell the two routes apart. A cloud
+        backup of the brain still cannot happen.
+
+        fullBackupContent stays false because it governs the older mechanism below Android
+        12, which only ever fed cloud backup; allowing it would open a cloud path on those
+        versions for no benefit.
+    -->
     <application
         android:name=".GuruApplication"
-        <!--
-            android:allowBackup — TRUE, because false switches off BOTH routes and only
-            one of them should be off.
-
-            One boolean cannot express "never to a cloud, yes over a cable". While it is
-            false the data-extraction rules below are never consulted at all, so the
-            device-transfer decision this app wants to make cannot be made.
-
-            So the blanket switch is on and the rules do the real work: cloud-backup
-            excludes every domain, device-transfer includes the database, shared prefs and
-            files. The privacy promise is held where it can be stated per route, by rules
-            that name the domains, rather than by a boolean that cannot tell the two routes
-            apart. A cloud backup of the brain still cannot happen.
-
-            fullBackupContent stays false because it governs the older mechanism below
-            Android 12, which only ever fed cloud backup; allowing it would open a cloud
-            path on those versions for no benefit.
-        -->
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:enableOnBackInvokedCallback="true"
