@@ -55,7 +55,30 @@ object EgressClassifier {
         address.isSiteLocalAddress -> Route.DIRECT
         isCarrierGradeNat(address) -> Route.DIRECT
         isUniqueLocalIpv6(address) -> Route.DIRECT
+        // The "this host" block and the benchmarking range some VPN clients use internally.
+        // Neither can be routed on the public internet, so asking Tor to reach one fails in
+        // exactly the silent way a private address does. These two rules came from LocalRoute,
+        // which owned them before it delegated here, and dropping them made the this-host
+        // address resolve as public and get handed to the proxy.
+        isThisHostBlock(address) -> Route.DIRECT
+        isBenchmarkingRange(address) -> Route.DIRECT
         else -> Route.TOR
+    }
+
+    /** The "this host" block: any address whose first octet is zero. */
+    private fun isThisHostBlock(address: InetAddress): Boolean {
+        val bytes = address.address
+        if (bytes.size != 4) return false
+        return bytes[0].toInt() == 0
+    }
+
+    /** The benchmarking range, which some VPN clients use internally. */
+    private fun isBenchmarkingRange(address: InetAddress): Boolean {
+        val bytes = address.address
+        if (bytes.size != 4) return false
+        val first = bytes[0].toInt() and 0xFF
+        val second = bytes[1].toInt() and 0xFF
+        return first == 198 && (second == 18 || second == 19)
     }
 
     /** 100.64.0.0/10, used by Tailscale and by several mobile carriers. */
