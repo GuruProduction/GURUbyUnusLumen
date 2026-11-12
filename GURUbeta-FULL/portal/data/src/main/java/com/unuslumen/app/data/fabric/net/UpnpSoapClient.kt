@@ -127,8 +127,29 @@ class UpnpSoapClient(
     ): Result<String> = withContext(Dispatchers.IO) {
         val envelope = buildEnvelope(service.serviceType, action, arguments)
 
+        // THE CONTROL URL CAME FROM THE DEVICE, SO IT IS CHECKED BEFORE USE. This used to post
+        // to whatever URL the description named, unproxied and unclassified, which meant a
+        // device could point GURU at a public host and have a SOAP POST sent from the device's
+        // own address. A control endpoint belongs on this network; anything else is refused.
+        val parsed = runCatching { URL(service.controlUrl) }.getOrNull()
+            ?: return@withContext Result.failure(
+                IllegalStateException("${service.controlUrl} is not a URL."),
+            )
+        if (!com.unuslumen.app.data.tor.EgressClassifier.isLocalName(parsed.host)) {
+            return@withContext Result.failure(
+                IllegalStateException(
+                    "${service.shortName} named a control URL that is not on this network, so " +
+                        "nothing was sent to it. A UPnP endpoint is expected to be a local " +
+                        "device, and reaching the internet from a control path is never what " +
+                        "was asked for.",
+                ),
+            )
+        }
+
         val connection = runCatching {
-            URL(service.controlUrl).openConnection() as HttpURLConnection
+            // An explicit NO_PROXY, because an omitted proxy defers to the JVM default and a
+            // default selector installed anywhere would silently re-route this.
+            parsed.openConnection(java.net.Proxy.NO_PROXY) as HttpURLConnection
         }.getOrNull()
             ?: return@withContext Result.failure(
                 IllegalStateException("Could not reach ${service.controlUrl}."),

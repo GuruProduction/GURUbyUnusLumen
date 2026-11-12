@@ -3,6 +3,7 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.data.tor
 
+import com.unuslumen.app.preferences.domain.model.EgressMode
 import java.net.InetAddress
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
@@ -54,7 +55,30 @@ object EgressClassifier {
         address.isSiteLocalAddress -> Route.DIRECT
         isCarrierGradeNat(address) -> Route.DIRECT
         isUniqueLocalIpv6(address) -> Route.DIRECT
+        // The "this host" block and the benchmarking range some VPN clients use internally.
+        // Neither can be routed on the public internet, so asking Tor to reach one fails in
+        // exactly the silent way a private address does. These two rules came from LocalRoute,
+        // which owned them before it delegated here, and dropping them made the this-host
+        // address resolve as public and get handed to the proxy.
+        isThisHostBlock(address) -> Route.DIRECT
+        isBenchmarkingRange(address) -> Route.DIRECT
         else -> Route.TOR
+    }
+
+    /** The "this host" block: any address whose first octet is zero. */
+    private fun isThisHostBlock(address: InetAddress): Boolean {
+        val bytes = address.address
+        if (bytes.size != 4) return false
+        return bytes[0].toInt() == 0
+    }
+
+    /** The benchmarking range, which some VPN clients use internally. */
+    private fun isBenchmarkingRange(address: InetAddress): Boolean {
+        val bytes = address.address
+        if (bytes.size != 4) return false
+        val first = bytes[0].toInt() and 0xFF
+        val second = bytes[1].toInt() and 0xFF
+        return first == 198 && (second == 18 || second == 19)
     }
 
     /** 100.64.0.0/10, used by Tailscale and by several mobile carriers. */
@@ -226,6 +250,83 @@ object EgressClassifier {
             InetAddress.getByName(host)
         } catch (_: Exception) {
             null
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // The decision, posture included
+    // ---------------------------------------------------------------------
+
+    /**
+     * The full decision for one host under one posture. THIS IS WHAT EVERY OUTBOUND PATH CALLS.
+     *
+     * WHY THE POSTURE IS AN ARGUMENT RATHER THAN A READ. It keeps this object pure, so the
+     * whole truth table is provable on the JVM with no device, no DataStore and no Tor. The
+     * live posture comes from EgressPolicy, which the caller consults and passes in.
+     *
+     * THE RULES, and every combination of host and posture is one of them:
+     *
+     *  1. A local or loopback host is DIRECT under every posture, because Tor cannot reach
+     *     private space. Asking it to is a guaranteed failure, not a privacy win.
+     *  2. A public host under AUTO or TOR_ONLY rides TOR. With no circuit the request is
+     *     REFUSED rather than sent direct.
+     *  3. A public host under CLEARNET goes DIRECT on the owner's override, and the decision
+     *     carries unproxied = true so no caller can report it as private.
+     *  4. A credential-bearing path ([forcesTor]) ignores the override entirely and behaves
+     *     as TOR_ONLY. A token over his own address identifies him to a service, which is a
+     *     different act from fetching a public page, and it is not a trade this command makes.
+     *
+     * [torReady] is passed in for the same purity reason, so a test can prove the fail-closed
+     * branch without a Tor daemon.
+     */
+    fun decide(
+        host: String?,
+        mode: EgressMode,
+        torReady: Boolean,
+        forcesTor: Boolean = false,
+    ): EgressDecision {
+        if (isLocalName(host)) {
+            return EgressDecision.direct(
+                mode = mode,
+                reason = "This address is on the device or on the local network, which Tor cannot " +
+                    "reach, so it goes direct.",
+            )
+        }
+
+        val effective = if (forcesTor) EgressMode.TOR_ONLY else mode
+
+        return when (effective) {
+            EgressMode.AUTO, EgressMode.TOR_ONLY -> {
+                if (torReady) {
+                    EgressDecision.tor(
+                        mode = mode,
+                        reason = if (forcesTor) {
+                            "This request carries a credential, so it rides Tor and never goes direct."
+                        } else {
+                            "This is a public address, so it rides Tor."
+                        },
+                    )
+                } else {
+                    EgressDecision.refuse(
+                        mode = mode,
+                        sentence = if (forcesTor) {
+                            "Tor is not running, so ${host ?: "this address"} was not contacted. " +
+                                "This request carries a credential, so it only ever rides Tor and " +
+                                "will not be sent direct even with clearnet on. Bring Tor up."
+                        } else {
+                            "Tor is not running, so ${host ?: "this address"} was not contacted. " +
+                                "Public addresses ride Tor in ${mode.label} and never fall back to a " +
+                                "direct connection. Turn clearnet on with /clearnet on to allow this, " +
+                                "or bring Tor up."
+                        },
+                    )
+                }
+            }
+
+            EgressMode.CLEARNET -> EgressDecision.clearnetOverride(
+                "This is a public address and clearnet is on, so this request went direct on the " +
+                    "device's own connection rather than through Tor.",
+            )
         }
     }
 

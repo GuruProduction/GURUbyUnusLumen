@@ -117,30 +117,62 @@ class MediaToolExecutor(
         ToolExecutionResult.success(r, json.encodeToString(GifSearchResult.serializer(), r))
     }
 
+    /** The live posture, resolved from the container, falling back to the fail-closed one. */
+    private fun currentEgressMode(): com.unuslumen.app.preferences.domain.model.EgressMode =
+        try {
+            val policy: com.unuslumen.app.data.tor.EgressPolicy =
+                org.koin.java.KoinJavaComponent.getKoin()
+                    .get(com.unuslumen.app.data.tor.EgressPolicy::class)
+            policy.current()
+        } catch (_: Exception) {
+            com.unuslumen.app.preferences.domain.model.EgressMode.DEFAULT
+        }
+
+    /**
+     * Download a GIF under the owner's egress posture.
+     *
+     * This used to refuse with "Cannot download over clearnet" whenever there was no circuit,
+     * naming no way out, even though a GIF is public content carrying no credential. It now
+     * takes the same decision as every other public fetch, and reports when a download went
+     * direct so the caller is never told a public download was private.
+     */
     private suspend fun gifDownload(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         val url = args["url"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'url'")
         val filename = args["filename"] as? String ?: "gif"
-        if (!torManager.isReady.value) {
-            val r = GifDownloadResult(success = false, path = null, error = "Tor is not running. Cannot download over clearnet.")
-            return@withContext ToolExecutionResult.success(r, json.encodeToString(GifDownloadResult.serializer(), r))
+
+        val torProxy = if (torManager.isReady.value) torManager.getSocksProxy() else null
+        val outcome = com.unuslumen.app.data.tor.EgressHttp.open(
+            url = url,
+            mode = currentEgressMode(),
+            torProxy = torProxy,
+            method = "GET",
+        )
+        val connected = when (outcome) {
+            is com.unuslumen.app.data.tor.EgressHttp.Outcome.Refused -> {
+                val r = GifDownloadResult(success = false, path = null, error = outcome.sentence)
+                return@withContext ToolExecutionResult.success(r, json.encodeToString(GifDownloadResult.serializer(), r))
+            }
+            is com.unuslumen.app.data.tor.EgressHttp.Outcome.Connected -> outcome
         }
-        var conn: HttpURLConnection? = null
+        val conn = connected.connection
         try {
             val dir = java.io.File(context.filesDir, "gifs")
             dir.mkdirs()
             val file = java.io.File(dir, "${filename}_${System.currentTimeMillis()}.gif")
-            val proxy = torManager.getSocksProxy()
-            conn = (URL(url).openConnection(proxy) as HttpURLConnection)
-            conn.requestMethod = "GET"
             conn.instanceFollowRedirects = true
             conn.inputStream.use { input -> FileOutputStream(file).use { output -> input.copyTo(output) } }
-            val r = if (file.exists() && file.length() > 0) GifDownloadResult(success = true, path = file.absolutePath, error = null)
-            else GifDownloadResult(success = false, path = null, error = "Downloaded file is empty")
+            val exposure = com.unuslumen.app.data.tor.EgressHttp.exposureNote(connected.decision)
+                .takeIf { it.isNotEmpty() }
+            val r = if (file.exists() && file.length() > 0) {
+                GifDownloadResult(success = true, path = file.absolutePath, error = exposure)
+            } else {
+                GifDownloadResult(success = false, path = null, error = "Downloaded file is empty")
+            }
             ToolExecutionResult.success(r, json.encodeToString(GifDownloadResult.serializer(), r))
         } catch (e: Exception) {
             val r = GifDownloadResult(success = false, path = null, error = "Download error: ${e.message}")
             ToolExecutionResult.success(r, json.encodeToString(GifDownloadResult.serializer(), r))
-        } finally { conn?.disconnect() }
+        } finally { conn.disconnect() }
     }
 
     private suspend fun memeSearch(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {

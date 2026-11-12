@@ -54,19 +54,40 @@ class WebFetchService(
      * and the empty list meant a LAN fetch was never attempted at all. A local
      * host now gets a single direct attempt, and a public host fails closed.
      */
-    private fun getProxies(host: String): List<Proxy?> =
-        when (EgressClassifier.routeForHost(host)) {
-            EgressClassifier.Route.DIRECT -> listOf(null)
+    private fun getProxies(host: String): List<Proxy?> {
+        val torReady = torManager.isReady.value
+        val decision = EgressClassifier.decide(
+            host = host,
+            mode = currentEgressMode(),
+            torReady = torReady,
+        )
+        return when (decision.route) {
+            // A refused decision yields no proxy, and the caller below reports the decision's
+            // own sentence rather than inventing one.
+            EgressClassifier.Route.DIRECT ->
+                if (decision.refused) emptyList() else listOf(null)
             EgressClassifier.Route.TOR -> {
-                if (!torManager.isReady.value) {
-                    emptyList()
-                } else {
+                if (torReady) {
                     listOf(
                         torManager.getProxy(),       // HTTP tunnel port 8118
                         torManager.getSocksProxy(),  // SOCKS port 9050
                     )
+                } else {
+                    emptyList()
                 }
             }
+        }
+    }
+
+    /** The live posture, resolved from the container, falling back to the fail-closed one. */
+    private fun currentEgressMode(): com.unuslumen.app.preferences.domain.model.EgressMode =
+        try {
+            val policy: com.unuslumen.app.data.tor.EgressPolicy =
+                org.koin.java.KoinJavaComponent.getKoin()
+                    .get(com.unuslumen.app.data.tor.EgressPolicy::class)
+            policy.current()
+        } catch (_: Exception) {
+            com.unuslumen.app.preferences.domain.model.EgressMode.DEFAULT
         }
 
     private fun hostOf(url: String): String? = try {
@@ -85,25 +106,33 @@ class WebFetchService(
     private fun tryFetchWithProxies(url: String, maxLength: Int): FetchResult {
         val host = hostOf(url)
         val route = EgressClassifier.routeForHost(host)
+        val decision = EgressClassifier.decide(
+            host = host,
+            mode = currentEgressMode(),
+            torReady = torManager.isReady.value,
+        )
         val proxies = host?.let { getProxies(it) } ?: emptyList()
 
-        // A public host with no Tor circuit is a refusal, not a network fact.
-        // Reporting it as one used to make a stopped Tor look like a dead site.
+        // A refusal is a posture decision, not a network fact, and it carries the policy's own
+        // sentence. Reporting it as a network failure used to make a stopped Tor look like a
+        // dead site.
+        decision.refusal?.let { sentence ->
+            return FetchResult(
+                url = url,
+                title = "",
+                content = "",
+                success = false,
+                error = sentence,
+            )
+        }
+
         if (proxies.isEmpty()) {
             return FetchResult(
                 url = url,
                 title = "",
                 content = "",
                 success = false,
-                error = EgressClassifier.failureSentence(
-                    host ?: url,
-                    null,
-                    route,
-                    java.net.ProtocolException("Tor is not ready"),
-                ).let {
-                    "Tor is not running, so $url was not fetched. Public pages ride Tor and never fall " +
-                        "back to a direct connection."
-                },
+                error = "$url was not fetched because no route to it was available.",
             )
         }
 
@@ -198,19 +227,25 @@ class WebFetchService(
         // old code forced every URL through the SOCKS listener and a LAN host
         // cannot be reached that way. This returned a black page for a device
         // that was answering perfectly well.
-        val route = EgressClassifier.routeForHost(hostOf(url))
-        if (route == EgressClassifier.Route.TOR && !torManager.isReady.value) {
+        val webViewDecision = EgressClassifier.decide(
+            host = hostOf(url),
+            mode = currentEgressMode(),
+            torReady = torManager.isReady.value,
+        )
+        webViewDecision.refusal?.let { sentence ->
             return@withContext FetchResult(
                 url = url,
                 title = "",
                 content = "",
                 success = false,
-                error = "Tor is not running, so $url was not loaded in the WebView. " +
-                    "Public pages ride Tor and never fall back to a direct connection.",
+                error = sentence,
             )
         }
 
-        val proxyController = if (route == EgressClassifier.Route.TOR) {
+        // THE DECISION, NOT THE STATIC ROUTE. Keying this on routeForHost meant a public page
+        // under the clearnet posture still had a Tor proxy override installed, so the override
+        // did nothing for the WebView fallback even though it worked for the Jsoup path.
+        val proxyController = if (webViewDecision.route == EgressClassifier.Route.TOR) {
             if (WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
                 ProxyController.getInstance()
             } else {

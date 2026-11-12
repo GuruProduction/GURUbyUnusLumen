@@ -28,7 +28,6 @@ class WebSearchService(
 
     companion object {
         private const val TAG = "WebSearch"
-        private const val SOCKS_PORT = 9050
     }
 
     data class SearchResult(
@@ -40,36 +39,66 @@ class WebSearchService(
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    private fun getSocksProxy(): Proxy {
-        return if (torManager.isReady.value) {
-            torManager.getSocksProxy()
-        } else {
-            Log.w(TAG, "TorManager not ready, trying direct SOCKS5 on port $SOCKS_PORT")
-            Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", SOCKS_PORT))
+    private fun currentEgressMode(): com.unuslumen.app.preferences.domain.model.EgressMode =
+        try {
+            val policy: com.unuslumen.app.data.tor.EgressPolicy =
+                org.koin.java.KoinJavaComponent.getKoin()
+                    .get(com.unuslumen.app.data.tor.EgressPolicy::class)
+            policy.current()
+        } catch (_: Exception) {
+            com.unuslumen.app.preferences.domain.model.EgressMode.DEFAULT
         }
-    }
 
-    private fun getSocksPort(): Int {
-        return if (torManager.isReady.value) {
-            torManager.getSocksProxy().let {
-                val addr = it.address() as? InetSocketAddress
-                addr?.port ?: SOCKS_PORT
-            }
-        } else {
-            SOCKS_PORT
+    /**
+     * The proxy to use, or null for a direct connection, or a refusal.
+     *
+     * WHAT WAS WRONG. This returned a SOCKS proxy on port 9050 whenever Tor was not ready,
+     * under a log line claiming it was "trying direct". It was not direct: it was a SOCKS
+     * connection to a listener that is not running, which fails every time. So search could
+     * not work at all without a circuit and the message pointing at it was false.
+     *
+     * Now the posture decides. Tor up means the circuit. Tor down under AUTO or TOR_ONLY is a
+     * refusal with the policy's own sentence. Tor down with clearnet on means a real direct
+     * connection, which is the whole point of the override.
+     */
+    private fun proxyOrRefusal(): Triple<Proxy?, String?, Boolean> {
+        val mode = currentEgressMode()
+        if (torManager.isReady.value) return Triple(torManager.getSocksProxy(), null, false)
+        return when (mode) {
+            com.unuslumen.app.preferences.domain.model.EgressMode.CLEARNET ->
+                Triple(null, null, true)
+            com.unuslumen.app.preferences.domain.model.EgressMode.AUTO,
+            com.unuslumen.app.preferences.domain.model.EgressMode.TOR_ONLY ->
+                Triple(
+                    null,
+                    "Tor is not running, so the search was not attempted. Search engines ride " +
+                        "Tor and never fall back to a direct connection. Turn clearnet on with " +
+                        "/clearnet on to allow this, or bring Tor up.",
+                    false,
+                )
         }
     }
 
     /**
-     * Fetch raw response body through Tor using HttpURLConnection.
+     * Fetch raw response body routed by the posture, using HttpURLConnection.
      * Returns the exact response body as a string — no HTML wrapping, no parsing.
      * Use this for JSON endpoints where Jsoup would corrupt the response.
      */
     private fun fetchRawThroughTor(url: String): String? {
         return try {
             Log.d(TAG, "Raw fetch: $url")
-            val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", getSocksPort()))
-            val conn = (URL(url).openConnection(proxy) as HttpURLConnection)
+            val (proxy, refusal, unproxied) = proxyOrRefusal()
+            if (refusal != null) {
+                Log.w(TAG, "Refused: $refusal")
+                return null
+            }
+            if (unproxied) {
+                Log.w(TAG, "Clearnet is on, so this search request goes direct rather than via Tor")
+            }
+            val conn = when (proxy) {
+                null -> URL(url).openConnection(Proxy.NO_PROXY) as HttpURLConnection
+                else -> URL(url).openConnection(proxy) as HttpURLConnection
+            }
             conn.requestMethod = "GET"
             conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36")
             conn.setRequestProperty("Accept", "*/*")
@@ -89,19 +118,31 @@ class WebSearchService(
     }
 
     /**
-     * Fetch URL content through Tor using Jsoup.
-     * Jsoup handles HTTPS through SOCKS proxies properly, unlike HttpURLConnection.
+     * A Jsoup connection routed by the posture.
+     *
+     * Jsoup REJECTS A NULL PROXY rather than defaulting to direct, so a clearnet request must
+     * leave the proxy off the connection entirely rather than be handed null. That distinction
+     * is why this builds the request in one place instead of duplicating it in each fetcher.
      */
+    private fun jsoupConnection(url: String): org.jsoup.Connection? {
+        val (proxy, refusal, _) = proxyOrRefusal()
+        if (refusal != null) {
+            Log.w(TAG, "Refused: $refusal")
+            return null
+        }
+        val connection = Jsoup.connect(url)
+            .userAgent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36")
+            .ignoreContentType(true)
+            .ignoreHttpErrors(true)
+            .followRedirects(true)
+        if (proxy != null) connection.proxy(proxy)
+        return connection
+    }
+
     private fun fetchThroughTor(url: String): String? {
         return try {
             Log.d(TAG, "Fetching: $url")
-            val doc = Jsoup.connect(url)
-                .userAgent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36")
-                .proxy(getSocksProxy())
-                .ignoreContentType(true)
-                .ignoreHttpErrors(true)
-                .followRedirects(true)
-                .get()
+            val doc = jsoupConnection(url)?.get() ?: return null
             Log.d(TAG, "Got response from $url — ${doc.body().text().length} chars")
             doc.html()
         } catch (e: Exception) {
@@ -113,13 +154,7 @@ class WebSearchService(
     private fun fetchHtmlThroughTor(url: String): org.jsoup.nodes.Document? {
         return try {
             Log.d(TAG, "Fetching HTML: $url")
-            val doc = Jsoup.connect(url)
-                .userAgent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36")
-                .proxy(getSocksProxy())
-                .ignoreContentType(true)
-                .ignoreHttpErrors(true)
-                .followRedirects(true)
-                .get()
+            val doc = jsoupConnection(url)?.get() ?: return null
             Log.d(TAG, "Got HTML from $url")
             doc
         } catch (e: Exception) {

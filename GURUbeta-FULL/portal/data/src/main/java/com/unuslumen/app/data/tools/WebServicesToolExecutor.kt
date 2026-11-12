@@ -10,9 +10,8 @@ import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.unuslumen.app.preferences.domain.model.EgressMode
 import kotlinx.serialization.json.Json
-import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
@@ -38,28 +37,65 @@ class WebServicesToolExecutor(
         else -> ToolExecutionResult.error("Unknown tool: $toolName")
     }
 
-    private fun fetchThroughTor(url: String): Pair<String?, String?> {
-        if (!torManager.isReady.value) {
-            return Pair(null, "Tor is not running. Cannot fetch over clearnet.")
+    /**
+     * The live posture, resolved from the container.
+     *
+     * Resolved lazily rather than injected, because this executor is constructed in places
+     * that predate the policy and adding a constructor parameter would mean touching every
+     * one of them for a value that only needs reading. A missing container means a unit test,
+     * and the fallback is the fail-closed posture, which is the only safe guess.
+     */
+    private fun currentEgressMode(): EgressMode =
+        try {
+            val policy: com.unuslumen.app.data.tor.EgressPolicy =
+                org.koin.java.KoinJavaComponent.getKoin()
+                    .get(com.unuslumen.app.data.tor.EgressPolicy::class)
+            policy.current()
+        } catch (_: Exception) {
+            EgressMode.DEFAULT
         }
-        var conn: HttpURLConnection? = null
+
+    /**
+     * Fetch a URL under the owner's egress posture.
+     *
+     * WHAT WAS WRONG. This refused outright whenever Tor was not ready, with a message saying
+     * it could not fetch "over clearnet", as though Tor were the only route that existed. So
+     * weather, RSS, blog watch and every other caller here failed when a circuit had not
+     * built, whatever the target was, and the owner had no way to say "fetch this one
+     * directly".
+     *
+     * The route now comes from the one classifier. Private and loopback go direct because Tor
+     * cannot reach them; a public host rides Tor under AUTO and is refused without a circuit;
+     * and the clearnet posture lets a public request go direct with that fact reported.
+     */
+    private fun fetchThroughTor(url: String): Pair<String?, String?> {
+        val torProxy = if (torManager.isReady.value) torManager.getSocksProxy() else null
+        val outcome = com.unuslumen.app.data.tor.EgressHttp.open(
+            url = url,
+            mode = currentEgressMode(),
+            torProxy = torProxy,
+            method = "GET",
+        )
+
+        val connection = when (outcome) {
+            is com.unuslumen.app.data.tor.EgressHttp.Outcome.Refused -> return Pair(null, outcome.sentence)
+            is com.unuslumen.app.data.tor.EgressHttp.Outcome.Connected -> outcome.connection
+        }
+
         return try {
-            val proxy = torManager.getSocksProxy()
-            conn = (URL(url).openConnection(proxy) as HttpURLConnection)
-            conn.requestMethod = "GET"
-            conn.instanceFollowRedirects = true
-            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            connection.instanceFollowRedirects = true
+            connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+            val body = connection.inputStream.bufferedReader().use { it.readText() }
             Pair(body, null)
         } catch (e: Exception) {
             try {
-                val errorBody = conn?.errorStream?.bufferedReader()?.use { it.readText() }
+                val errorBody = connection.errorStream?.bufferedReader()?.use { it.readText() }
                 Pair(null, "Fetch failed: ${e.message}" + (errorBody?.let { " — $it" } ?: ""))
             } catch (_: Exception) {
                 Pair(null, "Fetch failed: ${e.message}")
             }
         } finally {
-            conn?.disconnect()
+            connection.disconnect()
         }
     }
 
@@ -221,24 +257,46 @@ class WebServicesToolExecutor(
 
     private suspend fun urlExpand(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         val url = args["url"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'url'")
-        if (!torManager.isReady.value) {
-            val r = UrlResult(success = false, original = url, shortened = null, error = "Tor is not running.")
-            return@withContext ToolExecutionResult.success(r, json.encodeToString(UrlResult.serializer(), r))
+
+        // The same posture as every other fetch. A public URL under AUTO with no circuit is
+        // refused with the policy's own sentence rather than a bare "Tor is not running", and
+        // a clearnet posture lets it through and says that it did.
+        val torProxy = if (torManager.isReady.value) torManager.getSocksProxy() else null
+        val outcome = com.unuslumen.app.data.tor.EgressHttp.open(
+            url = url,
+            mode = currentEgressMode(),
+            torProxy = torProxy,
+            method = "HEAD",
+        )
+        val connected = when (outcome) {
+            is com.unuslumen.app.data.tor.EgressHttp.Outcome.Refused -> {
+                val r = UrlResult(success = false, original = url, shortened = null, error = outcome.sentence)
+                return@withContext ToolExecutionResult.success(r, json.encodeToString(UrlResult.serializer(), r))
+            }
+            is com.unuslumen.app.data.tor.EgressHttp.Outcome.Connected -> outcome
         }
-        var conn: HttpURLConnection? = null
+        val conn = connected.connection
+
         try {
-            val proxy = torManager.getSocksProxy()
-            conn = (URL(url).openConnection(proxy) as HttpURLConnection)
-            conn.requestMethod = "HEAD"
             conn.instanceFollowRedirects = true
             val finalUrl = conn.url.toString()
-            val r = UrlResult(success = true, original = url, shortened = finalUrl, error = null)
+            // A PUBLIC REQUEST THAT WENT UNPROXIED SAYS SO, in the field a model reads for a
+            // caveat. Concatenating onto the JSON body would have produced invalid JSON, and
+            // the caveat belongs beside the answer rather than buried inside it.
+            val exposure = com.unuslumen.app.data.tor.EgressHttp.exposureNote(connected.decision)
+                .takeIf { it.isNotEmpty() }
+            val r = UrlResult(
+                success = true,
+                original = url,
+                shortened = finalUrl,
+                error = exposure,
+            )
             ToolExecutionResult.success(r, json.encodeToString(UrlResult.serializer(), r))
         } catch (e: Exception) {
             val r = UrlResult(success = false, original = url, shortened = null, error = "URL expansion failed: ${e.message}")
             ToolExecutionResult.success(r, json.encodeToString(UrlResult.serializer(), r))
         } finally {
-            conn?.disconnect()
+            conn.disconnect()
         }
     }
 

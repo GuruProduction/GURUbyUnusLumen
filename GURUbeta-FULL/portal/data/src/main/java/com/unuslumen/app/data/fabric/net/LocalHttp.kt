@@ -95,8 +95,10 @@ object LocalHttp {
         timeoutMillis: Int = 4000,
         maxBodyChars: Int = MAX_BODY_CHARS,
     ): Outcome {
-        val resolution = LocalRoute.routeFor(host)
-        if (resolution.route == LocalRoute.Route.TOR) {
+        // ONE CLASSIFIER, NOT TWO. This asked LocalRoute, which carried its own copy of the
+        // address rules; two copies drift the moment one is edited, and the copy the app runs
+        // would be the one nothing tests. EgressClassifier is the single answer.
+        if (!com.unuslumen.app.data.tor.EgressClassifier.isLocalName(host)) {
             // A local-device path must never reach the public internet, directly or through
             // Tor. Refusing here keeps a mistyped address from becoming a silent privacy leak.
             return Outcome.NoAnswer(

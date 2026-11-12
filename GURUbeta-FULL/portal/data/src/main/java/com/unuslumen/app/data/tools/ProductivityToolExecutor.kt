@@ -42,6 +42,17 @@ class ProductivityToolExecutor(
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    /** The live posture, resolved from the container, falling back to the fail-closed one. */
+    private fun currentEgressMode(): com.unuslumen.app.preferences.domain.model.EgressMode =
+        try {
+            val policy: com.unuslumen.app.data.tor.EgressPolicy =
+                org.koin.java.KoinJavaComponent.getKoin()
+                    .get(com.unuslumen.app.data.tor.EgressPolicy::class)
+            policy.current()
+        } catch (_: Exception) {
+            com.unuslumen.app.preferences.domain.model.EgressMode.DEFAULT
+        }
+
     override suspend fun execute(toolName: String, args: Map<String, Any?>): ToolExecutionResult = when (toolName) {
         ProductivityToolDefinitions.TRELLO_LOGIN -> trelloLogin(args)
         ProductivityToolDefinitions.NOTION_LOGIN -> notionLogin(args)
@@ -59,7 +70,16 @@ class ProductivityToolExecutor(
 
     // ─────────────────────────── HTTP over Tor ───────────────────────────
 
-    /** Status, body, transport error. Fails closed when Tor is down, reporting so. */
+    /**
+     * Status, body, transport error. Fails closed when Tor is down, reporting so.
+     *
+     * THIS PATH CARRIES SEALED CREDENTIALS, SO IT IS TOR OR NOTHING, and that is deliberate
+     * rather than an inconsistency with the other tools. Every caller here sends a Trello key
+     * and token or a Notion integration secret. Over his own address those identify HIM to the
+     * service, which is a different act from fetching a public page, so the clearnet override
+     * must never reach this method. EgressClassifier.decide models exactly this as
+     * forcesTor = true, and the test suite holds that rule.
+     */
     private suspend fun fetch(
         url: String,
         method: String = "GET",
@@ -94,20 +114,34 @@ class ProductivityToolExecutor(
     }
 
     /**
-     * Binary fetch over Tor for image payloads. Reads raw bytes (never a text
-     * Reader, which corrupts binary data), decodes errors as text separately.
+     * Binary fetch for an anonymous render service, routed by the posture.
+     *
+     * NO CREDENTIAL TRAVELS HERE. This posts diagram source to kroki.io, a public render
+     * service, so it is public content rather than an authenticated call, and it honours the
+     * same override as any other public fetch: Tor when there is a circuit, a refusal under
+     * AUTO with none, and a real direct connection with clearnet on.
+     *
+     * Reads raw bytes, never a text Reader, which corrupts binary data, and decodes errors as
+     * text separately.
      */
     private suspend fun fetchBinary(
         url: String,
         headers: Map<String, String>,
         bodyContent: String
     ): Pair<ByteArray?, String?> = withContext(Dispatchers.IO) {
-        if (!torManager.isReady.value) {
-            return@withContext Pair(null, "Tor is not running. This request never rides clearnet on GURU — bring Tor up and call again.")
+        val torProxy = if (torManager.isReady.value) torManager.getSocksProxy() else null
+        val outcome = com.unuslumen.app.data.tor.EgressHttp.open(
+            url = url,
+            mode = currentEgressMode(),
+            torProxy = torProxy,
+            method = "POST",
+        )
+        val connection = when (outcome) {
+            is com.unuslumen.app.data.tor.EgressHttp.Outcome.Refused ->
+                return@withContext Pair(null, outcome.sentence)
+            is com.unuslumen.app.data.tor.EgressHttp.Outcome.Connected -> outcome.connection
         }
-        var connection: HttpURLConnection? = null
         try {
-            connection = URL(url).openConnection(torManager.getSocksProxy()) as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("User-Agent", "GURU-by-UnusLumen/1.0")
             headers.forEach { (name, value) -> connection.setRequestProperty(name, value) }
@@ -123,7 +157,7 @@ class ProductivityToolExecutor(
         } catch (e: Exception) {
             Pair(null, e.message ?: "network failure")
         } finally {
-            connection?.disconnect()
+            connection.disconnect()
         }
     }
 
@@ -521,11 +555,11 @@ class ProductivityToolExecutor(
         val filename = (args["filename"] as? String)?.takeIf { it.isNotBlank() } ?: "diagram"
 
         if (code.isBlank()) return@withContext ToolExecutionResult.error("Blank mermaid code passed to diagramCreate.")
-        if (!torManager.isReady.value) {
-            return@withContext ToolExecutionResult.error(
-                "Diagram rendering rides Tor (the render service is reached only through the Tor network). Bring Tor up and retry."
-            )
-        }
+        // THE PRE-CHECK IS GONE ON PURPOSE. It refused whenever there was no circuit, which made
+        // the clearnet override meaningless for this tool even though nothing confidential
+        // travels here: the request is public diagram source going to a public render service.
+        // fetchBinary now makes the decision and reports the policy's own sentence when it
+        // refuses, so there is one answer rather than two that can disagree.
         val rendered = fetchBinary(
             "https://kroki.io/mermaid/$formatClean",
             headers = mapOf("Content-Type" to "text/plain"),

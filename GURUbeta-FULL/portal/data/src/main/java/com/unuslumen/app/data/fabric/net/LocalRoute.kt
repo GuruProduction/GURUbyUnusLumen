@@ -3,11 +3,12 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.data.fabric.net
 
+import com.unuslumen.app.data.tor.EgressClassifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
-import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.Proxy
 import java.net.Socket
 import java.net.URL
 
@@ -96,51 +97,37 @@ object LocalRoute {
      * The ranges are the ones that genuinely cannot be routed on the internet, which is what
      * makes sending them to Tor pointless rather than merely slow.
      */
-    fun isLocalAddress(address: InetAddress): Boolean {
-        if (address.isLoopbackAddress) return true
-        if (address.isLinkLocalAddress) return true
-        if (address.isSiteLocalAddress) return true
-        if (!(address is Inet4Address)) return false
-
-        val bytes = address.address
-        val a = bytes[0].toInt() and 0xFF
-        val b = bytes[1].toInt() and 0xFF
-
-        // CGNAT, 100.64.0.0/10, which Tailscale and some carriers use for local peers.
-        if (a == 100 && b in 64..127) return true
-        // 0.0.0.0/8, the "this host" block.
-        if (a == 0) return true
-        // 198.18.0.0/15, the benchmarking range some VPN clients use internally.
-        if (a == 198 && (b == 18 || b == 19)) return true
-        return false
-    }
+    fun isLocalAddress(address: InetAddress): Boolean =
+        EgressClassifier.routeForAddress(address) == EgressClassifier.Route.DIRECT
 
     data class Resolution(val route: Route, val address: InetAddress?, val problem: String?)
 
     /**
-     * Open an HTTP connection to a host, bypassing the proxy when the host is local.
+     * Open an HTTP connection to a host ON THIS NETWORK, or refuse it.
      *
-     * THIS IS THE METHOD EVERY LOCAL TOOL SHOULD USE. It sets the JVM's proxy to DIRECT for a
-     * local host rather than relying on NO_PROXY, because NO_PROXY matches the literal string a
-     * caller passes: a hostname resolving to a private address would still be sent to the proxy
-     * and fail with the same silent 000.
+     * THIS METHOD USED TO LEAK. It classified the host, and for a public one it returned
+     * `parsed.openConnection()` with no proxy at all — under a comment claiming the system
+     * proxy was Tor. Nothing in this app installs a default ProxySelector, so that branch was a
+     * direct clearnet connection, and every caller inherited it: the scanner's identity fetches,
+     * the UPnP description fetch, the SOAP descriptions.
+     *
+     * It is now a local-only path and says so. A public host is refused rather than silently
+     * sent out unproxied, because anything that needs the internet should be asking EgressHttp,
+     * which makes the routing decision with the owner's posture rather than guessing.
+     *
+     * The classification itself now delegates to [EgressClassifier], so there is one set of
+     * address rules in the app rather than two that can drift apart.
      */
-    @Suppress("DEPRECATION")
     fun open(url: String): HttpURLConnection? = runCatching {
         val parsed = URL(url)
-        val resolution = routeFor(parsed.host)
-        if (resolution.route == Route.DIRECT) {
-            // A direct connection for this one call, without disturbing any global setting.
-            java.net.Proxy.NO_PROXY
+        if (EgressClassifier.isLocalName(parsed.host)) {
+            // An explicit NO_PROXY, because an omitted proxy defers to the JVM default and a
+            // default selector would silently re-route this.
+            parsed.openConnection(Proxy.NO_PROXY) as HttpURLConnection
         } else {
-            // The system proxy, which is Tor, is what a public request must use.
+            // A public host does not belong on a local-device path. Returning null makes the
+            // caller report a refusal instead of receiving a working clearnet connection.
             null
-        }.let { proxy ->
-            if (proxy == null) {
-                parsed.openConnection() as HttpURLConnection
-            } else {
-                parsed.openConnection(proxy) as HttpURLConnection
-            }
         }
     }.getOrNull()
 
