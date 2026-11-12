@@ -10,8 +10,10 @@ import com.unuslumen.app.domain.model.BackupFormat
 import com.unuslumen.app.domain.model.BackupFrequency
 import com.unuslumen.app.domain.repository.BackupScheduler
 import com.unuslumen.app.domain.repository.FileUtilsRepository
+import com.unuslumen.app.domain.use_case.CreateBrainSnapshotUseCase
 import com.unuslumen.app.domain.use_case.ExportDataUseCase
 import com.unuslumen.app.domain.use_case.ImportDataUseCase
+import com.unuslumen.app.domain.use_case.RestoreBrainSnapshotUseCase
 import com.unuslumen.app.preferences.PrefsConstants
 import com.unuslumen.app.preferences.domain.model.PrefsKey
 import com.unuslumen.app.preferences.domain.model.PrefsKey.BooleanKey
@@ -39,10 +41,15 @@ class BackupViewModel(
     private val getPreference: GetPreferenceUseCase,
     private val backupScheduler: BackupScheduler,
     private val fileUtilsRepository: FileUtilsRepository,
+    private val createBrainSnapshot: CreateBrainSnapshotUseCase,
+    private val restoreBrainSnapshot: RestoreBrainSnapshotUseCase,
 ) : ViewModel() {
 
     private val _backupResult = MutableStateFlow<BackupResult>(BackupResult.Idle)
     val backupResult: StateFlow<BackupResult> = _backupResult
+
+    private val _brainSnapshot = MutableStateFlow(BrainSnapshotUiState.Idle)
+    val brainSnapshot: StateFlow<BrainSnapshotUiState> = _brainSnapshot
 
     private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
         val backupError = throwable as? BackupDataException ?: BackupDataException.GenericError()
@@ -113,6 +120,62 @@ class BackupViewModel(
                     rescheduleBackup()
                 }
             }
+        }
+    }
+
+    /**
+     * Take a brain snapshot into the folder the owner just picked.
+     *
+     * The keep limit is fixed at five rather than exposed as a control. Five is enough that
+     * a mistake noticed a month later still has a snapshot behind it, and the alternative is
+     * another setting the owner has to reason about for a feature they press once per phone.
+     */
+    fun createSnapshot(folderUri: String, passphrase: String) {
+        viewModelScope.launch {
+            _brainSnapshot.value = BrainSnapshotUiState(busy = true)
+            val outcome = createBrainSnapshot(folderUri, passphrase, keep = SNAPSHOT_KEEP)
+            _brainSnapshot.value = BrainSnapshotUiState(
+                busy = false,
+                succeeded = outcome.succeeded,
+                message = if (outcome.succeeded) {
+                    buildString {
+                        append("Saved ${outcome.fileName} (${outcome.bytes} bytes) and verified it ")
+                        append("restores: ${outcome.totalRows} rows across ${outcome.tables} tables.")
+                        if (outcome.prunedCount > 0) {
+                            append(" Removed ${outcome.prunedCount} older snapshot(s).")
+                        }
+                    }
+                } else {
+                    outcome.message
+                },
+            )
+        }
+    }
+
+    /**
+     * Restore the brain from a snapshot file the owner picked.
+     *
+     * A successful restore ends by telling the owner to restart GURU, and that is not
+     * softened: Room holds the old database open until the process dies, so the restored
+     * file is on disk but not yet in use. Saying "restored" without the restart would be a
+     * lie the owner would discover by finding their old conversations still there.
+     */
+    fun restoreSnapshot(fileUri: String, passphrase: String) {
+        viewModelScope.launch {
+            _brainSnapshot.value = BrainSnapshotUiState(busy = true)
+            val outcome = restoreBrainSnapshot(fileUri, passphrase)
+            _brainSnapshot.value = BrainSnapshotUiState(
+                busy = false,
+                succeeded = outcome.succeeded,
+                message = if (outcome.succeeded) {
+                    buildString {
+                        append(outcome.message)
+                        append(" ${outcome.totalRows} rows across ${outcome.tables} tables are now on disk.")
+                    }
+                } else {
+                    outcome.message
+                },
+            )
         }
     }
 
@@ -196,6 +259,11 @@ class BackupViewModel(
             )
             _backupResult.update { BackupResult.ExportSuccess }
         }
+    }
+
+    companion object {
+        /** How many snapshots a folder keeps before the oldest is removed. */
+        const val SNAPSHOT_KEEP: Int = 5
     }
 
 }

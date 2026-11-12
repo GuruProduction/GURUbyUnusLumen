@@ -10,6 +10,7 @@ import com.unuslumen.app.data.fabric.ir.IrDomainModule
 import com.unuslumen.app.data.fabric.net.NetworkDomainModule
 import com.unuslumen.app.data.fabric.smart.SmartHomeDomainModule
 import com.unuslumen.app.data.fabric.tv.TvDomainModule
+import com.unuslumen.app.data.tools.backup.BrainBackupDomainModule
 import com.unuslumen.app.data.tools.permission.AccountsCalendarDomainModule
 import com.unuslumen.app.data.tools.permission.AlarmsMiscDomainModule
 import com.unuslumen.app.data.tools.permission.AppUsageNotifyDomainModule
@@ -68,6 +69,11 @@ object TeamThreeToolDomains {
         // all, because reporting which grant is switched off needs none, and one all-clear
         // boolean would hide the one that is actually missing.
         AlarmsMiscDomainModule,
+        // The brain backup domain. It takes, verifies and restores an encrypted snapshot of
+        // the whole database, which until now had no export path at all: a phone upgrade lost
+        // every conversation and memory permanently. A restore always answers that a restart
+        // is required, because the running process still holds the old database open.
+        BrainBackupDomainModule,
         // App usage and notifications. Its dndControl deliberately declares no permission,
         // because reading the Do Not Disturb filter needs none and refusing a true reading to
         // keep a uniform declaration would be the wrong trade.

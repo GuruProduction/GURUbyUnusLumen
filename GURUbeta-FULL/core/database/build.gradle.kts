@@ -33,6 +33,11 @@ android {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
     }
+    testOptions {
+        // Robolectric needs the module's resources, because the database under test resolves
+        // through the app's own Context rather than a stub.
+        unitTests.isIncludeAndroidResources = true
+    }
     kotlin {
         compilerOptions {
             jvmTarget = JvmTarget.JVM_1_8
@@ -53,6 +58,17 @@ dependencies {
     implementation(libs.material)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
+
+    // Robolectric, because the snapshot engine's central claim is about SQLite's own
+    // write-ahead log: that a copy taken while pages are still in it contains those pages.
+    // That cannot be proved in a pure JVM unit test, which has no SQLite and no Context, and
+    // it must not be left to a handset experiment that nobody repeats. Robolectric runs the
+    // real framework implementation, so a database opened here behaves as it does on device.
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test:core:1.6.1")
+    // runTest, because the engine's operations are suspend: a snapshot is a copy, a seal and
+    // a full re-open, and the test needs to await that rather than block a thread on it.
+    testImplementation(libs.kotlinx.coroutines.test)
 
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)

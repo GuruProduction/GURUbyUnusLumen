@@ -211,5 +211,24 @@ abstract class guruDatabase: RoomDatabase() {
 
     companion object {
         const val DATABASE_NAME = "guru_db"
+
+        /**
+         * The schema version this build writes, read back from the @Database annotation
+         * itself rather than restated.
+         *
+         * WHY IT IS DERIVED. Room's version argument must be a literal, so a second
+         * hand-written copy is one bump away from being wrong, and a wrong value here
+         * decides whether a restore is allowed. Reading the annotation makes drift
+         * impossible: bump the version and this answers the new number with no edit.
+         *
+         * A restore compares a snapshot's version against this, and refuses one that is
+         * newer, because installing a newer schema into an older build drops every
+         * column added since. That is silent loss rather than a failed restore.
+         */
+        val SCHEMA_VERSION: Int
+            get() = guruDatabase::class.java
+                .getAnnotation(androidx.room.Database::class.java)
+                ?.version
+                ?: 0
     }
 }

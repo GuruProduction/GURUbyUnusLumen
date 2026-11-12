@@ -103,6 +103,12 @@ class SensesDomainHonestyTest {
                 // than silent, because a silent install needs a privilege this build lacks.
                 "apps_management",
                 "bluetooth",
+                // The brain backup domain, added for #358. It takes, verifies and restores an
+                // encrypted snapshot of the whole database, which had no export path at all:
+                // a phone upgrade destroyed every conversation and memory with no recovery.
+                // None of its four tools declare a permission, because writing a file into a
+                // folder the owner picked and reading the app's own database need no grant.
+                "brain_backup",
                 // The personal-data domain: the call log and the address book. Its id is
                 // deliberately not `phone`, because it is governed by a different
                 // permission group and a refusal therefore names a different Settings
