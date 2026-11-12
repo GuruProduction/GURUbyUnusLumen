@@ -75,32 +75,49 @@ object TorEgress {
     }
 
     /**
-     * Proxy selector applied to every TorEgress client. Per-request lookup so
-     * circuit changes and port rebinds from TorService are always honoured.
+     * Proxy selector applied to every TorEgress client. Per-request lookup so circuit changes
+     * and port rebinds from TorService are always honoured.
+     *
+     * [honoursClearnet] IS FALSE BY DEFAULT, AND THAT DEFAULT IS THE SAFETY PROPERTY.
+     * Every caller that already exists keeps the old behaviour: a public host rides Tor or the
+     * request fails, whatever the owner's posture says. That matters because the callers here
+     * are the model clients, and those carry an API key and the entire conversation. Sending
+     * that direct would be the single worst leak this architecture could produce, so a path has
+     * to opt IN to the override deliberately rather than inherit it by being written later.
+     *
+     * The tools that fetch public content and carry no credential pass true. That is the whole
+     * distinction the posture exists for.
      */
-    fun selector(): ProxySelector = object : ProxySelector() {
+    fun selector(honoursClearnet: Boolean = false): ProxySelector = object : ProxySelector() {
         override fun select(uri: URI?): List<Proxy> {
             val host = uri?.host
-            when (EgressClassifier.routeForHost(host)) {
-                EgressClassifier.Route.DIRECT -> return listOf(Proxy.NO_PROXY)
-                EgressClassifier.Route.TOR -> Unit
+
+            val decision = EgressClassifier.decide(
+                host = host,
+                mode = if (honoursClearnet) currentMode() else FORCE_TOR,
+                torReady = torManager?.isReady?.value == true,
+            )
+
+            decision.refusal?.let { sentence ->
+                // Fail closed and mean it. An empty list here would be read by OkHttp as
+                // NO_PROXY and would dial clearnet, which is the exact leak this replaced, so a
+                // refusal has to be an exception rather than an absence.
+                throw ProtocolException(sentence)
+            }
+
+            if (decision.route == EgressClassifier.Route.DIRECT) {
+                return listOf(Proxy.NO_PROXY)
             }
 
             val manager = torManager
-            if (manager == null || !manager.isReady.value) {
-                // Fail closed and mean it. See the class comment: an empty list
-                // here would be read by OkHttp as NO_PROXY and would dial
-                // clearnet, which is the exact leak this replaced.
-                throw ProtocolException(
-                    "Tor is not ready, so ${host ?: "this host"} was not contacted. " +
-                        "Public requests ride Tor and will not fall back to a direct connection. " +
-                        "Local and private addresses are not affected by this."
+                ?: throw ProtocolException(
+                    "Tor is not available, so ${host ?: "this host"} was not contacted rather than " +
+                        "being sent direct."
                 )
-            }
             val addr = manager.getSocksProxy().address() as? InetSocketAddress
                 ?: throw ProtocolException(
-                    "Tor reported ready but its SOCKS listener has no address, so ${host ?: "this host"} " +
-                        "was not contacted rather than being sent direct."
+                    "Tor reported ready but its SOCKS listener has no address, so " +
+                        "${host ?: "this host"} was not contacted rather than being sent direct."
                 )
             val port = if (addr.port > 0) addr.port else 9050
             return listOf(Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port)))
@@ -110,6 +127,33 @@ object TorEgress {
             // Route failure information only; Tor circuit recovery handles retries.
         }
     }
+
+    /**
+     * The posture for a client that has NOT opted into the override: always the lock.
+     *
+     * This is the posture every existing caller gets, and it is TOR_ONLY rather than AUTO only so
+     * the intent reads correctly in the refusal sentence: public traffic rides Tor, full stop.
+     * AUTO would produce the same route, but a reader debugging a model call should see that this
+     * path is deliberately locked rather than merely defaulted.
+     */
+    private val FORCE_TOR: com.unuslumen.app.preferences.domain.model.EgressMode =
+        com.unuslumen.app.preferences.domain.model.EgressMode.TOR_ONLY
+
+    /**
+     * The live posture, for a caller that opted into the override.
+     *
+     * Resolved per call rather than cached so a /clearnet takes effect on the next request
+     * without restarting anything. A missing container means a unit test, and the fallback is
+     * the fail-closed posture, which is the only safe guess.
+     */
+    private fun currentMode(): com.unuslumen.app.preferences.domain.model.EgressMode =
+        try {
+            val policy: EgressPolicy = org.koin.java.KoinJavaComponent.getKoin()
+                .get(EgressPolicy::class)
+            policy.current()
+        } catch (_: Exception) {
+            com.unuslumen.app.preferences.domain.model.EgressMode.DEFAULT
+        }
 
     /**
      * Build an OkHttp-backed engine with the sovereign selector. Built fresh
