@@ -1,5 +1,37 @@
 <?xml version="1.0" encoding="utf-8"?>
 
+<!--
+    What Android may carry off this device, and what it may not.
+
+    CLOUD BACKUP EXCLUDES EVERYTHING, AND THAT IS THE PRODUCT.
+
+    GURU's promise is that the user's memory never leaves the phone. Shipping a person's
+    brain, their conversations, their journal and their facts to Google Drive would break
+    that promise in the exact place it is most valuable, and it would do so silently. So
+    every domain is excluded from cloud backup, and that stays.
+
+    DEVICE TRANSFER INCLUDES THE DATABASE AND FILES, AND THAT IS A DIFFERENT DECISION.
+
+    Device transfer is a direct phone-to-phone migration the person initiates with a cable,
+    with no account and no server involved. It cannot touch a cloud service, so it does not
+    weaken the privacy promise by one inch. Excluding it meant that buying a new phone
+    destroyed a year of a person's GURU with no recovery path and no warning, which is the
+    failure this file previously caused.
+
+    WHY THE WHOLE DATABASE DOMAIN RATHER THAN A NAMED FILE. guru_db lives in the database
+    domain along with the rest, and a transfer rule that names one file inside a domain
+    leaves every future database behind. The domain is the unit the platform offers, so it
+    is the unit used here.
+
+    SHARED PREFS TRAVEL BECAUSE THEY ARE PART OF THE BRAIN TOO. They hold the owner's model
+    configuration, egress posture and heartbeat switch. Transferring the database without
+    them would arrive on the new phone as a brain with no settings, which reads as a
+    corrupted restore to the person holding it.
+
+    CACHE AND EXTERNAL STORAGE STAY EXCLUDED. Cache is regenerable by definition, and
+    external storage is shared with other apps, so neither belongs in a transfer of this
+    app's own state.
+-->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="root" path="." />
@@ -9,10 +41,10 @@
         <exclude domain="external"  path="."/>
     </cloud-backup>
     <device-transfer>
-        <exclude domain="root" path="."/>
-        <exclude domain="file" path="."/>
-        <exclude domain="database" path="."/>
-        <exclude domain="sharedpref" path="."/>
-        <exclude domain="external" path="."/>
+        <include domain="database" path="." />
+        <include domain="sharedpref" path="." />
+        <include domain="file" path="." />
+        <exclude domain="cache" path="." />
+        <exclude domain="external" path="." />
     </device-transfer>
 </data-extraction-rules>
