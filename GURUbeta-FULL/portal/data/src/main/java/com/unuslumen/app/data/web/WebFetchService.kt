@@ -182,7 +182,23 @@ class WebFetchService(
         for (proxy in proxies) {
             try {
                 val request = Jsoup.connect(url)
-                    .userAgent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                    /*
+                     * THE PRODUCT USER AGENT, NOT A CHROME STRING (issue 345).
+                     *
+                     * Every request used to announce itself as Android Chrome, which means a site
+                     * owner could not tell GURU apart from a browser: they could not rate-limit it,
+                     * contact its operator, or block it selectively. They could only block
+                     * Chrome-shaped traffic, which is what pushes a site towards closing a feed
+                     * entirely. Reddit closing its public RSS feed is the concrete case, and this
+                     * client was contributing to it.
+                     *
+                     * The cost is real and is stated in [RobotsTxt.USER_AGENT]: a site now sees "a
+                     * GURU user" arriving from a Tor exit rather than one of thousands of identical
+                     * Chrome strings. That is a smaller crowd, so it is a modest reduction in
+                     * anonymity, shared by every user. The mitigation is that the string carries
+                     * nothing per-install, so it adds no distinguishing mark beyond the product.
+                     */
+                    .userAgent(RobotsTxt.USER_AGENT)
                     .ignoreContentType(true)
                     .maxBodySize(1024 * 1024)
 
@@ -339,7 +355,14 @@ class WebFetchService(
 
             webView.settings.javaScriptEnabled = true
             webView.settings.domStorageEnabled = true
-            webView.settings.userAgentString = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+            /*
+             * THE SAME PRODUCT AGENT AS THE JSOUP PATH (issue 345).
+             *
+             * A WebView that keeps the Chrome string while the Jsoup path announces GURU would be
+             * two different clients wearing one name, and the site would only ever be able to
+             * reason about the one it sees. Both paths must say the same thing.
+             */
+            webView.settings.userAgentString = RobotsTxt.USER_AGENT
             webView.settings.blockNetworkImage = true
             webView.settings.javaScriptCanOpenWindowsAutomatically = false
             webView.settings.safeBrowsingEnabled = false
@@ -465,7 +488,103 @@ class WebFetchService(
         }
     }
 
+    /**
+     * Ask the origin's robots.txt whether this path may be fetched (issue 345).
+     *
+     * THE OWNER'S RULING IS THE SHAPE OF THIS. GURU obeys the site by default and the owner can
+     * override it per origin. The override is not implemented here, deliberately: this answers only
+     * what the SITE asked, and the caller applies the override. Keeping them apart means the
+     * override cannot be implemented by quietly skipping the check.
+     *
+     * A robots file that will not load is not a refusal. RFC 9309 says a crawler may proceed when
+     * the file is absent or unreachable, and treating a network hiccup on `/robots.txt` as a block
+     * would refuse the whole site because one small file timed out. That is the opposite of the
+     * failure this issue is about: the point is to obey a site that has said something, not to
+     * invent obedience where nothing was said.
+     */
+    private fun robotsAllows(url: String): Pair<Boolean, String?> {
+        val host = hostOf(url) ?: return true to null
+        // A LOCAL address has no robots.txt worth fetching and no third party to be polite to.
+        // A router admin page also has no business being refused by a file it might serve.
+        if (EgressClassifier.routeForHost(host) == EgressClassifier.Route.DIRECT) return true to null
+
+        val path = try {
+            val uri = java.net.URI(url)
+            val p = uri.rawPath.orEmpty().ifEmpty { "/" }
+            if (uri.rawQuery.isNullOrEmpty()) p else "$p?${uri.rawQuery}"
+        } catch (_: Exception) {
+            return true to null
+        }
+
+        val policy = runCatching { fetchRobotsFor(url) }.getOrNull()
+            ?: return true to null
+
+        if (!RobotsTxt.permits(policy, path)) {
+            return false to "robots.txt on $host disallows $path, so it was not read. " +
+                "This is the site's own instruction rather than a network failure."
+        }
+        return true to null
+    }
+
+    /**
+     * Fetch and parse an origin's robots.txt, through the same egress path as any other fetch.
+     *
+     * IT GOES THROUGH THE SAME ROUTE ON PURPOSE. A robots fetch that went direct while the page
+     * went through Tor would tell the site which client is asking, which is the leak this whole
+     * object exists to prevent. The route is whatever the classifier says for the host.
+     */
+    private fun fetchRobotsFor(url: String): RobotsTxt.Policy {
+        val origin = runCatching { java.net.URI(url).let { "${it.scheme}://${it.authority}" } }.getOrNull()
+            ?: return RobotsTxt.Policy.UNKNOWN
+        val host = hostOf(url)
+        val proxies = host?.let { getProxies(it) } ?: emptyList()
+        if (proxies.isEmpty()) return RobotsTxt.Policy.UNKNOWN
+
+        for (proxy in proxies) {
+            try {
+                val request = Jsoup.connect("$origin/robots.txt")
+                    .userAgent(RobotsTxt.USER_AGENT)
+                    .ignoreContentType(true)
+                    .ignoreHttpErrors(true)
+                    .maxBodySize(512 * 1024)
+                    .timeout(10_000)
+                if (proxy != null) request.proxy(proxy)
+                val response = request.execute()
+                /*
+                 * A 4xx MEANS THERE IS NO FILE, and RFC 9309 says that permits everything. A 5xx
+                 * is the site failing rather than the site refusing, and is treated the same way
+                 * for the reason above: one unreachable file must not close a whole site.
+                 */
+                if (response.statusCode() in 400..599) return RobotsTxt.Policy.UNKNOWN
+                return RobotsTxt.parse(response.body())
+            } catch (_: Exception) {
+                // Try the next proxy, exactly as a page fetch does.
+            }
+        }
+        return RobotsTxt.Policy.UNKNOWN
+    }
+
     suspend fun fetch(url: String, maxLength: Int = 10000): FetchResult = withContext(Dispatchers.IO) {
+        /*
+         * THE SITE'S OWN INSTRUCTION, HONOURED BEFORE ANY REQUEST IS MADE (issue 345).
+         *
+         * This is the one place in the fetch path where GURU refuses something the owner asked for,
+         * and that is the decision the ticket records: obey by default, with a per-origin owner
+         * override that lives above this layer. A refusal here carries the site's reason rather
+         * than a generic failure, so a person can see it was the site's rule and not a fault.
+         */
+        val (allowed, refusal) = robotsAllows(url)
+        if (!allowed) {
+            return@withContext FetchResult(
+                url = url,
+                title = "",
+                content = "",
+                success = false,
+                error = "${refusal ?: "robots.txt disallowed this path."} " +
+                    "Nothing was fetched, so this is not a network fault.",
+            )
+        }
+
         // Step 1: Try Jsoup first — fast, works for server-rendered pages
         val jsoupResult = tryFetchWithProxies(url, maxLength)
         if (jsoupResult.success && jsoupResult.content.length >= MIN_CONTENT_LENGTH) {

@@ -121,7 +121,10 @@ class WebSearchService(
                 else -> URL(url).openConnection(proxy) as HttpURLConnection
             }
             conn.requestMethod = "GET"
-            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36")
+            // THE PRODUCT AGENT, NOT A CHROME STRING (issue 345). A search engine that cannot tell
+            // GURU apart from a browser can only block browser-shaped traffic, which is how a site
+            // ends up closing an endpoint rather than rate-limiting one client.
+            conn.setRequestProperty("User-Agent", RobotsTxt.USER_AGENT)
             conn.setRequestProperty("Accept", "*/*")
             conn.instanceFollowRedirects = true
             conn.connect()
@@ -148,7 +151,7 @@ class WebSearchService(
     private fun jsoupConnection(url: String): org.jsoup.Connection? {
         val (proxy, _) = proxyForSearch()
         val connection = Jsoup.connect(url)
-            .userAgent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36")
+            .userAgent(RobotsTxt.USER_AGENT)
             .ignoreContentType(true)
             .ignoreHttpErrors(true)
             .followRedirects(true)
