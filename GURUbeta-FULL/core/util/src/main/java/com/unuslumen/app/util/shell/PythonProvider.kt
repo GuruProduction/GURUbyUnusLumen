@@ -271,6 +271,24 @@ class PythonProvider(private val context: Context) {
             sharedStatus = result
             initialized = true
 
+            /*
+             * THE EGRESS GUARD GOES IN BEFORE ANY SCRIPT RUNS (issue 285).
+             *
+             * sitecustomize is imported by CPython's own site.py at startup, so installing it
+             * into site-packages means it runs before the user's script does, in every process,
+             * with no cooperation from the caller. That ordering is the whole point: a guard a
+             * script can skip is not a guard.
+             *
+             * Failure here is logged rather than fatal. A runtime without the guard still runs
+             * scripts; it just runs them with the old, leakier behaviour, and that is a fact the
+             * log should carry rather than a reason to refuse to work.
+             */
+            if (result.available) {
+                runCatching { installEgressGuard() }.onFailure {
+                    Log.w(TAG, "PythonProvider: egress guard not installed: ${it.message}")
+                }
+            }
+
             if (result.available) {
                 Log.d(TAG, "PythonProvider: ready - ${result.version} at ${result.launcherPath}")
             } else {
@@ -281,6 +299,33 @@ class PythonProvider(private val context: Context) {
             }
             return@withContext result
         }
+    }
+
+    /**
+     * Put the egress guard where CPython imports it at startup (issue 285).
+     *
+     * The file is bundled as a resource and copied into site-packages as `sitecustomize.py`,
+     * because that is the one name site.py imports unconditionally when it can be found. It is
+     * rewritten on every initialise so the version on disk is always the one this build shipped,
+     * which matters when a guard is the thing that stops a leak.
+     */
+    private fun installEgressGuard() {
+        val loader = javaClass.classLoader
+            ?: throw IllegalStateException("no class loader to read the egress guard from")
+        // The file is packaged under src/main/resources/python/, so it lands there in the jar;
+        // the bare name is tried as well because a resource pipeline that flattens the folder
+        // would otherwise make the guard silently absent.
+        val resource = loader.getResourceAsStream("python/guru_egress.py")
+            ?: loader.getResourceAsStream("guru_egress.py")
+            ?: throw IllegalStateException("guru_egress.py is not in the classpath")
+
+        val target = File(sitePackagesDir, "sitecustomize.py")
+        target.parentFile?.mkdirs()
+        resource.use { input ->
+            target.outputStream().use { output -> input.copyTo(output) }
+        }
+        target.setReadable(true, false)
+        Log.d(TAG, "PythonProvider: egress guard installed at ${target.absolutePath}")
     }
 
     private fun prepare(): PythonStatus {
