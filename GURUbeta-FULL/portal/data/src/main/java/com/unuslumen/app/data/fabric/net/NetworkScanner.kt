@@ -467,34 +467,21 @@ class NetworkScanner(
     // Helpers
     // ------------------------------------------------------------------
 
-    /** This device's /24 prefix, from whichever wifi interface is up. */
-    fun localSubnetPrefix(): String? = runCatching {
-        val interfaces = java.net.NetworkInterface.getNetworkInterfaces().toList()
-        for (iface in interfaces) {
-            if (!iface.isUp || iface.isLoopback) continue
-            for (address in iface.inetAddresses.toList()) {
-                if (address !is java.net.Inet4Address || address.isLoopbackAddress) continue
-                val host = address.hostAddress ?: continue
-                // 172 is checked as a range rather than a prefix: 172.1.x and 172.217.x are
-                // public addresses, and sweeping one would be a scan of somebody else's
-                // network rather than this one.
-                if (isPrivateIpv4(host)) return host.substringBeforeLast(".")
-            }
-        }
-        null
-    }.getOrNull()
+    /**
+     * This device's /24 prefix, from the interface that is actually the LAN.
+     *
+     * DELEGATES TO [LocalNetwork], AND THAT DELEGATION IS THE FIX FOR #330. This used to take
+     * the first interface it found holding any private IPv4 address. A Tor engine's `tun0`
+     * carries `10.x`, which is private, so the tunnel won on enumeration order and the sweep
+     * ran over the tunnel's range while the hosts in the result arrived over the wifi from
+     * SSDP and mDNS. `tvDiscover` carried a second copy of the same rule and inherited the
+     * same wrong subnet into its `problems[]` text.
+     *
+     * One rule, one place, one set of tests: wifi ranks above ethernet, which ranks above
+     * anything else, and cellular and tunnelled interfaces are never candidates at all.
+     */
+    fun localSubnetPrefix(): String? = LocalNetwork.current().prefix
 
-    /** Whether an address is in a private range a home network can use. */
-    private fun isPrivateIpv4(host: String): Boolean {
-        val octets = host.split('.').mapNotNull { it.toIntOrNull() }
-        if (octets.size != 4) return false
-        return when {
-            octets[0] == 10 -> true
-            octets[0] == 192 && octets[1] == 168 -> true
-            octets[0] == 172 && octets[1] in 16..31 -> true
-            else -> false
-        }
-    }
 
     private fun fetch(url: String, post: Boolean = false): String {
         val connection = com.unuslumen.app.data.fabric.net.LocalRoute.open(url)

@@ -10,7 +10,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
-import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -385,33 +384,24 @@ class FullNetworkSweep(
  */
 open class ScanTargets {
 
-    /** The /24 this phone is on, or null when it is not on a private IPv4 network. */
-    open fun subnetPrefix(): String? = runCatching {
-        for (iface in NetworkInterface.getNetworkInterfaces().toList()) {
-            if (!iface.isUp || iface.isLoopback) continue
-            // A mobile data interface is never the network to sweep, and sweeping it would be a
-            // scan of the carrier's address space rather than the user's own.
-            if (isCellular(iface)) continue
-            for (address in iface.inetAddresses.toList()) {
-                if (address !is Inet4Address || address.isLoopbackAddress) continue
-                val host = address.hostAddress ?: continue
-                if (isPrivateIpv4(host)) return host.substringBeforeLast('.')
-            }
-        }
-        null
-    }.getOrNull()
+    /**
+     * The /24 this phone is on, or null when it is not on a private IPv4 network.
+     *
+     * DELEGATES TO [LocalNetwork], WHICH IS THE FIX FOR #330. This used to skip cellular and
+     * take the first remaining interface with a private address, which a Tor `tun0` also
+     * satisfies, so the tunnel could win here exactly as it did in `NetworkScanner`. It also
+     * had no notion of preferring wifi over ethernet, so the answer depended on enumeration
+     * order rather than on which network the person meant.
+     */
+    open fun subnetPrefix(): String? = LocalNetwork.current().prefix
 
-    /** The interface a sweep's packets must leave by, or null when the platform decides. */
-    open fun wifiInterface(): NetworkInterface? = runCatching {
-        for (iface in NetworkInterface.getNetworkInterfaces().toList()) {
-            if (!iface.isUp || iface.isLoopback || isCellular(iface)) continue
-            val hasPrivateV4 = iface.inetAddresses.toList().any { address ->
-                address is Inet4Address && isPrivateIpv4(address.hostAddress.orEmpty())
-            }
-            if (hasPrivateV4) return iface
-        }
-        null
-    }.getOrNull()
+    /**
+     * The interface a sweep's packets must leave by, or null when the platform decides.
+     *
+     * Same resolver, so the interface and the subnet can never disagree. That disagreement is
+     * what #330 reports: a sweep over one network with hosts listed from another.
+     */
+    open fun wifiInterface(): NetworkInterface? = LocalNetwork.liveWifiInterface()
 
     /** The gateway address, which is where reverse DNS and the router's own tables live. */
     open fun gateway(): String? = runCatching {
@@ -425,20 +415,4 @@ open class ScanTargets {
         }
     }.getOrNull()
 
-    private fun isCellular(iface: NetworkInterface): Boolean {
-        val name = iface.name.lowercase()
-        return name.startsWith("rmnet") || name.startsWith("ccmni") ||
-            name.startsWith("pdp") || name.startsWith("wwan")
-    }
-
-    private fun isPrivateIpv4(host: String): Boolean {
-        val octets = host.split('.').mapNotNull { it.toIntOrNull() }
-        if (octets.size != 4) return false
-        return when {
-            octets[0] == 10 -> true
-            octets[0] == 192 && octets[1] == 168 -> true
-            octets[0] == 172 && octets[1] in 16..31 -> true
-            else -> false
-        }
-    }
 }
