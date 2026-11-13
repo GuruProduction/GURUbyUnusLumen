@@ -6,6 +6,25 @@ package com.unuslumen.app.data.tools
 import com.unuslumen.app.data.tools.registry.ToolResultData
 import kotlinx.serialization.Serializable
 
+/**
+ * The result of finding or pairing a Hue Bridge (issue 179).
+ *
+ * [state] IS THE POINT OF THIS SHAPE. Pairing has three outcomes that a person must act on
+ * differently: the bridge issued a key, the bridge is waiting for its physical button, or something
+ * unexpected happened. The bridge answers the first two with the same HTTP status and a different
+ * JSON body, so reporting them as one boolean would tell a person "pairing failed" while the correct
+ * next move is to press a button.
+ */
+@Serializable data class HueBridgeResult(
+    val success: Boolean,
+    /** The bridges found, for a discovery call. Empty for a pairing call. */
+    val bridges: List<String> = emptyList(),
+    /** PAIRED, AWAITING_BUTTON or UNEXPECTED, for a pairing call. Null for discovery. */
+    val state: String? = null,
+    /** The bridge this call concerned. */
+    val bridge: String? = null,
+    val error: String? = null,
+) : ToolResultData
 @Serializable data class HueLight(val id: String, val name: String, val on: Boolean, val brightness: Int) : ToolResultData
 @Serializable data class HueLightsResult(val success: Boolean, val lights: List<HueLight>, val error: String? = null) : ToolResultData
 @Serializable data class HueRoom(val id: String, val name: String) : ToolResultData

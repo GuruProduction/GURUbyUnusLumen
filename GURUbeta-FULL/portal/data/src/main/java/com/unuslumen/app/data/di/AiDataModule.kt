@@ -379,7 +379,10 @@ val aiDataModule = module {
     factory { DeviceControlToolExecutor(get<Context>()) }
     factory { NoteToolExecutor(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
     factory { MediaToolExecutor(get<Context>(), get()) }
-    factory { SmartHomeToolExecutor(get<Context>()) }
+    // The mDNS manager is passed in so hueDiscover reads the SAME listener the discovery tools
+    // report on. A second listener would be a second opinion about one network, which is exactly
+    // what issue 330 was.
+    factory { SmartHomeToolExecutor(get<Context>(), get()) }
     factory { ProductivityToolExecutor(get<Context>(), get()) }
     factory { ThemeToolExecutor(get(), get<Context>()) }
     factory { ProjectToolExecutor(get(), get(), get(), get(), get(), get(), get()) }

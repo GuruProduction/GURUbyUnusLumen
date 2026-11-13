@@ -5,6 +5,7 @@ package com.unuslumen.app.data.tools
 
 import android.content.Context
 import com.unuslumen.app.data.discovery.ArpDiscoveryManager
+import com.unuslumen.app.data.smarthome.HueApi
 import com.unuslumen.app.util.shell.ShellExecutor
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
@@ -14,7 +15,17 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 
-class SmartHomeToolExecutor(private val context: Context) : ToolExecutor {
+class SmartHomeToolExecutor(
+    private val context: Context,
+    /**
+     * The mDNS manager, for finding a Hue Bridge locally.
+     *
+     * INJECTED RATHER THAN RE-CREATED, so this uses the same listener the discovery tools report on
+     * rather than opening a second one that could disagree with the first. That disagreement is
+     * exactly what issue 330 was: two tools answering about one network in one minute.
+     */
+    private val mdnsDiscoveryManager: com.unuslumen.app.data.discovery.MdnsDiscoveryManager,
+) : ToolExecutor {
     private val json = Json { ignoreUnknownKeys = true }
     private val shellExecutor = ShellExecutor(context)
 
@@ -32,6 +43,8 @@ class SmartHomeToolExecutor(private val context: Context) : ToolExecutor {
     }
 
     override suspend fun execute(toolName: String, args: Map<String, Any?>): ToolExecutionResult = when (toolName) {
+        SmartHomeToolDefinitions.HUE_DISCOVER -> hueDiscover()
+        SmartHomeToolDefinitions.HUE_PAIR -> huePair(args)
         SmartHomeToolDefinitions.HUE_LIST_LIGHTS -> hueListLights()
         SmartHomeToolDefinitions.HUE_LIST_ROOMS -> hueListRooms()
         SmartHomeToolDefinitions.HUE_LIST_SCENES -> hueListScenes()
@@ -51,25 +64,166 @@ class SmartHomeToolExecutor(private val context: Context) : ToolExecutor {
         else -> ToolExecutionResult.error("Unknown tool: $toolName")
     }
 
+    /*
+     * THE SIX HUE TOOLS, OVER THE BRIDGE'S OWN HTTP API (issue 179).
+     *
+     * Every one of these used to run `openhue <something>`, and `openhue` is a Go binary Termux does
+     * not package and the APK never contained. So the commands could only fail, and they failed
+     * with a sentence telling a person to install something that does not exist. The whole smart
+     * home capability was dead, in the ticket's words, and had always been dead.
+     *
+     * The bridge is a JSON HTTP server on the local network. Discovery, the request shapes and the
+     * meaning of every response live in [HueApi] as pure functions, proven on the JVM; [HueClient]
+     * is the transport. What is left here is mapping a tool's arguments onto those decisions.
+     *
+     * A MISSING BRIDGE OR KEY IS ITS OWN SENTENCE. "Not paired yet" and "the bridge is not
+     * answering" are different instructions, and collapsing them into one message is the habit this
+     * whole batch exists to remove.
+     */
+    private val hueClient by lazy { com.unuslumen.app.data.smarthome.HueClient(context) }
+
+    /**
+     * Find bridges on this network.
+     *
+     * The local mDNS route is the one that works without internet, and the app already has it: the
+     * SSDP/mDNS discovery manager records `_hue._tcp` services, so this asks it rather than opening
+     * a second listener that could disagree with the first.
+     */
+    private suspend fun hueDiscover(): ToolExecutionResult = withContext(Dispatchers.IO) {
+        val local = runCatching {
+            mdnsDiscoveryManager.getDiscoveredDevices()
+                .filter { it.serviceType.contains("_hue.", ignoreCase = true) }
+                .mapNotNull { device -> device.host.takeIf { it.isNotBlank() } }
+        }.getOrDefault(emptyList())
+
+        val bridges = hueClient.discover(local)
+        val r = HueBridgeResult(
+            success = bridges.isNotEmpty(),
+            bridges = bridges.map { it.host },
+            error = if (bridges.isEmpty()) {
+                "No Hue Bridge answered on this network. Check that the bridge is powered and on " +
+                    "the same wifi as this phone; if it is, run mdnsDiscover first so the local " +
+                    "announcements are collected."
+            } else null,
+        )
+        ToolExecutionResult.success(r, json.encodeToString(HueBridgeResult.serializer(), r))
+    }
+
+    /**
+     * Pair with a bridge, which is what issues the application key.
+     *
+     * THE WAITING STATE IS NOT A FAILURE and is reported as its own outcome, because the bridge is
+     * behaving exactly as designed and the next move belongs to the person holding the phone.
+     */
+    private suspend fun huePair(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
+        val host = args["bridge"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'bridge'")
+        val outcome = hueClient.pair(host.trim())
+        val r = HueBridgeResult(
+            success = outcome.state == com.unuslumen.app.data.smarthome.HueApi.PairingState.PAIRED,
+            state = outcome.state.name,
+            bridge = host.trim(),
+            error = if (outcome.state == com.unuslumen.app.data.smarthome.HueApi.PairingState.PAIRED) {
+                null
+            } else {
+                outcome.sentence
+            },
+        )
+        ToolExecutionResult.success(r, json.encodeToString(HueBridgeResult.serializer(), r))
+    }
+
+    /** The saved bridge and key, or a result explaining what is missing. */
+    private fun hueBridgeOrNull(): Pair<com.unuslumen.app.data.smarthome.HueApi.Bridge?, String?> {
+        val bridge = hueClient.savedBridge()
+            ?: return null to "No Hue Bridge has been set up yet. Run hueDiscover to find one, then " +
+                "huePair with its address. The bridge's own button is pressed once during pairing."
+        if (!bridge.hasKey) {
+            return null to "The Hue Bridge at ${bridge.host} has no application key yet, so it will " +
+                "refuse every request. Press the bridge's button and run huePair."
+        }
+        return bridge to null
+    }
+
     private suspend fun hueListLights(): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val result = shellExecutor.execute("openhue get light 2>/dev/null")
-        val r = if (result.success) HueLightsResult(success = true, lights = parseHueLights(result.stdout), error = null)
-        else HueLightsResult(success = false, lights = emptyList(), error = "OpenHue CLI not available. Install openhue and configure with Hue Bridge IP.")
+        val (bridge, missing) = hueBridgeOrNull()
+        if (bridge == null) {
+            val r = HueLightsResult(success = false, lights = emptyList(), error = missing)
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(HueLightsResult.serializer(), r))
+        }
+        val (body, error) = hueClient.read(bridge, HueApi.lightsPath(bridge))
+        if (body == null) {
+            val r = HueLightsResult(success = false, lights = emptyList(), error = error)
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(HueLightsResult.serializer(), r))
+        }
+        /*
+         * EACH LIGHT'S STATE IS READ FROM ITS OWN `state` OBJECT. The old parser guessed `on` by
+         * searching the whole line for the substring "on", which is true of every light whose name
+         * contains it.
+         */
+        val lights = HueApi.entriesIn(body).map { entry ->
+            val fragment = body.substringAfter("\"${entry.id}\"", "")
+            HueLight(
+                id = entry.id,
+                name = entry.name,
+                on = Regex("\"on\"\\s*:\\s*true").containsMatchIn(fragment),
+                brightness = HueApi.extractNumber(fragment, "bri") ?: 0,
+            )
+        }
+        val r = HueLightsResult(success = true, lights = lights, error = null)
         ToolExecutionResult.success(r, json.encodeToString(HueLightsResult.serializer(), r))
     }
 
     private suspend fun hueListRooms(): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val result = shellExecutor.execute("openhue get room 2>/dev/null")
-        val r = if (result.success) HueRoomsResult(success = true, rooms = parseHueRooms(result.stdout), error = null)
-        else HueRoomsResult(success = false, rooms = emptyList(), error = "Failed to list rooms: ${result.stderr}")
+        val (bridge, missing) = hueBridgeOrNull()
+        if (bridge == null) {
+            val r = HueRoomsResult(success = false, rooms = emptyList(), error = missing)
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(HueRoomsResult.serializer(), r))
+        }
+        val (body, error) = hueClient.read(bridge, HueApi.roomsPath(bridge))
+        if (body == null) {
+            val r = HueRoomsResult(success = false, rooms = emptyList(), error = error)
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(HueRoomsResult.serializer(), r))
+        }
+        val rooms = HueApi.entriesIn(body).map { HueRoom(id = it.id, name = it.name) }
+        val r = HueRoomsResult(success = true, rooms = rooms, error = null)
         ToolExecutionResult.success(r, json.encodeToString(HueRoomsResult.serializer(), r))
     }
 
     private suspend fun hueListScenes(): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val result = shellExecutor.execute("openhue get scene 2>/dev/null")
-        val r = if (result.success) HueScenesResult(success = true, scenes = parseHueScenes(result.stdout), error = null)
-        else HueScenesResult(success = false, scenes = emptyList(), error = "Failed to list scenes: ${result.stderr}")
+        val (bridge, missing) = hueBridgeOrNull()
+        if (bridge == null) {
+            val r = HueScenesResult(success = false, scenes = emptyList(), error = missing)
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(HueScenesResult.serializer(), r))
+        }
+        val (body, error) = hueClient.read(bridge, HueApi.scenesPath(bridge))
+        if (body == null) {
+            val r = HueScenesResult(success = false, scenes = emptyList(), error = error)
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(HueScenesResult.serializer(), r))
+        }
+        val scenes = HueApi.entriesIn(body).map { HueScene(id = it.id, name = it.name) }
+        val r = HueScenesResult(success = true, scenes = scenes, error = null)
         ToolExecutionResult.success(r, json.encodeToString(HueScenesResult.serializer(), r))
+    }
+
+    /**
+     * Resolve a light the caller named to the id the bridge addresses.
+     *
+     * THE CALLER SAYS A NAME, THE API WANTS AN ID. Accepting either is what makes the tool usable
+     * without making a person learn bridge ids, and it is the same allowance bluetoothConnect makes
+     * for a MAC or a name.
+     */
+    private suspend fun resolveHueId(bridge: HueApi.Bridge, path: String, query: String): Pair<String?, String?> {
+        // A LOCAL CALLED `error` WOULD SHADOW ToolExecutionResult.error, which is how this failed to
+        // compile the first time. The names here are deliberate.
+        val readPair = hueClient.read(bridge, path)
+        val body = readPair.first
+        val readFailure = readPair.second
+        if (body == null) return null to (readFailure ?: "The bridge did not answer.")
+        val entries = HueApi.entriesIn(body)
+        val trimmed = query.trim()
+        entries.firstOrNull { it.id == trimmed }?.let { return it.id to null }
+        entries.firstOrNull { it.name.equals(trimmed, ignoreCase = true) }?.let { return it.id to null }
+        return null to "\"$query\" is neither an id nor the name of anything the bridge reports. " +
+            "It knows: ${entries.joinToString(", ") { it.name }}."
     }
 
     private suspend fun hueSetLight(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
@@ -77,16 +231,28 @@ class SmartHomeToolExecutor(private val context: Context) : ToolExecutor {
         val power = args["power"] as? String
         val brightness = (args["brightness"] as? Number)?.toInt()
         val temperature = (args["temperature"] as? Number)?.toInt()
-        val color = args["color"] as? String
-        val cmdArgs = buildString {
-            append("openhue set light \"$light\"")
-            power?.let { append(" --$it") }
-            brightness?.let { append(" --brightness $it") }
-            temperature?.let { append(" --temperature $it") }
-            color?.let { append(" --color $it") }
+
+        val (bridge, missing) = hueBridgeOrNull()
+        if (bridge == null) {
+            val r = HueResult(success = false, action = "set_light", target = light, error = missing)
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(HueResult.serializer(), r))
         }
-        val result = shellExecutor.execute("$cmdArgs 2>/dev/null")
-        val r = HueResult(success = result.success, action = "set_light", target = light, error = if (!result.success) "Failed to set light: ${result.stderr}" else null)
+        val (id, resolveError) = resolveHueId(bridge, HueApi.lightsPath(bridge), light)
+        if (id == null) {
+            val r = HueResult(success = false, action = "set_light", target = light, error = resolveError)
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(HueResult.serializer(), r))
+        }
+        val body = HueApi.lightStateBody(
+            on = when (power?.lowercase()) {
+                "on" -> true
+                "off" -> false
+                else -> null
+            },
+            brightnessPercent = brightness,
+            temperatureMired = temperature,
+        )
+        val (ok, writeError) = hueClient.write(bridge, HueApi.lightStatePath(bridge, id), body)
+        val r = HueResult(success = ok, action = "set_light", target = light, error = writeError)
         ToolExecutionResult.success(r, json.encodeToString(HueResult.serializer(), r))
     }
 
@@ -94,21 +260,56 @@ class SmartHomeToolExecutor(private val context: Context) : ToolExecutor {
         val room = args["room"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'room'")
         val power = args["power"] as? String
         val brightness = (args["brightness"] as? Number)?.toInt()
-        val cmdArgs = buildString {
-            append("openhue set room \"$room\"")
-            power?.let { append(" --$it") }
-            brightness?.let { append(" --brightness $it") }
+
+        val (bridge, missing) = hueBridgeOrNull()
+        if (bridge == null) {
+            val r = HueResult(success = false, action = "set_room", target = room, error = missing)
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(HueResult.serializer(), r))
         }
-        val result = shellExecutor.execute("$cmdArgs 2>/dev/null")
-        val r = HueResult(success = result.success, action = "set_room", target = room, error = if (!result.success) "Failed to set room: ${result.stderr}" else null)
+        val (id, resolveError) = resolveHueId(bridge, HueApi.roomsPath(bridge), room)
+        if (id == null) {
+            val r = HueResult(success = false, action = "set_room", target = room, error = resolveError)
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(HueResult.serializer(), r))
+        }
+        val body = HueApi.lightStateBody(
+            on = when (power?.lowercase()) {
+                "on" -> true
+                "off" -> false
+                else -> null
+            },
+            brightnessPercent = brightness,
+        )
+        val (ok, writeError) = hueClient.write(bridge, HueApi.roomActionPath(bridge, id), body)
+        val r = HueResult(success = ok, action = "set_room", target = room, error = writeError)
         ToolExecutionResult.success(r, json.encodeToString(HueResult.serializer(), r))
     }
 
     private suspend fun hueActivateScene(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         val scene = args["scene"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'scene'")
         val room = args["room"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'room'")
-        val result = shellExecutor.execute("openhue set scene \"$scene\" --room \"$room\" 2>/dev/null")
-        val r = HueResult(success = result.success, action = "activate_scene", target = "$scene in $room", error = if (!result.success) "Failed to activate scene: ${result.stderr}" else null)
+
+        val (bridge, missing) = hueBridgeOrNull()
+        if (bridge == null) {
+            val r = HueResult(success = false, action = "activate_scene", target = "$scene in $room", error = missing)
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(HueResult.serializer(), r))
+        }
+        val (roomId, roomError) = resolveHueId(bridge, HueApi.roomsPath(bridge), room)
+        if (roomId == null) {
+            val r = HueResult(success = false, action = "activate_scene", target = "$scene in $room", error = roomError)
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(HueResult.serializer(), r))
+        }
+        val (sceneId, sceneError) = resolveHueId(bridge, HueApi.scenesPath(bridge), scene)
+        if (sceneId == null) {
+            val r = HueResult(success = false, action = "activate_scene", target = "$scene in $room", error = sceneError)
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(HueResult.serializer(), r))
+        }
+        /*
+         * A SCENE IS APPLIED TO A GROUP, not started on its own. Group 0 is every light, and the
+         * bridge's documented form is `{"scene":"<id>"}` on the group's action endpoint.
+         */
+        val body = """{"scene":"$sceneId"}"""
+        val (ok, writeError) = hueClient.write(bridge, HueApi.roomActionPath(bridge, roomId), body)
+        val r = HueResult(success = ok, action = "activate_scene", target = "$scene in $room", error = writeError)
         ToolExecutionResult.success(r, json.encodeToString(HueResult.serializer(), r))
     }
 
