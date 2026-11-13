@@ -61,8 +61,8 @@ android {
         applicationId = "com.unuslumen.app.gurubeta"
         minSdk = 26
         targetSdk = 35
-        versionCode = 78
-        versionName = "3.54"
+        versionCode = 79
+        versionName = "3.55"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
