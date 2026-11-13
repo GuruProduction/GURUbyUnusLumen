@@ -33,12 +33,23 @@ object TvScanPlan {
     }
 
     /**
-     * Which vendor a Bonjour service set names, or null when it names none this build can
-     * drive. A Chromecast and an Apple TV announce themselves and both have no adapter, so
-     * they return null here rather than appearing as a set that refuses.
+     * Which vendor a Bonjour service set names, or null when it names none.
+     *
+     * AN AIRPLAY ANNOUNCEMENT USED TO RETURN NULL HERE, AND THAT WAS ISSUE 331. The service
+     * names are queried, so every AirPlay receiver on the network spends power answering,
+     * and this function then said "not a screen" and the reply was discarded. Asking a
+     * network a question and throwing the answer away is worse than never asking.
+     *
+     * The vendor is UNKNOWN because the service type names no make. Guessing which box it is
+     * would send the wrong protocol, and UNKNOWN is the value that already means "found, and
+     * this build has no adapter for it", which is the truth about AirPlay here.
+     *
+     * A Chromecast still returns null: `_googlecast._tcp` is a media protocol with no screen
+     * identity of its own, and it is present on speakers and displays alike.
      */
     fun vendorFromMdns(services: Set<String>): TvVendor? = when {
         services.any { it.startsWith("_androidtvremote2") } -> TvVendor.ANDROID_TV
+        services.any { it.startsWith("_airplay") || it.startsWith("_raop") } -> TvVendor.UNKNOWN
         else -> null
     }
 
