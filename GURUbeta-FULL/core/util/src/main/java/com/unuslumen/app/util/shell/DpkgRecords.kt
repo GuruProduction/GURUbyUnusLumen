@@ -82,23 +82,34 @@ object DpkgRecords {
         val data: List<String>,
         /** Rows still naming the upstream prefix, which cannot resolve through a plain path. */
         val upstreamRows: List<String>,
+        /** Rows that already name THIS install's root, so they resolve as written. */
+        val ownRows: List<String> = emptyList(),
     ) {
         val isEmpty: Boolean get() = rows.isEmpty()
     }
 
     /**
-     * Read a `.list` record into the four facts a caller needs.
+     * Read a `.list` record into the facts a caller needs.
      *
-     * Rows are taken verbatim, including the leading `/.` and the `.` directory row, because a
-     * caller checking that a file landed must ask about the path dpkg actually recorded rather
-     * than a normalised form this function invented. Two convenience views are derived on top:
-     * which rows are binaries and which are data.
+     * Rows are taken verbatim — no normalisation this function invented — except for the
+     * install-root row, which names nothing the package owns. Two convenience views are derived
+     * on top: which rows are binaries and which are data.
      */
     fun readList(record: String, termuxRoot: String = UPSTREAM_FILES_ROOT): PackageFiles {
         val rows = record.lineSequence()
             .map { it.trim() }
             .filter { it.isNotEmpty() }
-            .filter { it != "." }
+            /*
+             * THE INSTALL-ROOT ROW IS NOT A PACKAGE FILE.
+             *
+             * dpkg writes `/.` as the first row of every .list, and it names the install root
+             * itself rather than anything the package owns. Counting it as content is not
+             * harmless: it names neither tree, so it is one more row that is not evidence about
+             * which root the record describes, and a caller asking "did this package's files
+             * land" would be checking the filesystem root. The device-side check caught it as a
+             * missing path of "/." on every package.
+             */
+            .filter { !isInstallRootRow(it) }
             .toList()
         val binaries = rows.filter { isUnder(it, "bin") || isUnder(it, "sbin") }
         val data = rows.filter {
@@ -106,7 +117,27 @@ object DpkgRecords {
                 isUnder(it, "var") || isUnder(it, "opt")
         }
         val upstream = rows.filter { namesUpstream(it) }
-        return PackageFiles(rows, binaries, data, upstream)
+        // A row is "ours" when it is anchored under this install's own root. That is the fact
+        // the state below actually needs, because a package list legitimately carries ANCESTOR
+        // directories (`/data`, `/data/data`) that name neither tree in full.
+        val own = rows.filter { it.startsWith("$termuxRoot/") || it == termuxRoot }
+        return PackageFiles(rows, binaries, data, upstream, own)
+    }
+
+    /**
+     * Whether a row names the install root rather than a file the package owns.
+     *
+     * dpkg's `.list` begins with `/.` for the root and `./` for it too in some encodings, and a
+     * directory row for a parent directory is not content either. A row counts as the root when
+     * it holds no name at all once the leading dot and slashes are removed.
+     */
+    fun isInstallRootRow(row: String): Boolean {
+        val trimmed = row.trim()
+        // A row that holds nothing but dots and slashes names the root: `/.`, `./`, `.`, `/`.
+        // Anything with a name in it is content. Written as a character test rather than a
+        // chain of removePrefix calls because the prefix order matters for the mixed form `/.`,
+        // and only one order happens to work.
+        return trimmed.isNotEmpty() && trimmed.all { it == '.' || it == '/' }
     }
 
     /**
@@ -128,9 +159,12 @@ object DpkgRecords {
      * mapping dpkg's instdir uses, so the answer is the path the kernel would open.
      */
     fun resolveRow(row: String, termuxRoot: String): String {
+        // The install-root row names the root itself, not a path beneath it, so it is answered
+        // before any anchoring: left to the branches below it would come back as a bare "/."
+        // and a caller checking existence would ask about the device's root directory.
+        if (isInstallRootRow(row)) return termuxRoot
         val relocated = relocate(row, termuxRoot)
-        // A row of `/.` or `.` names the install root itself, and dpkg writes rows beginning
-        // with `./` for directories.
+        // dpkg writes rows beginning with `./` for directories.
         val trimmed = relocated.removePrefix("./")
         return when {
             trimmed.startsWith("/") -> trimmed
@@ -148,16 +182,29 @@ object DpkgRecords {
      *
      *  - NOT_RECORDED: no `.list`, so dpkg never unpacked it. A failed install.
      *  - RECORDED_NOTHING: a `.list` with no rows. dpkg claims the package and owns no files.
-     *  - RECORDED_UPSTREAM_ONLY: every row names the upstream prefix and no rewrite has run, so
-     *    the record describes a tree that is not this one.
-     *  - RECORDED: a list with real rows, of which the caller then checks existence.
+     *  - RECORDED_UPSTREAM_ONLY: not one row names this install's root, so the record describes
+     *    a tree that is not this one and nothing in it can be resolved without a rewrite.
+     *  - RECORDED: at least one row already names this install, so the caller checks existence.
      */
     enum class InstallRecordState { NOT_RECORDED, RECORDED_NOTHING, RECORDED_UPSTREAM_ONLY, RECORDED }
 
+    /**
+     * THE TEST IS "DOES ANY ROW NAME THIS INSTALL", not "does every row name upstream".
+     *
+     * The first version of this rule asked the second question, and a real dpkg `.list` is not
+     * uniform: it carries ancestor directories as it walks down — `/.`, `/data`, `/data/data`,
+     * `/data/data/com.termux` — and then the file rows. Those ancestors name neither tree in
+     * full, so a list whose every FILE row is upstream still has rows that are not, and the
+     * equality test answered false. The ticket's own figlet list is that shape.
+     *
+     * Asking whether the list contains a single row anchored under this install is the fact
+     * that decides whether existence checks mean anything, and it is true of exactly the
+     * records that a rewrite has already reached.
+     */
     fun installState(files: PackageFiles?): InstallRecordState = when {
         files == null -> InstallRecordState.NOT_RECORDED
         files.isEmpty -> InstallRecordState.RECORDED_NOTHING
-        files.upstreamRows.size == files.rows.size -> InstallRecordState.RECORDED_UPSTREAM_ONLY
+        files.ownRows.isEmpty() -> InstallRecordState.RECORDED_UPSTREAM_ONLY
         else -> InstallRecordState.RECORDED
     }
 

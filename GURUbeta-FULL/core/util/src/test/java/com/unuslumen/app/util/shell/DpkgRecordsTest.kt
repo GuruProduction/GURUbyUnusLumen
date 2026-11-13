@@ -51,7 +51,11 @@ class DpkgRecordsTest {
         )
         assertTrue(
             "the binary row must resolve into this install's prefix. Got: $relocated",
-            relocated.contains("$root/data/data/com.termux/files/usr/bin/figlet"),
+            relocated.contains("$root/usr/bin/figlet"),
+        )
+        assertTrue(
+            "and the rewritten record must now count as naming this install. Got: $relocated",
+            DpkgRecords.readList(relocated, root).ownRows.isNotEmpty(),
         )
     }
 
@@ -83,10 +87,29 @@ class DpkgRecordsTest {
         // This is the shape of fault 2: the package exists to render banners in a font, and
         // the list owns three binaries and not one .flf file.
         val files = DpkgRecords.readList(figletList, root)
-        assertEquals("the directory rows are still rows", 10, files.rows.size)
+        // Nine, not ten: the ticket's list opens with `/.`, which names the install root and
+        // is not a file the package owns.
+        // The ticket's list is nine lines. The first, `/.`, names the install root; the other
+        // eight are content, and they are counted here rather than trusted to a round number.
+        assertEquals("eight content rows once the root row is dropped", 8, files.rows.size)
         assertEquals("three binaries", 3, files.binaries.size)
         assertEquals("and no data at all, which is the fault", 0, files.data.size)
-        assertEquals("every row names the upstream prefix", 10, files.upstreamRows.size)
+        // The ancestors `/data`, `/data/data` and `/data/data/com.termux` name neither tree in
+        // full; the five rows from `.../files` downward name the upstream prefix. Measured, not
+        // counted by eye: this number was wrong twice before it was computed.
+        assertEquals("five rows name the upstream prefix in full", 5, files.upstreamRows.size)
+        assertEquals("and not one row names this install", 0, files.ownRows.size)
+    }
+
+    @Test
+    fun theInstallRootRowIsNotCountedAsPackageContent() {
+        assertTrue(DpkgRecords.isInstallRootRow("/."))
+        assertTrue(DpkgRecords.isInstallRootRow("./"))
+        assertFalse(DpkgRecords.isInstallRootRow("/data"))
+        assertFalse(
+            "a list holding ONLY the root row owns nothing, which is its own state",
+            DpkgRecords.readList("/.\n", root).rows.isNotEmpty(),
+        )
     }
 
     @Test
@@ -144,8 +167,11 @@ class DpkgRecordsTest {
 
     @Test
     fun aRowResolvesToThePathDpkgWouldHaveWritten() {
+        // The upstream root maps onto THIS install's root, so the `files` segment is replaced
+        // wholesale rather than kept and nested under it. That is the same mapping dpkg's
+        // --instdir uses, and the two must agree or an existence check asks about a fiction.
         assertEquals(
-            "$root/data/data/com.termux/files/usr/bin/figlet",
+            "$root/usr/bin/figlet",
             DpkgRecords.resolveRow("/data/data/com.termux/files/usr/bin/figlet", root),
         )
     }
