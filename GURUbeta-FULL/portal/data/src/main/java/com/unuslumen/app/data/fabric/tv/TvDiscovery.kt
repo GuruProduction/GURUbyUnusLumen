@@ -484,36 +484,20 @@ class TvDiscovery(
     private fun nameFromDescription(description: String): String? =
         tag(description, "friendlyName") ?: tag(description, "modelName")
 
-    /** This device's /24, from whichever interface is up. */
-    fun localSubnetPrefix(): String? = runCatching {
-        val interfaces = java.net.NetworkInterface.getNetworkInterfaces().toList()
-        for (iface in interfaces) {
-            if (!iface.isUp || iface.isLoopback) continue
-            for (address in iface.inetAddresses.toList()) {
-                if (address !is java.net.Inet4Address || address.isLoopbackAddress) continue
-                val host = address.hostAddress ?: continue
-                if (isPrivateIpv4(host)) return host.substringBeforeLast(".")
-            }
-        }
-        null
-    }.getOrNull()
-
     /**
-     * Whether an address is one of the private ranges a home network uses.
+     * This device's /24, from the interface that is actually the LAN.
      *
-     * 172 is checked properly rather than by prefix, because 172.1.x and 172.217.x are
-     * public addresses and sweeping them would be a scan of somebody else's network.
+     * DELEGATES TO [com.unuslumen.app.data.fabric.net.LocalNetwork], AND THAT IS #330's
+     * THIRD COPY. This used to take the first interface with any private IPv4 address, and
+     * a Tor `tun0` holding a 10.x address satisfies that, so the sweep ran over the tunnel
+     * while the sets in the result answered over the wifi. The ticket records the consequence
+     * in this tool's own wording: its `problems[]` text named the tunnel subnet while it
+     * returned a Fire TV on the wifi subnet, which cannot both be true.
+     *
+     * One rule, one place, one set of tests, so three tools can never disagree again.
      */
-    private fun isPrivateIpv4(host: String): Boolean {
-        val octets = host.split('.').mapNotNull { it.toIntOrNull() }
-        if (octets.size != 4) return false
-        return when {
-            octets[0] == 10 -> true
-            octets[0] == 192 && octets[1] == 168 -> true
-            octets[0] == 172 && octets[1] in 16..31 -> true
-            else -> false
-        }
-    }
+    fun localSubnetPrefix(): String? =
+        com.unuslumen.app.data.fabric.net.LocalNetwork.current().prefix
 
     /**
      * Fetch a local document, bypassing the proxy.
