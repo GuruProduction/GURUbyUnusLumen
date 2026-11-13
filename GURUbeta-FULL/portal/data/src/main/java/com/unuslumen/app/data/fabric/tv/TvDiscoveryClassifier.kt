@@ -236,6 +236,8 @@ object TvDiscoveryClassifier {
             .find(xml)
             ?.groupValues
             ?.getOrNull(1)
-            ?.trim()
+            // DECODED AT EXTRACTION (#216, #223). A real set serves `Alan&apos;s TV`, and
+            // leaving it encoded broke the documented discover-then-address-by-name flow.
+            ?.let { XmlText.decodeAndTrim(it) }
             ?.ifBlank { null }
 }

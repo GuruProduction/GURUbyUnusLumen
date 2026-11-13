@@ -293,6 +293,9 @@ class RokuRemote(
             .find(xml)
             ?.groupValues
             ?.getOrNull(1)
-            ?.trim()
+            // Roku's own device-info document is XML, so a name containing an apostrophe
+            // arrives encoded. Decoding here is #216: the name a person reads must be the
+            // name the set has, and the name tvPress can be given back.
+            ?.let { XmlText.decodeAndTrim(it) }
             ?.ifBlank { null }
 }
