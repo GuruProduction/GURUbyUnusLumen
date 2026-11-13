@@ -894,7 +894,29 @@ class TermuxProvider(private val context: Context) {
             "HOME" to homeDir.absolutePath,
             "TMPDIR" to tmpDir.absolutePath,
             "PATH" to "${binDir.absolutePath}:${reToolsDir.absolutePath}:/system/bin:/system/xbin",
-            "LD_LIBRARY_PATH" to "${libDir.absolutePath}:${reToolsDir.absolutePath}/lib",
+            /*
+             * THE JVM'S OWN LIBRARY DIRECTORIES GO FIRST (issue 292).
+             *
+             * This was only `$PREFIX/lib:$RE_TOOLS/lib`, and that single omission is why the
+             * bundled JDK did not work while every one of its files was present. The 6160-byte
+             * `bin/java` is a real PIE launcher, not a stub, and its first dependency is
+             * `libjli.so` — which lives in the JVM's OWN lib directory, three levels below the
+             * prefix lib. The loader could not find it, so the process died before libjvm.so was
+             * reached, and the resulting silence looked like a missing runtime.
+             *
+             * Measured on a handset by the commenter on that issue: adding these two entries made
+             * `java -version` print `openjdk version "21.0.13"` and `javac` compile a class.
+             *
+             * The JVM directories go in FRONT so the JVM's own copies of a library win over an
+             * older copy the bootstrap carries. That version skew is the same one that made aapt
+             * fail in issue 291. When no JVM is installed the list is empty and the value is
+             * exactly what it was, so this cannot break a prefix that has no toolchain.
+             */
+            "LD_LIBRARY_PATH" to JvmLaunch.libraryPathValue(
+                prefixPath = usrPrefix.absolutePath,
+                existing = listOf(libDir.absolutePath, "${reToolsDir.absolutePath}/lib"),
+                jvmDirs = JvmLaunch.libraryPath(usrPrefix.absolutePath),
+            ),
             // libtermux-exec reads these env vars to override its compiled-in defaults.
             "TERMUX__ROOTFS" to termuxRoot.absolutePath,
             "TERMUX__PREFIX" to usrPrefix.absolutePath,
@@ -2680,7 +2702,18 @@ class TermuxProvider(private val context: Context) {
                     )
                 }
             val combined = (outcome.stdout + "\n" + outcome.stderr).trim()
-            val refused = outcome.exitCode < 0 ||
+
+            /*
+             * THE LINKER'S OWN USAGE TEXT IS NOT A RUN (issue 292).
+             *
+             * Round one of that ticket reported the JDK as a phantom because the output was
+             * "Usage: /system/bin/linker64 ...", which reads like a broken launcher and is really
+             * the linker saying it was invoked wrongly. Whatever the cause, it is NOT evidence
+             * that the tool ran, and counting it as a run is how a broken launch gets reported as
+             * a working one. [JvmLaunch.isLinkerUsageOutput] names the shape once.
+             */
+            val linkerUsage = JvmLaunch.isLinkerUsageOutput(combined)
+            val refused = outcome.exitCode < 0 || linkerUsage ||
                 refusalMarkers.any { combined.contains(it, ignoreCase = true) }
             val ran = !refused && combined.isNotEmpty()
             // One line, always the real output: a caller reading the marker or
