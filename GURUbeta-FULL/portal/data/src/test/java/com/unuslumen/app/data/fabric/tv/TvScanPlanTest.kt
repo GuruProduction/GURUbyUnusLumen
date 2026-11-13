@@ -219,10 +219,31 @@ class TvScanPlanTest {
         )
     }
 
+    /**
+     * A Chromecast is not claimed as a television, and an AirPlay set is.
+     *
+     * CORRECTED FOR #331. This test used to assert that an AirPlay announcement returned
+     * null, and that assertion was the bug: `_airplay._tcp` was being queried, so every
+     * receiver on the network answered, and the answer was then discarded. Asking a network
+     * a question and throwing the reply away is worse than not asking.
+     *
+     * The Chromecast half stands, and for a different reason: `_googlecast._tcp` is a media
+     * protocol carried by speakers and displays alike and names no screen identity, so a
+     * set cannot be claimed from it. AirPlay is a mirroring protocol a screen announces.
+     */
     @Test
-    fun anUnsupportedScreenAnnouncementIsNotReportedAsADriveableTv() {
-        assertNull(TvScanPlan.vendorFromMdns(setOf("_googlecast._tcp.local")))
-        assertNull(TvScanPlan.vendorFromMdns(setOf("_airplay._tcp.local")))
+    fun anUnsupportedScreenAnnouncementIsReportedAsFoundButNotDriveable() {
+        assertNull(
+            "Google Cast names no screen identity, so it cannot claim a television.",
+            TvScanPlan.vendorFromMdns(setOf("_googlecast._tcp.local")),
+        )
+        assertEquals(
+            "An AirPlay announcement must be reported. UNKNOWN is the honest vendor because " +
+                "the service type names no make, and it is the value that already means " +
+                "found-but-no-adapter.",
+            TvVendor.UNKNOWN,
+            TvScanPlan.vendorFromMdns(setOf("_airplay._tcp.local")),
+        )
     }
 
     // -----------------------------------------------------------------

@@ -602,11 +602,22 @@ class TvDiscovery(
         coroutineScope {
             replies.map { (host, body) ->
                 async {
-                    val location = body.lines()
-                        .firstOrNull { it.trim().startsWith("LOCATION:", ignoreCase = true) }
-                        ?.substringAfter(":", "")
-                        ?.trim()
-                    val description = if (!location.isNullOrBlank()) {
+                    // THE LOCATION IS NORMALISED BEFORE ANYTHING READS IT (#331, #333).
+                    //
+                    // A UPnP LOCATION is specified to be an absolute URL, but real devices
+                    // send a bare host:port, and URL() reads the IP as a protocol so the
+                    // fetch never happens and the device stays unnamed. SsdpDiscoveryManager
+                    // was fixed for this in #333 and this second copy still had it, which is
+                    // how the Virgin boxes answered SSDP and arrived with no description for
+                    // the classifier to read. Delegating means one rule rather than three.
+                    val location = com.unuslumen.app.data.discovery.SsdpDescriptions
+                        .normaliseLocation(
+                            body.lines()
+                                .firstOrNull { it.trim().startsWith("LOCATION:", ignoreCase = true) }
+                                ?.substringAfter(":", "")
+                                ?.trim(),
+                        )
+                    val description = if (location != null) {
                         runCatching { fetch(location) }.getOrNull()
                     } else {
                         null
@@ -648,11 +659,23 @@ class TvDiscovery(
 
         hits.mapNotNull { (host, services) ->
             val vendor = TvScanPlan.vendorFromMdns(services) ?: return@mapNotNull null
+
+            // AN AIRPLAY SET HAS A REAL PORT AND NO VENDOR (#331).
+            //
+            // defaultPortFor(UNKNOWN) is 0, and a port of 0 is not a control port: it is the
+            // same class of fault as naming a make the device never claimed. An AirPlay
+            // receiver announced itself on RTSP 7000 in the very record being read, so that
+            // is the port, and the vendor stays UNKNOWN because the service type names no
+            // make. A service set this build cannot place keeps 0 rather than inventing one.
+            val airplay = services.any { it.startsWith("_airplay") || it.startsWith("_raop") }
+            val port = if (vendor == TvVendor.UNKNOWN && airplay) 7000
+                else TvScanPlan.defaultPortFor(vendor)
+
             DiscoveredTv(
                 vendor = vendor,
                 name = "${vendor.name.lowercase().replaceFirstChar { it.uppercase() }} on $host",
                 host = host,
-                port = TvScanPlan.defaultPortFor(vendor),
+                port = port,
                 evidence = "announced ${services.joinToString(", ")} over Bonjour",
                 needsPairing = vendor != TvVendor.ROKU,
             )

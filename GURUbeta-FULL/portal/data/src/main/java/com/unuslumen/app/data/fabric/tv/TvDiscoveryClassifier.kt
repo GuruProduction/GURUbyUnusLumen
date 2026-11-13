@@ -77,9 +77,43 @@ object TvDiscoveryClassifier {
             // to a refusal and the set vanished while netHosts listed it (issue #234).
             haystack.contains("eosstb") || haystack.contains("virgin tv") ||
                 haystack.contains("liberty global") -> TvVendor.UNKNOWN
-            // A DIAL service with no maker named is still a screen, but which one is
-            // unknown, and guessing a vendor would send the wrong protocol.
-            st.contains("dial-multiscreen", ignoreCase = true) && friendly != null -> TvVendor.UNKNOWN
+            // A DIAL SERVICE IS A SCREEN EVEN WHEN ITS DESCRIPTION WAS NEVER READ.
+            //
+            // Issue 331: both Virgin boxes advertise `urn:dial-multiscreen-org:service:dial:1`
+            // and appeared in `ssdpListDevices` in the same minute, but `tvDiscover` dropped
+            // them. The old rule required a friendly name here, and a friendly name only
+            // arrives with the description document, so a device whose description could not
+            // be fetched was refused one line after answering. The service type is the
+            // device's own declaration that a remote can launch something on it, which is
+            // precisely what this tool lists, so it needs no second witness.
+            // A DEVICE THAT DESCRIBED ITSELF AS SOMETHING ELSE IS NOT A SCREEN, WHATEVER IT
+            // ANNOUNCED (#331). DIAL is a search target printers and routers answer too, so
+            // accepting an announcement as proof would put a LaserJet in the television list.
+            // This is negative evidence and it beats the positive kind: the device said what
+            // it is, and it did not say television.
+            isPlainlyNotAScreen(haystack) -> return null
+
+            // A DIAL SERVICE IS A SCREEN EVEN WHEN ITS DESCRIPTION WAS NEVER READ.
+            //
+            // Issue 331: both Virgin boxes advertise `urn:dial-multiscreen-org:service:dial:1`
+            // and appeared in `ssdpListDevices` in the same minute, but `tvDiscover` dropped
+            // them. The old rule required a friendly name here, and a friendly name only
+            // arrives with the description document, so a device whose description could not
+            // be fetched was refused one line after answering. The service type is the
+            // device's own declaration that a remote can launch something on it, which is
+            // precisely what this tool lists, so it needs no second witness.
+            st.contains("dial-multiscreen", ignoreCase = true) -> TvVendor.UNKNOWN
+
+            // AN AIRPLAY OR RAOP SERVICE IS A SCREEN TOO, AND IT HAS NO SSDP REPLY AT ALL.
+            //
+            // Issue 331: two AirPlay receivers were queried over Bonjour and then dropped
+            // here, which is the query spending the network's power for nothing. The service
+            // type names no make, so the vendor is UNKNOWN deliberately: guessing which box
+            // it is would send the wrong protocol, and UNKNOWN is the value that already
+            // means "found, and this build has no adapter for it".
+            st.contains("airplay", ignoreCase = true) || st.contains("raop", ignoreCase = true) ->
+                TvVendor.UNKNOWN
+
             else -> return null
         }
 
@@ -112,7 +146,19 @@ object TvDiscoveryClassifier {
             TvVendor.PHILIPS -> 1925
             TvVendor.ANDROID_TV -> 6466
             TvVendor.AMAZON_FIRE_TV -> 8009
-            TvVendor.UNKNOWN -> 0
+            // AN UNKNOWN SCREEN'S CONTROL PORT COMES FROM WHAT IT ANNOUNCED (#331).
+            //
+            // This returned 0, so a Virgin box found over DIAL was listed with a port no
+            // command can address. DIAL is served on 8009 for every device that speaks it,
+            // which the Fire TV branch above already relies on, so a DIAL announcement names
+            // a real port even when the make does not. An AirPlay announcement is RTSP on
+            // 7000. A device that announced neither keeps 0, because a port it never
+            // mentioned would be a guess dressed as an address.
+            TvVendor.UNKNOWN -> when {
+                st.contains("dial-multiscreen", ignoreCase = true) -> 8009
+                st.contains("airplay", ignoreCase = true) || st.contains("raop", ignoreCase = true) -> 7000
+                else -> 0
+            }
         }
 
         return DiscoveredTv(
@@ -135,6 +181,29 @@ object TvDiscoveryClassifier {
     }
 
     /**
+     * Whether the device described itself as something that is plainly not a screen.
+     *
+     * WHY NEGATIVE EVIDENCE IS CHECKED FIRST. #331 widens what an announcement can prove, and
+     * the obvious risk of widening it is that every UPnP device answering a DIAL search target
+     * becomes a television. A printer is the case that caught it: `HP LaserJet UPnP/1.0` with
+     * `<friendlyName>Office Printer</friendlyName>` announces DIAL and serves that description,
+     * and the previous test asserting it is refused was right.
+     *
+     * The rule is therefore: a device that said what it is, and said something that is not a
+     * screen, is refused whatever it announced. A device that said nothing at all falls through
+     * to the announcement as evidence. Refusing on absence is the bug; refusing on a device's
+     * own statement is the fix.
+     */
+    private fun isPlainlyNotAScreen(haystack: String): Boolean =
+        haystack.contains("printer") ||
+            haystack.contains("laserjet") ||
+            haystack.contains("scanner") ||
+            haystack.contains("router") ||
+            haystack.contains("gatewaydevice") ||
+            haystack.contains("nas ") ||
+            haystack.contains("storage")
+
+    /**
      * Whether an unidentified device still described itself as something you watch.
      *
      * The bar is a MediaRenderer device type, the Liberty Global set-top-box strings, or a
@@ -146,8 +215,18 @@ object TvDiscoveryClassifier {
         haystack.contains("mediarenderer") -> true
         haystack.contains("eosstb") || haystack.contains("virgin tv") ||
             haystack.contains("liberty global") -> true
-        st.contains("dial-multiscreen", ignoreCase = true) &&
-            friendly != null && friendly.contains("tv", ignoreCase = true) -> true
+        // THE SERVICE TYPE ALONE IS ENOUGH, WITH NO FRIENDLY NAME REQUIRED (#331).
+        //
+        // This used to need `friendly != null && friendly.contains("tv")`, and a friendly
+        // name only arrives with the description document. So a device whose description was
+        // unreachable was refused here even though it had just declared, in its own SSDP
+        // reply, that it offers the DIAL multiscreen service. The declaration is the device's
+        // own statement about itself and is stronger evidence than a name we failed to fetch.
+        st.contains("dial-multiscreen", ignoreCase = true) -> true
+        // An AirPlay or RAOP announcement is a screen announcing itself over Bonjour. This
+        // build has no AirPlay adapter, and the result says so through the vendor rather than
+        // by pretending the device is not there.
+        st.contains("airplay", ignoreCase = true) || st.contains("raop", ignoreCase = true) -> true
         else -> false
     }
 

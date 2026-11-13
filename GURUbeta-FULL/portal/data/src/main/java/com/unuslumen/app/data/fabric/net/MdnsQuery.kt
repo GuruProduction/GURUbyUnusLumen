@@ -52,10 +52,23 @@ object MdnsQuery {
         return out.toByteArray()
     }
 
-    /** The service names a media device announces itself under. */
+    /**
+     * The service names a screen announces itself under.
+     *
+     * WHY AIRPLAY IS QUERIED AND THEN USED. Issue 331: `tvDiscover` found one of three DIAL
+     * sets and none of two AirPlay receivers, because `_airplay._tcp` was asked for and the
+     * replies were then mapped to no vendor, so they were dropped a line after arriving.
+     * Querying a service and discarding its answers is worse than not asking at all, because
+     * the question makes every receiver on the network spend power answering it.
+     *
+     * `_raop._tcp` is the Remote Audio Output Protocol an AirPlay receiver also publishes. A
+     * set that offers one almost always offers both, and listening for it costs one more
+     * question in the same pass.
+     */
     val screenServices: List<String> = listOf(
         "_androidtvremote2._tcp.local",
         "_googlecast._tcp.local",
         "_airplay._tcp.local",
+        "_raop._tcp.local",
     )
 }
