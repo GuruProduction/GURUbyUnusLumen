@@ -35,6 +35,58 @@ enum class NetworkReadOutcome {
 }
 
 /**
+ * What a *listener* is doing, which is a different question from what a read found.
+ *
+ * WHY THIS IS SEPARATE FROM [NetworkReadOutcome]. A table read is a single act that
+ * either happened or did not. A listener runs over time, so "nothing heard yet" is a
+ * legitimate state, and it is neither "found nothing" nor "never ran". Issue 222 is
+ * exactly that: `mdnsListDevices` returned `[]` whether the listener had never
+ * started, had failed to bind, was running and had not been seen yet, or was running
+ * on a network with no mDNS traffic at all. Four different facts, one empty array.
+ *
+ * COLLAPSING [LISTENING] INTO [STOPPED] WOULD BE THE SAME BUG IN REVERSE. A listener
+ * that is up and has heard nothing tells you something real about the network. A
+ * listener that is down tells you nothing at all, and saying so is the whole point.
+ */
+enum class ListenerState {
+    /** Never started, or started and then stopped. Nothing is being heard, by choice. */
+    STOPPED,
+    /** Every service type was asked and Android refused to start any of them. */
+    BIND_FAILED,
+    /** At least one listener is up but some types were refused, so results are partial. */
+    PARTIAL,
+    /** A listener is up and has found nothing yet. A real answer about the network. */
+    LISTENING,
+    /** A listener is up and has found devices. */
+    FOUND,
+}
+
+/**
+ * What a listener has to say for itself.
+ *
+ * [refusedTypes] is carried rather than flattened into [state] because a partial bind
+ * is the case a reader most needs: before treating silence on `_airplay._tcp` as
+ * evidence that no Apple TV exists, they need to know that type was being watched.
+ */
+data class ListenerReport(
+    val state: ListenerState,
+    /** Service types the platform accepted. */
+    val listening: List<String> = emptyList(),
+    /** Service types the platform refused, with the platform's own error code. */
+    val refusedTypes: List<String> = emptyList(),
+    /** How many devices are held right now. */
+    val found: Int = 0,
+    /** One sentence when the state is not a plain answer, naming the route where one exists. */
+    val sentence: String? = null,
+) {
+    /** True when at least one listener is actually running. */
+    val watching: Boolean
+        get() = state == ListenerState.LISTENING ||
+            state == ListenerState.PARTIAL ||
+            state == ListenerState.FOUND
+}
+
+/**
  * One table read, decided purely from what the shell returned.
  *
  * Deliberately free of Android imports so a JVM test pins the rule with no
@@ -87,6 +139,79 @@ object NetworkReads {
             sentence = null,
         )
     }
+
+    /**
+     * Decide what a listener is doing from what the platform said, and what is held.
+     *
+     * THE FOUR FACTS ISSUE 222 NAMED, KEPT APART. A listener that was never started, one
+     * the platform refused to start, one that is up with nothing heard yet, and one that
+     * is up with results are four different answers, and an empty array cannot carry any
+     * of them. The decision lives here, pure, so the rule needs no NsdManager to prove.
+     *
+     * [started] is whether startDiscovery was called at all. [listening] and [refused]
+     * are per-service-type, because Android refuses types individually: a partial bind
+     * is common and is the case where silence on one type is least trustworthy.
+     */
+    fun listenerReport(
+        started: Boolean,
+        listening: List<String>,
+        refused: List<String>,
+        found: Int,
+    ): ListenerReport {
+        if (!started) {
+            return ListenerReport(
+                state = ListenerState.STOPPED,
+                listening = listening,
+                refusedTypes = refused,
+                found = found,
+                sentence = "Discovery has not been started, so an empty list here would say " +
+                    "nothing about the network. Start discovery first.",
+            )
+        }
+
+        if (listening.isEmpty()) {
+            return ListenerReport(
+                state = ListenerState.BIND_FAILED,
+                listening = emptyList(),
+                refusedTypes = refused,
+                found = found,
+                sentence = "Android refused every mDNS service type, so nothing is being " +
+                    "listened for and this is not a report about the network. " +
+                    refused.firstOrNull()?.let { "The first refusal was $it. " }.orEmpty() +
+                    "Another app holding the multicast group, or multicast being filtered on " +
+                    "this wifi, are the usual causes.",
+            )
+        }
+
+        val state = when {
+            refused.isNotEmpty() -> ListenerState.PARTIAL
+            found > 0 -> ListenerState.FOUND
+            else -> ListenerState.LISTENING
+        }
+
+        return ListenerReport(
+            state = state,
+            listening = listening,
+            refusedTypes = refused,
+            found = found,
+            sentence = if (state == ListenerState.PARTIAL) {
+                "Android refused ${refused.joinToString(", ")}, so nothing is listening for " +
+                    "those and their silence is not evidence of absence. " +
+                    listening.joinToString(", ") + " are being watched."
+            } else {
+                null
+            },
+        )
+    }
+
+    /**
+     * How a listener's state renders in one line a model can repeat without distorting it.
+     *
+     * The distinction the sentence protects is the one issue 222 was filed about: a
+     * listener that is up with no results is describing the network, and a listener that
+     * failed to bind is describing the app.
+     */
+    fun listenerSentence(report: ListenerReport): String? = report.sentence
 
     /**
      * The sentence for a refused read.

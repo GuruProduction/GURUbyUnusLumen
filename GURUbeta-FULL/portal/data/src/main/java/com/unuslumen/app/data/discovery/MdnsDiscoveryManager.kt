@@ -77,6 +77,28 @@ class MdnsDiscoveryManager(
     private var isDiscovering = false
 
     /**
+     * Whether startDiscovery has ever been called.
+     *
+     * SEPARATE FROM [isDiscovering] ON PURPOSE. `isDiscovering` is false both before the
+     * first start and after a stop, and those are different answers: before the first
+     * start, an empty device list says nothing about the network; after a stop, it says
+     * the listener was deliberately taken down. Issue 222 was an empty array covering
+     * all of these.
+     */
+    @Volatile
+    private var everStarted = false
+
+    /**
+     * Service types Android accepted, and those it refused with its own error code.
+     *
+     * PER TYPE, because Android refuses them individually. A partial bind is the case
+     * where silence on one type is least trustworthy, so the reader has to be told which
+     * types are actually being watched before treating a missing device as absent.
+     */
+    private val listeningTypes = java.util.concurrent.CopyOnWriteArrayList<String>()
+    private val refusedTypes = java.util.concurrent.CopyOnWriteArrayList<String>()
+
+    /**
      * Multicast lock required to receive mDNS multicast packets.
      * Android WiFi drivers filter multicast by default to save battery.
      * Without this lock, NsdManager starts cleanly but finds zero devices.
@@ -111,7 +133,10 @@ class MdnsDiscoveryManager(
                 return
             }
             isDiscovering = true
+            everStarted = true
             activeListeners.clear()
+            listeningTypes.clear()
+            refusedTypes.clear()
             // Clear previous results so we start fresh
             discoveredDevices.clear()
         }
@@ -126,11 +151,35 @@ class MdnsDiscoveryManager(
                 synchronized(activeListeners) {
                     activeListeners.add(listener)
                 }
+                // discoverServices returning does NOT mean the listener bound: Android
+                // reports a refusal asynchronously through onStartDiscoveryFailed. So a
+                // type is only counted as listening once that callback has not fired by
+                // the time the report is read, and the callback records the refusal.
+                listeningTypes.add(serviceType)
             } catch (e: Exception) {
+                // A throw here is the synchronous form of the same refusal, so it is
+                // recorded rather than swallowed: issue 222 was this exception reaching
+                // nothing but the log.
                 Log.e(TAG, "Failed to start discovery for $serviceType", e)
+                listeningTypes.remove(serviceType)
+                refusedTypes.add("$serviceType (${e.javaClass.simpleName}: ${e.message ?: "no detail"})")
             }
         }
     }
+
+    /**
+     * What the listener is actually doing, for a caller that must not read an empty list
+     * as a statement about the network.
+     *
+     * The decision itself is [NetworkReads.listenerReport], which is pure so a JVM test
+     * pins it with no NsdManager and no device.
+     */
+    fun report(): ListenerReport = NetworkReads.listenerReport(
+        started = everStarted && isDiscovering,
+        listening = listeningTypes.toList(),
+        refused = refusedTypes.toList(),
+        found = discoveredDevices.size,
+    )
 
     /**
      * Stops all active discovery listeners.
@@ -237,8 +286,19 @@ class MdnsDiscoveryManager(
                 Log.d(TAG, "Discovery stopped: $type")
             }
 
+            /**
+             * The refusal, arriving asynchronously long after discoverServices returned.
+             *
+             * THIS IS WHY ISSUE 222 EXISTED. The platform accepts the call and then reports
+             * the failure here, so a manager that only logged this could not tell a bound
+             * listener from a refused one. Recording it is what makes the report honest,
+             * and the type moves out of `listeningTypes` because it is not being watched.
+             */
             override fun onStartDiscoveryFailed(type: String, errorCode: Int) {
                 Log.e(TAG, "Discovery start failed for $type, error=$errorCode")
+                listeningTypes.remove(serviceType)
+                val entry = "$serviceType (error $errorCode)"
+                if (!refusedTypes.contains(entry)) refusedTypes.add(entry)
             }
 
             override fun onStopDiscoveryFailed(type: String, errorCode: Int) {
