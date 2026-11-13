@@ -8,7 +8,28 @@ import com.unuslumen.app.data.tools.registry.ToolResultData
 import kotlinx.serialization.Serializable
 
 @Serializable data class MdnsDiscoverResult(val success: Boolean, val message: String?, val error: String?) : ToolResultData
-@Serializable data class MdnsDevicesResult(val success: Boolean, val devices: List<MdnsDevice>, val error: String?) : ToolResultData
+/**
+ * What `mdnsListDevices` returns.
+ *
+ * [listener] IS THE POINT OF THIS SHAPE. Issue 222: this tool returned `[]` whether the
+ * listener had never started, had failed to bind, was up and had heard nothing yet, or
+ * was up on a network with no mDNS traffic. Four different facts, one empty array, and
+ * the model reported all four as "there is no Apple TV on this network".
+ *
+ * [listener] carries which of those it is, plus which service types are actually being
+ * watched. A caller reading only [devices] and [success] is unaffected.
+ */
+@Serializable data class MdnsDevicesResult(
+    val success: Boolean,
+    val devices: List<MdnsDevice>,
+    val error: String?,
+    /** STOPPED, BIND_FAILED, PARTIAL, LISTENING or FOUND. */
+    val listener: String = "STOPPED",
+    /** Service types the platform accepted, so silence on one can be judged. */
+    val listeningTypes: List<String> = emptyList(),
+    /** Service types the platform refused, with its own error code. */
+    val refusedTypes: List<String> = emptyList(),
+) : ToolResultData
 @Serializable data class MdnsDevice(val serviceName: String, val serviceType: String, val host: String, val port: Int, val discoveredAt: Long) : ToolResultData
 @Serializable data class SsdpDiscoverResult(val success: Boolean, val message: String?, val error: String?) : ToolResultData
 @Serializable data class SsdpDevicesResult(val success: Boolean, val devices: List<SsdpDeviceDto>, val error: String?) : ToolResultData

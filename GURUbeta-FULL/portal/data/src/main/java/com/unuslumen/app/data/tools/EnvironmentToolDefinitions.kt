@@ -18,7 +18,24 @@ object EnvironmentToolDefinitions : ToolSetRegistration {
 
     override val definitions = listOf(
         ToolDefinition(name = MDNS_DISCOVER, description = "Start mDNS/Bonjour network discovery. Discovers Apple TV, Chromecast, Sonos, Hue bridges, printers.", category = "environment", parameters = emptyList(), permissions = emptyList()),
-        ToolDefinition(name = MDNS_LIST_DEVICES, description = "List all devices discovered via mDNS.", category = "environment", parameters = emptyList(), permissions = emptyList()),
+        // THE DESCRIPTION TELLS THE MODEL HOW TO READ AN EMPTY LIST (#222). An empty
+        // result used to mean four different things at once, and the model reported all
+        // four as "there is no Apple TV here". The result now carries the listener state
+        // and the service types actually being watched.
+        ToolDefinition(
+            name = MDNS_LIST_DEVICES,
+            description = "List the devices mDNS has heard: Apple TV and AirPlay receivers, " +
+                "Chromecasts, Sonos speakers, Hue bridges, printers. Reports the listener state " +
+                "alongside the devices, so an empty list is never ambiguous. FOUND means devices " +
+                "are listed, LISTENING means the listener is up and the wifi has announced nothing, " +
+                "PARTIAL means some service types were refused and their silence proves nothing, " +
+                "BIND_FAILED means Android refused every type and nothing was heard at all, and " +
+                "STOPPED means discovery was never started. Only LISTENING and FOUND are a " +
+                "statement about the network. Call mdnsDiscover first and give it a few seconds.",
+            category = "environment",
+            parameters = emptyList(),
+            permissions = emptyList(),
+        ),
         ToolDefinition(name = MDNS_STOP_DISCOVERY, description = "Stop mDNS discovery.", category = "environment", parameters = emptyList(), permissions = emptyList()),
         ToolDefinition(name = SSDP_DISCOVER, description = "Start SSDP/UPnP network discovery. Discovers Samsung TVs, DLNA servers, routers.", category = "environment", parameters = emptyList(), permissions = emptyList()),
         ToolDefinition(name = SSDP_LIST_DEVICES, description = "List all devices discovered via SSDP/UPnP.", category = "environment", parameters = emptyList(), permissions = emptyList()),

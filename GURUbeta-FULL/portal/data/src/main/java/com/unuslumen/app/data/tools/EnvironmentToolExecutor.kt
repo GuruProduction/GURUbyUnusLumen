@@ -6,6 +6,7 @@ package com.unuslumen.app.data.tools
 import android.content.Context
 import com.unuslumen.app.data.discovery.ArpDiscoveryManager
 import com.unuslumen.app.data.discovery.BluetoothScanManager
+import com.unuslumen.app.data.discovery.ListenerState
 import com.unuslumen.app.data.discovery.MdnsDiscoveryManager
 import com.unuslumen.app.data.discovery.NetworkReadOutcome
 import com.unuslumen.app.data.discovery.SsdpDiscoveryManager
@@ -39,7 +40,44 @@ class EnvironmentToolExecutor(
     override suspend fun execute(toolName: String, args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         when (toolName) {
             EnvironmentToolDefinitions.MDNS_DISCOVER -> { try { mdnsDiscoveryManager.startDiscovery(); val r = MdnsDiscoverResult(true, "mDNS discovery started", null); ToolExecutionResult.success(r, json.encodeToString(MdnsDiscoverResult.serializer(), r)) } catch (e: Exception) { val r = MdnsDiscoverResult(false, null, "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(MdnsDiscoverResult.serializer(), r)) } }
-            EnvironmentToolDefinitions.MDNS_LIST_DEVICES -> { try { val devs = mdnsDiscoveryManager.getDiscoveredDevices().map { MdnsDevice(it.serviceName, it.serviceType, it.host, it.port, it.discoveredAt) }; val r = MdnsDevicesResult(true, devs, null); ToolExecutionResult.success(r, json.encodeToString(MdnsDevicesResult.serializer(), r)) } catch (e: Exception) { val r = MdnsDevicesResult(false, emptyList(), "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(MdnsDevicesResult.serializer(), r)) } }
+            /*
+             * MDNS LIST DEVICES CARRIES THE LISTENER'S STATE (#222).
+             *
+             * This branch used to report `success = true` with an empty device list, so the
+             * model could not tell "the listener never bound" from "the wifi is quiet". It
+             * now reports which of the five listener states applies, and which service
+             * types are actually being watched, so silence on a refused type is never read
+             * as evidence that a device is absent.
+             *
+             * A LISTENING listener with no results stays a success: it genuinely looked and
+             * found nothing, which is a real answer. BIND_FAILED and STOPPED fail, because
+             * in both cases nothing was heard and the empty list describes the app.
+             */
+            EnvironmentToolDefinitions.MDNS_LIST_DEVICES -> {
+                try {
+                    val report = mdnsDiscoveryManager.report()
+                    val devs = mdnsDiscoveryManager.getDiscoveredDevices()
+                        .map { MdnsDevice(it.serviceName, it.serviceType, it.host, it.port, it.discoveredAt) }
+                    val honest = report.state == ListenerState.LISTENING || report.state == ListenerState.FOUND
+                    val r = MdnsDevicesResult(
+                        success = honest,
+                        devices = devs,
+                        error = report.sentence,
+                        listener = report.state.name,
+                        listeningTypes = report.listening,
+                        refusedTypes = report.refusedTypes,
+                    )
+                    emitPayload(json, json.encodeToString(MdnsDevicesResult.serializer(), r), r, r.success, r.error)
+                } catch (e: Exception) {
+                    val r = MdnsDevicesResult(
+                        success = false,
+                        devices = emptyList(),
+                        error = "mDNS list failed: ${e.message}",
+                        listener = ListenerState.BIND_FAILED.name,
+                    )
+                    emitPayload(json, json.encodeToString(MdnsDevicesResult.serializer(), r), r, false, r.error)
+                }
+            }
             EnvironmentToolDefinitions.MDNS_STOP_DISCOVERY -> { try { mdnsDiscoveryManager.stopDiscovery(); val r = MdnsDiscoverResult(true, "Stopped", null); ToolExecutionResult.success(r, json.encodeToString(MdnsDiscoverResult.serializer(), r)) } catch (e: Exception) { val r = MdnsDiscoverResult(false, null, "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(MdnsDiscoverResult.serializer(), r)) } }
             EnvironmentToolDefinitions.SSDP_DISCOVER -> { try { ssdpDiscoveryManager.startDiscovery(); val r = SsdpDiscoverResult(true, "SSDP discovery started", null); ToolExecutionResult.success(r, json.encodeToString(SsdpDiscoverResult.serializer(), r)) } catch (e: Exception) { val r = SsdpDiscoverResult(false, null, "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(SsdpDiscoverResult.serializer(), r)) } }
             EnvironmentToolDefinitions.SSDP_LIST_DEVICES -> { try { val devs = ssdpDiscoveryManager.getDiscoveredDevices().map { SsdpDeviceDto(it.usn, it.st, it.location, it.server, it.host, it.friendlyName, it.manufacturer, it.modelName, it.discoveredAt) }; val r = SsdpDevicesResult(true, devs, null); ToolExecutionResult.success(r, json.encodeToString(SsdpDevicesResult.serializer(), r)) } catch (e: Exception) { val r = SsdpDevicesResult(false, emptyList(), "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(SsdpDevicesResult.serializer(), r)) } }
