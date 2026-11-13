@@ -3107,15 +3107,38 @@ class TermuxProvider(private val context: Context) {
 
             if (existingTarget != wanted) {
                 if (existingTarget == null && usrLink.exists()) {
-                    // A real directory or file occupies the path. It cannot be a
-                    // working mapping, because dpkg writes THROUGH this path into
-                    // the prefix; left in place it silently swallows installs.
+                    /*
+                     * A REAL FILE OR DIRECTORY OCCUPIES THE MAPPING PATH, and the difference
+                     * between those two cases is not cosmetic (issue 31, measured on device).
+                     *
+                     * This used to call `usrLink.deleteRecursively()` unconditionally. Kotlin's
+                     * deleteRecursively builds a BOTTOM-UP FileTreeWalk, and FileTreeWalk's
+                     * iterator asserts that its root is a directory, so on a path that exists as
+                     * a regular FILE it throws
+                     *
+                     *     IllegalArgumentException: rootDir must be verified to be directory
+                     *
+                     * straight out of initialize(). The device run reproduced it and initialize()
+                     * never completed, which means no package could be installed at all: the very
+                     * step meant to repair the mapping was aborting the whole install.
+                     *
+                     * Either way an existing entry here cannot be a working mapping, because
+                     * dpkg writes THROUGH this path into the prefix. So the entry is removed with
+                     * the deletion that matches what is actually on disk.
+                     */
                     Log.w(
                         TAG,
-                        "TermuxProvider: compatibility root holds a real directory at " +
+                        "TermuxProvider: compatibility root holds a real " +
+                            "${if (usrLink.isDirectory) "directory" else "file"} at " +
                             "${usrLink.absolutePath}, replacing it with the symlink",
                     )
-                    usrLink.deleteRecursively()
+                    if (usrLink.isDirectory) {
+                        // A directory here is a partial tree from an install that wrote into
+                        // this path instead of the prefix. It is dpkg's own debris and goes.
+                        usrLink.deleteRecursively()
+                    } else {
+                        usrLink.delete()
+                    }
                 } else if (existingTarget != null) {
                     usrLink.delete()
                 }
