@@ -174,9 +174,34 @@ object TvDiscoveryClassifier {
             // needing one is the false requirement issue #243 reported. What genuinely needs
             // a pairing code is its button channel, and that is stated in the refusal for a
             // press where it is true, rather than as a flag saying the device is unusable.
+            // A SET THAT SPEAKS DIAL NEEDS NO PAIRING ON THAT PATH (#219, #243).
+            //
+            // This is the same false requirement #243 called out and #250 repeated: a DIAL
+            // launch is an unauthenticated HTTP POST, so there is no pairing step to offer.
+            // The Fire TV was the case both tickets named, and the Virgin boxes are the same
+            // shape: they advertise `dial-multiscreen` and serve an Application-URL, so
+            // saying they need a code sends a person to a prompt that never appears.
+            //
+            // A vendor whose control path genuinely does need one keeps it, which is why
+            // this is stated as "speaks DIAL" rather than as a blanket false.
+            // A DIAL LAUNCH NEEDS NO PAIRING, BUT ONLY WHERE DIAL IS THE WHOLE CONTROL PATH.
+            //
+            // #219 reported a Virgin box claiming a pairing requirement, and #243 and #250
+            // named the Fire TV. Both are right, and both are the same shape: their useful
+            // control path is an unauthenticated DIAL POST, so there is no prompt to accept.
+            //
+            // THE NARROW FORM MATTERS. The first attempt excluded any device that advertised
+            // DIAL, and a Samsung set advertises it too, so the rule stripped a requirement
+            // that is genuinely there: a Samsung's button channel does need its on-screen
+            // prompt, and telling a person otherwise sends them to a press that silently
+            // fails. Excluding on the announcement alone traded one wrong answer for another.
+            //
+            // So this excludes the vendor whose ONLY path is DIAL, and leaves every vendor
+            // with a real pairing channel saying so.
             needsPairing = vendor != TvVendor.ROKU &&
                 vendor != TvVendor.ANDROID_TV &&
-                vendor != TvVendor.AMAZON_FIRE_TV,
+                vendor != TvVendor.AMAZON_FIRE_TV &&
+                vendor != TvVendor.UNKNOWN,
         )
     }
 
