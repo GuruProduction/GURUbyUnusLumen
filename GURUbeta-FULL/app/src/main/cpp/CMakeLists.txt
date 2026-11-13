@@ -1,6 +1,31 @@
 cmake_minimum_required(VERSION 3.22.1)
 project("guru")
 
+# 16 KB PAGE ALIGNMENT, APPLIED BY ONE FUNCTION (issue 13).
+#
+# WHY THIS IS A FUNCTION RATHER THAN FOUR COPIES OF THE SAME TWO FLAGS. The flags
+# were already written out twice, on pathshim and python_launcher, and the targets
+# that did NOT get them are exactly the ones the compatibility warning named:
+# libquickjs.so and libquickjs_bridge.so were linked at 4 KB. Copying the block a
+# third and fourth time is how the fifth target gets forgotten.
+#
+# WHAT IT DOES. The NDK defaults a shared library's LOAD segments to 4096-byte
+# alignment. Android on 16 KB-page hardware refuses to load a library aligned
+# below the page size, and reports the app as not 16 KB compatible. Both flags are
+# needed: max-page-size sets the alignment the linker emits, and common-page-size
+# keeps the result loadable on 4 KB devices too, so one APK serves both.
+#
+# MEASURED, NOT ASSUMED. Before this change, 38 of the 66 native libraries in the
+# release APK carried 0x1000 LOAD alignment, including these two. The prebuilt
+# third-party libraries are a separate problem: they have to be rebuilt upstream,
+# and issue 13 tracks that half.
+function(guru_align_16kb target)
+    target_link_options(${target} PRIVATE
+        "-Wl,-z,max-page-size=16384"
+        "-Wl,-z,common-page-size=16384"
+    )
+endfunction()
+
 # Root shell daemon - runs commands as root via Unix socket
 add_executable(rootshell
     rootshell.c
@@ -16,6 +41,12 @@ target_link_libraries(exploit_runner log)
 
 set_target_properties(rootshell PROPERTIES LINKER_LANGUAGE C)
 set_target_properties(exploit_runner PROPERTIES LINKER_LANGUAGE C)
+
+# An executable carries LOAD segments exactly like a shared object, so the same
+# alignment rule applies. These two are not packaged into the APK today, which is
+# why nobody noticed, but a target built here should be correct by construction.
+guru_align_16kb(rootshell)
+guru_align_16kb(exploit_runner)
 
 # QuickJS JavaScript engine - shared library for JNI loading
 add_library(quickjs SHARED
@@ -44,6 +75,9 @@ target_link_libraries(quickjs log m)
 
 set_target_properties(quickjs PROPERTIES LINKER_LANGUAGE C)
 
+# Issue 13: this target was 0x1000 aligned and Android named it by name.
+guru_align_16kb(quickjs)
+
 # QuickJS JNI bridge - shared library that links against quickjs
 add_library(quickjs_bridge SHARED
     quickjs_bridge.c
@@ -60,6 +94,9 @@ target_link_libraries(quickjs_bridge
 )
 
 set_target_properties(quickjs_bridge PROPERTIES LINKER_LANGUAGE C)
+
+# Issue 13: named by Android as one of the misaligned libraries.
+guru_align_16kb(quickjs_bridge)
 
 # pathshim - LD_PRELOAD library that rewrites the upstream com.termux prefix at
 # the libc boundary, so binaries with a compiled-in path work without root and
@@ -86,10 +123,7 @@ set_target_properties(pathshim PROPERTIES LINKER_LANGUAGE C)
 # handling instead broke the shell. Both flags are needed: the linker needs the
 # larger max page size, and the common page size keeps the shared library usable
 # on 4 KB devices as well, so one APK serves both.
-target_link_options(pathshim PRIVATE
-    "-Wl,-z,max-page-size=16384"
-    "-Wl,-z,common-page-size=16384"
-)
+guru_align_16kb(pathshim)
 
 # python_launcher — the executable that starts the bundled CPython.
 #
@@ -147,10 +181,7 @@ set_target_properties(python_launcher PROPERTIES
 # libpython3.14.so or libpython3.so it finds.
 target_link_libraries(python_launcher dl)
 
-target_link_options(python_launcher PRIVATE
-    "-Wl,-z,max-page-size=16384"
-    "-Wl,-z,common-page-size=16384"
-)
+guru_align_16kb(python_launcher)
 
 # No post-build copy is needed, and the reason is worth recording because the
 # first attempt here added one and it caused a duplicate-file failure.
