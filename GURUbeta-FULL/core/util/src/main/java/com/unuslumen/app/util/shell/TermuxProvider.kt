@@ -91,7 +91,17 @@ class TermuxProvider(private val context: Context) {
          * that already holds the old extract.
          */
         private const val RE_TOOLCHAIN_MARKER = ".re-toolchain-ok"
-        private const val RE_TOOLCHAIN_VERSION = 1
+
+        /**
+         * Version 2 repairs the thirteen dangling JDK launcher links (issue 292).
+         *
+         * WHY THE BUMP IS THE FIX, and not just bookkeeping. installReToolchain returns early
+         * when the marker matches, so a handset that already ran version 1 keeps the relative
+         * links it wrote — which point at bin/lib/jvm/... and resolve to nothing. Without this
+         * bump the repair never runs on the devices that need it, which is every device that
+         * has installed the toolchain before.
+         */
+        private const val RE_TOOLCHAIN_VERSION = 2
 
         /** Where the JVM lands, relative to the prefix. Matches the archive. */
         private const val JVM_HOME_RELATIVE = "lib/jvm/java-21-openjdk"
@@ -2121,21 +2131,50 @@ class TermuxProvider(private val context: Context) {
              */
             val declaredLinks = readToolchainSymlinks(tempZip)
             var linked = 0
+            var repaired = 0
             for ((path, target) in declaredLinks) {
                 val linkFile = File(usrPrefix, path)
                 linkFile.parentFile?.mkdirs()
-                // A stale regular file at the link path is removed rather than
-                // left, because it is the broken artefact described above.
-                if (linkFile.exists() && !java.nio.file.Files.isSymbolicLink(linkFile.toPath())) {
+
+                /*
+                 * A SYMLINK THAT ALREADY EXISTS IS VERIFIED, NOT TRUSTED (issue 292).
+                 *
+                 * This used to `continue` on any existing symlink, so the links written by the
+                 * FIRST install were never re-examined. The manifest's target is written
+                 * prefix-relative — `lib/jvm/java-21-openjdk/bin/java` — but the link lives in
+                 * `bin/`, so the kernel resolves it to `bin/lib/jvm/...`, which does not exist.
+                 * All thirteen JDK tools were dangling for that reason, and no reinstall could
+                 * fix them because the second pass skipped them as present.
+                 *
+                 * The manifest's target is a PREFIX-RELATIVE path, so it is made absolute
+                 * against usrPrefix here rather than left for the kernel to reinterpret from
+                 * whichever directory the link happens to sit in. An absolute target behaves
+                 * identically wherever the link lives and can be checked with readlink.
+                 */
+                val wanted = File(usrPrefix, target).absolutePath
+                val existing = runCatching {
+                    android.system.Os.readlink(linkFile.absolutePath)
+                }.getOrNull()
+
+                if (existing == wanted) continue
+                if (existing != null) {
+                    // Wrong target: remove and recreate rather than leaving a dangling link.
+                    runCatching { linkFile.delete() }
+                    repaired++
+                } else if (linkFile.exists()) {
+                    // A stale regular file at the link path is the broken artefact described
+                    // above: a small text file that looks present and cannot execute.
                     linkFile.delete()
                 }
-                if (java.nio.file.Files.isSymbolicLink(linkFile.toPath())) continue
                 try {
-                    android.system.Os.symlink(target, linkFile.absolutePath)
+                    android.system.Os.symlink(wanted, linkFile.absolutePath)
                     linked++
                 } catch (e: Exception) {
-                    Log.w(TAG, "TermuxProvider: toolchain symlink $path -> $target failed: ${e.message}")
+                    Log.w(TAG, "TermuxProvider: toolchain symlink $path -> $wanted failed: ${e.message}")
                 }
+            }
+            if (repaired > 0) {
+                Log.w(TAG, "TermuxProvider: repaired $repaired toolchain symlinks that pointed at a dead relative path (issue 292)")
             }
             if (declaredLinks.isNotEmpty()) {
                 Log.d(TAG, "TermuxProvider: toolchain symlinks created ($linked of ${declaredLinks.size})")
