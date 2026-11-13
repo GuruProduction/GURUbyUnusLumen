@@ -133,6 +133,10 @@ class SensesDomainHonestyTest {
                 // has the partial-access subtlety, where Android may grant only the selected
                 // photos and a naive count reports a small library that is not small.
                 "nfc_media",
+                // The permissions domain, added for #47. The catalogue held 104 specs and the
+                // orchestrator knew every route, and nothing a model could call reached either
+                // of them, so GURU could not say why it lacked a capability or how to get it.
+                "permissions_management",
                 "phone",
                 "privileged_capture",
                 "sensors",

@@ -211,6 +211,17 @@ object GrantOrchestrator {
     // ------------------------------------------------------------------
 
     /**
+     * What the route for [spec] would be, without attempting it.
+     *
+     * The explainer path needs the plan and nothing else: a model asked what a person has to do
+     * must not fire a dialog or a shell command in order to answer. It lives here rather than
+     * being built at the call site so the environment is read exactly as [grant] reads it, and
+     * an explanation can never disagree with what a grant would actually do.
+     */
+    fun plan(context: Context, spec: PermissionSpec): GrantPlan =
+        GrantPolicy.plan(spec, environment(context, spec))
+
+    /**
      * Attempt the grant for one permission and report what actually happened.
      *
      * A route that is already held short-circuits to a landed outcome with no

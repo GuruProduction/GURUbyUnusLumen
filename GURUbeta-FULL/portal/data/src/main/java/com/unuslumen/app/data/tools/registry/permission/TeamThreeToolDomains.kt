@@ -19,6 +19,7 @@ import com.unuslumen.app.data.tools.permission.CallLogContactsDomainModule
 import com.unuslumen.app.data.tools.permission.DevicePowerIntrospectDomainModule
 import com.unuslumen.app.data.tools.permission.NetworkWifiDomainModule
 import com.unuslumen.app.data.tools.permission.NfcMediaDomainModule
+import com.unuslumen.app.data.tools.permission.PermissionDomainModule
 import com.unuslumen.app.data.tools.permission.SettingsControlDomainModule
 import com.unuslumen.app.data.tools.phone.PhoneDomainModule
 import com.unuslumen.app.data.tools.senses.BluetoothDomainModule
@@ -117,6 +118,12 @@ object TeamThreeToolDomains {
         // the partial-access subtlety, where Android may grant only the selected photos and a
         // naive count reports a small library that is not small.
         NfcMediaDomainModule,
+        // The permissions domain, which was the missing piece of the permission batch. The
+        // catalogue holds 104 specs and the orchestrator knows every route, and until this
+        // domain existed nothing a model could call reached either of them, so GURU could not
+        // answer "why can't you read my texts" with anything but a refusal from whichever tool
+        // happened to fail.
+        PermissionDomainModule,
         LocationDomainModule,
         PhoneDomainModule,
         PrivilegedCaptureDomainModule,
