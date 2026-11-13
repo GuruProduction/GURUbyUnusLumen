@@ -198,6 +198,16 @@ class TermuxToolExecutor(private val context: Context) : ToolExecutor {
                         toolDetails = details,
                         prefixExecutes = health.allRan,
                         prefixHealth = health.describe(),
+                        /*
+                         * THE HONEST BOUNDARY, ON THE SURFACE A PERSON CHECKS (issue 336).
+                         *
+                         * The ticket's minimum to ship is that the protection stops being presented
+                         * as unconditional. A status call is where somebody looks when they want to
+                         * know whether they are safe, so the sentence belongs here rather than in a
+                         * document nobody reads. [EgressBoundary] holds the reasoning and the table;
+                         * this carries its summary.
+                         */
+                        egressBoundary = com.unuslumen.app.data.tor.EgressBoundary.summary,
                     )
                     ToolExecutionResult.success(r, json.encodeToString(TermuxStatusResult.serializer(), r))
                 }
@@ -276,6 +286,13 @@ class TermuxToolExecutor(private val context: Context) : ToolExecutor {
                     }
 
                     val diagnostics = mutableListOf<String>()
+                    /*
+                     * THE BOUNDARY IS PART OF A DIAGNOSIS (issue 336). Somebody running one is
+                     * asking what state things are in, and "your traffic is protected" is one of
+                     * those states. It goes first because it is the answer with consequences outside
+                     * the phone.
+                     */
+                    diagnostics.add(com.unuslumen.app.data.tor.EgressBoundary.summary)
                     if (binCount == 0) diagnostics.add("No binaries")
                     if (!bashWorks) diagnostics.add("bash failed: ${bashTest.stderr.take(200)}")
                     when {
