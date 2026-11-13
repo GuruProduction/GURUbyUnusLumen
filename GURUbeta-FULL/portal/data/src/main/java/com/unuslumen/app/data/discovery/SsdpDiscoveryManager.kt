@@ -71,12 +71,70 @@ class SsdpDiscoveryManager(
             "urn:schemas-upnp-org:device:Basic:1",
             "urn:dial-multiscreen-org:service:dial:1"
         )
+
+        /**
+         * Whether a listener state means the question was genuinely answered.
+         *
+         * IN PRODUCTION RATHER THAN IN THE TEST, because a test that restates a rule proves only
+         * that the test agrees with itself. The executor calls this, so the test exercises the
+         * function the product actually runs.
+         *
+         * LISTENING and FOUND answered the question. STOPPED, BIND_FAILED and PARTIAL did not: the
+         * socket never opened, or it opened and something arrived that produced no device, and the
+         * second case is a fault in the parse rather than a fact about the network.
+         */
+        fun answered(state: ListenerState): Boolean =
+            state == ListenerState.LISTENING || state == ListenerState.FOUND
     }
 
     private val discoveredDevices = ConcurrentHashMap<String, SsdpDevice>()
 
     @Volatile
     private var isDiscovering = false
+
+    /*
+     * WHAT THE LISTENER ACTUALLY DID (issue 332's definition of done).
+     *
+     * This manager had no state at all beyond "am I discovering", so an empty device list could
+     * mean four different things and the tool reported all four as success with `[]`. The arp and
+     * mDNS tools were fixed for exactly this and this one was missed, which is why the family issue
+     * exists: the same defect fixed one tool at a time leaves the next one free.
+     *
+     * Every field below is written from a real event rather than inferred:
+     *  - [everStarted]      startDiscovery was called.
+     *  - [socketBound]      a DatagramSocket was created without throwing.
+     *  - [multicastLockHeld] the WifiManager lock was actually taken, which is what lets multicast
+     *                       replies through Android's filter at all.
+     *  - [packetsReceived]  a datagram arrived, whether or not it parsed into a device.
+     */
+    @Volatile private var everStarted = false
+    @Volatile private var socketBound = false
+    @Volatile private var multicastLockHeld = false
+    @Volatile private var packetsReceived = 0
+
+    /**
+     * Which of the five listener states applies right now.
+     *
+     * The same vocabulary the mDNS manager uses, so a caller reading two discovery tools sees one
+     * set of words rather than two dialects.
+     *
+     * FOUND is devices, LISTENING is a live socket that has heard nothing, PARTIAL is a live socket
+     * that heard traffic but produced no usable device, BIND_FAILED is a socket that was never
+     * created, and STOPPED is a scan that was never started.
+     */
+    fun listenerState(): ListenerState = when {
+        !everStarted -> ListenerState.STOPPED
+        !socketBound -> ListenerState.BIND_FAILED
+        discoveredDevices.isNotEmpty() -> ListenerState.FOUND
+        packetsReceived > 0 -> ListenerState.PARTIAL
+        else -> ListenerState.LISTENING
+    }
+
+    /** Whether the multicast lock is held, which is the usual reason silence is not a measurement. */
+    fun hasMulticastLock(): Boolean = multicastLockHeld
+
+    /** How many datagrams arrived, so a caller can tell a quiet network from a filtered one. */
+    fun packetsSeen(): Int = packetsReceived
 
     private var multicastLock: WifiManager.MulticastLock? = null
 
@@ -94,6 +152,11 @@ class SsdpDiscoveryManager(
             return
         }
         isDiscovering = true
+        // Reset the run's own state as well, so a second scan cannot inherit the first one's
+        // success. A STOPPED-then-listening sequence is a different answer from never having run.
+        everStarted = true
+        socketBound = false
+        packetsReceived = 0
         discoveredDevices.clear()
         acquireMulticastLock()
 
@@ -132,6 +195,7 @@ class SsdpDiscoveryManager(
             lock.setReferenceCounted(false)
             lock.acquire()
             multicastLock = lock
+            multicastLockHeld = true
             Log.d(TAG, "Multicast lock acquired")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to acquire multicast lock", e)
@@ -146,6 +210,7 @@ class SsdpDiscoveryManager(
                 Log.d(TAG, "Multicast lock released")
             }
             multicastLock = null
+            multicastLockHeld = false
         } catch (e: Exception) {
             Log.e(TAG, "Failed to release multicast lock", e)
         }
@@ -161,6 +226,13 @@ class SsdpDiscoveryManager(
 
         // Use a DatagramSocket on an ephemeral port for sending and receiving unicast responses
         DatagramSocket().use { socket ->
+            /*
+             * THE SOCKET EXISTED, WHICH IS THE FACT A REFUSAL DEPENDS ON. If this line is never
+             * reached the constructor threw and nothing could have been heard; if it is reached and
+             * the network is quiet, that is a real answer about the wifi. Everything downstream
+             * reads this one flag rather than guessing from an empty list.
+             */
+            socketBound = true
             socket.broadcast = true
 
             // Send M-SEARCH for each target
@@ -187,6 +259,10 @@ class SsdpDiscoveryManager(
                 val responsePacket = DatagramPacket(buffer, buffer.size)
                 try {
                     socket.receive(responsePacket)
+                    // COUNTED BEFORE PARSING, deliberately. A datagram that arrived but did not
+                    // parse as a device is still proof the multicast path works and the wifi is
+                    // not silent, which is exactly the difference between PARTIAL and LISTENING.
+                    packetsReceived++
                     val response = String(responsePacket.data, 0, responsePacket.length, Charsets.UTF_8)
                     parseSsdpResponse(response, responsePacket.address?.hostAddress ?: "")
                 } catch (e: java.net.SocketTimeoutException) {
@@ -221,6 +297,7 @@ class SsdpDiscoveryManager(
                     val packet = DatagramPacket(buffer, buffer.size)
                     try {
                         socket.receive(packet)
+                        packetsReceived++
                         val data = String(packet.data, 0, packet.length, Charsets.UTF_8)
                         if (data.startsWith("NOTIFY")) {
                             parseSsdpResponse(data, packet.address?.hostAddress ?: "")

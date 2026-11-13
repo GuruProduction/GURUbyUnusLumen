@@ -47,6 +47,21 @@ import kotlinx.serialization.Serializable
     val error: String?,
     /** One line per device whose name is missing, naming the reason. */
     val problems: List<String> = emptyList(),
+    /**
+     * FOUND, EMPTY or REFUSED (issue 332's definition of done).
+     *
+     * [problems] explained an unnamed device but said nothing about the case where SSDP produced
+     * no devices at all, which is the same defect the arp table and the mDNS listener had: a socket
+     * that never bound and a network with nothing on it produced the same empty list. REFUSED is
+     * the listen never happening; EMPTY is a real answer about the network.
+     */
+    val outcome: String = NetworkReadOutcome.EMPTY.name,
+    /** The multicast socket's state, so silence can be judged rather than assumed. */
+    val listener: String = "STOPPED",
+    /** The subnet the multicast group was swept from, or null when the phone has no LAN address. */
+    val subnet: String? = null,
+    /** Which tier served the read. */
+    val tier: String = "APP_UID",
 ) : ToolResultData
 @Serializable data class SsdpDeviceDto(
     val usn: String,
