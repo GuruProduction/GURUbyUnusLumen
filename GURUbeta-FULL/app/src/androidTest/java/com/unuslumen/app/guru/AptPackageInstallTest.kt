@@ -34,9 +34,45 @@ class AptPackageInstallTest {
 
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
 
+    /**
+     * Bring Tor up and wait for a circuit, because apt now genuinely goes through it.
+     *
+     * THE FIRST RUN OF THIS TEST MEASURED NOTHING AND LOOKED LIKE A PRODUCT FAULT. TermuxProvider
+     * exports `ALL_PROXY=socks5h://127.0.0.1:9050` into every process in the prefix, which is the
+     * fix from issue 335, so apt's fetch goes to the SOCKS port. On an emulator where the app's
+     * own Tor has never been started nothing is listening there, and apt reported
+     *
+     *   Could not connect to 127.0.0.1:9050 (127.0.0.1). - connect (111: Connection refused)
+     *   E: Unable to locate package figlet
+     *
+     * That is apt working correctly with no circuit, not the packing-system fault this issue is
+     * about. So the harness starts Tor the way the app does and waits for a usable circuit; only
+     * then does "can apt install a package" become a question about the prefix rather than about
+     * whether a proxy happened to be up.
+     */
+    private suspend fun bringUpTor(): Boolean {
+        // Resolved through Koin because TorManager is a @Single the app itself gets this way, and
+        // constructing one here would start a SECOND Tor alongside the app's own.
+        val manager = org.koin.core.context.GlobalContext.get()
+            .get<com.unuslumen.app.data.tor.TorManager>()
+        manager.start(context)
+        repeat(60) {
+            if (manager.areCircuitsUsable()) return true
+            kotlinx.coroutines.delay(2000)
+        }
+        return manager.areCircuitsUsable()
+    }
+
     @Test
     fun aptUpdateReachesTheRepositoryThroughTheTorCircuit() = runBlocking {
         TermuxProvider(context).initialize()
+        val torReady = bringUpTor()
+        println("TOR ready=$torReady")
+        assertTrue(
+            "the egress boundary routes apt through Tor, so a circuit must be up before this " +
+                "measures anything about apt. ready=$torReady",
+            torReady,
+        )
         val provider = TermuxProvider(context)
         val result = provider.execAptUpdate()
         val combined = (result.stdout + "\n" + result.stderr).trim()
@@ -57,6 +93,9 @@ class AptPackageInstallTest {
     @Test
     fun aptInstallsFigletAndTheFontDirectoryLandsWithIt() = runBlocking {
         TermuxProvider(context).initialize()
+        val torReady = bringUpTor()
+        println("TOR ready=$torReady")
+        assertTrue("a circuit is required before apt can fetch. ready=$torReady", torReady)
         val provider = TermuxProvider(context)
         val install = provider.execAptInstall("figlet")
         println("APT_INSTALL exit=${install.exitCode} out=[${(install.stdout + install.stderr).take(1200)}]")
