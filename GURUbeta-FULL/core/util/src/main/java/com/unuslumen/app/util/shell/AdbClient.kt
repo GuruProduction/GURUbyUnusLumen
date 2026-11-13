@@ -468,45 +468,41 @@ class AdbClient(
     }
 
     /**
-     * Sign an ADB AUTH token with RSA using PKCS#1 v1.5 padding.
+     * Sign an ADB AUTH token the way the daemon actually verifies it (issue 293).
      *
-     * ADB authentication: the server sends a 20-byte SHA1 token.
-     * The client signs it with RSA/ECB/NoPadding using PKCS#1 v1.5 padding.
-     * The signature format is: 0x00 0x01 [0xFF padding] 0x00 [DigestInfo] [token]
-     * where DigestInfo is the ASN.1 OID for SHA-1 followed by the token.
+     * WHAT THE DAEMON DOES. The server sends a 20-byte token and expects an RSA signature
+     * over it. Two schemes exist across AOSP:
      *
-     * For a 2048-bit key (256 bytes), the total must be exactly 256 bytes.
+     *   legacy   RSA_private_encrypt:  00 01 FF..FF 00 || token
+     *   modern   RSA_sign(NID_sha1):   00 01 FF..FF 00 || DigestInfo(SHA-1) || SHA1(token)
+     *
+     * WHAT THIS USED TO EMIT was `DigestInfo || token`, which is neither. It is only correct
+     * if the token already equals its own SHA-1 digest, which is false for every 20-byte value
+     * a daemon could send, so the signature never verified.
+     *
+     * WHY THAT PRODUCED A PROMPT ON EVERY CONNECT. A rejected signature makes the daemon send
+     * another AUTH_TOKEN, so the client fell through to AUTH_RSAPUBLICKEY, the person tapped
+     * Allow, and the key was added to the trusted list. On the next connection the client
+     * signed again and the signature was still malformed, so the lookup that would have found
+     * that trusted key never matched: the daemon resolves the key BY THE SIGNATURE. The
+     * trusted entry was never reached.
+     *
+     * THE MODERN FORM IS IMPLEMENTED, which is what every current daemon accepts and what
+     * RSA_sign computes. It is also strictly more correct than the legacy form: the hash is
+     * what the DigestInfo says it is, so the signature cannot be replayed against a different
+     * token.
      */
     private fun signWithRsa(token: ByteArray): ByteArray {
-        // DigestInfo for SHA-1: ASN.1 OID + NULL + SHA-1 digest
-        // 30 21 30 09 06 05 2b 0e 03 02 1a 05 00 04 14 [20-byte-hash]
-        val digestInfoPrefix = byteArrayOf(
-            0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e,
-            0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14
-        )
-
-        // Build the padded message: 0x00 0x01 [0xFF padding] 0x00 [DigestInfo] [token]
-        // Total must equal the RSA key size in bytes (256 for 2048-bit)
-        val keySize = (rsaKeyPair.private as RSAPrivateKey).modulus.bitLength() / 8  // 256 for 2048-bit
-        val paddingLen = keySize - 3 - digestInfoPrefix.size - token.size  // 0xFF bytes
-        require(paddingLen > 0) { "Token too large for RSA key" }
-
-        val paddedMessage = ByteArray(keySize)
-        var offset = 0
-        paddedMessage[offset++] = 0x00
-        paddedMessage[offset++] = 0x01
-        for (i in 0 until paddingLen) {
-            paddedMessage[offset++] = 0xFF.toByte()
-        }
-        paddedMessage[offset++] = 0x00
-        System.arraycopy(digestInfoPrefix, 0, paddedMessage, offset, digestInfoPrefix.size)
-        offset += digestInfoPrefix.size
-        System.arraycopy(token, 0, paddedMessage, offset, token.size)
-
-        // Encrypt with RSA private key using NoPadding (we did the padding ourselves)
+        val keySize = (rsaKeyPair.private as RSAPrivateKey).modulus.bitLength() / 8
+        /*
+         * THE BLOCK COMES FROM AdbAuthEncoding, so there is one implementation of the scheme
+         * rather than one here and one in a test that could drift (issue 293). The padding is
+         * built by hand there, so the cipher must not add its own.
+         */
+        val block = AdbAuthEncoding.signatureBlock(token, keySize)
         val cipher = Cipher.getInstance("RSA/ECB/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, rsaKeyPair.private)
-        return cipher.doFinal(paddedMessage)
+        return cipher.doFinal(block)
     }
 
     /**
