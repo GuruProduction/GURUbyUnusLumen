@@ -488,10 +488,24 @@ class TvToolExecutor(
                 emitPayload(json, json.encodeToString(TvPressResult.serializer(), r), r, false, r.error)
             }
             is TvCommandOutcome.Sent -> {
-                // Read the set back where the protocol allows it, and report the reading
-                // rather than assuming the press landed.
-                val state = runCatching { remote.readState() }.getOrNull()
-                val observed = state?.get(TvStateKey.POWER)
+                // REPORT ONLY WHAT THE BUTTON WAS ABOUT (#216).
+                //
+                // This read the set's power state and put it in `observed` whatever had been
+                // pressed, so a volume press came back saying `observed: "PowerOn"`. A reader
+                // takes that as confirmation the volume changed, and nothing about volume was
+                // observed at all. A field that answers a question nobody asked is worse than
+                // an empty one, because it is believed.
+                //
+                // So the reading is taken only where the protocol can answer the question the
+                // button actually asked, and `observed` stays null otherwise. A null here is
+                // the truth: this build did not observe the outcome of that press.
+                val observed = runCatching {
+                    when (button.observableState()) {
+                        TvStateKey.POWER -> remote.readState()?.get(TvStateKey.POWER)
+                        else -> null
+                    }
+                }.getOrNull()
+
                 val r = TvPressResult(
                     success = true,
                     television = entry.tv.name,

@@ -552,7 +552,10 @@ class TvDiscovery(
 
     private fun tag(xml: String, name: String): String? =
         Regex("<$name[^>]*>([^<]*)</$name>", RegexOption.IGNORE_CASE)
-            .find(xml)?.groupValues?.getOrNull(1)?.trim()?.ifBlank { null }
+            // DECODED AT EXTRACTION, NOT AT THE RESOLVER (#216, #223). A set whose real name
+        // contains an apostrophe serves it as `&apos;`, and leaving it encoded made the name
+        // impossible to address while looking like a string the person could type.
+        .find(xml)?.groupValues?.getOrNull(1)?.let { XmlText.decodeAndTrim(it) }?.ifBlank { null }
 
     // ------------------------------------------------------------------
     // SSDP and Bonjour

@@ -288,6 +288,25 @@ enum class TvButton {
     INPUT,
     ;
 
+    /**
+     * The piece of device state this button's effect would be visible in, or null when this
+     * build cannot observe it.
+     *
+     * WHY A BUTTON HAS TO SAY THIS (#216). `tvPress` reads the set back after a press, and it
+     * used to put the POWER state in its `observed` field for every button. A volume press
+     * therefore came back reporting `PowerOn`, which reads as confirmation that the volume
+     * changed. It confirmed nothing: the field was answering a question the caller had not
+     * asked, and a caller believes a field that is filled in.
+     *
+     * Only three buttons have an effect this build can actually read back. Everything else
+     * returns null, and null is the honest answer: the press was sent and its outcome was not
+     * observed.
+     */
+    fun observableState(): TvStateKey? = when (this) {
+        POWER, POWER_ON, POWER_OFF -> TvStateKey.POWER
+        else -> null
+    }
+
     companion object {
         /** Read a spoken or written button name. */
         fun fromRaw(raw: String?): TvButton? {
