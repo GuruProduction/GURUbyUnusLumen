@@ -70,6 +70,15 @@ import kotlinx.serialization.Serializable
     val toolDetails: Map<String, String> = emptyMap(),
     val prefixExecutes: Boolean? = null,
     val prefixHealth: String? = null,
+    /**
+     * What the egress boundary actually guarantees, in the words a person needs (issue 336).
+     *
+     * THE TICKET'S OWN MINIMUM TO SHIP: "at the moment the protection is presented as
+     * unconditional and it is not". A status surface is where somebody looks when they want to know
+     * whether they are safe, so this is where the honest sentence belongs. [EgressBoundary] holds the
+     * reasoning; this carries it to the model.
+     */
+    val egressBoundary: String? = null,
 ) : ToolResultData
 @Serializable data class TermuxHasCommandResult(val command: String, val available: Boolean, val message: String) : ToolResultData
 /*
