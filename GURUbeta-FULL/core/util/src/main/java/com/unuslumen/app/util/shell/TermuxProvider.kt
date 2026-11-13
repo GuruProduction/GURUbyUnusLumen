@@ -2470,6 +2470,7 @@ class TermuxProvider(private val context: Context) {
         val reToolsLibDir = File(reToolsDir, "lib")
         reToolsLibDir.mkdirs()
 
+
         var count = 0
         libDir.listFiles()?.forEach { file ->
             if (!file.isFile || !file.name.endsWith(".so") && !file.name.contains(".so.")) return@forEach
@@ -2484,6 +2485,113 @@ class TermuxProvider(private val context: Context) {
 
         if (count > 0) {
             Log.d(TAG, "TermuxProvider: copied $count libs to ${reToolsLibDir.absolutePath}")
+        }
+
+        /*
+         * THE C++ RUNTIME IS THE ONE LIBRARY THAT FLOWS THE OTHER WAY (issue 291).
+         *
+         * aapt, aapt2 and zipalign are built against a newer libc++ than the Termux bootstrap
+         * ships, so they fail with:
+         *
+         *   cannot locate symbol "_ZNSt6__ndk113__hash_memoryEPKvm"
+         *
+         * The re-toolchain archive carries a libc++_shared.so that DOES export it. Measured:
+         * the re-toolchain copy exports `_ZNSt6__ndk113__hash_memoryEPKvm`, the bootstrap copy
+         * does not, and the prefix's lib directory is FIRST on LD_LIBRARY_PATH, so the older
+         * one wins and the newer one is never reached.
+         *
+         * The copy above only ever runs Termux -> re-tools, so the newer library could not get
+         * in. This copies it the other way, into the prefix's lib, where the loader looks
+         * first. It is a superset: a newer libc++ exports everything the older one did, which
+         * is exactly what the version skew means.
+         *
+         * IT IS COPIED ONLY WHEN THE PREFIX COPY LACKS THE SYMBOL, so a future bootstrap that
+         * already carries a new enough library is left alone rather than overwritten.
+         */
+        /*
+         * THE CANDIDATE IS EXTRACTED FROM THE ARCHIVE WHEN IT IS NOT ON DISK.
+         *
+         * The re-toolchain installer writes its whole tree to reToolsDir, but it is gated on
+         * its own marker and may not have run in this process at all. Depending on it would
+         * make the C++ runtime's correctness a consequence of install order, which is exactly
+         * the kind of hidden coupling this issue is about. Reading the archive entry directly
+         * means the newer library is available whatever else has or has not happened.
+         */
+        /*
+         * THE PRESENCE OF THE FILE IS NOT ENOUGH, WHICH IS WHAT MY FIRST ATTEMPT GOT WRONG.
+         *
+         * re-tools/lib already contains a libc++_shared.so — copied there from the Termux prefix
+         * by the loop above, and it is the OLD one. So "if the file is missing, extract it" never
+         * fires on a tree that has ever been initialised, and the old library sits in both
+         * places. The question is whether the file in hand EXPORTS THE SYMBOL, not whether a
+         * file of that name exists.
+         */
+        val newerCxx = File(reToolsLibDir, "libc++_shared.so")
+        val cxxIsNewEnough = runCatching {
+            newerCxx.isFile && newerCxx.readBytes().toString(Charsets.ISO_8859_1).contains("__hash_memory")
+        }.getOrDefault(false)
+        if (!cxxIsNewEnough) {
+            extractReToolchainEntry("lib/libc++_shared.so", newerCxx)
+        }
+        /*
+         * AND IF THE ARCHIVE ENTRY COULD NOT BE EXTRACTED, THE PREFIX COPY IS LEFT ALONE.
+         * installNewerCxxRuntime checks the candidate for the symbol before touching anything,
+         * so a missing candidate is a no-op rather than a half-applied change.
+         */
+        installNewerCxxRuntime(newerCxx, File(libDir, "libc++_shared.so"))
+    }
+
+    /** Pull one entry out of the bundled re-toolchain archive, if the archive is there. */
+    private fun extractReToolchainEntry(entry: String, dest: File) {
+        runCatching {
+            context.assets.open(ASSET_RE_TOOLCHAIN).use { stream ->
+                java.util.zip.ZipInputStream(stream).use { zip ->
+                    var current = zip.nextEntry
+                    while (current != null) {
+                        if (current.name == entry) {
+                            dest.parentFile?.mkdirs()
+                            dest.outputStream().use { out -> zip.copyTo(out) }
+                            dest.setReadable(true, false)
+                            Log.d(TAG, "TermuxProvider: extracted $entry to ${dest.absolutePath}")
+                            return
+                        }
+                        current = zip.nextEntry
+                    }
+                }
+            }
+        }.onFailure {
+            Log.w(TAG, "TermuxProvider: could not read $entry from the re-toolchain: ${it.message}")
+        }
+    }
+
+    /**
+     * Put a libc++ that exports `__hash_memory` where the loader will find it first.
+     *
+     * [candidate] is the re-toolchain copy; [target] is the prefix's own. Both are read as raw
+     * bytes and the check is a byte search for the mangled symbol name, because this runs on
+     * Android where `nm` may not be present and spawning a process to inspect a library is a
+     * heavy way to answer a question about a string in it.
+     */
+    private fun installNewerCxxRuntime(candidate: File, target: File) {
+        if (!candidate.isFile) return
+        val symbol = "__hash_memory"
+        val candidateHas = runCatching {
+            candidate.readBytes().toString(Charsets.ISO_8859_1).contains(symbol)
+        }.getOrDefault(false)
+        if (!candidateHas) return
+
+        val targetHas = runCatching {
+            target.isFile && target.readBytes().toString(Charsets.ISO_8859_1).contains(symbol)
+        }.getOrDefault(false)
+        if (targetHas) return
+
+        runCatching {
+            target.parentFile?.mkdirs()
+            candidate.copyTo(target, overwrite = true)
+            target.setReadable(true, false)
+            Log.d(TAG, "TermuxProvider: installed a libc++ that exports $symbol into ${target.absolutePath}")
+        }.onFailure {
+            Log.w(TAG, "TermuxProvider: could not install the newer libc++: ${it.message}")
         }
     }
 
