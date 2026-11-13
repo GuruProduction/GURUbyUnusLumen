@@ -51,10 +51,44 @@ object TermuxToolDefinitions : ToolSetRegistration {
             ),
             permissions = emptyList(),
         ),
-        ToolDefinition(name = TERMUX_INSTALL, description = "Install packages inside the bundled Termux environment using apt.", category = "termux", parameters = listOf(ToolParameter("packages", ToolParameterType.String, true, "Space-separated packages")), permissions = emptyList()),
+        /*
+         * THE DESCRIPTION SAYS WHAT SUCCESS MEANS (issue 31).
+         *
+         * It said "install packages using apt", so a model reading it had no way to know that
+         * apt's exit status is not the answer. The ticket is a package that printed
+         * "Setting up figlet" and left every font absent, and the surface called that a success.
+         *
+         * The result now carries packagesInstalled, packagesIncomplete and installDetail, and
+         * this description points at them, because a caller that reads only `success` would be
+         * making the same mistake in the other direction after the fix.
+         */
+        ToolDefinition(
+            name = TERMUX_INSTALL,
+            description = "Install packages inside the bundled Termux environment using apt. " +
+                "dpkg's exit status is NOT the answer to whether a package works: it exits 0 " +
+                "when its writes reached a writable tree, which is compatible with a binary " +
+                "landing and its data files never arriving. So every requested package is " +
+                "checked against its own dpkg file list afterwards and the result reports " +
+                "packagesInstalled, packagesIncomplete, and installDetail naming the paths that " +
+                "are missing.",
+            category = "termux",
+            parameters = listOf(ToolParameter("packages", ToolParameterType.String, true, "Space-separated packages")),
+            permissions = emptyList(),
+        ),
         ToolDefinition(name = TERMUX_STATUS, description = "Get the current status of the bundled Termux environment.", category = "termux", parameters = emptyList(), permissions = emptyList()),
         ToolDefinition(name = TERMUX_HAS_COMMAND, description = "Check if a specific command or binary exists in the Termux environment.", category = "termux", parameters = listOf(ToolParameter("command", ToolParameterType.String, true, "Command name")), permissions = emptyList()),
-        ToolDefinition(name = TERMUX_DIAGNOSE, description = "Run a full diagnostic on the bundled Termux environment.", category = "termux", parameters = emptyList(), permissions = emptyList())
+        ToolDefinition(
+            name = TERMUX_DIAGNOSE,
+            description = "Run a full diagnostic on the bundled Termux environment. Reports apt's " +
+                "state in three values (absent, will not load, runs) and, separately, the " +
+                "measured state of every package the database records as installed: " +
+                "packagesInstalled, packagesIncomplete, and installDetail naming the paths each " +
+                "incomplete package is missing. A clean apt exit and a package whose payload is " +
+                "absent are different facts and this reports both.",
+            category = "termux",
+            parameters = emptyList(),
+            permissions = emptyList(),
+        )
     )
     override fun executorClass(): KClass<out ToolExecutor> = TermuxToolExecutor::class
     override fun extractorClass(): KClass<out ToolResultExtractor>? = null
