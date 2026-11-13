@@ -73,7 +73,51 @@ class TermuxToolExecutor(private val context: Context) : ToolExecutor {
         when (toolName) {
             TermuxToolDefinitions.TERMUX_INIT -> { val err = ensureReady(); if (err != null) { val r = TermuxInitResult(false, false, "", "", "", err); ToolExecutionResult.success(r, json.encodeToString(TermuxInitResult.serializer(), r)) } else { val reTools = shellExecutor.reTools; val binCount = File(termuxProvider.getBinPath()).listFiles()?.size ?: 0; val r = TermuxInitResult(true, true, termuxProvider.getRootPath(), termuxProvider.getHomePath(), termuxProvider.getBinPath(), "Termux initialized: $binCount binaries. RE tools: aapt=${reTools.isAaptAvailable()} aapt2=${reTools.isAapt2Available()} apktool=${reTools.isApktoolAvailable()} jadx=${reTools.isJadxAvailable()}"); ToolExecutionResult.success(r, json.encodeToString(TermuxInitResult.serializer(), r)) } }
             TermuxToolDefinitions.TERMUX_EXEC -> { val cmd = args["command"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'command'"); val err = ensureReady(); if (err != null) { val r = TermuxExecResult(false, -1, "", err, cmd); ToolExecutionResult.success(r, json.encodeToString(TermuxExecResult.serializer(), r)) } else { val dir = args["workingDir"] as? String ?: termuxProvider.getHomePath(); val result = if (dir != termuxProvider.getHomePath()) termuxProvider.execBash("cd '$dir' 2>/dev/null; $cmd") else termuxProvider.execInTermux(cmd); val r = TermuxExecResult(result.exitCode == 0, result.exitCode, result.stdout, result.stderr, cmd); ToolExecutionResult.success(r, json.encodeToString(TermuxExecResult.serializer(), r)) } }
-            TermuxToolDefinitions.TERMUX_INSTALL -> { val packages = args["packages"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'packages'"); val err = ensureReady(); if (err != null) { val r = TermuxInstallResult(false, -1, err, packages); ToolExecutionResult.success(r, json.encodeToString(TermuxInstallResult.serializer(), r)) } else { val result = termuxProvider.execAptInstall(packages); val output = if (result.stdout.length > 3000) result.stdout.takeLast(3000) else result.stdout; val r = TermuxInstallResult(result.exitCode == 0, result.exitCode, output.ifBlank { result.stderr }, packages); ToolExecutionResult.success(r, json.encodeToString(TermuxInstallResult.serializer(), r)) } }
+            TermuxToolDefinitions.TERMUX_INSTALL -> {
+                val packages = args["packages"] as? String
+                    ?: return@withContext ToolExecutionResult.error("Missing 'packages'")
+                val err = ensureReady()
+                if (err != null) {
+                    val r = TermuxInstallResult(false, -1, err, packages)
+                    ToolExecutionResult.success(r, json.encodeToString(TermuxInstallResult.serializer(), r))
+                } else {
+                    val result = termuxProvider.execAptInstall(packages)
+                    val output = if (result.stdout.length > 3000) result.stdout.takeLast(3000) else result.stdout
+
+                    /*
+                     * MEASURE WHAT LANDED, DO NOT TRUST THE EXIT CODE (issue 31).
+                     *
+                     * dpkg exits 0 when its writes reached a writable tree through the
+                     * compatibility root, and that is not the same question as "did this
+                     * package's payload arrive where the app can run it". The ticket's figlet
+                     * case is a clean exit, a binary on disk, and every font missing. So every
+                     * package named on the command line is checked against its own .list and
+                     * the result carries the answer.
+                     *
+                     * A name that dpkg has no record for is reported as incomplete rather than
+                     * skipped, because "apt said it installed this and dpkg has never heard of
+                     * it" is the strongest form of the fault, not a reason to stay quiet.
+                     */
+                    val requested = packages.split(Regex("\\s+"))
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() && !it.startsWith("-") }
+                    val verdicts = requested.map { termuxProvider.checkInstall(it) }
+                    val installed = verdicts.filter { it.complete }.map { it.packageName }
+                    val incomplete = verdicts.filterNot { it.complete }.map { it.packageName }
+                    val detail = verdicts.filterNot { it.complete }.map { it.sentence }
+
+                    val r = TermuxInstallResult(
+                        success = result.exitCode == 0 && incomplete.isEmpty(),
+                        exitCode = result.exitCode,
+                        output = output.ifBlank { result.stderr },
+                        packages = packages,
+                        packagesInstalled = installed,
+                        packagesIncomplete = incomplete,
+                        installDetail = detail,
+                    )
+                    ToolExecutionResult.success(r, json.encodeToString(TermuxInstallResult.serializer(), r))
+                }
+            }
             TermuxToolDefinitions.TERMUX_STATUS -> {
                 // Install on demand before answering. termuxStatus used to report
                 // "not available" purely because a freshly constructed provider had
@@ -181,7 +225,17 @@ class TermuxToolExecutor(private val context: Context) : ToolExecutor {
             TermuxToolDefinitions.TERMUX_DIAGNOSE -> {
                 val err = ensureReady()
                 if (err != null) {
-                    val r = TermuxDiagnoseResult(false, 0, 0, false, err, "", false, "Environment not ready", listOf("Failed: $err"))
+                    val r = TermuxDiagnoseResult(
+                        environmentReady = false,
+                        binCount = 0,
+                        executableCount = 0,
+                        aptWorking = false,
+                        aptError = err,
+                        linkerPath = "",
+                        bashWorks = false,
+                        bashError = "Environment not ready",
+                        diagnostics = listOf("Failed: $err"),
+                    )
                     ToolExecutionResult.success(r, json.encodeToString(TermuxDiagnoseResult.serializer(), r))
                 } else {
                     val binDir = File(termuxProvider.getBinPath())
@@ -238,6 +292,30 @@ class TermuxToolExecutor(private val context: Context) : ToolExecutor {
                         diagnostics.add("aptPresent=false")
                     }
 
+                    /*
+                     * AND THE PACKAGES, MEASURED FROM THEIR OWN RECORDS (issue 31).
+                     *
+                     * "apt update exited 0" and "the package I asked for is usable" are two
+                     * different facts, and the ticket is the case where the first was true and
+                     * the second was false for every package on the device. Reading every
+                     * installed package's .list is a few small text files, so a diagnosis can
+                     * afford it and this is the only place that answers it.
+                     *
+                     * The incomplete list also drives a diagnostic line, because a person
+                     * reading a diagnosis should not have to compare two arrays to notice that
+                     * something they installed is missing its files.
+                     */
+                    val installs = termuxProvider.checkAllInstalls()
+                    val installedPackages = installs.filter { it.complete }.map { it.packageName }
+                    val incompletePackages = installs.filterNot { it.complete }.map { it.packageName }
+                    val installDetail = installs.filterNot { it.complete }.map { it.sentence }
+                    if (incompletePackages.isNotEmpty()) {
+                        diagnostics.add(
+                            "${incompletePackages.size} package(s) recorded as installed do not have " +
+                                "every file on disk: ${incompletePackages.joinToString(", ")}",
+                        )
+                    }
+
                     val r = TermuxDiagnoseResult(
                         environmentReady = true,
                         binCount = binCount,
@@ -248,6 +326,9 @@ class TermuxToolExecutor(private val context: Context) : ToolExecutor {
                         bashWorks = bashWorks,
                         bashError = if (bashWorks) null else bashTest.stderr.take(200),
                         diagnostics = diagnostics,
+                        packagesInstalled = installedPackages,
+                        packagesIncomplete = incompletePackages,
+                        installDetail = installDetail,
                     )
                     ToolExecutionResult.success(r, json.encodeToString(TermuxDiagnoseResult.serializer(), r))
                 }

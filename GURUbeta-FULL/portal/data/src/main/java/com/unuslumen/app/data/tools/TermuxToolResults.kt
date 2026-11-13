@@ -8,7 +8,30 @@ import kotlinx.serialization.Serializable
 
 @Serializable data class TermuxInitResult(val success: Boolean, val initialized: Boolean, val rootPath: String, val homePath: String, val binPath: String, val message: String) : ToolResultData
 @Serializable data class TermuxExecResult(val success: Boolean, val exitCode: Int, val stdout: String, val stderr: String, val command: String) : ToolResultData
-@Serializable data class TermuxInstallResult(val success: Boolean, val exitCode: Int, val output: String, val packages: String) : ToolResultData
+/*
+ * AN INSTALL IS NOT SUCCESSFUL BECAUSE dpkg EXITED ZERO (issue 31).
+ *
+ * The ticket's whole complaint is a package that reported `install ok installed` and then could
+ * not run: the binary landed through the compatibility root and its data files did not arrive at
+ * all. Exit status cannot tell those apart, so this result carries the measurement instead.
+ *
+ * `packagesInstalled` and `packagesIncomplete` are what the caller acts on. `success` stays as
+ * the tool's own gate but now requires both a clean exit AND every named package being recorded
+ * with its payload on disk, so an install that exits 0 and delivers nothing reads as a failure
+ * with a sentence saying what was missing.
+ */
+@Serializable data class TermuxInstallResult(
+    val success: Boolean,
+    val exitCode: Int,
+    val output: String,
+    val packages: String,
+    /** Package names that are recorded and whose every declared path is on disk. */
+    val packagesInstalled: List<String> = emptyList(),
+    /** Package names recorded with paths missing, with what is absent named in `installDetail`. */
+    val packagesIncomplete: List<String> = emptyList(),
+    /** One sentence per package, from the records rather than from dpkg's exit status. */
+    val installDetail: List<String> = emptyList(),
+) : ToolResultData
 /*
  * `availableTools` keeps its original meaning so nothing that reads it changes
  * behaviour, and it keeps its original type so an existing consumer still
@@ -49,4 +72,24 @@ import kotlinx.serialization.Serializable
     val prefixHealth: String? = null,
 ) : ToolResultData
 @Serializable data class TermuxHasCommandResult(val command: String, val available: Boolean, val message: String) : ToolResultData
-@Serializable data class TermuxDiagnoseResult(val environmentReady: Boolean, val binCount: Int, val executableCount: Int, val aptWorking: Boolean, val aptError: String?, val linkerPath: String, val bashWorks: Boolean, val bashError: String?, val diagnostics: List<String>) : ToolResultData
+/*
+ * `packagesInstalled` and `packagesIncomplete` are the package-level half of the diagnosis
+ * (issue 31). `aptWorking` is "apt exits 0", which the ticket proved is compatible with an
+ * install that delivered nothing, so the diagnosis now carries the measured state of every
+ * package the database records as installed. A prefix with a clean apt and three packages whose
+ * payload is missing is not a healthy prefix, and this is the field that says so.
+ */
+@Serializable data class TermuxDiagnoseResult(
+    val environmentReady: Boolean,
+    val binCount: Int,
+    val executableCount: Int,
+    val aptWorking: Boolean,
+    val aptError: String?,
+    val linkerPath: String,
+    val bashWorks: Boolean,
+    val bashError: String?,
+    val diagnostics: List<String>,
+    val packagesInstalled: List<String> = emptyList(),
+    val packagesIncomplete: List<String> = emptyList(),
+    val installDetail: List<String> = emptyList(),
+) : ToolResultData

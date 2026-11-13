@@ -110,8 +110,14 @@ class TermuxProvider(private val context: Context) {
          * Version of the prefix-relocation pass. Bump it whenever the rewrite
          * rules change, so a tree installed by an older build re-runs the pass
          * rather than keeping the old, broken result forever.
+         *
+         * VERSION 2 (issue 31). The rules did not change; the TRIGGER did. Version 1 ran
+         * only during initialize, so every package installed afterwards left its .list and
+         * status stanza naming the upstream com.termux root until the next cold start. The
+         * per-install pass is now the primary path and this marker gate covers the cold-start
+         * sweep, so the bump forces one corrected sweep over trees that still carry version 1.
          */
-        private const val PREFIX_RELOCATION_VERSION = 1
+        private const val PREFIX_RELOCATION_VERSION = 2
 
         /** The prefix every shipped script and dpkg row was built against. */
         private const val UPSTREAM_FILES_ROOT = "/data/data/com.termux/files"
@@ -987,6 +993,21 @@ class TermuxProvider(private val context: Context) {
         if (aptConfig.exists()) {
             env["APT_CONFIG"] = aptConfig.absolutePath
         }
+        /*
+         * DPKG_ADMINDIR IN THE AMBIENT ENVIRONMENT (issue 31, fault 3).
+         *
+         * apt is given `--admindir` through the config file, so apt's view of the database is
+         * correct. A BARE `dpkg` typed into a shell is a different program invocation with only
+         * its own defaults, and dpkg's compiled-in admin dir is the upstream com.termux path.
+         * So `dpkg -l figlet` said "no packages found matching figlet" while `status` in this
+         * prefix held the package, and the two tools disagreed about which database was real.
+         *
+         * dpkg documents DPKG_ADMINDIR as exactly this: "If set, dpkg will use it as the
+         * administrative directory as if it was specified with --admindir." Setting it in the
+         * shared environment is the only way a bare invocation inherits it, and it is the same
+         * mechanism APT_CONFIG already uses one block up.
+         */
+        env["DPKG_ADMINDIR"] = File(usrPrefix, "var/lib/dpkg").absolutePath
         return env
     }
 
@@ -1104,6 +1125,7 @@ class TermuxProvider(private val context: Context) {
         val aptConfig = File(File(etcDir, "apt"), "apt.conf.d/01-root.conf").absolutePath
         val aptBinary = File(binDir, "apt").absolutePath
         val aptEnv = "export APT_CONFIG='$aptConfig'; " +
+            "export DPKG_ADMINDIR='$prefix/var/lib/dpkg'; " +
             "export PATH='${binDir.absolutePath}:/system/bin'; "
         // dpkg's own compiled-in admin dir is the com.termux path, so every
         // dpkg invocation inside apt gets an explicit one.
@@ -1114,7 +1136,157 @@ class TermuxProvider(private val context: Context) {
 
         val fullScript = aptEnv + "\"$aptBinary\" $dpkgArgs update 2>&1; " +
             aptEnv + "\"$aptBinary\" $dpkgArgs install -y $packages 2>&1"
-        return execWithEnv(listOf(linker, bash.absolutePath, "-c", fullScript))
+        val result = execWithEnv(listOf(linker, bash.absolutePath, "-c", fullScript))
+
+        /*
+         * THE RECORDS ARE RELOCATED STRAIGHT AWAY, not on the next cold start (issue 31).
+         *
+         * relocatePrefixPaths is marker-gated and version-gated, so it runs once per prefix per
+         * build. Everything a package writes into var/lib/dpkg AFTER that pass — the .list file
+         * and the status stanza — keeps the upstream com.termux paths for as long as the marker
+         * stays current, which is until the app is upgraded. So the package that was just
+         * installed is the one guaranteed to be described by a record that names a tree this
+         * device does not have.
+         *
+         * This pass is cheap and bounded: it reads var/lib/dpkg only, not the whole prefix, and
+         * rewrites only the files that name the upstream root. Running it here means the state
+         * of the database is a property of the install rather than of when the app last started.
+         */
+        relocateDpkgRecords()
+        return result
+    }
+
+    /**
+     * Rewrite the upstream prefix inside dpkg's own records, and nothing else.
+     *
+     * WHY THIS IS SEPARATE FROM [relocatePrefixPaths]. That pass walks the whole prefix with a
+     * 4 MiB per-file text read, which is right for a cold start and far too much to repeat on
+     * every package install. The records are a known, small directory: one `.list` per package
+     * plus the `status` database. So this is the same rule applied to the only files that are
+     * WRITTEN by a package manager, which is what makes it safe to run after each install.
+     *
+     * The rewrite itself is [DpkgRecords.relocate], so the rule is proved on the JVM and this
+     * function is only the loop.
+     */
+    private fun relocateDpkgRecords() {
+        val dpkgRoot = File(usrPrefix, "var/lib/dpkg")
+        if (!dpkgRoot.isDirectory) return
+        val realRoot = termuxRoot.absolutePath
+        var rewritten = 0
+        var scanned = 0
+        try {
+            for (file in listOf(File(dpkgRoot, "status")) + (File(dpkgRoot, "info").listFiles() ?: emptyArray())) {
+                if (!file.isFile) continue
+                // The records are text. A binary in info/ would be a package's own data, and
+                // rewriting bytes inside it corrupts it, so the ELF check is not optional here.
+                if (file.length() > 8L * 1024 * 1024) continue
+                val text = runCatching { file.readText() }.getOrNull() ?: continue
+                scanned++
+                if (!DpkgRecords.namesUpstream(text)) continue
+                val updated = DpkgRecords.relocate(text, realRoot)
+                if (runCatching { file.writeText(updated) }.isSuccess) rewritten++
+            }
+            if (rewritten > 0) {
+                Log.d(
+                    TAG,
+                    "TermuxProvider: relocated $rewritten of $scanned dpkg records onto $realRoot (issue 31)",
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "TermuxProvider: dpkg record relocation failed: ${e.message}")
+        }
+    }
+
+    /**
+     * What one package's install actually delivered, measured from dpkg's own records.
+     *
+     * This is the answer issue 31 asks for and the old surface could not give: whether a package
+     * that reported `install ok installed` has its files on disk. It reads the `.list` it owns
+     * and counts the rows that resolve to a real file, which is the only claim worth making.
+     */
+    data class InstallVerdict(
+        val packageName: String,
+        val state: DpkgRecords.InstallRecordState,
+        /** Rows the .list claims, after relocation. */
+        val declared: Int,
+        /** Rows that resolve to something that exists on disk. */
+        val present: Int,
+        /** A few example rows that are declared and absent, for a person to act on. */
+        val missing: List<String>,
+        /** One sentence naming what the records showed. */
+        val sentence: String,
+    ) {
+        val complete: Boolean
+            get() = state == DpkgRecords.InstallRecordState.RECORDED && declared > 0 && present == declared
+    }
+
+    /**
+     * Measure one installed package against the filesystem.
+     *
+     * A row is counted as present when the path it names exists. Nothing is inferred from
+     * dpkg's exit status, because the whole complaint in the ticket is that dpkg exits 0 and
+     * the files are not there. The records are relocated first so a row that still names the
+     * upstream root is compared against the tree it actually maps onto.
+     */
+    fun checkInstall(
+        packageName: String,
+        maxMissingReported: Int = 5,
+    ): InstallVerdict {
+        val dpkgRoot = File(usrPrefix, "var/lib/dpkg")
+        val listFile = File(dpkgRoot, "info/$packageName.list")
+        val record = if (listFile.isFile) runCatching { listFile.readText() }.getOrNull() else null
+        if (record == null) {
+            val state = DpkgRecords.InstallRecordState.NOT_RECORDED
+            return InstallVerdict(packageName, state, 0, 0, emptyList(), DpkgRecords.describeInstallState(state, packageName))
+        }
+
+        val realRoot = termuxRoot.absolutePath
+        val files = DpkgRecords.readList(record, realRoot)
+        val state = DpkgRecords.installState(files)
+
+        /*
+         * Only FILES are counted. A .list carries directory rows as well, and a directory that
+         * dpkg created during unpack legitimately disappears when the package is removed. What
+         * matters is whether the payload a package exists to provide is on disk, so rows whose
+         * resolved path is a directory are counted as declared and present only if the directory
+         * exists, and a dangling row is reported with its path.
+         */
+        var present = 0
+        val missing = mutableListOf<String>()
+        for (row in files.rows) {
+            val path = DpkgRecords.resolveRow(row, realRoot)
+            val exists = runCatching { File(path).exists() }.getOrDefault(false)
+            if (exists) {
+                present++
+            } else if (missing.size < maxMissingReported) {
+                missing.add(path)
+            }
+        }
+
+        val base = DpkgRecords.describeInstallState(state, packageName)
+        val sentence = if (state == DpkgRecords.InstallRecordState.RECORDED) {
+            "$base ${present} of ${files.rows.size} recorded paths are on disk." +
+                if (missing.isEmpty()) "" else " Missing: ${missing.joinToString(", ")}."
+        } else {
+            base
+        }
+        return InstallVerdict(packageName, state, files.rows.size, present, missing, sentence)
+    }
+
+    /**
+     * Every package the database records as fully installed, measured.
+     *
+     * Exists so a caller can answer "is this package actually usable" without naming a package
+     * first, and so a surface can report the prefix's package state in one call. A package with
+     * no `.list` is excluded rather than reported as broken: dpkg writes the stanza before it
+     * unpacks, so a stanza with no list is an install in progress, not a fault.
+     */
+    fun checkAllInstalls(maxPackages: Int = 20): List<InstallVerdict> {
+        val statusFile = File(usrPrefix, "var/lib/dpkg/status")
+        val status = runCatching { statusFile.readText() }.getOrNull() ?: return emptyList()
+        return DpkgRecords.installedPackages(status)
+            .take(maxPackages)
+            .map { checkInstall(it) }
     }
 
     /**

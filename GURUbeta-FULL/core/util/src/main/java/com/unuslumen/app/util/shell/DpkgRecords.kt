@@ -1,0 +1,223 @@
+// GURU by Unus Lumen - an AI framework that gives a language model real hands on an Android phone.
+// Copyright (C) 2026 Steven Newman, Founder and Developer, Unus Lumen Ltd, Bristol UK.
+// Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
+package com.unuslumen.app.util.shell
+
+/**
+ * The dpkg bookkeeping that decides whether an installed package can actually be used.
+ *
+ * WHY THIS IS A SEPARATE, ANDROID-FREE, OBJECT (issue 31).
+ *
+ * A Termux package is built against `/data/data/com.termux/files`, and dpkg records that path
+ * verbatim in two places: `var/lib/dpkg/info/<pkg>.list`, which is the list of files the package
+ * owns, and `var/lib/dpkg/status`, which is the database `dpkg -l` reads. Inside this app neither
+ * path exists. The install still reports `install ok installed` because dpkg only cares that its
+ * own writes through the compatibility root reached a writable tree.
+ *
+ * The consequence is a package that is installed and unusable in three different ways at once,
+ * and all three are answerable from the TEXT of those two records rather than from a device:
+ *
+ *  1. A `.list` naming the upstream prefix describes files that exist nowhere. Anything that
+ *     reads it — `dpkg -L`, a package's own postinst, a person — is looking at a fiction.
+ *  2. `relocatePrefixPaths` rewrites those files, but it is marker-gated and runs at init, so a
+ *     package installed AFTER that pass keeps the upstream paths until the next cold start.
+ *  3. A bare `dpkg -l` in a shell reads the compiled-in admin dir, which is the upstream path,
+ *     so it reports "no packages found" while `apt` (which is given `--admindir` explicitly)
+ *     can see the same package. Two tools, one database, two answers.
+ *
+ * So the rules that decide all of this live here, as pure functions over strings, and the
+ * device-side pass is only the loop that applies them. That is what makes them provable on the
+ * JVM in seconds instead of only on a handset.
+ */
+object DpkgRecords {
+
+    /** The prefix every shipped Termux package was built against. */
+    const val UPSTREAM_FILES_ROOT = "/data/data/com.termux/files"
+
+    /**
+     * Rewrite the upstream root in a dpkg record onto this install's root.
+     *
+     * THE REPLACEMENT IS THE TERMUX ROOT, NOT THE PREFIX. A package path is
+     * `data/data/com.termux/files/usr/bin/figlet` with no leading slash in the record, and the
+     * compatibility root created by TermuxProvider maps `<termuxRoot>/data/data/com.termux/files/usr`
+     * onto `<termuxRoot>/usr`. Both the SLASHED and the BARE form are replaced, because
+     * `dpkg`'s generated `status` file writes the bare form in some fields and the `.list`
+     * file writes the slashed one.
+     *
+     * Returns the input unchanged when it names neither form, so a caller can compare identity
+     * to decide whether a write is needed.
+     */
+    fun relocate(record: String, termuxRoot: String): String {
+        if (record.isEmpty()) return record
+        val slashed = UPSTREAM_FILES_ROOT
+        val bare = UPSTREAM_FILES_ROOT.removePrefix("/")
+        var out = record
+        // The slashed form first: replacing the bare one first would leave a stray leading
+        // slash in front of the replacement and produce `//<root>/usr/...`.
+        if (out.contains(slashed)) out = out.replace(slashed, termuxRoot)
+        if (out.contains(bare)) out = out.replace(bare, termuxRoot)
+        return out
+    }
+
+    /** Whether a record still names the upstream prefix in either of its two written forms. */
+    fun namesUpstream(record: String): Boolean =
+        record.contains(UPSTREAM_FILES_ROOT) ||
+            record.contains(UPSTREAM_FILES_ROOT.removePrefix("/"))
+
+    /**
+     * What a `.list` file says about the package it belongs to.
+     *
+     * The distinction that matters is not "how many rows" but "can this package be run". A row
+     * under the prefix's `bin/` is the package's own executable; a row under `share/` is the
+     * data that executable reads. Issue 31's figlet case is exactly a binary that arrived with
+     * its fonts missing, so a list whose binaries are present and whose data rows are not is a
+     * different answer from a list that is simply empty.
+     */
+    data class PackageFiles(
+        /** Every path the package claims, as written in the record. */
+        val rows: List<String>,
+        /** Rows that name an executable under the prefix's bin or sbin. */
+        val binaries: List<String>,
+        /** Rows that name data under share, lib, etc, var or opt. */
+        val data: List<String>,
+        /** Rows still naming the upstream prefix, which cannot resolve through a plain path. */
+        val upstreamRows: List<String>,
+    ) {
+        val isEmpty: Boolean get() = rows.isEmpty()
+    }
+
+    /**
+     * Read a `.list` record into the four facts a caller needs.
+     *
+     * Rows are taken verbatim, including the leading `/.` and the `.` directory row, because a
+     * caller checking that a file landed must ask about the path dpkg actually recorded rather
+     * than a normalised form this function invented. Two convenience views are derived on top:
+     * which rows are binaries and which are data.
+     */
+    fun readList(record: String, termuxRoot: String = UPSTREAM_FILES_ROOT): PackageFiles {
+        val rows = record.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .filter { it != "." }
+            .toList()
+        val binaries = rows.filter { isUnder(it, "bin") || isUnder(it, "sbin") }
+        val data = rows.filter {
+            isUnder(it, "share") || isUnder(it, "lib") || isUnder(it, "etc") ||
+                isUnder(it, "var") || isUnder(it, "opt")
+        }
+        val upstream = rows.filter { namesUpstream(it) }
+        return PackageFiles(rows, binaries, data, upstream)
+    }
+
+    /**
+     * Whether one recorded row lives under a named directory of the prefix.
+     *
+     * The row can be either form — the slashed upstream one, or this install's absolute root —
+     * and both are checked by looking for `/usr/<dir>/` anywhere in the path. That is
+     * deliberately loose about the root: a package that has not yet been relocated still names
+     * the upstream prefix, and the classification of binary-versus-data does not depend on
+     * which root the row uses.
+     */
+    fun isUnder(row: String, dir: String): Boolean = row.contains("/usr/$dir/") || row.contains("/$dir/")
+
+    /**
+     * Resolve one recorded row to the path it names on THIS install.
+     *
+     * Used by the post-install check that asks whether a package's data actually landed. A row
+     * is rewritten through [relocate] and then anchored at the termux root, which is the same
+     * mapping dpkg's instdir uses, so the answer is the path the kernel would open.
+     */
+    fun resolveRow(row: String, termuxRoot: String): String {
+        val relocated = relocate(row, termuxRoot)
+        // A row of `/.` or `.` names the install root itself, and dpkg writes rows beginning
+        // with `./` for directories.
+        val trimmed = relocated.removePrefix("./")
+        return when {
+            trimmed.startsWith("/") -> trimmed
+            trimmed.isEmpty() -> termuxRoot
+            else -> "$termuxRoot/$trimmed"
+        }
+    }
+
+    /**
+     * The verdict on an install, from the records dpkg left behind.
+     *
+     * A package can be in `status` as installed and have delivered nothing, which is the exact
+     * shape issue 31 reported. These four states keep that apart from a clean install and from
+     * a package that was never unpacked at all:
+     *
+     *  - NOT_RECORDED: no `.list`, so dpkg never unpacked it. A failed install.
+     *  - RECORDED_NOTHING: a `.list` with no rows. dpkg claims the package and owns no files.
+     *  - RECORDED_UPSTREAM_ONLY: every row names the upstream prefix and no rewrite has run, so
+     *    the record describes a tree that is not this one.
+     *  - RECORDED: a list with real rows, of which the caller then checks existence.
+     */
+    enum class InstallRecordState { NOT_RECORDED, RECORDED_NOTHING, RECORDED_UPSTREAM_ONLY, RECORDED }
+
+    fun installState(files: PackageFiles?): InstallRecordState = when {
+        files == null -> InstallRecordState.NOT_RECORDED
+        files.isEmpty -> InstallRecordState.RECORDED_NOTHING
+        files.upstreamRows.size == files.rows.size -> InstallRecordState.RECORDED_UPSTREAM_ONLY
+        else -> InstallRecordState.RECORDED
+    }
+
+    /**
+     * One sentence a person can act on, naming only what the records showed.
+     *
+     * This is the text that goes back on the install result, and its job is to stop the surface
+     * reporting `install ok installed` as success when the data never arrived. Every branch
+     * names an observed fact rather than a guess, which is the same discipline the three-state
+     * probes elsewhere in this package follow.
+     */
+    fun describeInstallState(state: InstallRecordState, packageName: String): String = when (state) {
+        InstallRecordState.NOT_RECORDED ->
+            "dpkg left no file list for $packageName, so the package was not unpacked. " +
+                "An 'install ok installed' line from apt in this state means the unpack step " +
+                "did not reach the prefix."
+        InstallRecordState.RECORDED_NOTHING ->
+            "$packageName is recorded as installed and owns no files at all, which is not a " +
+                "working install."
+        InstallRecordState.RECORDED_UPSTREAM_ONLY ->
+            "$packageName's file list still names ${UPSTREAM_FILES_ROOT}, which does not exist " +
+                "on this install, so nothing in the list can be resolved without a path rewrite."
+        InstallRecordState.RECORDED ->
+            "$packageName is recorded with a file list that names this install's tree."
+    }
+
+    /**
+     * The names of every package dpkg knows about, from the `status` database.
+     *
+     * Read as the `Package:` stanza field rather than by matching "installed", because a package
+     * can be half-configured and still matter. Returns them in the order they appear, which is
+     * alphabetical in a database dpkg wrote itself.
+     */
+    fun installedPackages(statusRecord: String): List<String> =
+        statusRecord.lineSequence()
+            .map { it.trim() }
+            .filter { it.startsWith("Package: ") }
+            .map { it.removePrefix("Package: ").trim() }
+            .filter { it.isNotEmpty() }
+            .toList()
+
+    /**
+     * Whether a package's own `status` stanza says it is fully installed.
+     *
+     * The `Status:` line is three words: want, eflag, status. Only `... ok installed` means the
+     * package is configured and ready; `... unpacked` and `... half-configured` are the states a
+     * half-applied instdir leaves behind, and both were visible in the ticket.
+     */
+    fun saysInstalled(statusRecord: String, packageName: String): Boolean {
+        var inStanza = false
+        for (line in statusRecord.lineSequence()) {
+            val trimmed = line.trim()
+            if (trimmed.startsWith("Package: ")) {
+                inStanza = trimmed.removePrefix("Package: ").trim() == packageName
+                continue
+            }
+            if (inStanza && trimmed.startsWith("Status: ")) {
+                return trimmed.removePrefix("Status: ").trim().endsWith(" ok installed")
+            }
+        }
+        return false
+    }
+}
