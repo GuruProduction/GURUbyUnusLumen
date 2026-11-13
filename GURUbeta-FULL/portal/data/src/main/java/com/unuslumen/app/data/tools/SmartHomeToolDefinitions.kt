@@ -72,11 +72,53 @@ object SmartHomeToolDefinitions : ToolSetRegistration {
         ToolDefinition(name = HUE_SET_LIGHT, description = "Control a Philips Hue light - turn on/off, set brightness, color, or temperature.", category = "smart_home", parameters = listOf(ToolParameter("light", ToolParameterType.String, true, "Light name or ID"), ToolParameter("power", ToolParameterType.String, false, "Power state: 'on' or 'off'"), ToolParameter("brightness", ToolParameterType.Integer, false, "Brightness level 0-100"), ToolParameter("temperature", ToolParameterType.Integer, false, "Color temperature in mirek (153-500, warm to cool)"), ToolParameter("color", ToolParameterType.String, false, "Color name (e.g., 'red', 'blue', 'green') or hex (e.g., '#FF5500')")), permissions = emptyList()),
         ToolDefinition(name = HUE_SET_ROOM, description = "Control all lights in a Philips Hue room/zone.", category = "smart_home", parameters = listOf(ToolParameter("room", ToolParameterType.String, true, "Room name or ID"), ToolParameter("power", ToolParameterType.String, false, "Power state: 'on' or 'off'"), ToolParameter("brightness", ToolParameterType.Integer, false, "Brightness level 0-100")), permissions = emptyList()),
         ToolDefinition(name = HUE_ACTIVATE_SCENE, description = "Activate a Philips Hue scene in a room.", category = "smart_home", parameters = listOf(ToolParameter("scene", ToolParameterType.String, true, "Scene name (e.g., 'Relax', 'Concentrate', 'Energize')"), ToolParameter("room", ToolParameterType.String, true, "Room name to apply the scene to")), permissions = emptyList()),
-        ToolDefinition(name = SONOS_DISCOVER, description = "Discover Sonos speakers on the local network.", category = "smart_home", parameters = emptyList(), permissions = emptyList()),
-        ToolDefinition(name = SONOS_STATUS, description = "Get playback status of a Sonos speaker.", category = "smart_home", parameters = listOf(ToolParameter("speaker", ToolParameterType.String, true, "Speaker name or IP address")), permissions = emptyList()),
-        ToolDefinition(name = SONOS_PLAY_PAUSE, description = "Play or pause a Sonos speaker.", category = "smart_home", parameters = listOf(ToolParameter("speaker", ToolParameterType.String, true, "Speaker name or IP address"), ToolParameter("action", ToolParameterType.String, true, "Action: 'play', 'pause', or 'stop'")), permissions = emptyList()),
-        ToolDefinition(name = SONOS_VOLUME, description = "Set volume on a Sonos speaker.", category = "smart_home", parameters = listOf(ToolParameter("speaker", ToolParameterType.String, true, "Speaker name or IP address"), ToolParameter("volume", ToolParameterType.Integer, true, "Volume level 0-100")), permissions = emptyList()),
-        ToolDefinition(name = SONOS_GROUP, description = "Group or ungroup Sonos speakers for synchronized playback.", category = "smart_home", parameters = listOf(ToolParameter("action", ToolParameterType.String, true, "Action: 'join' to group, 'unjoin' to ungroup, 'party' for party mode, 'solo' for solo mode"), ToolParameter("speaker", ToolParameterType.String, false, "Speaker name or IP address")), permissions = emptyList()),
+        /*
+         * THE SONOS TOOLS NEED NO CLI EITHER (issues 179 and 186). They ran `sonos <verb>`, a Node
+         * CLI Termux does not package, so every one could only fail. A speaker is a UPnP device on
+         * port 1400 and these now talk to it directly.
+         */
+        ToolDefinition(
+            name = SONOS_DISCOVER,
+            description = "Discover Sonos speakers on this network. Asks the speakers themselves for " +
+                "their zone topology, so one reachable speaker names every other speaker in the " +
+                "house along with each room's own name. Run mdnsDiscover first if this finds nothing.",
+            category = "smart_home",
+            parameters = emptyList(),
+            permissions = emptyList(),
+        ),
+        ToolDefinition(
+            name = SONOS_STATUS,
+            description = "Report what a Sonos speaker is doing: playing, paused or stopped, and " +
+                "what it has queued. Takes a speaker name from sonosDiscover, or an IP address.",
+            category = "smart_home",
+            parameters = listOf(ToolParameter("speaker", ToolParameterType.String, true, "Speaker name or IP address")),
+            permissions = emptyList(),
+        ),
+        ToolDefinition(
+            name = SONOS_PLAY_PAUSE,
+            description = "Play, pause or stop a Sonos speaker over its own UPnP transport service.",
+            category = "smart_home",
+            parameters = listOf(ToolParameter("speaker", ToolParameterType.String, true, "Speaker name or IP address"), ToolParameter("action", ToolParameterType.String, true, "Action: 'play', 'pause', or 'stop'")),
+            permissions = emptyList(),
+        ),
+        ToolDefinition(
+            name = SONOS_VOLUME,
+            description = "Set the volume on a Sonos speaker. Sonos takes 0 to 100 directly, so the " +
+                "number given is the number the speaker receives.",
+            category = "smart_home",
+            parameters = listOf(ToolParameter("speaker", ToolParameterType.String, true, "Speaker name or IP address"), ToolParameter("volume", ToolParameterType.Integer, true, "Volume level 0-100")),
+            permissions = emptyList(),
+        ),
+        ToolDefinition(
+            name = SONOS_GROUP,
+            description = "Grouping is NOT implemented. Changing a Sonos zone group means writing " +
+                "the topology back through services this client does not use, so this reports that " +
+                "plainly rather than claiming a join happened. Individual speakers still work " +
+                "through sonosPlayPause and sonosVolume.",
+            category = "smart_home",
+            parameters = listOf(ToolParameter("action", ToolParameterType.String, true, "Action: 'join' to group, 'unjoin' to ungroup, 'party' for party mode, 'solo' for solo mode"), ToolParameter("speaker", ToolParameterType.String, false, "Speaker name or IP address")),
+            permissions = emptyList(),
+        ),
         // BLUETOOTH_LIST DECLARES BLUETOOTH_CONNECT SO THE DISPATCHER REFUSES IT
         // UP FRONT. That is the permission batch's deliberate design: a declared
         // permission makes ToolDispatcher answer with the grant sentence before
