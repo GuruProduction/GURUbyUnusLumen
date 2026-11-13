@@ -3,6 +3,7 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.data.tools
 
+import com.unuslumen.app.data.discovery.NetworkReadOutcome
 import com.unuslumen.app.data.tools.registry.ToolResultData
 import kotlinx.serialization.Serializable
 
@@ -12,7 +13,33 @@ import kotlinx.serialization.Serializable
 @Serializable data class SsdpDiscoverResult(val success: Boolean, val message: String?, val error: String?) : ToolResultData
 @Serializable data class SsdpDevicesResult(val success: Boolean, val devices: List<SsdpDeviceDto>, val error: String?) : ToolResultData
 @Serializable data class SsdpDeviceDto(val usn: String, val st: String, val location: String, val server: String, val host: String, val friendlyName: String, val manufacturer: String, val modelName: String, val discoveredAt: Long) : ToolResultData
-@Serializable data class ArpScanResult(val success: Boolean, val devices: List<ArpDeviceDto>, val error: String?) : ToolResultData
+/**
+ * What `arpScan` returns.
+ *
+ * [outcome] IS THE POINT OF THIS SHAPE, NOT DECORATION. Issues 221 and 224 were
+ * this tool returning `{"success":true,"devices":[]}` when Android had refused the
+ * ARP table, so a caller read "the network is empty" as a measurement. The three
+ * states [NetworkReadOutcome] carries are the difference between a real empty
+ * network, a real finding, and a table nobody was allowed to open. [devices] only
+ * means anything in the first two.
+ *
+ * A caller that reads only [success] keeps working, because it is false for a
+ * refusal. A caller that reads [outcome] can tell the three apart, which is what
+ * stops the model reporting a refusal as an observation about the house.
+ */
+@Serializable data class ArpScanResult(
+    val success: Boolean,
+    val devices: List<ArpDeviceDto>,
+    val error: String?,
+    /** FOUND, EMPTY or REFUSED. REFUSED means the table was never opened. */
+    val outcome: String = NetworkReadOutcome.EMPTY.name,
+    /** Which tier served the read, so a caller can see how complete this answer is. */
+    val tier: String = "APP_UID",
+    /** The subnet that was swept, or null when the phone has no LAN address. */
+    val subnet: String? = null,
+    /** Which neighbour table answered, so an empty answer can be traced. */
+    val servedBy: String? = null,
+) : ToolResultData
 @Serializable data class ArpDeviceDto(val ip: String, val mac: String, val manufacturer: String, val hostname: String, val discoveredAt: Long) : ToolResultData
 @Serializable data class WifiScanResult(val success: Boolean, val networks: List<WifiNetworkDto>, val error: String?) : ToolResultData
 @Serializable data class WifiNetworkDto(val ssid: String, val bssid: String, val signalStrength: Int, val frequency: Int, val channel: Int, val securityType: String, val isHidden: Boolean, val isCurrentlyConnected: Boolean, val capabilities: String) : ToolResultData

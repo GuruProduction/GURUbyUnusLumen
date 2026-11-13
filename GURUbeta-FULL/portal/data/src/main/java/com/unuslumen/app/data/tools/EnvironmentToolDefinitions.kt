@@ -23,7 +23,25 @@ object EnvironmentToolDefinitions : ToolSetRegistration {
         ToolDefinition(name = SSDP_DISCOVER, description = "Start SSDP/UPnP network discovery. Discovers Samsung TVs, DLNA servers, routers.", category = "environment", parameters = emptyList(), permissions = emptyList()),
         ToolDefinition(name = SSDP_LIST_DEVICES, description = "List all devices discovered via SSDP/UPnP.", category = "environment", parameters = emptyList(), permissions = emptyList()),
         ToolDefinition(name = SSDP_STOP_DISCOVERY, description = "Stop SSDP discovery.", category = "environment", parameters = emptyList(), permissions = emptyList()),
-        ToolDefinition(name = ARP_SCAN, description = "Scan the local network using ARP table reading. Finds all devices on the network.", category = "environment", parameters = emptyList(), permissions = emptyList()),
+        // THE DESCRIPTION NAMES THE WALL, BECAUSE THE OLD ONE PROMISED WHAT THE TOOL
+        // COULD NOT DO (#224). It said "finds all devices on the network" while a
+        // refusal from Android came back as an empty success. Android hides the ARP
+        // table from an app UID, so without Shizuku or wireless debugging this tool
+        // can only report that it was not allowed to look, and the result now says
+        // which of the three outcomes it got rather than leaving the model to guess.
+        ToolDefinition(
+            name = ARP_SCAN,
+            description = "Read the phone's neighbour table to list the IP and MAC of every device " +
+                "on the local network, with the manufacturer from the MAC prefix. Reports whether " +
+                "the table was FOUND, genuinely EMPTY, or REFUSED: a REFUSED result means Android " +
+                "would not let this tier read /proc/net/arp, which says nothing about the network " +
+                "and is what Shizuku or wireless debugging unlocks. An EMPTY result is the real " +
+                "answer that nothing answered. Use netHosts or netEverything to sweep the subnet " +
+                "rather than read a table.",
+            category = "environment",
+            parameters = emptyList(),
+            permissions = emptyList(),
+        ),
         ToolDefinition(name = WIFI_SCAN, description = "Scan all nearby WiFi networks. Shows SSIDs, signal strengths, security types.", category = "environment", parameters = emptyList(), permissions = listOf("android.permission.ACCESS_FINE_LOCATION")),
         // Discovery reports each device's name and bond state, which Bluetooth treats as
         // a connect-tier read, so both grants are declared and both are guarded. Listing

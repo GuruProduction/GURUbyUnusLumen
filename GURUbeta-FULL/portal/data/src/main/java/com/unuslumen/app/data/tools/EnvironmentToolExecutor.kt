@@ -7,12 +7,14 @@ import android.content.Context
 import com.unuslumen.app.data.discovery.ArpDiscoveryManager
 import com.unuslumen.app.data.discovery.BluetoothScanManager
 import com.unuslumen.app.data.discovery.MdnsDiscoveryManager
+import com.unuslumen.app.data.discovery.NetworkReadOutcome
 import com.unuslumen.app.data.discovery.SsdpDiscoveryManager
 import com.unuslumen.app.data.discovery.WifiScanManager
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
 import com.unuslumen.app.data.tools.registry.permission.PermissionGrants
 import com.unuslumen.app.data.tools.registry.permission.TeamThreePermissions
+import com.unuslumen.app.data.tools.senses.emitPayload
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -25,7 +27,14 @@ class EnvironmentToolExecutor(
     private val wifiScanManager: WifiScanManager,
     private val bluetoothScanManager: BluetoothScanManager
 ) : ToolExecutor {
-    private val json = Json { ignoreUnknownKeys = true }
+    /**
+     * `encodeDefaults = true` matters for `arpScan` specifically. Without it a field
+     * equal to its default is dropped from the JSON, so an EMPTY outcome would encode
+     * as `{"success":true,"devices":[],"error":null}` with the outcome missing and look
+     * exactly like the refusal this change exists to distinguish. Writing every field
+     * means the model always sees which of the three states it got.
+     */
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     override suspend fun execute(toolName: String, args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         when (toolName) {
@@ -35,7 +44,45 @@ class EnvironmentToolExecutor(
             EnvironmentToolDefinitions.SSDP_DISCOVER -> { try { ssdpDiscoveryManager.startDiscovery(); val r = SsdpDiscoverResult(true, "SSDP discovery started", null); ToolExecutionResult.success(r, json.encodeToString(SsdpDiscoverResult.serializer(), r)) } catch (e: Exception) { val r = SsdpDiscoverResult(false, null, "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(SsdpDiscoverResult.serializer(), r)) } }
             EnvironmentToolDefinitions.SSDP_LIST_DEVICES -> { try { val devs = ssdpDiscoveryManager.getDiscoveredDevices().map { SsdpDeviceDto(it.usn, it.st, it.location, it.server, it.host, it.friendlyName, it.manufacturer, it.modelName, it.discoveredAt) }; val r = SsdpDevicesResult(true, devs, null); ToolExecutionResult.success(r, json.encodeToString(SsdpDevicesResult.serializer(), r)) } catch (e: Exception) { val r = SsdpDevicesResult(false, emptyList(), "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(SsdpDevicesResult.serializer(), r)) } }
             EnvironmentToolDefinitions.SSDP_STOP_DISCOVERY -> { try { ssdpDiscoveryManager.stopDiscovery(); val r = SsdpDiscoverResult(true, "Stopped", null); ToolExecutionResult.success(r, json.encodeToString(SsdpDiscoverResult.serializer(), r)) } catch (e: Exception) { val r = SsdpDiscoverResult(false, null, "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(SsdpDiscoverResult.serializer(), r)) } }
-            EnvironmentToolDefinitions.ARP_SCAN -> { try { val devs = arpDiscoveryManager.discoverDevices().map { ArpDeviceDto(it.ip, it.mac, it.manufacturer, it.hostname, it.discoveredAt) }; val r = ArpScanResult(true, devs, null); ToolExecutionResult.success(r, json.encodeToString(ArpScanResult.serializer(), r)) } catch (e: Exception) { val r = ArpScanResult(false, emptyList(), "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(ArpScanResult.serializer(), r)) } }
+            /*
+             * ARP SCAN REPORTS WHICH OF THREE THINGS HAPPENED (#221, #224).
+             *
+             * This branch used to be `ToolExecutionResult.success(ArpScanResult(true, devs, null))`
+             * unconditionally, so a refusal from Android arrived at the model as
+             * `{"success":true,"devices":[]}`, and the model reported that as "there is
+             * nothing on your network". The result now carries the outcome, the tier that
+             * served the read and which table answered, and the payload's own flag decides
+             * `success` through emitPayload rather than a constant.
+             *
+             * EMPTY stays a success: a table that was read and has no neighbours is a real
+             * answer, and calling it a failure would send a caller hunting for a fault that
+             * is not there. Only REFUSED fails, because only REFUSED means we did not look.
+             */
+            EnvironmentToolDefinitions.ARP_SCAN -> {
+                try {
+                    val sweep = arpDiscoveryManager.sweepSuspending()
+                    val devs = sweep.devices.map { ArpDeviceDto(it.ip, it.mac, it.manufacturer, it.hostname, it.discoveredAt) }
+                    val r = ArpScanResult(
+                        success = sweep.read.outcome != NetworkReadOutcome.REFUSED,
+                        devices = devs,
+                        error = sweep.read.sentence,
+                        outcome = sweep.read.outcome.name,
+                        tier = sweep.read.tier.name,
+                        subnet = sweep.subnet,
+                        servedBy = sweep.servedBy,
+                    )
+                    emitPayload(json, json.encodeToString(ArpScanResult.serializer(), r), r, r.success, r.error)
+                } catch (e: Exception) {
+                    val r = ArpScanResult(
+                        success = false,
+                        devices = emptyList(),
+                        error = "ARP scan failed: ${e.message}",
+                        outcome = NetworkReadOutcome.REFUSED.name,
+                        tier = "NONE",
+                    )
+                    emitPayload(json, json.encodeToString(ArpScanResult.serializer(), r), r, false, r.error)
+                }
+            }
             EnvironmentToolDefinitions.WIFI_SCAN -> { try { val nets = wifiScanManager.scanNetworks().map { WifiNetworkDto(it.ssid, it.bssid, it.signalStrength, it.frequency, it.channel, it.securityType, it.isHidden, it.isCurrentlyConnected, it.capabilities) }; val r = WifiScanResult(true, nets, null); ToolExecutionResult.success(r, json.encodeToString(WifiScanResult.serializer(), r)) } catch (e: Exception) { val r = WifiScanResult(false, emptyList(), "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(WifiScanResult.serializer(), r)) } }
             // BluetoothScanManager now refuses through PermissionGrants itself, so this
             // branch only maps its result. A refusal there carries the catalogue

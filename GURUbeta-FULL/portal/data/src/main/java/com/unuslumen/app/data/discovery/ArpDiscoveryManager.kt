@@ -4,10 +4,14 @@
 package com.unuslumen.app.data.discovery
 
 import android.content.Context
-import android.net.wifi.WifiManager
 import android.util.Log
+import com.unuslumen.app.util.shell.ShellExecutor
+import com.unuslumen.app.util.shell.ShellResult
+import com.unuslumen.app.util.shell.ShellTier
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.koin.core.annotation.Single
-import java.io.File
 
 /**
  * Discovered ARP device on the local network.
@@ -21,74 +25,244 @@ data class ArpDevice(
 )
 
 /**
+ * What one ARP sweep produced, and whether it was allowed to look.
+ *
+ * WHY THIS REPLACES A BARE `List<ArpDevice>`. Issues 221 and 224: this class
+ * returned an empty list whether the network was quiet or Android had refused
+ * the table, and the executor above it turned every empty list into
+ * `success: true`. A caller had no way to tell "nothing is there" from "I could
+ * not look", so it reported the first while the second was true.
+ *
+ * [read] carries the distinction. [devices] is only meaningful when [read]
+ * answered, and a refused read carries the sentence a caller can repeat.
+ */
+data class ArpSweep(
+    val devices: List<ArpDevice>,
+    val read: NetworkReads.Read,
+    /** The subnet that was swept, or null when no LAN address could be determined. */
+    val subnet: String?,
+    /** Which table answered: `/proc/net/arp`, `ip neigh`, or no interface at all. */
+    val servedBy: String,
+)
+
+/**
  * Reads the ARP table to map every IP to MAC address on the local network.
  * Identifies device manufacturers from MAC OUI (Organizationally Unique Identifier) prefixes.
  *
  * Works by ping-sweeping the subnet first to force ARP entries to populate,
- * then reading /proc/net/arp. Falls back to `ip neigh show` and DHCP info.
+ * then reading /proc/net/arp. Falls back to `ip neigh show`.
+ *
+ * EVERY READ GOES THROUGH [ShellExecutor], WHICH IS THE FIX FOR #221 AND #224 AS
+ * MUCH AS THE HONEST OUTCOME IS. This class used to shell out with raw
+ * `ProcessBuilder("sh", "-c", ...)`, which can only ever run at the app's own UID.
+ * Android hides `/proc/net/arp` from an app UID, so the read was guaranteed to
+ * fail on every device, forever, while the sibling `netRecon` tool found devices
+ * because it goes through the shell ladder. That is why two tools contradicted
+ * each other on the same network in the same minute (#332): one was looking at
+ * UID 2000 and this one was looking at UID 10123.
  */
 @Single
 class ArpDiscoveryManager(
-    private val context: Context
+    private val context: Context,
+    private val shell: ShellExecutor = ShellExecutor(context),
 ) {
 
     /**
-     * Discovers all devices on the local network by ping-sweeping the subnet
-     * and reading the ARP table. Returns a list of devices with IP, MAC, and manufacturer.
+     * Discover all devices on the local network, and say whether it was allowed to.
+     *
+     * This is the honest form. It is a blocking call so the existing synchronous
+     * call sites keep working; [sweepSuspending] is the same work for a caller
+     * already on a coroutine.
      */
-    fun discoverDevices(): List<ArpDevice> {
-        val subnet = getSubnet()
-        if (subnet == null) {
-            Log.e(TAG, "Could not determine subnet")
-            return emptyList()
-        }
+    fun sweep(): ArpSweep = runBlocking(Dispatchers.IO) { sweepSuspending() }
 
+    /**
+     * The sweep, as a suspend function.
+     *
+     * The ping sweep is best effort and its failure is never fatal: an empty table
+     * after a failed sweep is still a table that was read, and the difference
+     * between that and a refused read is exactly what this function exists to keep.
+     */
+    suspend fun sweepSuspending(): ArpSweep = withContext(Dispatchers.IO) {
         // The live interface address, so ARP entries can be filtered to the LAN
         // we are actually on. /proc/net/arp is a GLOBAL table: it holds every
-        // interface, including stale entries from networks the device has left,
-        // and returning those is what made a scan look like it was reaching data
-        // it was not. Only entries inside our own prefix are ours.
-        val address = getInterfaceAddress()
+        // interface, including stale entries from networks the device has left.
+        val address = interfaceAddressSuspending()
+        val subnet = getSubnet(address)
 
-        Log.d(TAG, "Ping-sweeping subnet: $subnet (interface ${address?.ip}/${address?.prefixLength})")
-
-        // Ping sweep to populate ARP table
-        pingSweep(subnet)
-
-        // Read ARP table
-        var arpEntries = readArpTable()
-
-        // If ARP table is empty, try ip neigh
-        if (arpEntries.isEmpty()) {
-            Log.d(TAG, "ARP table empty, trying ip neigh show")
-            arpEntries.addAll(readIpNeigh())
-        }
-
-        // Keep only addresses on this network. A /24 sweep already limits the
-        // ping range, but the ARP table itself is not limited, and a stale entry
-        // from the coffee shop down the road is not a device on this LAN.
-        if (address != null) {
-            val before = arpEntries.size
-            arpEntries = arpEntries.filter { (ip, _) -> address.contains(ip) }.toMutableList()
-            if (before != arpEntries.size) {
-                Log.d(TAG, "Filtered ARP entries to ${address.network}: ${arpEntries.size} of $before kept")
-            }
-        }
-
-        // Enrich with manufacturer info from OUI
-        val devices = arpEntries.map { (ip, mac) ->
-            val manufacturer = lookupManufacturer(mac)
-            ArpDevice(
-                ip = ip,
-                mac = mac,
-                manufacturer = manufacturer,
-                hostname = "",
-                discoveredAt = System.currentTimeMillis()
+        if (subnet == null) {
+            // No LAN address is a real answer about the phone, not a permission
+            // problem, so it is reported as a refusal carrying its own reason rather
+            // than as an empty list that reads as a quiet network.
+            return@withContext ArpSweep(
+                devices = emptyList(),
+                read = NetworkReads.Read(
+                    outcome = NetworkReadOutcome.REFUSED,
+                    tier = ShellTier.NONE,
+                    sentence = "This phone has no LAN IPv4 address, so there is no subnet to " +
+                        "sweep. That is a statement about the phone's own connection rather " +
+                        "than about what is on the wifi.",
+                ),
+                subnet = null,
+                servedBy = "no interface",
             )
         }
 
-        Log.d(TAG, "Discovered ${devices.size} devices via ARP")
-        return devices.sortedBy { it.ip }
+        Log.d(TAG, "Ping-sweeping subnet: $subnet (interface ${address?.ip}/${address?.prefixLength})")
+
+        pingSweep(subnet)
+
+        // /proc/net/arp first because it is the complete list on every Android
+        // version. `ip neigh` is the modern spelling of the same fact and is used
+        // only when the first read genuinely could not happen, so a refusal at one
+        // path is not papered over by an empty answer from the other.
+        val arp = readTable("cat /proc/net/arp", "ARP table")
+        val entries: List<Pair<String, String>>
+        val read: NetworkReads.Read
+        val servedBy: String
+
+        if (arp.result.success) {
+            entries = arp.entries
+            // The verdict is taken on the RAW count, before the LAN filter, so an
+            // empty-but-successful read stays distinguishable from a refused one
+            // whatever the filter later removes.
+            read = arp.counted
+            servedBy = "/proc/net/arp"
+        } else {
+            Log.d(TAG, "ARP table refused at ${arp.result.tier}, trying ip neigh")
+            val neigh = readTable("ip neigh", "neighbour table")
+            entries = neigh.entries
+            read = neigh.counted
+            servedBy = "ip neigh"
+        }
+
+        // Keep only addresses on this network. The ARP table itself is not limited
+        // to one interface, and a stale entry from the coffee shop down the road is
+        // not a device on this LAN.
+        val onLan = if (address != null) {
+            val before = entries.size
+            val kept = entries.filter { (ip, _) -> address.contains(ip) }
+            if (before != kept.size) {
+                Log.d(TAG, "Filtered ARP entries to ${address.network}: ${kept.size} of $before kept")
+            }
+            kept
+        } else {
+            entries
+        }
+
+        val devices = onLan.map { (ip, mac) ->
+            ArpDevice(
+                ip = ip,
+                mac = mac,
+                manufacturer = lookupManufacturer(mac),
+                hostname = "",
+                discoveredAt = System.currentTimeMillis(),
+            )
+        }.sortedBy { it.ip }
+
+        Log.d(TAG, "Discovered ${devices.size} devices via $servedBy (${read.outcome})")
+
+        // The outcome is decided on the FILTERED count, because the question a
+        // caller asks is "is anything on MY network", not "does the phone remember
+        // any network it has ever been on". A refused read keeps its sentence; a
+        // successful read that found nothing on this LAN gets an empty's silence.
+        val decided = if (read.outcome == NetworkReadOutcome.REFUSED) {
+            read
+        } else {
+            NetworkReads.verdict(
+                result = ShellResult(
+                    exitCode = 0,
+                    stdout = "",
+                    stderr = "",
+                    success = true,
+                    tier = read.tier,
+                ),
+                what = "ARP table",
+                count = devices.size,
+            )
+        }
+
+        ArpSweep(
+            devices = devices,
+            read = decided,
+            subnet = subnet,
+            servedBy = servedBy,
+        )
+    }
+
+    /**
+     * The plain list, for callers that have nowhere to put a refusal.
+     *
+     * Kept because a caller that cannot report a refusal is better served by an
+     * empty list it already handles than by a crash. New code should call [sweep]
+     * and read the outcome.
+     */
+    fun discoverDevices(): List<ArpDevice> = sweep().devices
+
+    /** One table read: the shell result, the entries parsed from it, and its verdict. */
+    private data class TableRead(
+        val result: ShellResult,
+        val entries: List<Pair<String, String>>,
+        val counted: NetworkReads.Read,
+    )
+
+    /**
+     * Run one table read through the shell ladder and decide its outcome.
+     *
+     * The verdict is taken on the raw parse, before the LAN filter, so a refused
+     * read is never mistaken for a read that found only off-network entries.
+     */
+    private suspend fun readTable(command: String, what: String): TableRead {
+        val result = shell.execute(command)
+        val entries = if (command.startsWith("cat /proc/net/arp")) {
+            parseArpTable(result.stdout)
+        } else {
+            parseIpNeighOutput(result.stdout)
+        }
+        return TableRead(
+            result = result,
+            entries = entries,
+            counted = NetworkReads.verdict(result, what, entries.size),
+        )
+    }
+
+    /**
+     * Parse `/proc/net/arp`.
+     *
+     * The format is a header then one line per neighbour:
+     * `IP address  HW type  Flags  HW address  Mask  Device`
+     *
+     * A line whose MAC is all zeros is an entry the kernel created and never
+     * resolved, so it is skipped: it is not a device, it is a question that went
+     * unanswered. Flag 0x2 is ATF_COM, meaning the entry is complete and the MAC
+     * was actually resolved.
+     */
+    private fun parseArpTable(raw: String): List<Pair<String, String>> {
+        if (raw.isBlank()) return emptyList()
+        return raw.lines().drop(1).mapNotNull { line ->
+            val parts = line.trim().split(Regex("\\s+"))
+            if (parts.size < 4) return@mapNotNull null
+            val ip = parts[0]
+            val flags = parts.getOrNull(2)?.toIntOrNull(16)
+            val mac = parts[3]
+            if (mac.isBlank() || mac == "00:00:00:00:00:00" || !mac.contains(":")) return@mapNotNull null
+            // ATF_COM (0x2) means the MAC was resolved. An entry without it is a
+            // question the kernel asked and nobody answered.
+            if (flags != null && flags and 0x2 == 0) return@mapNotNull null
+            ip to mac.uppercase()
+        }
+    }
+
+    /** Parse `ip neigh` output, the modern spelling of the same fact. */
+    private fun parseIpNeighOutput(raw: String): List<Pair<String, String>> {
+        if (raw.isBlank()) return emptyList()
+        return raw.lines().mapNotNull { line ->
+            if (line.isBlank()) return@mapNotNull null
+            // Format: 192.0.2.1 dev wlan0 lladdr 00:1f:a4:xx:xx:xx REACHABLE
+            val ipMatch = Regex("\\d+\\.\\d+\\.\\d+\\.\\d+").find(line) ?: return@mapNotNull null
+            val macMatch = Regex("([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}").find(line) ?: return@mapNotNull null
+            ipMatch.value to macMatch.value.uppercase()
+        }
     }
 
     /**
@@ -127,12 +301,28 @@ class ArpDiscoveryManager(
     }
 
     /**
-     * Read the live interface address, wlan0 first, then any non-loopback IPv4.
+     * Read the live interface address, wlan0 first, then any other IPv4.
      *
      * Returns null when the device genuinely has no address, which is a real
      * state (no network), and the caller must report it rather than invent one.
+     *
+     * Through [ShellExecutor] for the same reason the ARP read is: `ip addr` is
+     * readable at app UID on most builds but not all, and a ladder that reaches
+     * UID 2000 costs one cheap call and removes a whole class of "the subnet is
+     * unknown" reports on a phone that is plainly online.
      */
-    fun getInterfaceAddress(): InterfaceAddress? {
+    fun getInterfaceAddress(): InterfaceAddress? = runBlocking(Dispatchers.IO) {
+        interfaceAddressSuspending()
+    }
+
+    /**
+     * The same read, without blocking the caller.
+     *
+     * [getInterfaceAddress] wraps this with `runBlocking` for the existing synchronous
+     * call sites. [sweepSuspending] calls this directly so a coroutine never nests one
+     * blocking bridge inside another.
+     */
+    private suspend fun interfaceAddressSuspending(): InterfaceAddress? {
         val attempts = listOf(
             "ip -4 addr show wlan0 2>/dev/null",
             "ip -4 addr 2>/dev/null",
@@ -144,12 +334,11 @@ class ArpDiscoveryManager(
         return null
     }
 
-    private fun readInterface(command: String): InterfaceAddress? {
-        val process = ProcessBuilder("sh", "-c", command).start()
-        val output = process.inputStream.bufferedReader().readText()
-        process.waitFor()
+    private suspend fun readInterface(command: String): InterfaceAddress? {
+        val result = shell.execute(command)
+        if (!result.success && result.stdout.isBlank()) return null
         // Matches:  inet 192.168.1.179/24 brd 192.168.1.255 scope global wlan0
-        val match = Regex("""inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)""").find(output) ?: return null
+        val match = Regex("""inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)""").find(result.stdout) ?: return null
         val ip = match.groupValues[1]
         val prefix = match.groupValues[2].toIntOrNull() ?: return null
         if (ip.startsWith("127.")) return null // loopback is not the LAN
@@ -163,8 +352,8 @@ class ArpDiscoveryManager(
      * usable LAN address. A /31 or /32 has no sweepable host range and returns
      * null rather than producing a nonsense sweep.
      */
-    private fun getSubnet(): String? {
-        val address = getInterfaceAddress() ?: run {
+    private fun getSubnet(address: InterfaceAddress?): String? {
+        if (address == null) {
             Log.e(TAG, "No LAN IPv4 address found; cannot determine a subnet")
             return null
         }
@@ -196,65 +385,6 @@ class ArpDiscoveryManager(
         } catch (e: Exception) {
             Log.e(TAG, "Error during ping sweep", e)
         }
-    }
-
-    /**
-     * Reads the ARP table from /proc/net/arp.
-     * Returns a list of (ip, mac) pairs.
-     */
-    private fun readArpTable(): MutableList<Pair<String, String>> {
-        val entries = mutableListOf<Pair<String, String>>()
-
-        try {
-            val arpFile = File("/proc/net/arp")
-            if (arpFile.exists()) {
-                val lines = arpFile.readLines()
-                // Skip header line
-                for (line in lines.drop(1)) {
-                    val parts = line.trim().split(Regex("\\s+"))
-                    if (parts.size >= 4) {
-                        val ip = parts[0]
-                        val mac = parts[3]
-                        // Skip entries with no MAC (00:00:00:00:00:00 or empty)
-                        if (mac.isNotBlank() && mac != "00:00:00:00:00:00" && mac.contains(":")) {
-                            entries.add(ip to mac.uppercase())
-                        }
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error reading /proc/net/arp", e)
-        }
-
-        return entries
-    }
-
-    /**
-     * Reads neighbour table using `ip neigh show`.
-     * Fallback when /proc/net/arp is inaccessible.
-     */
-    private fun readIpNeigh(): MutableList<Pair<String, String>> {
-        val entries = mutableListOf<Pair<String, String>>()
-
-        try {
-            val process = ProcessBuilder("sh", "-c", "ip neigh show 2>/dev/null").start()
-            val output = process.inputStream.bufferedReader().readText()
-            process.waitFor()
-
-            for (line in output.lines()) {
-                if (line.isBlank()) continue
-                // Format: 192.168.1.1 dev wlan0 lladdr 00:1f:a4:xx:xx:xx REACHABLE
-                val ipMatch = Regex("\\d+\\.\\d+\\.\\d+\\.\\d+").find(line)
-                val macMatch = Regex("([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}").find(line)
-                if (ipMatch != null && macMatch != null) {
-                    entries.add(ipMatch.value to macMatch.value.uppercase())
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error reading ip neigh", e)
-        }
-
-        return entries
     }
 
     /**
