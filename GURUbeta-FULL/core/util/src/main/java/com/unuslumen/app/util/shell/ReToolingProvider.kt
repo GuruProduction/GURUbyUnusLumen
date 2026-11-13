@@ -36,20 +36,53 @@ import java.util.zip.ZipFile
  * real output attached, so a caller can tell "not installed" from "installed and
  * broken" without guessing.
  *
- * adb is the one thing that stays in `re-tools`, because it is a power-user
- * route rather than part of the toolchain: it is copied to /data/local/tmp and
- * run there, which is why its handling does not resemble the prefix tools.
+ * ADB IS PACKAGED AS A NATIVE LIBRARY, AND THAT IS THE ONLY ROUTE THAT WORKS (issue 209).
+ *
+ * The old handling extracted the binary into `files/re-tools/adb` and then copied it again to
+ * `/data/local/tmp/guru_adb` to run it. Both halves of that failed on a real handset, and the
+ * ticket measured the reason:
+ *
+ *  - `/data/local/tmp` is not writable at app UID. `touch /data/local/tmp/gurutest` answers
+ *    `Permission denied`, so the second copy never landed and every call exited 127.
+ *  - App data under `u:r:untrusted_app` is W^X, so no loose binary in `files/` or `cache/` can
+ *    execute however it is chmod'd. The ticket tested four locations and all four refused.
+ *
+ * The one executable location an unprivileged app has is `nativeLibraryDir`, which is populated
+ * by the package installer from `jniLibs` and carries the `nativedir_file` label that permits
+ * execution. Five binaries in this app already work that way, and `libguru_toybox.so` has been
+ * proven on his own phone. So adb is packaged as `libguru_adb.so` and run from there.
+ *
+ * WHY THE LIBRARIES STILL COME FROM APP STORAGE. A shared library is mapped rather than executed,
+ * so `mmap` on a noexec mount is fine: only `execve` is refused. adb's dependency set is large
+ * (abseil, protobuf, zstd, zlib, utf8) and it is far simpler to point `LD_LIBRARY_PATH` at an
+ * extracted directory than to package twenty more `.so` files as jniLibs and get each one's name
+ * exactly right.
+ *
+ * THE ONE CASE THIS DOES NOT SOLVE, named so nobody has to rediscover it: `adb start-server`
+ * daemonises itself with a second `execve`. That child is a fork of a process already running
+ * from an executable path, so it works, but it is worth knowing that the binary is being executed
+ * twice rather than once.
  */
 class ReToolingProvider(private val context: Context) {
 
     companion object {
         private const val TAG = "guru"
 
-        // adb is the only binary this provider extracts for itself. Everything
-        // else comes from the prefix.
-        private const val ASSET_ADB_ARM64 = "re-tools/adb-arm64"
-        private const val ASSET_ADB_X86_64 = "re-tools/adb-x86_64"
-        private const val ADB_FILENAME = "adb"
+        /**
+         * The packaged adb binary, as a native library (issue 209).
+         *
+         * `libguru_adb.so` lives in `jniLibs/` beside every other `libguru_*.so`, and the package
+         * installer extracts it to the native library directory at install time. The `lib` prefix
+         * and `.so` suffix are not cosmetic: they are the two things that make Android treat the
+         * file as a native library and extract it to an executable location. The same binary under
+         * an asset name cannot be executed from anywhere the app can write.
+         *
+         * The old `assets/re-tools/adb-arm64` copy is deleted. It was the same 2.8 MB binary, and
+         * shipping both meant carrying it twice in every APK for no reader.
+         */
+        private const val ADB_LIB_SO = "libguru_adb.so"
+
+        /** The shared libraries adb needs, extracted to app storage and mapped, never executed. */
         private const val ADB_LIBS_DIR_ARM64 = "re-tools/adb-libs-arm64"
         private const val ADB_LIBS_DIR_X86_64 = "re-tools/adb-libs-x86_64"
 
@@ -81,8 +114,16 @@ class ReToolingProvider(private val context: Context) {
     private val toolsDir: File
         get() = File(context.filesDir, "re-tools")
 
+    /**
+     * The adb binary, in the one place an app can execute anything from (issue 209).
+     *
+     * `applicationInfo.nativeLibraryDir` is resolved fresh on every read rather than cached,
+     * because a reinstall gives the directory a new hashed path and a cached value would point at
+     * a tree the package installer has already removed. That is the same trap the toybox symlinks
+     * hit, and it is why those are rebuilt on every launch.
+     */
     private val adbPath: File
-        get() = File(toolsDir, ADB_FILENAME)
+        get() = File(context.applicationInfo.nativeLibraryDir, ADB_LIB_SO)
 
     private val adbLibsDir: File
         get() = File(toolsDir, "adb-libs")
@@ -193,38 +234,45 @@ class ReToolingProvider(private val context: Context) {
     fun getAdbLibsPath(): String = adbLibsDir.absolutePath
 
     /**
-     * Wrap an adb command for execution.
+     * Wrap an adb command for execution, from the native library directory.
      *
-     * The adb binary is copied to /data/local/tmp/ (which is exec-allowed)
-     * because app storage (/data/user, /data/data) is mounted with noexec
-     * on modern Android. The adb server daemon needs to fork and execve
-     * itself, which requires a real exec-allowed filesystem. The linker
-     * trick only works for the initial load, not for the daemon fork.
+     * THIS FUNCTION USED TO COPY THE BINARY TO /data/local/tmp AND RUN IT THERE, which could never
+     * work (issue 209). Two measurements from the ticket settle it: `/data/local/tmp` is not
+     * writable at app UID, so the copy failed with `Permission denied` and every call exited 127;
+     * and app storage under `u:r:untrusted_app` is W^X, so no loose binary in `files/` or `cache/`
+     * executes however it is chmod'd.
      *
-     * Shared libraries stay in app storage since they're loaded via mmap,
-     * not execve. LD_LIBRARY_PATH points to both the extracted adb-libs
-     * directory and system library paths so the linker finds everything.
+     * The binary now runs from [adbPath], which is `nativeLibraryDir`: the package installer puts
+     * it there and the `nativedir_file` label permits execution. Nothing is copied at call time, so
+     * there is no silent failure to swallow.
      *
-     * ADB_SERVER_SOCKET is set so the binary uses the default socket
-     * without needing the -L flag (unsupported in this version 35.0.2).
+     * SHARED LIBRARIES STAY IN APP STORAGE, and that is not an inconsistency. A library is
+     * `mmap`ed rather than executed, and a noexec mount refuses only `execve`, so mapping from
+     * `files/` works. `LD_LIBRARY_PATH` points at the extracted directory first and the system
+     * directories after it, so adb's own copies win over a platform version of the same name.
+     *
+     * `ADB_SERVER_SOCKET` is set because version 35.0.2 of this binary does not accept `-L`.
      */
-    fun wrapAdb(args: String): String {
-        val tmpAdbPath = "/data/local/tmp/guru_adb"
-        val tmpAdbFile = File(tmpAdbPath)
-        // Copy the binary to /data/local/tmp/ in Kotlin code, not shell.
-        // /data/local/tmp/ is world-writable (drwxrwxrwt) so the app process
-        // can write there directly. A shell cp might fail under Runtime.exec
-        // because the shell process runs as a different UID.
-        try {
-            if (!tmpAdbFile.exists() || tmpAdbFile.length() != adbPath.length()) {
-                adbPath.copyTo(tmpAdbFile, overwrite = true)
-                tmpAdbFile.setExecutable(true, false)
-                Log.d(TAG, "ReToolingProvider: copied adb binary to $tmpAdbPath")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "ReToolingProvider: failed to copy adb to $tmpAdbPath: ${e.message}")
-        }
-        return "ADB_SERVER_SOCKET=tcp:127.0.0.1:5037 LD_LIBRARY_PATH=${adbLibsDir.absolutePath}:/system/lib64:/vendor/lib64 $tmpAdbPath $args"
+    fun wrapAdb(args: String): String =
+        "ADB_SERVER_SOCKET=tcp:127.0.0.1:5037 " +
+            "LD_LIBRARY_PATH=${adbLibsDir.absolutePath}:/system/lib64:/vendor/lib64 " +
+            "${adbPath.absolutePath} $args"
+
+    /**
+     * Why adb cannot run, when it cannot, in words a caller can act on.
+     *
+     * A missing `libguru_adb.so` means the APK was built without the jniLibs copy, which is a
+     * packaging fault rather than a device fault, and the two look identical from an exit code of
+     * 127. This distinguishes them so the report says which one it is.
+     */
+    fun adbUnavailableReason(): String? = when {
+        !adbPath.exists() ->
+            "The adb binary is not in the native library directory at ${adbPath.absolutePath}. " +
+                "That means it was not packaged into jniLibs, so this build cannot run adb at all."
+        !adbPath.canExecute() ->
+            "The adb binary is present at ${adbPath.absolutePath} but is not executable, which " +
+                "means the package installer did not extract it as a native library."
+        else -> null
     }
 
     /**
@@ -238,12 +286,16 @@ class ReToolingProvider(private val context: Context) {
      * ships libz.so.1.3.2.
      */
     private fun extractAdbWithLibs(): Boolean {
-        val adbOk = extractArchBinary(
-            arm64Asset = ASSET_ADB_ARM64,
-            x8664Asset = ASSET_ADB_X86_64,
-            destFile = adbPath
-        )
-        if (!adbOk) return false
+        /*
+         * THE BINARY IS NOT EXTRACTED ANY MORE (issue 209). It is packaged as `libguru_adb.so`
+         * and the package installer puts it in the native library directory, which is the only
+         * place the app can execute anything from. So the only availability question worth asking
+         * is whether it arrived, and [adbUnavailableReason] is what answers it with a reason.
+         */
+        adbUnavailableReason()?.let { reason ->
+            Log.w(TAG, "ReToolingProvider: $reason")
+            return false
+        }
 
         // Select the correct libs subdirectory based on architecture
         val arch = System.getProperty("os.arch") ?: return false
@@ -302,47 +354,4 @@ class ReToolingProvider(private val context: Context) {
         return true
     }
 
-    private fun extractArchBinary(arm64Asset: String, x8664Asset: String, destFile: File): Boolean {
-        if (destFile.exists() && destFile.canExecute()) return true
-
-        val arch = System.getProperty("os.arch") ?: return false
-        val assetName = when {
-            arch.contains("aarch64", ignoreCase = true) ||
-            arch.contains("arm64", ignoreCase = true) -> arm64Asset
-            arch.contains("x86_64", ignoreCase = true) ||
-            arch.contains("amd64", ignoreCase = true) -> x8664Asset
-            else -> {
-                Log.w(TAG, "ReToolingProvider: unknown architecture: $arch")
-                return false
-            }
-        }
-
-        return extractAssetFile(assetName, destFile) && destFile.setExecutable(true, false)
-    }
-
-    private fun extractAssetFile(assetName: String, destFile: File): Boolean {
-        if (destFile.exists()) return true
-
-        return try {
-            val assetExists = context.assets.list(assetName.substringBefore("/"))
-                ?.contains(assetName.substringAfter("/")) ?: false
-
-            if (!assetExists) {
-                Log.w(TAG, "ReToolingProvider: asset '$assetName' not bundled")
-                return false
-            }
-
-            Log.d(TAG, "ReToolingProvider: extracting $assetName to ${destFile.absolutePath}")
-            destFile.parentFile?.mkdirs()
-            context.assets.open(assetName).use { input ->
-                FileOutputStream(destFile).use { output ->
-                    input.copyTo(output)
-                }
-            }
-            true
-        } catch (e: Exception) {
-            Log.w(TAG, "ReToolingProvider: failed to extract $assetName: ${e.message}")
-            false
-        }
-    }
 }
