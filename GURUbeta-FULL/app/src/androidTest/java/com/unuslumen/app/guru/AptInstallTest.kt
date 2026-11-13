@@ -56,12 +56,26 @@ class AptInstallTest {
          * One symlink covers usr/ entirely, so a data path and a binary path resolve through the
          * same mapping. If a data file is missing after an install, it is not this mapping
          * refusing to carry it, and this assertion is what rules that out rather than guessing.
+         *
+         * CANONICAL, NOT ABSOLUTE. The first version of this check compared
+         * `File(mapping, "share").absolutePath`, which is a purely LEXICAL operation: it joins
+         * the two strings and never consults the filesystem, so it returned
+         * `<root>/data/data/com.termux/files/usr/share` and failed while the mapping was in fact
+         * correct. getCanonicalFile() is the call that resolves symlinks, which is the whole
+         * question being asked.
          */
-        assertTrue(
-            "a data directory reached through the mapping must land inside this prefix",
-            File(mapping, "share").absolutePath.startsWith(prefix().absolutePath),
+        val shareViaMapping = File(mapping, "share")
+        val shareReal = runCatching { shareViaMapping.canonicalPath }.getOrDefault("")
+        val prefixReal = runCatching { prefix().canonicalPath }.getOrDefault("")
+        println(
+            "COMPAT share-via-mapping=${shareViaMapping.absolutePath} canonical=$shareReal " +
+                "prefixCanonical=$prefixReal exists=${shareViaMapping.exists()}",
         )
-        println("COMPAT share-via-mapping=${File(mapping, "share").absolutePath}")
+        assertTrue(
+            "a data directory reached through the mapping must resolve inside this prefix. " +
+                "canonical=$shareReal prefix=$prefixReal",
+            shareReal.startsWith(prefixReal),
+        )
     }
 
     @Test

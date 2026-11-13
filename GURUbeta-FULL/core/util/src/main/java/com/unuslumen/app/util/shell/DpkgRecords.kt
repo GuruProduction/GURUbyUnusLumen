@@ -152,6 +152,51 @@ object DpkgRecords {
     fun isUnder(row: String, dir: String): Boolean = row.contains("/usr/$dir/") || row.contains("/$dir/")
 
     /**
+     * Whether a row is one of dpkg's ancestor directories rather than content of the package.
+     *
+     * MEASURED, NOT ASSUMED (issue 31). Every package's `.list` opens by walking down to its own
+     * prefix: `/.`, `/data`, `/data/data`, `/data/data/com.termux`, `/data/data/com.termux/files`,
+     * `.../usr`, and only then the files the package owns. Those leading rows existed inside the
+     * package author's build root and none of them is payload a user can run.
+     *
+     * The device run is what makes this concrete. With the ancestors counted as content, all
+     * twenty-four bootstrap packages reported `present = declared - 1`, the missing path being
+     * `/data/data/com.termux` every single time. The payload had landed in full; the checker was
+     * counting a directory that no install ever creates inside the mapping. So an ancestor row is
+     * excluded from the existence question, which is different from calling it delivered.
+     */
+    fun isAncestorRow(row: String, termuxRoot: String = UPSTREAM_FILES_ROOT): Boolean {
+        if (isInstallRootRow(row)) return true
+        val root = termuxRoot.trimEnd('/')
+        /*
+         * BOTH FORMS ARE CHECKED, because the row may be written either way and the check must
+         * not depend on which. A `.list` that has not been relocated names `.../files/usr`; the
+         * same row after a rewrite names `<root>/usr`. Comparing only the relocated form made
+         * `.../files/usr` fail as "not an ancestor", which is exactly backwards: it is the
+         * mapping's own entry point and never payload.
+         */
+        val forms = listOf(
+            row.trim().removePrefix("./").trimEnd('/'),
+            relocate(row, termuxRoot).removePrefix("./").trimEnd('/'),
+        )
+        val scaffolds = listOf(
+            "/data",
+            "/data/data",
+            "/data/data/com.termux",
+            UPSTREAM_FILES_ROOT,
+            "$UPSTREAM_FILES_ROOT/usr",
+            root,
+            "$root/data",
+            "$root/data/data",
+            "$root/data/data/com.termux",
+            "$root/data/data/com.termux/files",
+            "$root/data/data/com.termux/files/usr",
+            "$root/usr",
+        )
+        return forms.any { it in scaffolds }
+    }
+
+    /**
      * Resolve one recorded row to the path it names on THIS install.
      *
      * Used by the post-install check that asks whether a package's data actually landed. A row
@@ -163,13 +208,34 @@ object DpkgRecords {
         // before any anchoring: left to the branches below it would come back as a bare "/."
         // and a caller checking existence would ask about the device's root directory.
         if (isInstallRootRow(row)) return termuxRoot
-        val relocated = relocate(row, termuxRoot)
         // dpkg writes rows beginning with `./` for directories.
-        val trimmed = relocated.removePrefix("./")
+        val trimmed = row.trim().removePrefix("./")
+        val root = termuxRoot.trimEnd('/')
         return when {
-            trimmed.startsWith("/") -> trimmed
-            trimmed.isEmpty() -> termuxRoot
-            else -> "$termuxRoot/$trimmed"
+            trimmed.isEmpty() -> root
+            /*
+             * A ROW IS RESOLVED FROM dpkg'S INSTDIR, WHICHEVER ROOT IT NAMES.
+             *
+             * This is the reading half of issue 31's first fault, and the device run is what
+             * corrected it. dpkg unpacks with `--instdir=<termuxRoot>`, so EVERY path a package
+             * records is resolved FROM that directory, even though it is written with a leading
+             * slash. A row of `/data/data/com.termux/files/usr/bin/figlet` therefore names
+             * `<termuxRoot>/data/data/com.termux/files/usr/bin/figlet`, and the compatibility
+             * symlink — one link over the whole of `usr` — carries it into the real prefix.
+             *
+             * The first version of this function relocated the row FIRST and then anchored it.
+             * That produced `<termuxRoot>/usr/bin/figlet`, which happens to be the same file,
+             * and it reported every one of the bootstrap's twenty-four packages as incomplete
+             * with the single miss being `/data/data/com.termux` — an ancestor of the mapping
+             * that no install creates. The payload had all landed. Anchoring at the root without
+             * rewriting is both the simpler rule and the one dpkg actually applies.
+             *
+             * A row that already names this install is used as written, so a record a rewrite has
+             * already reached resolves the same way.
+             */
+            trimmed == root || trimmed.startsWith("$root/") -> trimmed
+            trimmed.startsWith("/") -> "$root$trimmed"
+            else -> "$root/$trimmed"
         }
     }
 

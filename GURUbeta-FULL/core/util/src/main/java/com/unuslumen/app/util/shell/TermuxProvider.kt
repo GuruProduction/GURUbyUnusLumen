@@ -1252,8 +1252,20 @@ class TermuxProvider(private val context: Context) {
          * exists, and a dangling row is reported with its path.
          */
         var present = 0
+        var checked = 0
         val missing = mutableListOf<String>()
         for (row in files.rows) {
+            /*
+             * ANCESTOR ROWS ARE NOT COUNTED EITHER WAY (issue 31, measured).
+             *
+             * A .list opens by walking down to the package's own prefix, and those rows name
+             * directories that existed in the package author's build root. No install creates
+             * them inside the mapping, so counting them as missing reported all twenty-four
+             * bootstrap packages as incomplete with the same miss every time. Excluding them
+             * keeps the ratio meaningful: it is now payload against payload.
+             */
+            if (DpkgRecords.isAncestorRow(row, realRoot)) continue
+            checked++
             val path = DpkgRecords.resolveRow(row, realRoot)
             val exists = runCatching { File(path).exists() }.getOrDefault(false)
             if (exists) {
@@ -1265,12 +1277,12 @@ class TermuxProvider(private val context: Context) {
 
         val base = DpkgRecords.describeInstallState(state, packageName)
         val sentence = if (state == DpkgRecords.InstallRecordState.RECORDED) {
-            "$base ${present} of ${files.rows.size} recorded paths are on disk." +
+            "$base $present of $checked checked paths are on disk." +
                 if (missing.isEmpty()) "" else " Missing: ${missing.joinToString(", ")}."
         } else {
             base
         }
-        return InstallVerdict(packageName, state, files.rows.size, present, missing, sentence)
+        return InstallVerdict(packageName, state, checked, present, missing, sentence)
     }
 
     /**

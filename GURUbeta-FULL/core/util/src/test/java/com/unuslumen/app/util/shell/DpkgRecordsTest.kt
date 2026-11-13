@@ -167,12 +167,33 @@ class DpkgRecordsTest {
 
     @Test
     fun aRowResolvesToThePathDpkgWouldHaveWritten() {
-        // The upstream root maps onto THIS install's root, so the `files` segment is replaced
-        // wholesale rather than kept and nested under it. That is the same mapping dpkg's
-        // --instdir uses, and the two must agree or an existence check asks about a fiction.
+        // An absolute row is resolved FROM dpkg's instdir, which is the termux root, so the
+        // leading slash anchors at the root rather than at the host filesystem. Measured on
+        // device: treating it as a host path reported all 24 bootstrap packages incomplete.
+        assertEquals(
+            "$root/data/data/com.termux/files/usr/bin/figlet",
+            DpkgRecords.resolveRow("/data/data/com.termux/files/usr/bin/figlet", root),
+        )
+    }
+
+    @Test
+    fun aRowAlreadyAnchoredAtThisInstallIsUsedAsWritten() {
         assertEquals(
             "$root/usr/bin/figlet",
-            DpkgRecords.resolveRow("/data/data/com.termux/files/usr/bin/figlet", root),
+            DpkgRecords.resolveRow("$root/usr/bin/figlet", root),
+        )
+    }
+
+    @Test
+    fun theAncestorRowsAreNotCountedAsPayload() {
+        // Every .list opens by walking down to its own prefix. None of those rows is content.
+        for (row in listOf("/.", "/data", "/data/data", "/data/data/com.termux",
+            "/data/data/com.termux/files", "/data/data/com.termux/files/usr")) {
+            assertTrue("$row is an ancestor row, not payload", DpkgRecords.isAncestorRow(row, root))
+        }
+        assertFalse(
+            "a real file under the prefix is payload",
+            DpkgRecords.isAncestorRow("/data/data/com.termux/files/usr/bin/figlet", root),
         )
     }
 
