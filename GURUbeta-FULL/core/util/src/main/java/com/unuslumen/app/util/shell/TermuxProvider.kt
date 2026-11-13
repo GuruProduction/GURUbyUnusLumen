@@ -176,6 +176,14 @@ class TermuxProvider(private val context: Context) {
         private const val MODE_LIBRARY = 0b110_100_100         // 0644 rw-r--r--
         private const val MODE_READABLE_FILE = 0b110_100_100   // 0644 rw-r--r--
         private const val MODE_DIRECTORY = 0b111_101_101       // 0755 rwxr-xr-x
+
+        /**
+         * Tor's SOCKS port, which is the one the egress path uses (issue 335).
+         *
+         * The same value ShellToolExecutor derives from TorManager, stated here so the prefix's
+         * environment does not have to reach into the Tor layer to build itself.
+         */
+        private const val TOR_SOCKS_PORT = 9050
     }
 
     private val termuxRoot: File
@@ -882,6 +890,36 @@ class TermuxProvider(private val context: Context) {
             "TERMUX_APP_PACKAGE" to context.packageName,
             "TERMUX_ANDROID_HOME" to homeDir.absolutePath
         )
+
+        /*
+         * THE PROXY GOES IN THE ENVIRONMENT, NOT IN EACH COMMAND (issue 335).
+         *
+         * Every other tool in the app reaches the network through the Tor circuit, and the
+         * Termux prefix did not: a `curl` inside it connected directly and reported the
+         * device's real address, while the same binary family through busyboxExec reported a
+         * Tor exit. One architecture promise, two behaviours, and the prefix was the one
+         * outside it.
+         *
+         * THE SHAPE IS COPIED FROM THE PATH THAT ALREADY WORKS rather than invented here.
+         * ShellToolExecutor sets ALL_PROXY and both HTTP variables to socks5h on the SOCKS
+         * port, because socks5h is what makes the RESOLVER go through the proxy: plain socks5
+         * resolves the name locally, which leaks the query even when the connection is
+         * tunnelled.
+         *
+         * THE PORTS ARE THE STANDARD ONES THE TOR SERVICE PUBLISHES on this device, and the
+         * ticket's own suggested fix names the same values.
+         *
+         * THIS IS NOT THE CLEARNET OVERRIDE. If a person turns clearnet on, that is a decision
+         * taken in the egress layer for one command; it is not a reason for the whole prefix to
+         * be permanently outside the circuit, which is what having no variables at all meant.
+         */
+        env["ALL_PROXY"] = "socks5h://127.0.0.1:$TOR_SOCKS_PORT"
+        env["HTTP_PROXY"] = "socks5h://127.0.0.1:$TOR_SOCKS_PORT"
+        env["HTTPS_PROXY"] = "socks5h://127.0.0.1:$TOR_SOCKS_PORT"
+        // Lower case as well, because plenty of tools read only these spellings.
+        env["all_proxy"] = "socks5h://127.0.0.1:$TOR_SOCKS_PORT"
+        env["http_proxy"] = "socks5h://127.0.0.1:$TOR_SOCKS_PORT"
+        env["https_proxy"] = "socks5h://127.0.0.1:$TOR_SOCKS_PORT"
         /*
          * LD_PRELOAD carries TWO libraries, in order, and the order matters.
          *
