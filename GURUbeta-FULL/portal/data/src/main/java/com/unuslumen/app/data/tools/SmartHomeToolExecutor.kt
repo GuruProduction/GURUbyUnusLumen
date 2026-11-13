@@ -313,51 +313,209 @@ class SmartHomeToolExecutor(
         ToolExecutionResult.success(r, json.encodeToString(HueResult.serializer(), r))
     }
 
+    /*
+     * THE FIVE SONOS TOOLS, OVER THE SPEAKERS' OWN UPnP SERVICES (issues 179 and 186).
+     *
+     * Every one of these ran `sonos <verb>`, a Node CLI that Termux does not package and the APK
+     * never contained, so all five could only fail. A speaker is an ordinary UPnP device on port
+     * 1400, so the envelope shapes and the reading of replies live in [SonosApi] as pure functions
+     * and [SonosClient] is the transport.
+     *
+     * EVERY SPEAKER IS ADDRESSED BY A DISCOVERED HOST. The tools take a name, and the name is
+     * resolved against the zone topology the speaker itself reports, because a guessed address
+     * changes the wrong room.
+     */
+    private val sonosClient by lazy { com.unuslumen.app.data.smarthome.SonosClient() }
+
+    /**
+     * The one place a Sonos speaker is looked up.
+     *
+     * A SEED ADDRESS IS NEEDED THE FIRST TIME, because the topology comes from a speaker. So the
+     * parameter accepts an IP or a name, and a name is resolved by asking any speaker the last scan
+     * found. When nothing has been discovered yet the sentence says to run sonosDiscover rather
+     * than pretending the house is empty.
+     */
+    private var lastSonosSpeakers: List<com.unuslumen.app.data.smarthome.SonosApi.Speaker> = emptyList()
+
+    private suspend fun resolveSonosSpeaker(query: String): Pair<com.unuslumen.app.data.smarthome.SonosApi.Speaker?, String?> {
+        val trimmed = query.trim()
+        // An address is taken as given, which is how a first speaker is reached at all.
+        if (Regex("""^\d{1,3}(\.\d{1,3}){3}$""").matches(trimmed)) {
+            return com.unuslumen.app.data.smarthome.SonosApi.Speaker(trimmed, trimmed) to null
+        }
+        if (lastSonosSpeakers.isEmpty()) {
+            return null to "No Sonos speakers have been discovered yet, and \"$trimmed\" is a name " +
+                "rather than an address. Run sonosDiscover with a speaker's IP first."
+        }
+        val named = lastSonosSpeakers.firstOrNull { it.name.equals(trimmed, ignoreCase = true) }
+        return when {
+            named != null -> named to null
+            else -> null to "\"$trimmed\" is not one of the speakers this network reports. It knows: " +
+                lastSonosSpeakers.joinToString(", ") { it.name } + "."
+        }
+    }
+
     private suspend fun sonosDiscover(): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val result = shellExecutor.execute("sonos discover 2>/dev/null")
-        val r = if (result.success) SonosDiscoverResult(success = true, speakers = parseSonosSpeakers(result.stdout), error = null)
-        else SonosDiscoverResult(success = false, speakers = emptyList(), error = "Sonos CLI not available or no speakers found. Install sonoscli and ensure network access.")
+        /*
+         * A SEED IS FOUND THROUGH THE SAME SSDP SCAN THE OTHER NETWORK TOOLS USE, so this does not
+         * open a second listener that could disagree with the first. Sonos announces itself as
+         * MediaRenderer, and one speaker's topology then names every other speaker in the house.
+         */
+        val local = runCatching {
+            mdnsDiscoveryManager.getDiscoveredDevices()
+                .mapNotNull { device -> device.host.takeIf { it.isNotBlank() } }
+                .distinct()
+        }.getOrDefault(emptyList())
+
+        val found = mutableListOf<com.unuslumen.app.data.smarthome.SonosApi.Speaker>()
+        for (host in local.take(12)) {
+            val speakers = sonosClient.discoverFrom(host)
+            if (speakers.isNotEmpty()) {
+                found.addAll(speakers)
+                break
+            }
+        }
+        lastSonosSpeakers = found.distinctBy { it.host }
+
+        val r = SonosDiscoverResult(
+            success = lastSonosSpeakers.isNotEmpty(),
+            speakers = lastSonosSpeakers.map {
+                SonosSpeaker(name = it.name, ip = it.host, model = it.model.ifBlank { "Sonos" })
+            },
+            error = if (lastSonosSpeakers.isEmpty()) {
+                "No Sonos speaker answered. Run mdnsDiscover first so the network announcements " +
+                    "are collected, and check that the speaker is on the same wifi as this phone."
+            } else null,
+        )
         ToolExecutionResult.success(r, json.encodeToString(SonosDiscoverResult.serializer(), r))
     }
 
     private suspend fun sonosStatus(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val speaker = args["speaker"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'speaker'")
-        val result = shellExecutor.execute("sonos status --name \"$speaker\" 2>/dev/null")
-        val r = SonosStatusResult(success = result.success, status = result.stdout.trim(), error = if (!result.success) "Failed to get status: ${result.stderr}" else null)
+        val query = args["speaker"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'speaker'")
+        val (speaker, resolveError) = resolveSonosSpeaker(query)
+        if (speaker == null) {
+            val r = SonosStatusResult(success = false, status = null, error = resolveError)
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(SonosStatusResult.serializer(), r))
+        }
+
+        val (svc, actionArgs) = com.unuslumen.app.data.smarthome.SonosApi.getTransportInfo()
+        val reply = sonosClient.call(speaker, svc, "GetTransportInfo", actionArgs)
+        if (reply.failure != null || reply.statusCode !in 200..299) {
+            val r = SonosStatusResult(
+                success = false,
+                status = null,
+                error = com.unuslumen.app.data.smarthome.SonosApi.failureSentence(
+                    speaker.host, reply.statusCode, reply.body, reply.failure,
+                ),
+            )
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(SonosStatusResult.serializer(), r))
+        }
+
+        val rawState = com.unuslumen.app.data.smarthome.SonosApi
+            .elementText(reply.body, "CurrentTransportState").orEmpty()
+        val track = com.unuslumen.app.data.smarthome.SonosApi
+            .elementText(reply.body, "CurrentTrackURI").orEmpty()
+
+        val (posSvc, posArgs) = com.unuslumen.app.data.smarthome.SonosApi.getPositionInfo()
+        val posReply = sonosClient.call(speaker, posSvc, "GetPositionInfo", posArgs)
+        val title = com.unuslumen.app.data.smarthome.SonosApi.elementText(posReply.body, "TrackURI")
+            .orEmpty()
+            .ifBlank { track }
+
+        val status = buildString {
+            append("\"${speaker.name}\" is ")
+            append(com.unuslumen.app.data.smarthome.SonosApi.describeTransportState(rawState))
+            if (title.isNotBlank()) append(", playing $title") else append(", with nothing queued")
+            append(".")
+        }
+        val r = SonosStatusResult(success = true, status = status, error = null)
         ToolExecutionResult.success(r, json.encodeToString(SonosStatusResult.serializer(), r))
     }
 
     private suspend fun sonosPlayPause(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val speaker = args["speaker"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'speaker'")
-        val action = args["action"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'action'")
-        val result = shellExecutor.execute("sonos $action --name \"$speaker\" 2>/dev/null")
-        val r = SonosResult(success = result.success, action = action, speaker = speaker, error = if (!result.success) "Failed to $action: ${result.stderr}" else null)
+        val query = args["speaker"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'speaker'")
+        val verb = args["action"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'action'")
+
+        // AN UNKNOWN VERB IS REFUSED RATHER THAN GUESSED AT. The old code passed it straight to the
+        // shell, where it became an unknown CLI subcommand and a failure with no explanation.
+        val mapping = com.unuslumen.app.data.smarthome.SonosApi.transportAction(verb)
+        if (mapping == null) {
+            val r = SonosResult(
+                success = false,
+                action = verb,
+                speaker = query,
+                error = "\"$verb\" is not a transport action. Use play, pause or stop.",
+            )
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(SonosResult.serializer(), r))
+        }
+        val (service, action) = mapping
+
+        val (speaker, resolveError) = resolveSonosSpeaker(query)
+        if (speaker == null) {
+            val r = SonosResult(success = false, action = verb, speaker = query, error = resolveError)
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(SonosResult.serializer(), r))
+        }
+        val reply = sonosClient.call(
+            speaker, service, action, com.unuslumen.app.data.smarthome.SonosApi.transportArguments(verb),
+        )
+        val ok = reply.failure == null && reply.statusCode in 200..299
+        val r = SonosResult(
+            success = ok,
+            action = action.lowercase(),
+            speaker = speaker.name,
+            error = if (ok) null else com.unuslumen.app.data.smarthome.SonosApi.failureSentence(
+                speaker.host, reply.statusCode, reply.body, reply.failure,
+            ),
+        )
         ToolExecutionResult.success(r, json.encodeToString(SonosResult.serializer(), r))
     }
 
     private suspend fun sonosVolume(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val speaker = args["speaker"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'speaker'")
-        val volume = (args["volume"] as? Number)?.toInt() ?: return@withContext ToolExecutionResult.error("Missing 'volume'")
-        val result = shellExecutor.execute("sonos volume set $volume --name \"$speaker\" 2>/dev/null")
-        val r = SonosResult(success = result.success, action = "volume", speaker = speaker, error = if (!result.success) "Failed to set volume: ${result.stderr}" else null)
+        val query = args["speaker"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'speaker'")
+        val volume = (args["volume"] as? Number)?.toInt()
+            ?: return@withContext ToolExecutionResult.error("Missing 'volume'")
+
+        val (speaker, resolveError) = resolveSonosSpeaker(query)
+        if (speaker == null) {
+            val r = SonosResult(success = false, action = "volume", speaker = query, error = resolveError)
+            return@withContext ToolExecutionResult.success(r, json.encodeToString(SonosResult.serializer(), r))
+        }
+        val (service, actionArgs) = com.unuslumen.app.data.smarthome.SonosApi.setVolume(volume)
+        val reply = sonosClient.call(speaker, service, "SetVolume", actionArgs)
+        val ok = reply.failure == null && reply.statusCode in 200..299
+        val r = SonosResult(
+            success = ok,
+            action = "volume",
+            speaker = speaker.name,
+            error = if (ok) null else com.unuslumen.app.data.smarthome.SonosApi.failureSentence(
+                speaker.host, reply.statusCode, reply.body, reply.failure,
+            ),
+        )
         ToolExecutionResult.success(r, json.encodeToString(SonosResult.serializer(), r))
     }
 
     private suspend fun sonosGroup(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         val action = args["action"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'action'")
-        val speaker = args["speaker"] as? String
-        val cmd = when (action.lowercase()) {
-            "join" -> "sonos group join --name \"$speaker\""
-            "unjoin" -> "sonos group unjoin --name \"$speaker\""
-            "party" -> "sonos group party"
-            "solo" -> "sonos group solo"
-            else -> {
-                val r = SonosResult(success = false, action = action, speaker = speaker, error = "Invalid action: $action")
-                return@withContext ToolExecutionResult.success(r, json.encodeToString(SonosResult.serializer(), r))
-            }
-        }
-        val result = shellExecutor.execute("$cmd 2>/dev/null")
-        val r = SonosResult(success = result.success, action = "group_$action", speaker = speaker, error = if (!result.success) "Group action failed: ${result.stderr}" else null)
+        val query = args["speaker"] as? String
+
+        /*
+         * GROUPING IS HONESTLY UNSUPPORTED RATHER THAN A LIE. Joining and leaving a zone group on
+         * Sonos is done by writing the topology back through `SetZoneAttributes`/`AddZonePlayerTo
+         * Group` on services this client does not implement, and pretending a join happened would
+         * be worse than saying it cannot be done yet.
+         *
+         * The old code shelled out to `sonos group join`, which could only fail, and it reported
+         * the failure as though the speaker had refused.
+         */
+        val r = SonosResult(
+            success = false,
+            action = "group_$action",
+            speaker = query,
+            error = "Grouping is not implemented yet. Sonos groups are changed by writing the zone " +
+                "topology back, which this client does not do. Individual speakers can be " +
+                "controlled with sonosPlayPause and sonosVolume, and sonosStatus reports what one " +
+                "speaker is doing.",
+        )
         ToolExecutionResult.success(r, json.encodeToString(SonosResult.serializer(), r))
     }
 
@@ -844,30 +1002,11 @@ class SmartHomeToolExecutor(
         ToolExecutionResult.success(r, json.encodeToString(NetworkPingResult.serializer(), r))
     }
 
-    private fun parseHueLights(output: String): List<HueLight> {
-        return output.lines().filter { it.isNotBlank() && !it.startsWith("ID") }.take(50).map { line ->
-            val parts = line.split(Regex("\\s+"))
-            HueLight(id = parts.getOrNull(0) ?: "", name = parts.getOrNull(1) ?: line.trim(), on = line.contains("on", ignoreCase = true), brightness = extractNumber(line, "brightness") ?: 100)
-        }
-    }
-
-    private fun parseHueRooms(output: String): List<HueRoom> {
-        return output.lines().filter { it.isNotBlank() }.take(20).map { line ->
-            val parts = line.split(Regex("\\s+")); HueRoom(id = parts.getOrNull(0) ?: "", name = parts.getOrNull(1) ?: line.trim())
-        }
-    }
-
-    private fun parseHueScenes(output: String): List<HueScene> {
-        return output.lines().filter { it.isNotBlank() }.take(50).map { line ->
-            val parts = line.split(Regex("\\s+")); HueScene(id = parts.getOrNull(0) ?: "", name = parts.getOrNull(1) ?: line.trim())
-        }
-    }
-
-    private fun parseSonosSpeakers(output: String): List<SonosSpeaker> {
-        return output.lines().filter { it.isNotBlank() && it.contains(":") }.take(20).map { line ->
-            val parts = line.split(Regex("\\s+")); SonosSpeaker(name = parts.getOrNull(0) ?: line.trim(), ip = parts.find { it.contains(".") } ?: "", model = parts.getOrNull(2) ?: "Sonos")
-        }
-    }
+    /*
+     * THE CLI OUTPUT PARSERS ARE DELETED, not kept for a caller that no longer exists. Everything
+     * that read `openhue` or `sonos` stdout is gone, because those programs are not shipped and
+     * cannot be: keeping a parser for their output would suggest the path still works.
+     */
 
     private fun parseNetworkDevices(output: String): List<NetworkDevice> {
         return output.lines().filter { it.isNotBlank() && it.contains(".") }.take(50).map { line ->
