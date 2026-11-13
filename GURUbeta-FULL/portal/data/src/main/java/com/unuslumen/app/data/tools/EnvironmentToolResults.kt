@@ -89,8 +89,44 @@ import kotlinx.serialization.Serializable
     val servedBy: String? = null,
 ) : ToolResultData
 @Serializable data class ArpDeviceDto(val ip: String, val mac: String, val manufacturer: String, val hostname: String, val discoveredAt: Long) : ToolResultData
-@Serializable data class WifiScanResult(val success: Boolean, val networks: List<WifiNetworkDto>, val error: String?) : ToolResultData
+/*
+ * [outcome] IS THE POINT OF THIS SHAPE (issue 337).
+ *
+ * This was `success` plus a list, and on a failure it was `success=false, networks=[]`. A caller
+ * could tell a failure from a success, but the MODEL reads the list, and an empty list under a
+ * failed call is the same value an empty list under a successful call would be. The ticket's rule
+ * is that a tool must never return a value a genuine result could also produce, and "no wifi
+ * networks are visible from here" is a genuine result a phone can produce.
+ *
+ * So the same three states arpScan carries: FOUND, EMPTY and REFUSED, with REFUSED meaning the
+ * scan never ran — no location permission, wifi turned off, or the platform refusing the request.
+ */
+@Serializable data class WifiScanResult(
+    val success: Boolean,
+    val networks: List<WifiNetworkDto>,
+    val error: String?,
+    /** FOUND, EMPTY or REFUSED. REFUSED means the platform never answered the scan. */
+    val outcome: String = "EMPTY",
+    /** The sentence to repeat, naming the route when a permission is what is missing. */
+    val outcomeSentence: String? = null,
+) : ToolResultData
 @Serializable data class WifiNetworkDto(val ssid: String, val bssid: String, val signalStrength: Int, val frequency: Int, val channel: Int, val securityType: String, val isHidden: Boolean, val isCurrentlyConnected: Boolean, val capabilities: String) : ToolResultData
-@Serializable data class BluetoothScanResult(val success: Boolean, val devices: List<DiscoveredBluetoothDevice>, val error: String?) : ToolResultData
+/*
+ * The same three states, for the same reason (issue 337).
+ *
+ * A Bluetooth scan has an extra way to be meaningless: Bluetooth can be OFF. In that case there
+ * are genuinely no devices visible, and reporting that as an empty scan is a statement about the
+ * room made by a radio that was not transmitting. The outcome separates it: REFUSED covers radio
+ * off, permission absent and any platform refusal, and each carries a sentence naming which.
+ */
+@Serializable data class BluetoothScanResult(
+    val success: Boolean,
+    val devices: List<DiscoveredBluetoothDevice>,
+    val error: String?,
+    /** FOUND, EMPTY or REFUSED. REFUSED means the radio never scanned. */
+    val outcome: String = "EMPTY",
+    /** The sentence to repeat, naming the route when a setting or permission is what is missing. */
+    val outcomeSentence: String? = null,
+) : ToolResultData
 @Serializable data class DiscoveredBluetoothDevice(val name: String, val mac: String, val deviceType: String, val majorDeviceClass: String, val minorDeviceClass: String, val bondState: String, val isPaired: Boolean, val rssi: Int?, val timestamp: Long) : ToolResultData
 @Serializable data class TcpConnectResult(val success: Boolean, val host: String, val port: Int, val response: String?, val responseHex: String?, val bytesReceived: Int, val error: String?) : ToolResultData
