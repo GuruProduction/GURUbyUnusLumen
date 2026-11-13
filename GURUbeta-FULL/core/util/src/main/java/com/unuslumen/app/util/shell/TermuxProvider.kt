@@ -181,6 +181,28 @@ class TermuxProvider(private val context: Context) {
     private val termuxRoot: File
         get() = File(context.filesDir, "termux")
 
+    /**
+     * The app's data directory: the PARENT of `files`, which is what libtermux-exec wants.
+     *
+     * ISSUE 329. libtermux-exec-ld-preload reads TERMUX_APP__DATA_DIR to decide where it is
+     * allowed to redirect an exec. This used to be `context.filesDir`, and the ticket's own
+     * matrix shows that value FAILING where its parent succeeds:
+     *
+     *     TERMUX_APP__DATA_DIR=/data/user/0/<pkg>         git version 2.56.0   works
+     *     TERMUX_APP__DATA_DIR=/data/user/0/<pkg>/files   Permission denied
+     *
+     * Every other variable people expect to matter, TERMUX__PREFIX and TERMUX__ROOTFS, is
+     * insufficient on its own: with both set correctly and this one absent, every forked
+     * child still dies with "Permission denied". So one wrong value here silently broke
+     * every exec that crosses a fork, which is most of what a package manager does.
+     *
+     * DERIVED FROM filesDir RATHER THAN HARDCODED. `filesDir.parentFile` is the data
+     * directory on every Android version and every install type, including a debug build
+     * with a separate package id, so nothing here names a package or a user id.
+     */
+    private val appDataDir: File
+        get() = context.filesDir.parentFile ?: context.filesDir
+
     private val usrPrefix: File
         get() = File(termuxRoot, "usr")
 
@@ -854,7 +876,8 @@ class TermuxProvider(private val context: Context) {
             "TERMUX__PREFIX" to usrPrefix.absolutePath,
             "TERMUX_PREFIX" to usrPrefix.absolutePath,
             "TERMUX_HOME" to homeDir.absolutePath,
-            "TERMUX_APP__DATA_DIR" to context.filesDir.absolutePath,
+            // THE PARENT OF files, NOT files ITSELF (#329). See appDataDir for the matrix.
+            "TERMUX_APP__DATA_DIR" to appDataDir.absolutePath,
             "TERMUX_APP__LEGACY_DATA_DIR" to "/data/data/${context.packageName}",
             "TERMUX_APP_PACKAGE" to context.packageName,
             "TERMUX_ANDROID_HOME" to homeDir.absolutePath
