@@ -12,6 +12,8 @@ import com.unuslumen.app.data.tools.registry.ToolSetRegistration
 import kotlin.reflect.KClass
 
 object SmartHomeToolDefinitions : ToolSetRegistration {
+    const val HUE_DISCOVER = "hueDiscover"
+    const val HUE_PAIR = "huePair"
     const val HUE_LIST_LIGHTS = "hueListLights"
     const val HUE_LIST_ROOMS = "hueListRooms"
     const val HUE_LIST_SCENES = "hueListScenes"
@@ -30,7 +32,41 @@ object SmartHomeToolDefinitions : ToolSetRegistration {
     const val NETWORK_PING = "networkPing"
 
     override val definitions = listOf(
-        ToolDefinition(name = HUE_LIST_LIGHTS, description = "List all Philips Hue lights with their names, IDs, and current states.", category = "smart_home", parameters = emptyList(), permissions = emptyList()),
+        /*
+         * THE HUE TOOLS NEED NO CLI AND NO INSTALL (issue 179).
+         *
+         * They used to run `openhue`, a Go binary Termux does not package and the APK never
+         * contained, so every one of them could only fail with a message telling a person to
+         * install something that does not exist. The bridge is a JSON HTTP server on the local
+         * network, so the two setup steps below plus the six control tools are the whole
+         * capability.
+         *
+         * THE SETUP ORDER MATTERS and is stated in the descriptions, because a model reading these
+         * has to know that pairing needs a physical button press before anything else can work.
+         */
+        ToolDefinition(
+            name = HUE_DISCOVER,
+            description = "Find Philips Hue Bridges on this network. Asks the LAN for the bridge's " +
+                "own announcement first, so it works with no internet access, then falls back to " +
+                "the vendor's cloud discovery service. Run this before huePair.",
+            category = "smart_home",
+            parameters = emptyList(),
+            permissions = emptyList(),
+        ),
+        ToolDefinition(
+            name = HUE_PAIR,
+            description = "Pair with a Hue Bridge found by hueDiscover. This is what issues the " +
+                "application key every other Hue tool needs. The bridge only issues a key while " +
+                "its physical round button has been pressed within the last 30 seconds, so press " +
+                "it first. If it was not pressed, this reports that it is waiting for the button " +
+                "rather than reporting a failure, because the bridge is working as designed.",
+            category = "smart_home",
+            parameters = listOf(
+                ToolParameter("bridge", ToolParameterType.String, true, "The bridge's IP address, as hueDiscover returned it"),
+            ),
+            permissions = emptyList(),
+        ),
+        ToolDefinition(name = HUE_LIST_LIGHTS, description = "List all Philips Hue lights with their names, IDs, and current states. Needs a bridge paired with huePair.", category = "smart_home", parameters = emptyList(), permissions = emptyList()),
         ToolDefinition(name = HUE_LIST_ROOMS, description = "List all Philips Hue rooms/zones.", category = "smart_home", parameters = emptyList(), permissions = emptyList()),
         ToolDefinition(name = HUE_LIST_SCENES, description = "List all Philips Hue scenes available.", category = "smart_home", parameters = emptyList(), permissions = emptyList()),
         ToolDefinition(name = HUE_SET_LIGHT, description = "Control a Philips Hue light - turn on/off, set brightness, color, or temperature.", category = "smart_home", parameters = listOf(ToolParameter("light", ToolParameterType.String, true, "Light name or ID"), ToolParameter("power", ToolParameterType.String, false, "Power state: 'on' or 'off'"), ToolParameter("brightness", ToolParameterType.Integer, false, "Brightness level 0-100"), ToolParameter("temperature", ToolParameterType.Integer, false, "Color temperature in mirek (153-500, warm to cool)"), ToolParameter("color", ToolParameterType.String, false, "Color name (e.g., 'red', 'blue', 'green') or hex (e.g., '#FF5500')")), permissions = emptyList()),
