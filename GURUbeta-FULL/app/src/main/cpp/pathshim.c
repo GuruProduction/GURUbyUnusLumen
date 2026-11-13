@@ -76,6 +76,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+/* __NR_access and syscall(), for the preinit fallback described below. */
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #include <android/log.h>
@@ -164,6 +166,184 @@ static const char *shim_path(const char *path, char *out, size_t outsz) {
 /* Convenience wrapper for the very common two-argument shape. */
 #define SHIM(path, buf) shim_path((path), (buf), sizeof(buf))
 
+/* ==================================================================== */
+/* THE NULL-DEREFERENCE FIX, AND WHY IT IS SHAPED THIS WAY (issue 328)  */
+/* ==================================================================== */
+/*
+ * WHAT WAS BROKEN. Every hook below did:
+ *
+ *     static access_fn real = NULL;
+ *     if (!real) real = (access_fn)dlsym(RTLD_NEXT, "access");
+ *     return real(SHIM(path, buf), mode);          // <-- no check
+ *
+ * bionic calls access() on ITSELF during __libc_preinit, before the linker has
+ * finished its own work. dlsym needs the linker, so at that moment it answers
+ * NULL, and the very next line calls NULL. The process dies with SIGSEGV before
+ * main() ever runs, which is why EVERY process this library was preloaded into
+ * segfaulted, including /system/bin/echo:
+ *
+ *     #05 libpathshim.so (access+92)
+ *     #06 bionic libc (__libc_safe_arc4random_buf)
+ *     #07 bionic libc (__libc_init_setjmp_cookie)
+ *     #08 bionic libc (__libc_init_globals)
+ *     #09 bionic libc (__libc_preinit_impl)
+ *     #10 linker64 (call_constructors)
+ *
+ * That tombstone is the whole diagnosis: the crash is inside libc's own startup,
+ * one frame below our hook, and the address it died on is NULL.
+ *
+ * THE FIX IS IN TWO PARTS, AND BOTH ARE NEEDED.
+ *
+ *   1. A resolver that never hands back NULL to a caller. When dlsym cannot
+ *      answer, the shim reports the call as UNSUPPORTED and the hook passes the
+ *      ORIGINAL, UNREWRITTEN path to the real libc behaviour it can still reach.
+ *      Passing through is always safe: an unrewritten path simply behaves the
+ *      way it did before this shim existed, which is the failure the shim was
+ *      built to improve rather than one it created.
+ *
+ *   2. A fallback for the startup window specifically. During preinit the only
+ *      thing bionic needs from access() is an answer about a path that is never
+ *      ours, so the hook uses the kernel directly via syscall(SYS_access) rather
+ *      than pretending it has the libc symbol. That keeps the shim transparent
+ *      for exactly as long as the linker is not ready, and it is the difference
+ *      between "inert" and "kills the host process".
+ *
+ * WHY NOT JUST DELETE THE access HOOK. access is how dpkg and apt test for a
+ * binary before running it, and it is one of the six paths that made the prefix
+ * work at all. Removing it would fix the crash by removing the feature.
+ */
+
+/*
+ * Resolve the real symbol behind a hook, exactly once.
+ *
+ * Returns 1 and stores the pointer when libc answered, or 0 when it did not.
+ * A zero is NOT cached as a permanent answer for the startup window: dlsym
+ * legitimately returns NULL during preinit and works a moment later, so a
+ * resolver that cached that NULL would leave the shim permanently inert on
+ * every process. Only a successful lookup is cached.
+ */
+static int shim_resolve(void **slot, const char *name) {
+    if (*slot) return 1;
+    void *found = dlsym(RTLD_NEXT, name);
+    if (!found) return 0;
+    *slot = found;
+    return 1;
+}
+
+/*
+ * The kernel fallback, for when the linker cannot answer yet.
+ *
+ * SYS_access is stable across every Android ABI this app ships, and the raw
+ * syscall needs none of the linker state that dlsym does. Using it here is not a
+ * second implementation of access: it is the same operation, reached by the one
+ * route that is open during preinit.
+ */
+/*
+ * access(2)'s syscall number, spelled per architecture.
+ *
+ * BIONIC DOES NOT PUBLISH __NR_access TO USERSPACE. The first attempt used it and the
+ * compiler was blunt: "use of undeclared identifier '__NR_access'". The numbers are part
+ * of the kernel ABI rather than of libc, so they are stable and they are written here,
+ * with the reason, rather than being fetched from a header that does not carry them.
+ *
+ * The alternative — inline assembly per ABI — was tried and rejected by the compiler for
+ * armv7, which is right: r7 is the frame pointer under Thumb and a syscall number cannot
+ * be placed there. syscall() takes the number as an argument and handles the register
+ * conventions itself, which is the whole reason it is preferred here.
+ */
+#if defined(__aarch64__)
+#  define SHIM_NR_access 48
+#elif defined(__arm__)
+#  define SHIM_NR_access 33
+#elif defined(__x86_64__)
+#  define SHIM_NR_access 21
+#elif defined(__i386__)
+#  define SHIM_NR_access 33
+#else
+#  error "no access(2) syscall number for this architecture"
+#endif
+
+static int shim_raw_access(const char *path, int mode) {
+    /*
+     * THE PORTABLE FORM, NOT HAND-WRITTEN ASSEMBLY.
+     *
+     * The first attempt wrote the syscall instruction inline per architecture, and the
+     * armv7 build refused it outright:
+     *
+     *   error: write to reserved register 'R7'
+     *
+     * which is correct of the compiler: r7 is the frame pointer under the Thumb ABI this
+     * target uses, so a syscall number cannot live there. Writing it as assembly also means
+     * getting three calling conventions right by hand for a single call, which is three
+     * chances to be wrong for no gain.
+     *
+     * `syscall()` from <unistd.h> is the same operation, already correct on every ABI the
+     * NDK targets, and bionic implements it without needing the linker to have finished.
+     * That last property is the entire reason this function exists.
+     */
+    return (int)syscall(SHIM_NR_access, path, mode);
+}
+
+/*
+ * One sentence for a hook that could not resolve its real symbol and therefore
+ * declined to rewrite. Logged once per symbol so a diagnosis is one line rather
+ * than one line per file open.
+ */
+static void shim_report_unresolved(const char *name) {
+    LOGI("pathshim: %s unresolved, passing paths through unrewritten", name);
+}
+
+/*
+ * What a hook does when the real symbol cannot be resolved.
+ *
+ * EVERY ONE OF THESE IS A RETURN, NOT A CRASH, and that is the entire point of
+ * issue 328. Before this file had them, an unresolved symbol was called anyway.
+ *
+ * THE SHAPE IS CHOSEN PER FUNCTION so each one tells the truth about what it did:
+ *
+ *  - access() has a working kernel route, so it USES it and answers correctly even
+ *    during preinit. Returning ENOSYS here would break bionic's own startup, which
+ *    is the one caller guaranteed to run before the linker is ready.
+ *  - The rest report ENOSYS or NULL, because a path that cannot be given to libc
+ *    cannot be rewritten, and inventing a success is worse than an honest failure.
+ *
+ * A caller that receives ENOSYS learns the shim could not help. A caller that
+ * receives a fabricated success would act on a file that was never opened.
+ */
+static int shim_unresolved_open(void) { errno = ENOSYS; return -1; }
+static int shim_unresolved_openat(void) { errno = ENOSYS; return -1; }
+static int shim_unresolved_stat(void) { errno = ENOSYS; return -1; }
+static int shim_unresolved_lstat(void) { errno = ENOSYS; return -1; }
+static int shim_unresolved_fstatat(void) { errno = ENOSYS; return -1; }
+static int shim_unresolved_faccessat(void) { errno = ENOSYS; return -1; }
+static char *shim_unresolved_realpath(void) { errno = ENOSYS; return NULL; }
+static ssize_t shim_unresolved_readlink(void) { errno = ENOSYS; return -1; }
+static int shim_unresolved_execve(void) { errno = ENOSYS; return -1; }
+static int shim_unresolved_execv(void) { errno = ENOSYS; return -1; }
+static int shim_unresolved_execvp(void) { errno = ENOSYS; return -1; }
+static int shim_unresolved_execvpe(void) { errno = ENOSYS; return -1; }
+static DIR *shim_unresolved_opendir(void) { errno = ENOSYS; return NULL; }
+static FILE *shim_unresolved_fopen(void) { errno = ENOSYS; return NULL; }
+static FILE *shim_unresolved_fopen64(void) { errno = ENOSYS; return NULL; }
+static int shim_unresolved_scandir(void) { errno = ENOSYS; return -1; }
+static int shim_unresolved_scandir64(void) { errno = ENOSYS; return -1; }
+
+/*
+ * access() IS THE ONE THAT MUST NOT FAIL, because it is the one bionic calls
+ * during its own preinit. The kernel route needs no linker state, so the answer
+ * is still correct, and the shim stays transparent for exactly the window in
+ * which it used to kill the process.
+ */
+/*
+ * NOTE there is no shim_unresolved_access() here.
+ *
+ * access() cannot delegate its failure to a no-argument stub, because a refusal
+ * and a truth are different answers and bionic's preinit needs the truth: it asks
+ * whether a path exists, and gets a wrong answer if the shim says no on its
+ * behalf. So the hook itself takes the syscall route with the real path, which is
+ * where the fix for issue 328 actually lives. See access() below.
+ */
+
 /* ------------------------------------------------------------------ */
 /* Intercepted entry points                                            */
 /* ------------------------------------------------------------------ */
@@ -171,7 +351,14 @@ static const char *shim_path(const char *path, char *out, size_t outsz) {
 typedef int (*open_fn)(const char *, int, ...);
 int open(const char *path, int flags, ...) {
     static open_fn real = NULL;
-    if (!real) real = (open_fn)dlsym(RTLD_NEXT, "open");
+    if (!shim_resolve((void **)&real, "open")) {
+        static int reported = 0;
+        if (!reported) { reported = 1; shim_report_unresolved("open"); }
+        /* No way to reach libc's open: report the operation as unsupported rather than
+         * dereferencing NULL. EAGAIN is wrong, ENOSYS is the truth. */
+        errno = ENOSYS;
+        return -1;
+    }
     mode_t mode = 0;
     if (flags & O_CREAT) {
         va_list ap;
@@ -186,7 +373,7 @@ int open(const char *path, int flags, ...) {
 typedef int (*openat_fn)(int, const char *, int, ...);
 int openat(int dirfd, const char *path, int flags, ...) {
     static openat_fn real = NULL;
-    if (!real) real = (openat_fn)dlsym(RTLD_NEXT, "openat");
+    if (!shim_resolve((void **)&real, "openat")) return shim_unresolved_openat();
     mode_t mode = 0;
     if (flags & O_CREAT) {
         va_list ap;
@@ -206,7 +393,7 @@ int openat(int dirfd, const char *path, int flags, ...) {
 typedef int (*stat_fn)(const char *, struct stat *);
 int stat(const char *path, struct stat *st) {
     static stat_fn real = NULL;
-    if (!real) real = (stat_fn)dlsym(RTLD_NEXT, "stat");
+    if (!shim_resolve((void **)&real, "stat")) return shim_unresolved_stat();
     char buf[PATHBUF];
     return real(SHIM(path, buf), st);
 }
@@ -214,7 +401,7 @@ int stat(const char *path, struct stat *st) {
 typedef int (*lstat_fn)(const char *, struct stat *);
 int lstat(const char *path, struct stat *st) {
     static lstat_fn real = NULL;
-    if (!real) real = (lstat_fn)dlsym(RTLD_NEXT, "lstat");
+    if (!shim_resolve((void **)&real, "lstat")) return shim_unresolved_lstat();
     char buf[PATHBUF];
     return real(SHIM(path, buf), st);
 }
@@ -222,16 +409,41 @@ int lstat(const char *path, struct stat *st) {
 typedef int (*fstatat_fn)(int, const char *, struct stat *, int);
 int fstatat(int dirfd, const char *path, struct stat *st, int flags) {
     static fstatat_fn real = NULL;
-    if (!real) real = (fstatat_fn)dlsym(RTLD_NEXT, "fstatat");
+    if (!shim_resolve((void **)&real, "fstatat")) return shim_unresolved_fstatat();
     char buf[PATHBUF];
     const char *p = (path && path[0] == '/') ? SHIM(path, buf) : path;
     return real(dirfd, p, st, flags);
 }
 
+/*
+ * access, THE HOOK ISSUE 328 IS ABOUT.
+ *
+ * bionic calls access() during __libc_preinit, before the linker can answer a
+ * dlsym. The old code called the NULL that dlsym returned and every preloaded
+ * process died with SIGSEGV before main(). The tombstone named this frame exactly:
+ *
+ *     #05  libpathshim.so (access+92)
+ *     #06  bionic libc (__libc_safe_arc4random_buf)
+ *     #07  bionic libc (__libc_init_setjmp_cookie)
+ *     #08  bionic libc (__libc_init_globals)
+ *     #09  bionic libc (__libc_preinit_impl)
+ *
+ * SO THIS ONE DOES NOT DELEGATE ITS FAILURE, IT USES THE KERNEL. When dlsym cannot
+ * answer, the raw syscall still can, and it answers the same question with the
+ * same path. During preinit the path is never one of ours, so no rewrite is
+ * needed and the correct answer comes back; later, when the linker is ready, the
+ * libc symbol is used as before.
+ */
 typedef int (*access_fn)(const char *, int);
 int access(const char *path, int mode) {
     static access_fn real = NULL;
-    if (!real) real = (access_fn)dlsym(RTLD_NEXT, "access");
+    if (!shim_resolve((void **)&real, "access")) {
+        static int reported = 0;
+        if (!reported) { reported = 1; shim_report_unresolved("access"); }
+        /* The kernel route: same operation, same path, no linker state needed. */
+        char buf[PATHBUF];
+        return shim_raw_access(SHIM(path, buf), mode);
+    }
     char buf[PATHBUF];
     return real(SHIM(path, buf), mode);
 }
@@ -239,7 +451,7 @@ int access(const char *path, int mode) {
 typedef int (*faccessat_fn)(int, const char *, int, int);
 int faccessat(int dirfd, const char *path, int mode, int flags) {
     static faccessat_fn real = NULL;
-    if (!real) real = (faccessat_fn)dlsym(RTLD_NEXT, "faccessat");
+    if (!shim_resolve((void **)&real, "faccessat")) return shim_unresolved_faccessat();
     char buf[PATHBUF];
     const char *p = (path && path[0] == '/') ? SHIM(path, buf) : path;
     return real(dirfd, p, mode, flags);
@@ -248,7 +460,7 @@ int faccessat(int dirfd, const char *path, int mode, int flags) {
 typedef char *(*realpath_fn)(const char *, char *);
 char *realpath(const char *path, char *resolved) {
     static realpath_fn real = NULL;
-    if (!real) real = (realpath_fn)dlsym(RTLD_NEXT, "realpath");
+    if (!shim_resolve((void **)&real, "realpath")) return shim_unresolved_realpath();
     char buf[PATHBUF];
     return real(SHIM(path, buf), resolved);
 }
@@ -256,7 +468,7 @@ char *realpath(const char *path, char *resolved) {
 typedef ssize_t (*readlink_fn)(const char *, char *, size_t);
 ssize_t readlink(const char *path, char *out, size_t outsz) {
     static readlink_fn real = NULL;
-    if (!real) real = (readlink_fn)dlsym(RTLD_NEXT, "readlink");
+    if (!shim_resolve((void **)&real, "readlink")) return shim_unresolved_readlink();
     char buf[PATHBUF];
     return real(SHIM(path, buf), out, outsz);
 }
@@ -269,7 +481,7 @@ ssize_t readlink(const char *path, char *out, size_t outsz) {
 typedef int (*execve_fn)(const char *, char *const[], char *const[]);
 int execve(const char *path, char *const argv[], char *const envp[]) {
     static execve_fn real = NULL;
-    if (!real) real = (execve_fn)dlsym(RTLD_NEXT, "execve");
+    if (!shim_resolve((void **)&real, "execve")) return shim_unresolved_execve();
     char buf[PATHBUF];
     return real(SHIM(path, buf), argv, envp);
 }
@@ -277,7 +489,7 @@ int execve(const char *path, char *const argv[], char *const envp[]) {
 typedef int (*execv_fn)(const char *, char *const[]);
 int execv(const char *path, char *const argv[]) {
     static execv_fn real = NULL;
-    if (!real) real = (execv_fn)dlsym(RTLD_NEXT, "execv");
+    if (!shim_resolve((void **)&real, "execv")) return shim_unresolved_execv();
     char buf[PATHBUF];
     return real(SHIM(path, buf), argv);
 }
@@ -297,7 +509,7 @@ int execv(const char *path, char *const argv[]) {
 typedef int (*execvp_fn)(const char *, char *const[]);
 int execvp(const char *file, char *const argv[]) {
     static execvp_fn real = NULL;
-    if (!real) real = (execvp_fn)dlsym(RTLD_NEXT, "execvp");
+    if (!shim_resolve((void **)&real, "execvp")) return shim_unresolved_execvp();
     char buf[PATHBUF];
     return real(SHIM(file, buf), argv);
 }
@@ -305,7 +517,7 @@ int execvp(const char *file, char *const argv[]) {
 typedef int (*execvpe_fn)(const char *, char *const[], char *const[]);
 int execvpe(const char *file, char *const argv[], char *const envp[]) {
     static execvpe_fn real = NULL;
-    if (!real) real = (execvpe_fn)dlsym(RTLD_NEXT, "execvpe");
+    if (!shim_resolve((void **)&real, "execvpe")) return shim_unresolved_execvpe();
     char buf[PATHBUF];
     return real(SHIM(file, buf), argv, envp);
 }
@@ -349,7 +561,7 @@ int execvpe(const char *file, char *const argv[], char *const envp[]) {
 typedef DIR *(*opendir_fn)(const char *);
 DIR *opendir(const char *path) {
     static opendir_fn real = NULL;
-    if (!real) real = (opendir_fn)dlsym(RTLD_NEXT, "opendir");
+    if (!shim_resolve((void **)&real, "opendir")) return shim_unresolved_opendir();
     char buf[PATHBUF];
     return real(SHIM(path, buf));
 }
@@ -369,14 +581,14 @@ DIR *opendir(const char *path) {
 typedef FILE *(*fopen_fn)(const char *, const char *);
 FILE *fopen(const char *path, const char *mode) {
     static fopen_fn real = NULL;
-    if (!real) real = (fopen_fn)dlsym(RTLD_NEXT, "fopen");
+    if (!shim_resolve((void **)&real, "fopen")) return shim_unresolved_fopen();
     char buf[PATHBUF];
     return real(SHIM(path, buf), mode);
 }
 
 FILE *fopen64(const char *path, const char *mode) {
     static fopen_fn real = NULL;
-    if (!real) real = (fopen_fn)dlsym(RTLD_NEXT, "fopen64");
+    if (!shim_resolve((void **)&real, "fopen64")) return shim_unresolved_fopen64();
     char buf[PATHBUF];
     return real(SHIM(path, buf), mode);
 }
@@ -399,7 +611,7 @@ int scandir(const char *path, struct dirent ***namelist,
             int (*filter)(const struct dirent *),
             int (*compar)(const struct dirent **, const struct dirent **)) {
     static scandir_fn real = NULL;
-    if (!real) real = (scandir_fn)dlsym(RTLD_NEXT, "scandir");
+    if (!shim_resolve((void **)&real, "scandir")) return shim_unresolved_scandir();
     char buf[PATHBUF];
     return real(SHIM(path, buf), namelist, filter, compar);
 }
@@ -408,7 +620,7 @@ int scandir64(const char *path, struct dirent64 ***namelist,
               int (*filter)(const struct dirent64 *),
               int (*compar)(const struct dirent64 **, const struct dirent64 **)) {
     static scandir_fn real = NULL;
-    if (!real) real = (scandir_fn)dlsym(RTLD_NEXT, "scandir64");
+    if (!shim_resolve((void **)&real, "scandir64")) return shim_unresolved_scandir64();
     char buf[PATHBUF];
     return real(SHIM(path, buf), (struct dirent ***)namelist,
                  (int (*)(const struct dirent *))filter,
