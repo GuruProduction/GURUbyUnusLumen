@@ -12,6 +12,7 @@ import com.unuslumen.app.data.discovery.NetworkReadOutcome
 import com.unuslumen.app.data.discovery.SsdpDescriptions
 import com.unuslumen.app.data.discovery.SsdpDiscoveryManager
 import com.unuslumen.app.data.discovery.WifiScanManager
+import com.unuslumen.app.data.fabric.net.LocalNetwork
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
 import com.unuslumen.app.data.tools.registry.ToolRead
@@ -121,15 +122,51 @@ class EnvironmentToolExecutor(
                                 detail = it.descriptionDetail,
                             )
                         }
+                    /*
+                     * THE LISTENER'S STATE DECIDES WHETHER AN EMPTY LIST IS A MEASUREMENT
+                     * (issue 332's definition of done).
+                     *
+                     * This branch used to answer `success = true` with whatever it had, so a
+                     * multicast socket that never bound produced the same empty list as a quiet
+                     * network. That is the family's whole defect, and it was still present in this
+                     * one tool after the arp and mDNS ones were fixed.
+                     *
+                     * REFUSED is the socket never listening. EMPTY is a listener that ran and
+                     * heard nothing, which IS an answer about the network. FOUND is devices.
+                     */
+                    val listener = ssdpDiscoveryManager.listenerState()
+                    val read = ToolReads.fromShell(
+                        succeeded = SsdpDiscoveryManager.answered(listener),
+                        items = devs,
+                        tier = "APP_UID",
+                        refusalReason = "The SSDP multicast socket never bound, so nothing was " +
+                            "listened for. This is not a report about the network.",
+                        remedy = "Check that wifi is connected. A multicast socket cannot bind " +
+                            "without a live LAN interface.",
+                    )
                     val r = SsdpDevicesResult(
-                        success = true,
-                        devices = devs,
-                        error = null,
+                        success = read.answered,
+                        devices = read.values.orEmpty(),
+                        error = if (read.answered) null else ToolReads.sentence(read, "SSDP devices"),
                         problems = problems,
+                        outcome = ToolReads.outcomeName(read),
+                        listener = listener.name,
+                        // The subnet the sweep actually used, from the same single derivation every
+                        // other tool in this family reads. Issue 330 was two tools deriving this
+                        // differently and disagreeing about the LAN in the same minute.
+                        subnet = LocalNetwork.current().prefix,
+                        tier = "APP_UID",
                     )
                     emitPayload(json, json.encodeToString(SsdpDevicesResult.serializer(), r), r, r.success, r.error)
                 } catch (e: Exception) {
-                    val r = SsdpDevicesResult(success = false, devices = emptyList(), error = "SSDP list failed: ${e.message}")
+                    val r = SsdpDevicesResult(
+                        success = false,
+                        devices = emptyList(),
+                        error = "SSDP list failed: ${e.message}",
+                        outcome = NetworkReadOutcome.REFUSED.name,
+                        listener = ListenerState.BIND_FAILED.name,
+                        tier = "NONE",
+                    )
                     emitPayload(json, json.encodeToString(SsdpDevicesResult.serializer(), r), r, false, r.error)
                 }
             }
