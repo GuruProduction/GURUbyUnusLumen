@@ -14,6 +14,8 @@ import com.unuslumen.app.data.discovery.SsdpDiscoveryManager
 import com.unuslumen.app.data.discovery.WifiScanManager
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
+import com.unuslumen.app.data.tools.registry.ToolRead
+import com.unuslumen.app.data.tools.registry.ToolReads
 import com.unuslumen.app.data.tools.registry.permission.PermissionGrants
 import com.unuslumen.app.data.tools.registry.permission.TeamThreePermissions
 import com.unuslumen.app.data.tools.senses.emitPayload
@@ -171,11 +173,108 @@ class EnvironmentToolExecutor(
                     emitPayload(json, json.encodeToString(ArpScanResult.serializer(), r), r, false, r.error)
                 }
             }
-            EnvironmentToolDefinitions.WIFI_SCAN -> { try { val nets = wifiScanManager.scanNetworks().map { WifiNetworkDto(it.ssid, it.bssid, it.signalStrength, it.frequency, it.channel, it.securityType, it.isHidden, it.isCurrentlyConnected, it.capabilities) }; val r = WifiScanResult(true, nets, null); ToolExecutionResult.success(r, json.encodeToString(WifiScanResult.serializer(), r)) } catch (e: Exception) { val r = WifiScanResult(false, emptyList(), "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(WifiScanResult.serializer(), r)) } }
+            /*
+             * A FAILED SCAN IS A REFUSAL, NOT AN EMPTY NETWORK (issue 337).
+             *
+             * This branch answered a failed scan with `success=false, networks=[]` plus an error
+             * string. The MODEL reads the list, and "no wifi networks are visible" is a value a
+             * working scan genuinely produces, so for the only reader that matters the two were
+             * indistinguishable. `outcome` now carries FOUND, EMPTY or REFUSED from the shared
+             * rule in [ToolReads], and a refusal also carries the sentence naming the route.
+             *
+             * Location permission is the usual cause: Android will not return scan results to an
+             * app without it, and a phone with wifi switched off produces the same empty list as
+             * a flat with no router in it.
+             */
+            EnvironmentToolDefinitions.WIFI_SCAN -> {
+                try {
+                    val nets = wifiScanManager.scanNetworks().map { WifiNetworkDto(it.ssid, it.bssid, it.signalStrength, it.frequency, it.channel, it.securityType, it.isHidden, it.isCurrentlyConnected, it.capabilities) }
+                    val read = ToolReads.fromShell(
+                        succeeded = true,
+                        items = nets,
+                        tier = "APP_UID",
+                        refusalReason = "The wifi scan did not run.",
+                        remedy = "Grant location permission, which Android requires before it returns scan results.",
+                    )
+                    val r = WifiScanResult(
+                        success = read.answered,
+                        networks = read.values.orEmpty(),
+                        error = null,
+                        outcome = ToolReads.outcomeName(read),
+                        outcomeSentence = if (read.answered) null else ToolReads.sentence(read, "wifi networks"),
+                    )
+                    ToolExecutionResult.success(r, json.encodeToString(WifiScanResult.serializer(), r))
+                } catch (e: Exception) {
+                    val read: ToolRead<WifiNetworkDto> = ToolRead.Refused(
+                        tier = "APP_UID",
+                        reason = "The wifi scan threw ${e.javaClass.simpleName}: ${e.message}",
+                        remedy = "Grant location permission and check that wifi is switched on. " +
+                            "Android refuses scan results to an app without location.",
+                    )
+                    val r = WifiScanResult(
+                        success = false,
+                        networks = emptyList(),
+                        error = ToolReads.sentence(read, "wifi networks"),
+                        outcome = ToolReads.outcomeName(read),
+                        outcomeSentence = ToolReads.sentence(read, "wifi networks"),
+                    )
+                    ToolExecutionResult.success(r, json.encodeToString(WifiScanResult.serializer(), r))
+                }
+            }
             // BluetoothScanManager now refuses through PermissionGrants itself, so this
             // branch only maps its result. A refusal there carries the catalogue
             // sentence in `error`, which is exactly what the model should read.
-            EnvironmentToolDefinitions.BLUETOOTH_SCAN -> { try { val result = bluetoothScanManager.scan(); val devs = result.devices.map { DiscoveredBluetoothDevice(it.name, it.mac, it.deviceType, it.majorDeviceClass, it.minorDeviceClass, it.bondState, it.isPaired, it.rssi, it.timestamp) }; val r = BluetoothScanResult(result.success, devs, result.error); ToolExecutionResult.success(r, json.encodeToString(BluetoothScanResult.serializer(), r)) } catch (e: SecurityException) { PermissionGrants.refusal(PermissionGrants.check(context, TeamThreePermissions.BLUETOOTH_SCAN)) } catch (e: Exception) { val r = BluetoothScanResult(false, emptyList(), "Bluetooth scan failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(BluetoothScanResult.serializer(), r)) } }
+            /*
+             * A BLUETOOTH REFUSAL IS NOT AN EMPTY ROOM (issue 337).
+             *
+             * Bluetooth has an extra way to be meaningless that no other scan here has: the radio
+             * can be OFF. When it is, there are genuinely no devices visible, and reporting that
+             * as an empty scan is a statement about the room made by a radio that was not
+             * transmitting. So the manager's own success flag feeds the shared rule and the
+             * outcome says which of the three happened.
+             *
+             * The manager already refuses through PermissionGrants, so a permission refusal
+             * carries the catalogue sentence in `error`, and it is repeated into
+             * `outcomeSentence` so a reader that only looks at the new field still sees it.
+             */
+            EnvironmentToolDefinitions.BLUETOOTH_SCAN -> {
+                try {
+                    val result = bluetoothScanManager.scan()
+                    val devs = result.devices.map { DiscoveredBluetoothDevice(it.name, it.mac, it.deviceType, it.majorDeviceClass, it.minorDeviceClass, it.bondState, it.isPaired, it.rssi, it.timestamp) }
+                    val read = ToolReads.fromShell(
+                        succeeded = result.success,
+                        items = devs,
+                        tier = "APP_UID",
+                        refusalReason = result.error ?: "The Bluetooth scan did not run.",
+                        remedy = "Grant BLUETOOTH_SCAN and turn Bluetooth on. A scan with the radio " +
+                            "off is not a report about nearby devices.",
+                    )
+                    val r = BluetoothScanResult(
+                        success = read.answered,
+                        devices = read.values.orEmpty(),
+                        error = if (read.answered) result.error else null,
+                        outcome = ToolReads.outcomeName(read),
+                        outcomeSentence = if (read.answered) null else ToolReads.sentence(read, "Bluetooth devices"),
+                    )
+                    ToolExecutionResult.success(r, json.encodeToString(BluetoothScanResult.serializer(), r))
+                } catch (e: SecurityException) {
+                    PermissionGrants.refusal(PermissionGrants.check(context, TeamThreePermissions.BLUETOOTH_SCAN))
+                } catch (e: Exception) {
+                    val read = ToolRead.Refused(
+                        tier = "APP_UID",
+                        reason = "The Bluetooth scan threw ${e.javaClass.simpleName}: ${e.message}",
+                        remedy = "Grant BLUETOOTH_SCAN and check that Bluetooth is switched on.",
+                    )
+                    val r = BluetoothScanResult(
+                        success = false,
+                        devices = emptyList(),
+                        error = ToolReads.sentence(read, "Bluetooth devices"),
+                        outcome = ToolReads.outcomeName(read),
+                        outcomeSentence = ToolReads.sentence(read, "Bluetooth devices"),
+                    )
+                    ToolExecutionResult.success(r, json.encodeToString(BluetoothScanResult.serializer(), r))
+                }
+            }
             EnvironmentToolDefinitions.TCP_CONNECT -> { val host = args["host"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'host'"); val port = (args["port"] as? Number)?.toInt() ?: return@withContext ToolExecutionResult.error("Missing 'port'"); val data = args["data"] as? String ?: return@withContext ToolExecutionResult.error("Missing 'data'"); val timeoutMs = (args["timeoutMs"] as? Number)?.toLong() ?: 5000L; var socket: java.net.Socket? = null; try { socket = java.net.Socket(); socket.connect(java.net.InetSocketAddress(host, port), timeoutMs.toInt()); socket.soTimeout = timeoutMs.toInt(); val out = socket.getOutputStream(); out.write(data.toByteArray()); out.flush(); val inp = socket.getInputStream(); val buf = ByteArray(8192); val bytes = inp.read(buf); val resp = if (bytes > 0) String(buf, 0, bytes, Charsets.UTF_8) else ""; val r = TcpConnectResult(true, host, port, resp, resp.toByteArray().joinToString("") { "%02x".format(it) }, bytes, null); ToolExecutionResult.success(r, json.encodeToString(TcpConnectResult.serializer(), r)) } catch (e: Exception) { val r = TcpConnectResult(false, host, port, null, null, 0, "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(TcpConnectResult.serializer(), r)) } finally { try { socket?.close() } catch (_: Exception) {} } }
             else -> ToolExecutionResult.error("Unknown tool: $toolName")
         }
