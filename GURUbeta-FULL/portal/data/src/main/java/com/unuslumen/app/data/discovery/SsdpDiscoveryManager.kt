@@ -30,7 +30,19 @@ data class SsdpDevice(
     val friendlyName: String,
     val manufacturer: String,
     val modelName: String,
-    val discoveredAt: Long
+    val discoveredAt: Long,
+    /**
+     * Why the name fields are what they are (#333).
+     *
+     * An empty [friendlyName] used to be indistinguishable from "the description was
+     * never fetched", and on the reported network that was the difference between the
+     * LG sets and the Amazon ones. Defaults to [DescriptionState.NOT_FETCHED] because
+     * a device is created before its description is requested, and claiming it was
+     * fetched before it was would be the same dishonesty in the other direction.
+     */
+    val descriptionState: DescriptionState = DescriptionState.NOT_FETCHED,
+    /** The reason behind [descriptionState], in one line a caller can show. */
+    val descriptionDetail: String? = null,
 )
 
 /**
@@ -260,28 +272,49 @@ class SsdpDiscoveryManager(
         // Already discovered this device
         if (discoveredDevices.containsKey(usn)) return
 
-        val host = extractHostFromLocation(location, sourceIp)
+        // The LOCATION is normalised before anything reads it, because a bare host:port is
+        // what issue 333 is about: URL() treats the IP as a protocol, the fetch never
+        // happens, and the device stays unnamed while a neighbour sending a proper URL is
+        // named. Normalising once here means both the host and the fetch agree.
+        val normalised = SsdpDescriptions.normaliseLocation(location)
+        val host = SsdpDescriptions.hostOf(normalised, sourceIp)
 
-        // Create initial device entry
+        // Create initial device entry. NOT_FETCHED, not FETCHED: the description has not
+        // been read yet, and a default that claims otherwise would be the same lie as an
+        // empty name with no reason attached.
         val device = SsdpDevice(
             usn = usn,
             st = st,
-            location = location,
+            location = normalised ?: location,
             server = server,
             host = host,
             friendlyName = "",
             manufacturer = "",
             modelName = "",
-            discoveredAt = System.currentTimeMillis()
+            discoveredAt = System.currentTimeMillis(),
+            descriptionState = if (normalised == null) {
+                DescriptionState.BAD_LOCATION
+            } else {
+                DescriptionState.NOT_FETCHED
+            },
+            descriptionDetail = if (normalised == null && location.isNotBlank()) {
+                "the LOCATION header was \"$location\""
+            } else {
+                null
+            },
         )
         discoveredDevices[usn] = device
-        Log.d(TAG, "Found SSDP device: $usn at $host (ST: $st)")
+        Log.d(TAG, "Found SSDP device: $usn at $host (ST: $st, location=$normalised)")
 
         // Fetch device description XML for rich metadata
-        if (location.isNotBlank()) {
+        if (normalised != null) {
             executor.execute {
-                fetchDeviceDescription(usn, location)
+                fetchDeviceDescription(usn, normalised)
             }
+        } else if (location.isBlank()) {
+            // No LOCATION at all is a fact about the device, and it is recorded so the
+            // caller can tell it from a failed fetch.
+            discoveredDevices[usn] = device.copy(descriptionState = DescriptionState.NO_LOCATION)
         }
     }
 
@@ -318,20 +351,30 @@ class SsdpDiscoveryManager(
      * Fetches the device description XML from the LOCATION URL and extracts
      * friendlyName, manufacturer, and modelName.
      */
-    private fun fetchDeviceDescription(usn: String, location: String) {
-        try {
-            val url = URL(location)
+    private fun fetchDeviceDescription(usn: String, normalisedLocation: String) {
+        // Every early return below records WHY it returned. The old version logged and
+        // returned, which is precisely how issue 333 stayed invisible: the caller saw an
+        // empty name and no reason, so a device whose description was never fetched was
+        // indistinguishable from a device that declares no name.
+        fun fail(state: DescriptionState, detail: String?) {
+            val existing = discoveredDevices[usn] ?: return
+            discoveredDevices[usn] = existing.copy(descriptionState = state, descriptionDetail = detail)
+            Log.d(TAG, "Description for $usn not read: $state ${detail.orEmpty()}")
+        }
 
-            // THE LOCATION HEADER IS THE DEVICE'S OWN CHOICE, NOT OURS. This used to fetch
-            // whatever URL a device advertised with no check at all, so a device on the network
-            // could hand GURU a public address and have it fetched from the device's real one.
-            // A description belongs on this network, so anything else is refused outright rather
-            // than classified and routed: this path has no business reaching the internet.
-            if (!com.unuslumen.app.data.tor.EgressClassifier.isLocalName(url.host)) {
-                Log.d(TAG, "Description for $usn is not on this network, refusing to fetch it")
-                return
-            }
+        val url = runCatching { URL(normalisedLocation) }.getOrNull()
+            ?: return fail(DescriptionState.BAD_LOCATION, normalisedLocation)
 
+        // THE LOCATION HEADER IS THE DEVICE'S OWN CHOICE, NOT OURS. This used to fetch
+        // whatever URL a device advertised with no check at all, so a device on the network
+        // could hand GURU a public address and have it fetched from the device's real one.
+        // A description belongs on this network, so anything else is refused outright rather
+        // than classified and routed: this path has no business reaching the internet.
+        if (!com.unuslumen.app.data.tor.EgressClassifier.isLocalName(url.host)) {
+            return fail(DescriptionState.REFUSED_OFF_NETWORK, url.host)
+        }
+
+        val xml = try {
             val connection = url.openConnection(java.net.Proxy.NO_PROXY) as HttpURLConnection
             connection.requestMethod = "GET"
             connection.connectTimeout = 3000
@@ -339,40 +382,40 @@ class SsdpDiscoveryManager(
 
             val responseCode = connection.responseCode
             if (responseCode != 200) {
-                Log.d(TAG, "Device description for $usn returned $responseCode")
                 connection.disconnect()
-                return
+                return fail(DescriptionState.HTTP_ERROR, "HTTP $responseCode from ${url.host}")
             }
 
-            val xml = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            // BOUNDED, like every other body read in this app. readText() allocates the whole
+            // document with no ceiling, and this is a response from a device on the wifi, so a
+            // malfunctioning or hostile device could otherwise stream until the heap dies.
+            val body = connection.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                val buffer = CharArray(64 * 1024)
+                val read = reader.read(buffer)
+                if (read <= 0) "" else String(buffer, 0, read)
+            }
             connection.disconnect()
-
-            val friendlyName = extractXmlTag(xml, "friendlyName")
-            val manufacturer = extractXmlTag(xml, "manufacturer")
-            val modelName = extractXmlTag(xml, "modelName")
-
-            // Update the device with rich metadata
-            val existing = discoveredDevices[usn] ?: return
-            val updated = existing.copy(
-                friendlyName = friendlyName,
-                manufacturer = manufacturer,
-                modelName = modelName
-            )
-            discoveredDevices[usn] = updated
-
-            Log.d(TAG, "Enriched device $usn: $friendlyName ($manufacturer $modelName)")
+            body
         } catch (e: Exception) {
-            Log.d(TAG, "Failed to fetch device description for $usn: ${e.message}")
+            return fail(DescriptionState.HTTP_ERROR, e.message ?: e.javaClass.simpleName)
         }
-    }
 
-    /**
-     * Extracts the text content of an XML tag from a device description document.
-     * Handles namespaces by matching on the local tag name only.
-     */
-    private fun extractXmlTag(xml: String, tagName: String): String {
-        // Match <tagName>value</tagName> or <ns:tagName>value</ns:tagName>
-        val regex = Regex("<[^>]*$tagName[^>]*>([^<]*)<[^>]*$tagName[^>]*>", RegexOption.IGNORE_CASE)
-        return regex.find(xml)?.groupValues?.getOrNull(1)?.trim() ?: ""
+        val parsed = SsdpDescriptions.parse(xml)
+        val state = SsdpDescriptions.stateOf(parsed)
+
+        val existing = discoveredDevices[usn] ?: return
+        discoveredDevices[usn] = existing.copy(
+            friendlyName = parsed?.friendlyName.orEmpty(),
+            manufacturer = parsed?.manufacturer.orEmpty(),
+            modelName = parsed?.modelName.orEmpty(),
+            descriptionState = state,
+            descriptionDetail = if (state == DescriptionState.UNPARSEABLE) {
+                "${xml.length} characters from ${url.host} that did not parse as a device description"
+            } else {
+                null
+            },
+        )
+
+        Log.d(TAG, "Description for $usn: $state (${parsed?.friendlyName.orEmpty()})")
     }
 }

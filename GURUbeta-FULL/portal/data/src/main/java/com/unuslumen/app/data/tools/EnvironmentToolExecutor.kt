@@ -9,6 +9,7 @@ import com.unuslumen.app.data.discovery.BluetoothScanManager
 import com.unuslumen.app.data.discovery.ListenerState
 import com.unuslumen.app.data.discovery.MdnsDiscoveryManager
 import com.unuslumen.app.data.discovery.NetworkReadOutcome
+import com.unuslumen.app.data.discovery.SsdpDescriptions
 import com.unuslumen.app.data.discovery.SsdpDiscoveryManager
 import com.unuslumen.app.data.discovery.WifiScanManager
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
@@ -80,7 +81,56 @@ class EnvironmentToolExecutor(
             }
             EnvironmentToolDefinitions.MDNS_STOP_DISCOVERY -> { try { mdnsDiscoveryManager.stopDiscovery(); val r = MdnsDiscoverResult(true, "Stopped", null); ToolExecutionResult.success(r, json.encodeToString(MdnsDiscoverResult.serializer(), r)) } catch (e: Exception) { val r = MdnsDiscoverResult(false, null, "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(MdnsDiscoverResult.serializer(), r)) } }
             EnvironmentToolDefinitions.SSDP_DISCOVER -> { try { ssdpDiscoveryManager.startDiscovery(); val r = SsdpDiscoverResult(true, "SSDP discovery started", null); ToolExecutionResult.success(r, json.encodeToString(SsdpDiscoverResult.serializer(), r)) } catch (e: Exception) { val r = SsdpDiscoverResult(false, null, "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(SsdpDiscoverResult.serializer(), r)) } }
-            EnvironmentToolDefinitions.SSDP_LIST_DEVICES -> { try { val devs = ssdpDiscoveryManager.getDiscoveredDevices().map { SsdpDeviceDto(it.usn, it.st, it.location, it.server, it.host, it.friendlyName, it.manufacturer, it.modelName, it.discoveredAt) }; val r = SsdpDevicesResult(true, devs, null); ToolExecutionResult.success(r, json.encodeToString(SsdpDevicesResult.serializer(), r)) } catch (e: Exception) { val r = SsdpDevicesResult(false, emptyList(), "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(SsdpDevicesResult.serializer(), r)) } }
+            /*
+             * SSDP LIST DEVICES NAMES WHY A DEVICE HAS NO NAME (#333, #332).
+             *
+             * On the reported network three of six televisions came back with an empty
+             * friendlyName and nothing said why. Each device now carries its description
+             * state, and every unnamed one appears in `problems[]` with the reason, so an
+             * empty name is never read as "this device has no name" when the truth may be
+             * "its description was never fetched".
+             */
+            EnvironmentToolDefinitions.SSDP_LIST_DEVICES -> {
+                try {
+                    val devices = ssdpDiscoveryManager.getDiscoveredDevices()
+                    val devs = devices.map {
+                        SsdpDeviceDto(
+                            usn = it.usn,
+                            st = it.st,
+                            location = it.location,
+                            server = it.server,
+                            host = it.host,
+                            friendlyName = it.friendlyName,
+                            manufacturer = it.manufacturer,
+                            modelName = it.modelName,
+                            discoveredAt = it.discoveredAt,
+                            descriptionState = it.descriptionState.name,
+                        )
+                    }
+                    // One line per device that answered but has no name, so a partial list is
+                    // visibly partial rather than looking like a complete one.
+                    val problems = devices
+                        .filter { it.friendlyName.isBlank() }
+                        .map {
+                            SsdpDescriptions.problemSentence(
+                                host = it.host,
+                                usn = it.usn,
+                                state = it.descriptionState,
+                                detail = it.descriptionDetail,
+                            )
+                        }
+                    val r = SsdpDevicesResult(
+                        success = true,
+                        devices = devs,
+                        error = null,
+                        problems = problems,
+                    )
+                    emitPayload(json, json.encodeToString(SsdpDevicesResult.serializer(), r), r, r.success, r.error)
+                } catch (e: Exception) {
+                    val r = SsdpDevicesResult(success = false, devices = emptyList(), error = "SSDP list failed: ${e.message}")
+                    emitPayload(json, json.encodeToString(SsdpDevicesResult.serializer(), r), r, false, r.error)
+                }
+            }
             EnvironmentToolDefinitions.SSDP_STOP_DISCOVERY -> { try { ssdpDiscoveryManager.stopDiscovery(); val r = SsdpDiscoverResult(true, "Stopped", null); ToolExecutionResult.success(r, json.encodeToString(SsdpDiscoverResult.serializer(), r)) } catch (e: Exception) { val r = SsdpDiscoverResult(false, null, "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(SsdpDiscoverResult.serializer(), r)) } }
             /*
              * ARP SCAN REPORTS WHICH OF THREE THINGS HAPPENED (#221, #224).

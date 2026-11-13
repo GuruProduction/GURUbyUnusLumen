@@ -32,8 +32,35 @@ import kotlinx.serialization.Serializable
 ) : ToolResultData
 @Serializable data class MdnsDevice(val serviceName: String, val serviceType: String, val host: String, val port: Int, val discoveredAt: Long) : ToolResultData
 @Serializable data class SsdpDiscoverResult(val success: Boolean, val message: String?, val error: String?) : ToolResultData
-@Serializable data class SsdpDevicesResult(val success: Boolean, val devices: List<SsdpDeviceDto>, val error: String?) : ToolResultData
-@Serializable data class SsdpDeviceDto(val usn: String, val st: String, val location: String, val server: String, val host: String, val friendlyName: String, val manufacturer: String, val modelName: String, val discoveredAt: Long) : ToolResultData
+/**
+ * What `ssdpListDevices` returns.
+ *
+ * [problems] IS THE POINT (#332, #333). Three of the six televisions on the reported
+ * network came back with an empty `friendlyName` while three did not, and nothing in
+ * the result said why. A device that answered SSDP and could not be named now appears
+ * in [problems] with the reason, so an empty name is never read as "this device has no
+ * name" when the truth may be "its description was never fetched".
+ */
+@Serializable data class SsdpDevicesResult(
+    val success: Boolean,
+    val devices: List<SsdpDeviceDto>,
+    val error: String?,
+    /** One line per device whose name is missing, naming the reason. */
+    val problems: List<String> = emptyList(),
+) : ToolResultData
+@Serializable data class SsdpDeviceDto(
+    val usn: String,
+    val st: String,
+    val location: String,
+    val server: String,
+    val host: String,
+    val friendlyName: String,
+    val manufacturer: String,
+    val modelName: String,
+    val discoveredAt: Long,
+    /** Why the name fields are what they are: FETCHED, UNNAMED, NOT_FETCHED, and so on. */
+    val descriptionState: String = "NOT_FETCHED",
+) : ToolResultData
 /**
  * What `arpScan` returns.
  *
