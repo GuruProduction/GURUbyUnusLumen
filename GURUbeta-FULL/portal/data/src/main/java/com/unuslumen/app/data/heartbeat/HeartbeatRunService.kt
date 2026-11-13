@@ -15,6 +15,7 @@ import android.os.PowerManager
 import android.util.Log
 import com.unuslumen.app.domain.memory.MemoryRepository
 import com.unuslumen.app.domain.model.AiMessage
+import com.unuslumen.app.domain.model.BeatContextDerivation
 import com.unuslumen.app.domain.model.EntryState
 import com.unuslumen.app.domain.model.HeartbeatBooking
 import com.unuslumen.app.domain.model.HeartbeatEntry
@@ -294,7 +295,87 @@ class HeartbeatRunService : Service(), KoinComponent {
                         ).first()
                     }.getOrDefault("")
 
-                    // --- 2. The prompt in force ---
+                    /*
+                     * --- 2. The conversation and its history, RESOLVED BEFORE THE PROMPT ---
+                     *
+                     * THE ORDER HERE IS THE FIX (issue 327). This block used to sit three steps
+                     * further down, after substitution, so the prompt was composed before anything
+                     * knew when the human last spoke — and no token could carry that fact even if
+                     * it had been wanted. A prompt is the only instruction an owner can give a
+                     * scheduled beat, and with no state it can only be written as a vibe: "be
+                     * productive", "be curious". A model cannot fail any of those, which means it
+                     * cannot follow them either.
+                     *
+                     * Resolving history first makes the facts available where the text is built.
+                     * That is the whole change, and it is ordering rather than plumbing.
+                     */
+                    val conversation = runCatching {
+                        memoryRepository.getAllConversations().maxByOrNull { it.updatedDate }
+                    }.getOrNull()
+                    if (conversation == null) {
+                        Log.d(TAG, "No conversation exists yet: nothing to wake into")
+                        endedAs = EntryState.SKIPPED
+                        endedBecause = "There was no conversation to wake into, so the beat " +
+                            "had nowhere to send."
+                        HeartbeatScheduler.recordOutcome(
+                            applicationContext,
+                            "The beat fired but there is no conversation to wake into yet, so " +
+                                "nothing was sent. Talk to GURU once and the next beat has a home.",
+                        )
+                        return@withTimeoutOrNull
+                    }
+
+                    val persisted = runCatching {
+                        memoryRepository.getMessagesByConversation(conversation.id)
+                    }.getOrDefault(emptyList())
+                    val history = persisted.mapNotNull { msg ->
+                        when (msg.role) {
+                            "user" -> AiMessage.UserMessage(
+                                uuid = msg.id,
+                                content = msg.content,
+                                time = msg.timestamp
+                            )
+                            "assistant" -> AiMessage.AssistantMessage(
+                                content = msg.content,
+                                time = msg.timestamp,
+                                uuid = msg.id
+                            )
+                            else -> null
+                        }
+                    }
+                    if (history.isEmpty()) {
+                        Log.d(TAG, "Conversation has no user/assistant history: nothing to wake into")
+                        endedAs = EntryState.SKIPPED
+                        endedBecause = "The conversation held no history to continue, so the " +
+                            "beat had nothing to build on."
+                        HeartbeatScheduler.recordOutcome(
+                            applicationContext,
+                            "The beat fired but the newest conversation holds no user or " +
+                                "assistant messages, so there was no history to continue.",
+                        )
+                        return@withTimeoutOrNull
+                    }
+
+                    /*
+                     * THE THREE FACTS A PROMPT CAN ACT ON.
+                     *
+                     * Computed here, by the host, from timestamps already in hand. The idle count
+                     * and the gap are arithmetic over the newest user message; the note is what the
+                     * previous beat wrote about itself. None of the three is something a model
+                     * could work out reliably for itself, and the gap in particular is exactly what
+                     * a compaction destroys.
+                     */
+                    val lastHumanAt = persisted
+                        .filter { it.role == "user" }
+                        .maxOfOrNull { it.timestamp }
+                    val nowMillis = System.currentTimeMillis()
+                    val beatContext = HeartbeatPrompts.BeatContext(
+                        idleBeats = BeatContextDerivation.idleBeats(nowMillis, lastHumanAt),
+                        silentFor = BeatContextDerivation.silentFor(nowMillis, lastHumanAt),
+                        lastBeatNote = BeatContextDerivation.lastBeatNote(previousBeatOutcome()),
+                    )
+
+                    // --- 3. The prompt in force ---
                     //
                     // ONE SOURCE: THE DATABASE. The prompt is the owner's, written in
                     // the Heartbeat room, and there is no shipped fallback any more.
@@ -308,7 +389,7 @@ class HeartbeatRunService : Service(), KoinComponent {
                     val masterPrompt = if (rawPrompt.isBlank()) {
                         ""
                     } else {
-                        HeartbeatPrompts.substitute(rawPrompt, humanName)
+                        HeartbeatPrompts.substitute(rawPrompt, humanName, beatContext)
                     }
 
                     /*
@@ -344,56 +425,7 @@ class HeartbeatRunService : Service(), KoinComponent {
                         return@withTimeoutOrNull
                     }
 
-                    // --- 3. Newest-conversation pick (real Portal pick shape) ---
-                    val conversation = runCatching {
-                        memoryRepository.getAllConversations().maxByOrNull { it.updatedDate }
-                    }.getOrNull()
-                    if (conversation == null) {
-                        Log.d(TAG, "No conversation exists yet: nothing to wake into")
-                        endedAs = EntryState.SKIPPED
-                        endedBecause = "There was no conversation to wake into, so the beat " +
-                            "had nowhere to send."
-                        HeartbeatScheduler.recordOutcome(
-                            applicationContext,
-                            "The beat fired but there is no conversation to wake into yet, so " +
-                                "nothing was sent. Talk to GURU once and the next beat has a home.",
-                        )
-                        return@withTimeoutOrNull
-                    }
-
-                    // --- 4. Persisted history remapped ("user"/"assistant" only) ---
-                    val persisted = runCatching {
-                        memoryRepository.getMessagesByConversation(conversation.id)
-                    }.getOrDefault(emptyList())
-                    val history = persisted.mapNotNull { msg ->
-                        when (msg.role) {
-                            "user" -> AiMessage.UserMessage(
-                                uuid = msg.id,
-                                content = msg.content,
-                                time = msg.timestamp
-                            )
-                            "assistant" -> AiMessage.AssistantMessage(
-                                content = msg.content,
-                                time = msg.timestamp,
-                                uuid = msg.id
-                            )
-                            else -> null
-                        }
-                    }
-                    if (history.isEmpty()) {
-                        Log.d(TAG, "Conversation has no user/assistant history: nothing to wake into")
-                        endedAs = EntryState.SKIPPED
-                        endedBecause = "The conversation held no history to continue, so the " +
-                            "beat had nothing to build on."
-                        HeartbeatScheduler.recordOutcome(
-                            applicationContext,
-                            "The beat fired but the newest conversation holds no user or " +
-                                "assistant messages, so there was no history to continue.",
-                        )
-                        return@withTimeoutOrNull
-                    }
-
-                    // --- 5. The REAL beat send, the proven chain verbatim ---
+                    // --- 4. The REAL beat send, the proven chain verbatim ---
                     val beat = AiMessage.UserMessage(
                         uuid = Uuid.random().toString(),
                         content = prompt,
@@ -496,6 +528,34 @@ class HeartbeatRunService : Service(), KoinComponent {
         runningJob = currentJob
         return START_NOT_STICKY
     }
+
+    /**
+     * What the most recent finished beat recorded it did.
+     *
+     * WHY A DIARY READ AND NOT A STORED NOTE. The diary already holds a sentence for every
+     * occurrence that ended, written on every path including the failures, because `recordOutcome`
+     * is called from the NonCancellable end block. So the honest answer to "what did the last beat
+     * do" is already in the database and needs no new field: it is the newest FINISHED entry's
+     * outcome, whatever state it ended in.
+     *
+     * FINISHED MEANS RAN, CUT_SHORT, MISSED OR SKIPPED, which is anything with a finishedAt. A
+     * PENDING or RUNNING entry is this beat or a future one, not a previous beat, and those are
+     * excluded by requiring the slot to be strictly before the current one.
+     *
+     * Returns null rather than inventing a sentence, so the token substitutes to nothing and a
+     * prompt can check for emptiness. This reads the last eight hours rather than the whole diary
+     * because a note from three days ago is not "the last beat"; it is history, and a prompt that
+     * repeated it would describe a stale situation with confidence.
+     */
+    private suspend fun previousBeatOutcome(): String? = runCatching {
+        val now = System.currentTimeMillis()
+        val from = now - 8L * 60L * 60L * 1000L
+        bookingRepository.day(from, now + HeartbeatSlot.SLOT_MILLIS)
+            .filter { it.finishedAt > 0L && it.outcome.isNotBlank() }
+            .filter { it.slotAt < HeartbeatSlot.floor(now) }
+            .maxByOrNull { it.finishedAt }
+            ?.outcome
+    }.getOrNull()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
