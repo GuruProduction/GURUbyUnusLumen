@@ -156,7 +156,17 @@ class TermuxProvider(private val context: Context) {
          * re-proves the tree rather than trusting the one an older build left.
          */
         private const val EXEC_HEALTH_MARKER = ".prefix-executes"
-        private const val EXEC_HEALTH_VERSION = 1
+
+        /**
+         * VERSION 2 ADDS THE FORKED PROBE (issue 334).
+         *
+         * Version 1 recorded a tree proven by launching binaries directly through the linker. That
+         * probe answered true on a handset where every user-visible command failed, so a marker
+         * written by version 1 is not evidence about the question the marker now asks. Bumping the
+         * version makes every existing device re-prove its tree through the forked path, which is
+         * the only way the corrected check reaches the handsets that were reported as healthy.
+         */
+        private const val EXEC_HEALTH_VERSION = 2
 
         /**
          * The exit status a process gets when the dynamic linker refuses it:
@@ -586,8 +596,43 @@ class TermuxProvider(private val context: Context) {
         val git = probeCommand("git")
         val curl = probeCommand("curl")
         val apt = probeCommand("apt")
-        val allRan = listOf(bash, git, curl, apt).all { it.state == CommandProbe.RUNS }
-        return ExecHealth(allRan, bash, git, curl, apt)
+        val direct = listOf(bash, git, curl, apt).all { it.state == CommandProbe.RUNS }
+        return ExecHealth(direct && forkedProbesPass(), bash, git, curl, apt)
+    }
+
+    /**
+     * The same health question, asked through the path a tool actually takes (issue 334).
+     *
+     * THE DEFECT THIS CLOSES, in the ticket's own words: `termuxStatus` reported
+     * `prefixExecutes: true` with `prefixHealth: "every probed binary ran"` on the same device and
+     * in the same session where `termuxExec {"command": "git --version"}` returned `Permission
+     * denied`. Both readings were honest and they measured different things — [probeCommand]
+     * launches a binary DIRECTLY through the linker, while `termuxExec` goes through `bash`, and
+     * the fork is the layer where libtermux-exec refuses when a variable is missing (#329).
+     *
+     * So the health check asserted the component was fine while every user-visible command failed.
+     * The ticket's rule is that a probe which disagrees with the tool is wrong by definition, and
+     * this is the smallest change that makes them agree: run the same commands the tool runs, in
+     * the same way it runs them, through [execBash], and require both readings.
+     *
+     * THE PROBES LIVE IN [PrefixProbe] so the rule is JVM-testable without a prefix. `echo` comes
+     * first because it has no relationship to Termux at all, so a failure there can only be the
+     * shell or a preloaded library, which is what would have caught #328 in one second.
+     */
+    private fun forkedProbesPass(): Boolean {
+        val results = PrefixProbe.probes.map { probe ->
+            val outcome = execBash(probe.script)
+            PrefixProbe.decide(
+                probe = probe,
+                exitCode = outcome.exitCode,
+                output = outcome.stdout + "\n" + outcome.stderr,
+            )
+        }
+        val verdict = PrefixProbe.verdict(results)
+        if (!verdict.allRan) {
+            Log.w(TAG, "TermuxProvider: forked prefix probe failed — ${verdict.sentence}")
+        }
+        return verdict.allRan
     }
 
     /**
