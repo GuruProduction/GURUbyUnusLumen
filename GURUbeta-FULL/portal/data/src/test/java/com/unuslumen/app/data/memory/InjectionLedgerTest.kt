@@ -69,6 +69,13 @@ class InjectionLedgerTest {
                     it.restatedWithoutInjection
             }
 
+        // Mirrors the real query: this conversation's injections that are not
+        // themselves recall failures, newest first.
+        override suspend fun relevantForConversation(conversationId: String, limit: Int) =
+            rows.filter { it.conversationId == conversationId && !it.restatedWithoutInjection }
+                .takeLast(limit)
+                .reversed()
+
         override suspend fun precisionByLane(sinceMillis: Long): List<LanePrecision> =
             emptyList()
 

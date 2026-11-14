@@ -229,7 +229,19 @@ class AiRepositoryImpl(
     private val getNote: GetNoteUseCase,
     private val getTaskById: GetTaskByIdUseCase,
     private val getCalendarEventById: GetCalendarEventByIdUseCase,
-    private val toolResultDao: ToolResultDao
+    private val toolResultDao: ToolResultDao,
+    /**
+     * The recall ledger. Required rather than nullable for the reason its own
+     * class doc gives: a nullable collaborator with a default is a feature flag
+     * that is off by default, and nothing tested the on state, so off shipped.
+     *
+     * The send path is where a turn ENDS, which is the only moment at which the
+     * reply exists and the injections are still known. Without a call from here
+     * the ledger's confirmation column is a constant NULL, which is exactly what
+     * issue 418 defect 1 records: 187 rows, confirmed_used_at NULL on every one,
+     * a complete learning loop with no signal reaching it.
+     */
+    private val injectionLedger: com.unuslumen.app.data.memory.InjectionLedger,
 ) : AiRepository {
 
     companion object {
@@ -871,6 +883,33 @@ class AiRepositoryImpl(
                         "content" to userMessage.content
                     )
                 )
+                // THE RECALL-FAILURE SIGNAL, TAKEN BEFORE THIS TURN'S PREAMBLE.
+                //
+                // A human restating a stored fact is ground truth about retrieval
+                // they produced by accident, and it only exists on the way IN.
+                // Checked before buildPreamble so "the preamble did not inject
+                // this" is measured against the turn that had not yet run.
+                //
+                // The candidate bodies come from the ledger's recorded ids plus
+                // the brain, because the ledger stores ids and query text and
+                // never memory bodies.
+                try {
+                    val candidates = injectionLedger.recentCandidates(resolvedConversationId)
+                    if (candidates.isNotEmpty()) {
+                        val withBodies = candidates.mapNotNull { candidate ->
+                            val fact = memoryRepository.getFact(candidate.memoryId)
+                            fact?.let { candidate.copy(score = it.confidence, content = it.fact) }
+                        }
+                        injectionLedger.recordRestatements(
+                            conversationId = resolvedConversationId,
+                            userMessage = userMessage.content,
+                            candidates = withBodies,
+                            injectedThisTurn = emptySet(),
+                        )
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("guru", "Ledger restatement check failed: ${e.message}")
+                }
                 memoryRepository.buildContextPreamble(
                     query = userMessage.content,
                     humanName = humanName,
@@ -1355,6 +1394,20 @@ class AiRepositoryImpl(
                                             "content" to assistantMessage.content
                                         )
                                     )
+                                    // THE RECALL SIGNAL, AND THE ONLY PLACE IT CAN BE TAKEN.
+                                    // The reply exists here and the preamble's injections are
+                                    // still held by the ledger; one line later the turn ends.
+                                    // Awaited rather than launched so a test can observe the
+                                    // write, and wrapped because an observation must never be
+                                    // able to fail the turn it observes.
+                                    try {
+                                        injectionLedger.completeTurn(
+                                            conversationId = resolvedConversationId,
+                                            assistantReply = finalText,
+                                        )
+                                    } catch (e: Exception) {
+                                        android.util.Log.w("guru", "Ledger turn outcome failed: ${e.message}")
+                                    }
                                 }
                                 break
                             }
@@ -1467,7 +1520,16 @@ class AiRepositoryImpl(
                                             resultText = resultText,
                                             timestamp = toolCallMsg.time,
                                             conversationId = resolvedConversationId,
-                                            success = !toolCallMsg.isFailed && !truncatedResult.contains("\"success\":false", ignoreCase = true) && !truncatedResult.contains("\"success\": false", ignoreCase = true),
+                                            // PARSED, NOT SEARCHED. The old test was a
+                                            // substring search for one spelling of one
+                                            // field, so `{"error":"Invalid mood: EXCITED"}`
+                                            // was recorded as a success while any result
+                                            // that merely QUOTED `"success":false` was
+                                            // recorded as a failure. See issue 418.
+                                            success = !com.unuslumen.app.data.tools.ToolResultOutcome.isFailure(
+                                                rawJson = truncatedResult,
+                                                transportFailed = toolCallMsg.isFailed,
+                                            ),
                                             ttlMinutes = ttlMinutes,
                                             resultSignature = signature
                                         ))
