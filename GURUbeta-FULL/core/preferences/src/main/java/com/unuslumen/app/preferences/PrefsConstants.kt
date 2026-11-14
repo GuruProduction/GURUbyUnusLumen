@@ -33,6 +33,15 @@ object PrefsConstants {
 
     const val USER_NAME_KEY = "user_name"
 
+    /* The name the owner gave GURU (issue 340).
+
+       THE MIRROR OF USER_NAME_KEY, and it exists because GURU had no name of its own: the
+       owner could rename himself and the ${human} token picked it up, but the thing he is
+       talking to called itself GURU everywhere forever. A blank value means the owner has
+       not chosen one, and the default is GURU, so an unset device reads exactly as it did
+       before this setting existed. */
+    const val GURU_NAME_KEY = "guru_name"
+
     const val AI_PROVIDER_KEY = "ai_api"
     const val AI_TOOLS_ENABLED_KEY = "ai_tools_enabled"
 

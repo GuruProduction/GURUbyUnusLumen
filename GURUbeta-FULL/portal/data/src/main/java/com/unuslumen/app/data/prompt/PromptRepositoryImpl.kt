@@ -5,6 +5,7 @@ package com.unuslumen.app.data.prompt
 
 import android.content.Context
 import com.unuslumen.app.data.PromptFetcher
+import com.unuslumen.app.domain.prompt.NameTokens
 import com.unuslumen.app.domain.repository.PromptRepository
 import com.unuslumen.app.preferences.PrefsConstants
 import com.unuslumen.app.preferences.domain.model.stringPreferencesKey
@@ -38,31 +39,53 @@ class PromptRepositoryImpl(
         const val FALLBACK_NAME = "your human"
     }
 
+    /**
+     * The assembled prompt with BOTH name tokens substituted (issue 340).
+     *
+     * `${human}` was the only token, so GURU called itself "GURU" everywhere forever even when the
+     * owner wanted it called something else. `${guru}` is substituted here through the same rules,
+     * and both are read fresh on every send so renaming either one takes effect on the next message
+     * with no restart and no prompt re-fetch.
+     */
     override suspend fun getSystemPrompt(): String = withContext(Dispatchers.IO) {
         val raw = PromptFetcher.getCachedPrompt(context) ?: ""
-        substituteHumanToken(raw)
+        if (!NameTokens.hasUnsubstitutedToken(raw)) return@withContext raw
+        NameTokens.substitute(raw, humanName = readUserName(), guruName = readGuruName())
     }
 
     /**
-     * Replace every ${human} occurrence with the saved user name.
-     * Reads the name fresh through the preference flow each time. Blank or
-     * missing names fall back to "your human" so prompts never ship the raw
-     * token to the model.
+     * Replace every name token with the saved names.
+     *
+     * Kept as a named function because existing callers use it, but the rules themselves live in
+     * [NameTokens] so the prompt path and any other surface cannot drift apart on what a blank name
+     * becomes.
      */
     suspend fun substituteHumanToken(prompt: String, savedName: String? = null): String {
-        if (!prompt.contains(HUMAN_TOKEN)) return prompt
-        val name = savedName ?: readUserName()
-        return prompt.replace(HUMAN_TOKEN, name.ifBlank { FALLBACK_NAME })
+        if (!NameTokens.hasUnsubstitutedToken(prompt)) return prompt
+        return NameTokens.substitute(
+            prompt,
+            humanName = savedName ?: readUserName(),
+            guruName = readGuruName(),
+        )
     }
 
-    private suspend fun readUserName(): String = withContext(Dispatchers.IO) {
+    private suspend fun readUserName(): String = readPreference(PrefsConstants.USER_NAME_KEY, "user name")
+
+    /** The owner's chosen name for GURU, or blank when he has not chosen one (issue 340). */
+    private suspend fun readGuruName(): String = readPreference(PrefsConstants.GURU_NAME_KEY, "GURU name")
+
+    /**
+     * One read, for both names.
+     *
+     * A FAILED READ IS A BLANK, which the substitution turns into the default. That is deliberate:
+     * a preference read that throws must not leave a literal token in the prompt, because a model
+     * reading `${guru}` does exactly what the literal text says.
+     */
+    private suspend fun readPreference(key: String, what: String): String = withContext(Dispatchers.IO) {
         try {
-            getPreference(
-                stringPreferencesKey(PrefsConstants.USER_NAME_KEY),
-                ""
-            ).first()
+            getPreference(stringPreferencesKey(key), "").first()
         } catch (e: Exception) {
-            android.util.Log.w("guru", "Reading user name for prompt substitution failed: ${e.message}")
+            android.util.Log.w("guru", "Reading $what for prompt substitution failed: ${e.message}")
             ""
         }
     }
