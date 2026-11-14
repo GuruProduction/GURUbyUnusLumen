@@ -110,34 +110,64 @@ class AdbPairingClient(
         // may not be on the pairing screen yet.
         val maxRetries = 3
         var lastException: Exception? = null
+        var lastStage = "connecting"
 
         for (attempt in 1..maxRetries) {
             try {
                 Log.d(TAG, "AdbPairingClient: starting pairing with $host:$port (attempt $attempt/$maxRetries)")
                 return@withContext performPairing()
-            } catch (e: java.net.ConnectException) {
+            } catch (e: Exception) {
                 lastException = e
-                Log.w(TAG, "AdbPairingClient: connection refused on attempt $attempt/$maxRetries: ${e.message}")
+                lastStage = lastStageOf() ?: lastStage
+                /*
+                 * RETRY EVERY TRANSIENT SOCKET FAILURE, NOT ONLY A REFUSED CONNECT (issue 389).
+                 *
+                 * This used to retry only ConnectException, so the transient Broken pipe in the ticket
+                 * aborted the whole pairing on the first attempt. AOSP's own `adb pair` retries. A
+                 * cryptographic failure is NOT retried, because a wrong pairing code gives the same
+                 * answer every time and retrying only delays telling the person.
+                 */
+                if (!AdbTarget.isTransient(e)) {
+                    Log.e(TAG, "AdbPairingClient: pairing failed during $lastStage", e)
+                    return@withContext PairingResult(
+                        success = false,
+                        error = AdbTarget.failureSentence(host, port, lastStage, e.message),
+                    )
+                }
+                Log.w(TAG, "AdbPairingClient: transient failure during $lastStage on attempt $attempt/$maxRetries: ${e.message}")
                 if (attempt < maxRetries) {
                     kotlinx.coroutines.delay(1500L * attempt) // Progressive backoff: 1.5s, 3s
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "AdbPairingClient: pairing failed", e)
-                return@withContext PairingResult(success = false, error = "Pairing failed: ${e.message}")
             }
         }
 
-        val errorMsg = lastException?.message ?: "Unknown error"
+        /*
+         * THE SENTENCE NAMES HOST, PORT AND STAGE (issue 389's third defect). It used to say only
+         * "Could not connect to ADB pairing port ...", which could not distinguish a refused socket
+         * from a TLS failure from a SPAKE2 write, and that is why the report went looking at the adb
+         * binary for a cause that was never there.
+         */
         PairingResult(
             success = false,
-            error = "Could not connect to ADB pairing port $host:$port. " +
-                "Make sure you are on the 'Pair device with pairing code' screen in Developer Options. " +
-                "Error: $errorMsg"
+            error = AdbTarget.failureSentence(host, port, lastStage, lastException?.message) +
+                " Make sure you are on the 'Pair device with pairing code' screen in Developer Options.",
         )
+    }
+
+    /** How far the handshake got, so a failure can name the stage rather than only the symptom. */
+    @Volatile
+    private var stage: String? = null
+
+    private fun lastStageOf(): String? = stage
+
+    /** Records one step, so the failure sentence can say which one it was. */
+    private fun entering(step: String) {
+        stage = step
     }
 
     private suspend fun performPairing(): PairingResult {
         // Step 1: TLS connection
+        entering("opening the socket")
         val socket = Socket()
         socket.connect(java.net.InetSocketAddress(host, port), 10000)
         socket.tcpNoDelay = true
@@ -147,6 +177,7 @@ class AdbPairingClient(
 
         try {
             // Step 2: TLS handshake with self-signed cert
+            entering("the TLS handshake")
             val sslSocket = createTlsSocket(socket)
             val inputStream = DataInputStream(sslSocket.inputStream)
             val outputStream = DataOutputStream(sslSocket.outputStream)
@@ -166,6 +197,7 @@ class AdbPairingClient(
             Log.d(TAG, "AdbPairingClient: SPAKE2 message generated (${ourMessage.size} bytes)")
 
             // Step 5: Exchange SPAKE2 messages
+            entering("the SPAKE2 exchange")
             val ourHeader = createHeader(PairingPacketHeader.Type.SPAKE2_MSG, ourMessage.size)
             writeHeader(outputStream, ourHeader, ourMessage)
 
@@ -193,6 +225,7 @@ class AdbPairingClient(
             Log.d(TAG, "AdbPairingClient: derived AES key (${aesKey.size} bytes)")
 
             // Step 7: Exchange peer info (encrypted with AES-128-GCM)
+            entering("the encrypted peer exchange")
             val peerInfo = PeerInfo(
                 PEER_INFO_TYPE_ADB_RSA_PUB_KEY,
                 encodeAdbPublicKey(rsaKeyPair)

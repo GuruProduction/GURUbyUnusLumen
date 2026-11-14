@@ -35,13 +35,50 @@ class ShellExecutor(private val context: Context) {
 
     companion object {
         private const val TAG = "guru"
-        private const val WIRELESS_DEBUGGING_PORT = 5555
         private const val ADB_ENABLE_ATTEMPTS = 3
         private const val ADB_ENABLE_DELAY_MS = 2000L
     }
 
+    /**
+     * THE CONNECT PORT IS NOT A CONSTANT (issue 389).
+     *
+     * This used to build the client with `port = WIRELESS_DEBUGGING_PORT`, a fixed 5555, and that
+     * number is not a wireless-debugging port on any modern device. Android listens on a random port
+     * that changes every time the toggle is cycled, and the pairing dialog shows it. So a successful
+     * pairing left this client dialling a port nothing was listening on, and the failure was
+     * reported as "Wireless Debugging may not be enabled", which was a sentence about the wrong thing.
+     *
+     * It stays null until the pairing dialog or the mDNS record supplies the real number, and
+     * [AdbClient] is rebuilt with it. A null port means "not known yet", which is a different and
+     * honest state from "5555".
+     */
+    @Volatile
+    private var adbConnectPort: Int? = null
+
+    @Volatile
+    private var adbClient: AdbClient = AdbClient(context = context)
+
+    /**
+     * Hand the real connect port to the ADB client, once something has read it from the dialog.
+     *
+     * Called after pairing, because pairing is the only moment the dialog is on screen and therefore
+     * the only moment the number is available. The old client is replaced rather than mutated because
+     * its port is a constructor argument.
+     */
+    fun setAdbConnectPort(port: Int?) {
+        val usable = AdbTarget.connectPort(port) ?: return
+        if (usable == adbConnectPort) return
+        adbConnectPort = usable
+        adbClient = AdbClient(port = usable, context = context)
+        // The old client's answer was about the old port, so it is no longer evidence about this one.
+        adbChecked = false
+        Log.d(TAG, "ShellExecutor: ADB connect port set to $usable")
+    }
+
+    /** The connect port in use, or null when none has been read yet. */
+    fun adbConnectPort(): Int? = adbConnectPort
+
     private val rootShell = RootShell(context)
-    private val adbClient = AdbClient(port = WIRELESS_DEBUGGING_PORT, context = context)
 
     /**
      * The Shizuku channel.
@@ -170,30 +207,64 @@ class ShellExecutor(private val context: Context) {
      * @return PairingResult indicating success or failure
      */
     @RequiresApi(Build.VERSION_CODES.R)
-    suspend fun pairWithAdb(pairingCode: String, pairingPort: Int): AdbPairingClient.PairingResult = withContext(Dispatchers.IO) {
-        try {
-            Log.d(TAG, "ShellExecutor: pairing with ADB on port $pairingPort")
-            val keyPair = AdbKeyStore.getOrCreateKeyPair(context)
-            val pairingClient = AdbPairingClient(
-                host = "127.0.0.1",
-                port = pairingPort,
-                pairingCode = pairingCode,
-                rsaKeyPair = keyPair
+    suspend fun pairWithAdb(
+        pairingCode: String,
+        pairingPort: Int,
+        /**
+         * The address the pairing dialog advertises, which is the device's own Wi-Fi address.
+         *
+         * NULL MEANS "TRY LOOPBACK ONLY". The old code hardcoded `127.0.0.1`, which assumed adbd's
+         * pairing server binds there. It may not, and dialling an address nothing listens on produces
+         * exactly the ticket's symptom: a connect that succeeds against a different listener and a TLS
+         * write that then dies with Broken pipe.
+         */
+        deviceWifiAddress: String? = null,
+    ): AdbPairingClient.PairingResult = withContext(Dispatchers.IO) {
+        val port = AdbTarget.pairingPort(pairingPort)
+            ?: return@withContext AdbPairingClient.PairingResult(
+                success = false,
+                error = "\"$pairingPort\" is not a usable TCP port, so no pairing was attempted. " +
+                    "Read the port from the 'Pair device with pairing code' dialog again.",
             )
-            val result = pairingClient.start()
-            if (result.success) {
-                isPaired = true
-                adbAvailable = true
-                adbChecked = true
-                Log.d(TAG, "ShellExecutor: ADB pairing successful!")
-            } else {
-                Log.w(TAG, "ShellExecutor: ADB pairing failed: ${result.error}")
+
+        var lastResult: AdbPairingClient.PairingResult? = null
+        /*
+         * EVERY CANDIDATE IS TRIED, because the host is a device fact rather than something to assume.
+         * One failed TCP connect costs a moment; assuming the wrong host costs the whole pairing.
+         */
+        for (host in AdbTarget.pairingCandidates(deviceWifiAddress)) {
+            try {
+                Log.d(TAG, "ShellExecutor: pairing with ADB at $host:$port")
+                val keyPair = AdbKeyStore.getOrCreateKeyPair(context)
+                val pairingClient = AdbPairingClient(
+                    host = host,
+                    port = port,
+                    pairingCode = pairingCode,
+                    rsaKeyPair = keyPair,
+                )
+                val result = pairingClient.start()
+                lastResult = result
+                if (result.success) {
+                    isPaired = true
+                    adbAvailable = true
+                    adbChecked = true
+                    Log.d(TAG, "ShellExecutor: ADB pairing succeeded at $host:$port")
+                    return@withContext result
+                }
+                Log.w(TAG, "ShellExecutor: ADB pairing failed at $host:$port: ${result.error}")
+            } catch (e: Exception) {
+                Log.e(TAG, "ShellExecutor: ADB pairing error at $host:$port", e)
+                lastResult = AdbPairingClient.PairingResult(
+                    success = false,
+                    error = AdbTarget.failureSentence(host, port, "pairing", e.message),
+                )
             }
-            result
-        } catch (e: Exception) {
-            Log.e(TAG, "ShellExecutor: ADB pairing error", e)
-            AdbPairingClient.PairingResult(success = false, error = "Pairing error: ${e.message}")
         }
+
+        lastResult ?: AdbPairingClient.PairingResult(
+            success = false,
+            error = "No address was available to pair against on port $port.",
+        )
     }
 
     /**
@@ -307,14 +378,48 @@ class ShellExecutor(private val context: Context) {
 
                 var pairingCode: String? = null
                 var pairingPort: Int? = null
+                var connectPort: Int? = null
+                var wifiAddress: String? = null
                 val allText = mutableListOf<String>()
                 collectAllText(rootNode, allText)
 
+                /*
+                 * THE DIALOG CARRIES THREE NUMBERS AND THIS USED TO READ ONE OF THEM.
+                 *
+                 * It shows an IP address, a pairing port beside the six-digit code, and a separate
+                 * connect port further up the same screen. The old parse took the first port-shaped
+                 * token as the pairing port and never read the connect port at all, so pairing could
+                 * succeed and the ADB client still dialled 5555 (issue 389).
+                 *
+                 * The address is read too, because the pairing server is dialled at the address the
+                 * dialog advertises rather than assumed to be loopback.
+                 */
+                val addressPattern = Regex("""\b(\d{1,3}(?:\.\d{1,3}){3})\b""")
                 for (text in allText) {
                     val codeMatch = Regex("\\b(\\d{6})\\b").find(text)
                     if (codeMatch != null && pairingCode == null) {
                         pairingCode = codeMatch.groupValues[1]
                     }
+                    if (wifiAddress == null) {
+                        addressPattern.find(text)?.groupValues?.get(1)?.let { wifiAddress = it }
+                    }
+
+                    /*
+                     * A LINE NAMING THE CONNECT PORT IS IDENTIFIED BY ITS WORDING, because the two
+                     * numbers are indistinguishable as numbers. The pairing screen labels one
+                     * "Pair with pairing code" and the other with the port wireless debugging is
+                     * listening on, so the label is the only signal there is.
+                     */
+                    val labelledConnect = Regex(
+                        """(?:connect|debugging|ip)\D*?(\d{4,5})""",
+                        RegexOption.IGNORE_CASE,
+                    ).find(text)
+                    if (labelledConnect != null && connectPort == null) {
+                        labelledConnect.groupValues[1].toIntOrNull()
+                            ?.takeIf { AdbTarget.isPlausiblePort(it) }
+                            ?.let { connectPort = it }
+                    }
+
                     val portMatch = Regex(":(\\d{4,5})\\b").find(text)
                     if (portMatch != null && pairingPort == null) {
                         pairingPort = portMatch.groupValues[1].toIntOrNull()
@@ -328,6 +433,10 @@ class ShellExecutor(private val context: Context) {
                     }
                 }
 
+                // A connect port that only the unlabelled fallback found is not trusted as one; it is
+                // more likely the pairing port seen twice.
+                if (connectPort != null && connectPort == pairingPort) connectPort = null
+
                 if (pairingCode == null) {
                     return@withContext AutoPairResult(
                         success = false,
@@ -337,12 +446,21 @@ class ShellExecutor(private val context: Context) {
 
                 Log.d(TAG, "AutoPairAdb: Found code=$pairingCode, port=$pairingPort")
 
-                // Step 5: Pair using the discovered code and port
+                // Step 5: Pair using the discovered code and port, at the address the dialog showed
                 val result = if (pairingPort != null) {
-                    pairWithAdb(pairingCode, pairingPort)
+                    pairWithAdb(pairingCode, pairingPort, deviceWifiAddress = wifiAddress)
                 } else {
                     autoPairWithAdb(pairingCode)
                 }
+
+                /*
+                 * THE CONNECT PORT FROM THE SAME DIALOG, HANDED TO THE CLIENT (issue 389).
+                 *
+                 * Pairing alone leaves the ADB tier dead unless the client knows the port wireless
+                 * debugging is listening on, and that number exists only while this dialog is on
+                 * screen. Reading it here is the only chance there is.
+                 */
+                if (connectPort != null) setAdbConnectPort(connectPort)
 
                 if (result.success) {
                     Log.d(TAG, "AutoPairAdb: Pairing successful!")
@@ -365,7 +483,8 @@ class ShellExecutor(private val context: Context) {
                     success = result.success,
                     error = result.error,
                     pairingCode = pairingCode,
-                    pairingPort = pairingPort
+                    pairingPort = pairingPort,
+                    connectPort = connectPort,
                 )
             } catch (e: Exception) {
                 Log.e(TAG, "AutoPairAdb: failed", e)
@@ -389,7 +508,15 @@ class ShellExecutor(private val context: Context) {
         val success: Boolean,
         val error: String? = null,
         val pairingCode: String? = null,
-        val pairingPort: Int? = null
+        val pairingPort: Int? = null,
+        /**
+         * The port wireless debugging listens on, read from the same dialog (issue 389).
+         *
+         * Null when the dialog did not show one, which is a state worth reporting rather than
+         * substituting 5555 for: a wrong port turns "the dialog gave me nothing" into a connect
+         * against silence, and then into a sentence blaming wireless debugging.
+         */
+        val connectPort: Int? = null,
     )
 
     /**
