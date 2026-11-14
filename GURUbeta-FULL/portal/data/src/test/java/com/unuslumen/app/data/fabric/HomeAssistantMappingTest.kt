@@ -1,7 +1,7 @@
 // GURU by Unus Lumen - an AI framework that gives a language model real hands on an Android phone.
 // Copyright (C) 2026 Steven Newman, Founder and Developer, Unus Lumen Ltd, Bristol UK.
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
-package com.unuslumen.app.domain.fabric
+package com.unuslumen.app.data.fabric
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -174,7 +174,7 @@ class HomeAssistantMappingTest {
         assertEquals("light.kitchen_ceiling", device.id)
         assertEquals("Kitchen Ceiling", device.name)
         assertEquals("Kitchen", device.room)
-        assertEquals(Transport.HOME_ASSISTANT, device.transport)
+        assertEquals(Transport.HA, device.transport)
         assertEquals(DeviceClass.LIGHT, device.deviceClass)
         assertTrue(Capability.BRIGHTNESS in device.capabilities)
         assertTrue(device.available)
@@ -216,7 +216,13 @@ class HomeAssistantMappingTest {
                 "${device.state}",
             device.state.isNotEmpty(),
         )
-        assertTrue(device.state.values.contains("on"))
+        // The state is a typed value, so a light switched on is a power flag rather than the string
+        // "on". That typing is what stops a brightness silently becoming text and a comparison
+        // against zero stopping working.
+        assertTrue(
+            "a light's on state must be recorded as a power flag: ${device.state}",
+            device.state[Capability.POWER] == DeviceValue.Flag(true),
+        )
     }
 
     @Test

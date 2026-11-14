@@ -1,7 +1,7 @@
 // GURU by Unus Lumen - an AI framework that gives a language model real hands on an Android phone.
 // Copyright (C) 2026 Steven Newman, Founder and Developer, Unus Lumen Ltd, Bristol UK.
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
-package com.unuslumen.app.domain.fabric
+package com.unuslumen.app.data.fabric
 
 /**
  * How a Home Assistant entity becomes a fabric device.
@@ -170,22 +170,79 @@ object HomeAssistantMapping {
         room: String? = null,
         stateValue: String? = null,
         lastSeen: Long = 0L,
-    ): FabricDevice = FabricDevice(
-        id = entityId,
-        name = friendlyName.ifBlank { entityId.substringAfter('.') },
-        room = room,
-        transport = Transport.HOME_ASSISTANT,
-        deviceClass = deviceClassOf(domain, haDeviceClass),
-        capabilities = capabilitiesOf(domain, supportedFeatures),
-        state = stateValue?.let { value ->
-            // The entity's own state is recorded against the first capability it has that can carry
-            // it, so a read-back has something real to compare against rather than an empty map.
-            capabilitiesOf(domain, supportedFeatures).firstOrNull()?.let { capability ->
-                mapOf(capability to value)
+    ): Device {
+        val capabilities = capabilitiesOf(domain, supportedFeatures)
+        return Device(
+            id = entityId,
+            name = friendlyName.ifBlank { entityId.substringAfter('.') },
+            room = room,
+            transport = Transport.HA,
+            deviceClass = deviceClassOf(domain, haDeviceClass),
+            capabilities = capabilities,
+            /*
+             * THE ENTITY'S OWN STATE IS RECORDED AGAINST THE CAPABILITY THAT CARRIES IT, so a
+             * read-back has a real value to compare against rather than an empty map.
+             *
+             * The mapping is explicit per domain because HA's state string is not a value: "on" for a
+             * light is a power flag, "on" for a lock is a lock state, and "heat" for a thermostat is a
+             * mode. Inferring one from the string would put a lock's value under a lamp's capability.
+             */
+            state = stateValue?.let { value -> stateOf(domain, capabilities, value) } ?: emptyMap(),
+            /*
+             * HA REPORTS UNAVAILABLE AND UNKNOWN AS STATES, and both mean the fabric cannot say what
+             * the device is doing. Neither is a reason to drop the device: somebody owns it, and
+             * omitting it would report a smaller house than they have.
+             */
+            available = !stateValue.equals("unavailable", ignoreCase = true) &&
+                !stateValue.equals("unknown", ignoreCase = true),
+            lastSeen = lastSeen,
+        )
+    }
+
+    /**
+     * The capability an entity's own state belongs under, and the value in its own type.
+     *
+     * A STATE STRING IS NOT A VALUE ON ITS OWN. "on" is a power flag on a light and a lock state on a
+     * lock; "heat" is a thermostat mode; "23.5" is a temperature. Giving every one of them to the
+     * first capability the device happens to have would put a thermostat's mode under its target
+     * temperature and make every read-back compare the wrong pair.
+     */
+    private fun stateOf(domain: String, capabilities: Set<Capability>, raw: String): Map<Capability, DeviceValue> {
+        val trimmed = raw.trim()
+        val asNumber = trimmed.toDoubleOrNull()
+
+        fun put(capability: Capability, value: DeviceValue): Map<Capability, DeviceValue> =
+            if (capability in capabilities) mapOf(capability to value) else emptyMap()
+
+        return when (domain.lowercase()) {
+            "light", "switch", "input_boolean", "fan" -> put(
+                Capability.POWER,
+                DeviceValue.Flag(trimmed.equals("on", ignoreCase = true)),
+            )
+            "lock" -> put(
+                Capability.LOCK_STATE,
+                DeviceValue.Text(trimmed),
+            )
+            "cover" -> if (asNumber != null) {
+                put(Capability.POSITION, DeviceValue.Measure(asNumber))
+            } else {
+                put(Capability.POWER, DeviceValue.Flag(trimmed.equals("open", ignoreCase = true)))
             }
-        } ?: emptyMap(),
-        available = !stateValue.equals("unavailable", ignoreCase = true) &&
-            !stateValue.equals("unknown", ignoreCase = true),
-        lastSeen = lastSeen,
-    )
+            "climate" -> put(Capability.MODE, DeviceValue.Text(trimmed))
+            "sensor" -> if (asNumber != null) {
+                put(Capability.READ_TEMPERATURE, DeviceValue.Measure(asNumber))
+            } else {
+                put(Capability.READ_TEMPERATURE, DeviceValue.Text(trimmed))
+            }
+            "binary_sensor" -> put(
+                Capability.READ_CONTACT,
+                DeviceValue.Flag(trimmed.equals("on", ignoreCase = true)),
+            )
+            "media_player" -> put(Capability.PLAYBACK, DeviceValue.Text(trimmed))
+            "alarm_control_panel" -> put(Capability.ALARM_STATE, DeviceValue.Text(trimmed))
+            else -> capabilities.firstOrNull()?.let { first ->
+                mapOf(first to (asNumber?.let { DeviceValue.Measure(it) } ?: DeviceValue.Text(trimmed)))
+            } ?: emptyMap()
+        }
+    }
 }
