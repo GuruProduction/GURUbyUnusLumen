@@ -140,13 +140,90 @@ class ToolObservationRecorder(
         durationMs: Long,
         targetValues: Collection<String> = emptyList()
     ) {
+        recordOutcome(
+            success = false,
+            packageName = packageName,
+            activityClass = activityClass,
+            toolName = toolName,
+            argumentsJson = argumentsJson,
+            resultSummary = resultSummary,
+            conversationId = conversationId,
+            durationMs = durationMs,
+            targetValues = targetValues,
+            captureScreen = true,
+        )
+    }
+
+    /**
+     * Write one observation for a call that SUCCEEDED.
+     *
+     * THE HALF OF THE LOG THAT DID NOT EXIST. This class had exactly one write
+     * method, `recordFailure`, and the dispatcher only called it inside
+     * `if (failed(execResult))`. So `success = 0` on all 45 rows was not a flag
+     * being set wrongly: it was the only value the table could hold. The table
+     * was a failure log wearing an observation log's name, and `getObservations`
+     * could therefore never answer the question its own description promises,
+     * "did this tool work here before", because every row it could return was a
+     * failure.
+     *
+     * No screen capture on success, and that is deliberate rather than a saving.
+     * The tree exists so a retry can compare a broken screen against the one
+     * that broke it; on a success there is nothing to compare against, and
+     * capturing every successful call would spend an accessibility walk per tool
+     * call to record a screen nobody will consult. The call, its arguments, its
+     * duration and its summary are all real and all recorded.
+     */
+    fun recordSuccess(
+        packageName: String?,
+        activityClass: String?,
+        toolName: String,
+        argumentsJson: String,
+        resultSummary: String,
+        conversationId: String?,
+        durationMs: Long,
+    ) {
+        recordOutcome(
+            success = true,
+            packageName = packageName,
+            activityClass = activityClass,
+            toolName = toolName,
+            argumentsJson = argumentsJson,
+            resultSummary = resultSummary,
+            conversationId = conversationId,
+            durationMs = durationMs,
+            targetValues = emptyList(),
+            captureScreen = false,
+        )
+    }
+
+    /**
+     * The one write path both outcomes share.
+     *
+     * [captureScreen] is the only thing that differs between a failure and a
+     * success, and keeping the row construction in one place is what stops the
+     * two from drifting into different shapes — which is the defect this file
+     * just had, in a bigger form.
+     */
+    @OptIn(ExperimentalUuidApi::class)
+    private fun recordOutcome(
+        success: Boolean,
+        packageName: String?,
+        activityClass: String?,
+        toolName: String,
+        argumentsJson: String,
+        resultSummary: String,
+        conversationId: String?,
+        durationMs: Long,
+        targetValues: Collection<String>,
+        captureScreen: Boolean,
+    ) {
         val arguments = ToolObservationEntity.truncateArguments(argumentsJson)
         val summary = ToolObservationEntity.truncateSummary(resultSummary)
         val observedAt = System.currentTimeMillis()
 
         applicationScope.launch {
             try {
-                val snapshot = captureSnapshot(targetValues)
+                val snapshot = if (captureScreen) captureSnapshot(targetValues) else null
                 dao.insert(
                     ToolObservationEntity(
                         id = Uuid.random().toString(),
@@ -155,7 +232,7 @@ class ToolObservationRecorder(
                         toolName = toolName,
                         argumentsJson = arguments,
                         resultSummary = summary,
-                        success = 0,
+                        success = if (success) 1 else 0,
                         screenFingerprint = snapshot?.fingerprint,
                         accessibilityTreeJson = snapshot?.treeJson,
                         conversationId = conversationId,

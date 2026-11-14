@@ -26,9 +26,14 @@ import kotlinx.serialization.json.JsonPrimitive
  * 8. If resultObject is null and extractor exists, call extractor.extract().
  * 9. Return ToolDispatchResult.
  *
- * Step 7 also hands the outcome to ToolObservationRecorder when the call fails.
- * That write is fire-and-forget on the application scope, so it can never delay
- * or fail the dispatch and it changes nothing about what the dispatcher returns.
+ * Step 7 also hands the outcome to ToolObservationRecorder, for a call that
+ * succeeded and for one that failed. Recording only failures made `success` a
+ * constant zero in the observation table, which is issue 418 defect 4: a table
+ * whose every row said failure could not answer "did this tool work here
+ * before", and that is the one question its retrieval tool exists to answer.
+ *
+ * Both writes are fire-and-forget on the application scope, so neither can delay
+ * or fail the dispatch and neither changes what the dispatcher returns.
  */
 class ToolDispatcher(
     private val registry: ToolRegistry,
@@ -94,7 +99,8 @@ class ToolDispatcher(
         val execResult = executor.executeWithProgress(resolvedName, repairedArgs, progress)
         val durationMs = System.currentTimeMillis() - startedAt
 
-        if (failed(execResult)) {
+        val didFail = failed(execResult)
+        if (didFail) {
             // The executor's own error when there is one, else the head of
             // whatever it did return. Never invented: a failure with no message
             // stores the empty string and stays honest.
@@ -107,6 +113,19 @@ class ToolDispatcher(
                 conversationId = conversationId,
                 durationMs = durationMs,
                 targetValues = observationRecorder.targetValuesFrom(repairedArgs)
+            )
+        } else {
+            // THE ROW THAT WAS NEVER WRITTEN. Without this arm the observation
+            // table could only ever hold failures, so `success` was a constant
+            // and the log could not answer whether a tool had ever worked here.
+            observationRecorder?.recordSuccess(
+                packageName = null,
+                activityClass = null,
+                toolName = resolvedName,
+                argumentsJson = rawArgs.toString(),
+                resultSummary = execResult.rawJson.take(500),
+                conversationId = conversationId,
+                durationMs = durationMs,
             )
         }
 

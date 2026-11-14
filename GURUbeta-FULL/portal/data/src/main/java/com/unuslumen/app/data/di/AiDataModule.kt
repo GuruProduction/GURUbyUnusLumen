@@ -252,13 +252,19 @@ val aiDataModule = module {
         com.unuslumen.app.data.onboarding.BrainProfileFactWriter(get())
     }
     // ThoughtCycleRepository binding lives in thoughtsDataModule (thoughts module) — see ThoughtsDataModule.kt
-    // The ledger is passed EXPLICITLY. It is a nullable constructor parameter
-    // with a null default, so a two-argument `get()` call resolves to null and
-    // the preamble records nothing — which is exactly what happened: the table
-    // was created, the schema version bumped, and zero rows were ever written.
-    // Koin does not error on a missing nullable; it uses the default. The
-    // two-argument form silently disabled the feature it was added for.
-    factory { ContextBuilder(get(), get(), get()) }
+    // EVERY ARGUMENT HERE IS LOAD-BEARING, so this is written positionally on
+    // purpose rather than with named arguments: the order is brainService,
+    // toolResultDao, messageDao, injectionLedger, and a previous version of this
+    // binding passed one argument too few while still compiling.
+    //
+    // The ledger was once a nullable constructor parameter with a null default,
+    // so a two-argument `get()` call resolved to null and the preamble recorded
+    // nothing: the table was created, the schema version bumped, and zero rows
+    // were ever written. Koin does not error on a missing nullable; it uses the
+    // default. The ledger is now a required parameter, so this call cannot
+    // silently omit it, and the message DAO is here because the message lane
+    // reads Room rather than the brain.
+    factory { ContextBuilder(get(), get(), get(), get()) }
 
     factory { com.unuslumen.app.domain.use_case.CreateProjectUseCase(get()) }
     factory { com.unuslumen.app.domain.use_case.UpdateProjectUseCase(get()) }

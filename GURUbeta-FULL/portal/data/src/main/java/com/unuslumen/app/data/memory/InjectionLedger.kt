@@ -38,6 +38,33 @@ class InjectionLedger(
     private val tag = "guru_ledger"
 
     /**
+     * The most recent turn's injections, held in memory so the reply can be
+     * checked against them when it arrives.
+     *
+     * WHY THIS EXISTS. `recordInjections` is called while the preamble is being
+     * built; the assistant's reply does not exist until the model has finished
+     * streaming, seconds or minutes later. The confirmation decision needs both,
+     * so the injections have to survive the gap.
+     *
+     * It is held here rather than returned to the caller because the ledger is
+     * the only component that needs it and passing it through the repository
+     * interface would put a memory-measurement type in the domain layer for no
+     * reason. Keyed by conversation because two conversations can be open at
+     * once and a reply must be scored against its own preamble.
+     *
+     * Bounded: one entry per live conversation, and the map is cleared per turn.
+     * A conversation abandoned mid-turn leaves one small entry behind, which is
+     * why [MAX_PENDING_TURNS] exists as a ceiling rather than relying on
+     * consumers to be tidy.
+     */
+    private val pendingTurns = java.util.concurrent.ConcurrentHashMap<String, PendingTurn>()
+
+    private data class PendingTurn(
+        val userQuery: String,
+        val injected: List<InjectedMemory>,
+    )
+
+    /**
      * Log without ever throwing.
      *
      * THE BUG THIS FIXES. Every failure path in this class called Log.w inside
@@ -59,7 +86,9 @@ class InjectionLedger(
      * Record every memory the preamble put in front of the model for this turn.
      *
      * Called from the send path with the exact hits that made it into the
-     * preamble, in lane order, so rank is real rather than reconstructed.
+     * preamble, in lane order, so rank is real rather than reconstructed. The
+     * same list is held for [completeTurn], which is where the confirmation
+     * decision is made once a reply exists.
      */
     suspend fun recordInjections(
         query: String,
@@ -67,6 +96,15 @@ class InjectionLedger(
         injections: List<InjectedMemory>,
     ) {
         if (injections.isEmpty()) return
+        if (pendingTurns.size >= MAX_PENDING_TURNS) {
+            // A conversation that never produced a reply should not pin memory
+            // forever. Clearing wholesale is correct rather than arbitrary: every
+            // entry here is at most one turn old, so nothing of lasting value is
+            // lost and the next build repopulates its own.
+            pendingTurns.clear()
+        }
+        pendingTurns[conversationId] = PendingTurn(userQuery = query, injected = injections)
+
         val now = System.currentTimeMillis()
         val capped = MemoryInjectionEntity.capQuery(query)
         val rows = injections.map { injected ->
@@ -173,6 +211,136 @@ class InjectionLedger(
         }
     }
 
+    /**
+     * Observe a finished turn: what was injected, what came back, what was asked.
+     *
+     * THE CALLER THAT WAS MISSING. `confirmUsed` existed with no caller, so
+     * `confirmed_used_at` was NULL on every row and `precisionByLane` computed
+     * zero for every lane no matter how good retrieval was. A ledger with no
+     * observation is not a measurement, it is a table.
+     *
+     * Reads the injections held by [recordInjections] rather than taking them
+     * again, so the caller cannot pass a different list from the one that was
+     * actually recorded and quietly score a turn against the wrong memories.
+     *
+     * Runs the decision in [RecallSignals] and writes one confirmation per
+     * memory the reply demonstrably drew on. Best-effort throughout: a ledger
+     * fault is logged and the turn proceeds, because an observation log that can
+     * break a conversation is worse than no observation log.
+     */
+    suspend fun completeTurn(conversationId: String, assistantReply: String) {
+        val pending = pendingTurns.remove(conversationId) ?: return
+        if (pending.injected.isEmpty() || assistantReply.isBlank()) return
+        runCatching {
+            val confirmedIds = RecallSignals.confirmationsFor(
+                injected = pending.injected,
+                assistantReply = assistantReply,
+                userQuery = pending.userQuery,
+            )
+            for (memoryId in confirmedIds) {
+                injectionDao.markConfirmedUsed(conversationId, memoryId, System.currentTimeMillis())
+            }
+            if (confirmedIds.isNotEmpty()) {
+                logInfo("confirmed ${confirmedIds.size} of ${pending.injected.size} injected memories for conv=$conversationId")
+            }
+        }.onFailure {
+            logWarn("completeTurn failed: ${it.message}")
+        }
+    }
+
+    /**
+     * Score a finished turn against an explicit list.
+     *
+     * Used by tests and by any caller that already holds the injections. The
+     * production path uses [completeTurn], which cannot disagree with what was
+     * recorded.
+     */
+    suspend fun recordTurnOutcome(
+        conversationId: String,
+        userQuery: String,
+        injected: List<InjectedMemory>,
+        assistantReply: String,
+    ) {
+        if (injected.isEmpty() || assistantReply.isBlank()) return
+        runCatching {
+            val confirmedIds = RecallSignals.confirmationsFor(
+                injected = injected,
+                assistantReply = assistantReply,
+                userQuery = userQuery,
+            )
+            for (memoryId in confirmedIds) {
+                injectionDao.markConfirmedUsed(conversationId, memoryId, System.currentTimeMillis())
+            }
+            if (confirmedIds.isNotEmpty()) {
+                logInfo("confirmed ${confirmedIds.size} of ${injected.size} injected memories for conv=$conversationId")
+            }
+        }.onFailure {
+            logWarn("recordTurnOutcome failed: ${it.message}")
+        }
+    }
+
+    /**
+     * Check a new user message against memories this conversation already
+     * showed the model, and record any the human restated anyway.
+     *
+     * Separate from [recordMissedRelevant] because the two answer different
+     * questions. That one compares the preamble against a fresh relevance
+     * search and fires when retrieval MISSED something it should have picked.
+     * This one compares a human's own words against what the model was given and
+     * fires when the model HAD the memory and failed to use it. Both are recall
+     * failures, and only this one can be decided from the ledger alone.
+     *
+     * The candidate bodies are not stored in the ledger (it holds ids and query
+     * text, never memory bodies), so the caller supplies them.
+     */
+    suspend fun recordRestatements(
+        conversationId: String,
+        userMessage: String,
+        candidates: List<InjectedMemory>,
+        injectedThisTurn: Set<String>,
+    ) {
+        if (candidates.isEmpty() || userMessage.isBlank()) return
+        runCatching {
+            val restated = RecallSignals.restatementsFor(
+                userMessage = userMessage,
+                candidates = candidates,
+                alreadyInjectedIds = injectedThisTurn,
+            )
+            for (candidate in restated) {
+                recordRecallFailure(
+                    query = userMessage,
+                    conversationId = conversationId,
+                    memoryId = candidate.memoryId,
+                    score = candidate.score,
+                )
+            }
+        }.onFailure {
+            logWarn("recordRestatements failed: ${it.message}")
+        }
+    }
+
+    /**
+     * The memories this conversation injected before now, as candidates for a
+     * restatement check.
+     *
+     * Only ids, lanes, ranks and scores survive the read, because that is all the
+     * ledger stores. `content` comes back blank and the caller fills it from the
+     * brain, which keeps memory bodies out of the ledger while still letting the
+     * comparison run.
+     */
+    suspend fun recentCandidates(conversationId: String, limit: Int = 40): List<InjectedMemory> =
+        runCatching {
+            injectionDao.relevantForConversation(conversationId, limit).map { row ->
+                InjectedMemory(
+                    memoryId = row.memoryId,
+                    lane = row.lane,
+                    rankInLane = row.rankInLane,
+                    score = row.score,
+                    content = "",
+                )
+            }
+        }.getOrDefault(emptyList())
+
     /** Lane precision over a window, for comparing retrieval lanes on real data. */
     suspend fun precisionByLane(sinceMillis: Long) =
         runCatching { injectionDao.precisionByLane(sinceMillis) }.getOrDefault(emptyList())
@@ -184,6 +352,16 @@ class InjectionLedger(
     companion object {
         /** Lane name for a recall failure, matching the entity's lane vocabulary. */
         const val LANE_RESTATED = "restated"
+
+        /**
+         * Ceiling on conversations held between the preamble and the reply.
+         *
+         * A reply normally follows its preamble within the same turn, so this
+         * only ever fills when turns are abandoned. Small on purpose: the held
+         * list is a copy of one turn's injections and nothing of lasting value
+         * lives here.
+         */
+        private const val MAX_PENDING_TURNS = 8
     }
 }
 

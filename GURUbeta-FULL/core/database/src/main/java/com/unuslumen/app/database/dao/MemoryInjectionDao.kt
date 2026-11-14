@@ -68,6 +68,25 @@ interface MemoryInjectionDao {
     """)
     suspend fun recallFailuresSince(sinceMillis: Long): Int
 
+    /**
+     * Injections from THIS conversation that arrived before [beforeMillis].
+     *
+     * The recall-failure check needs the memories the preamble considered
+     * relevant in this conversation, so a user restating one can be recognised
+     * as "the model had this and did not use it" rather than as a fresh
+     * question. It reads the ledger rather than the whole brain on purpose: the
+     * ledger is what the preamble actually believed, which is the exact set a
+     * miss can be measured against.
+     */
+    @Query("""
+        SELECT * FROM memory_injections
+        WHERE conversation_id = :conversationId
+          AND restated_without_injection = 0
+        ORDER BY timestamp DESC
+        LIMIT :limit
+    """)
+    suspend fun relevantForConversation(conversationId: String, limit: Int): List<MemoryInjectionEntity>
+
     /** Prune the ledger on the same horizon as everything else. */
     @Query("DELETE FROM memory_injections WHERE timestamp < :timestamp")
     suspend fun pruneOlderThan(timestamp: Long)
