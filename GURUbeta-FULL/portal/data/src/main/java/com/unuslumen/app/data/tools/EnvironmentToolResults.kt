@@ -7,7 +7,25 @@ import com.unuslumen.app.data.discovery.NetworkReadOutcome
 import com.unuslumen.app.data.tools.registry.ToolResultData
 import kotlinx.serialization.Serializable
 
-@Serializable data class MdnsDiscoverResult(val success: Boolean, val message: String?, val error: String?) : ToolResultData
+/**
+ * What starting mDNS discovery reports.
+ *
+ * `success` USED TO MEAN ONLY "the call did not throw", which is issue 337's defect in its plainest
+ * form: a start that genuinely watched six service types and a start that watched nothing because
+ * the platform refused every one produced the same `true`. [outcome] now says which, and the type
+ * lists name what was accepted so an empty device list can be judged rather than guessed at.
+ */
+@Serializable data class MdnsDiscoverResult(
+    val success: Boolean,
+    val message: String?,
+    val error: String?,
+    /** FOUND, EMPTY or REFUSED, from the listener's real state after the start. */
+    val outcome: String = NetworkReadOutcome.EMPTY.name,
+    /** Service types the platform accepted, so a start that watched nothing is visible. */
+    val listeningTypes: List<String> = emptyList(),
+    /** Service types the platform refused, with its own error code. */
+    val refusedTypes: List<String> = emptyList(),
+) : ToolResultData
 /**
  * What `mdnsListDevices` returns.
  *
@@ -29,9 +47,34 @@ import kotlinx.serialization.Serializable
     val listeningTypes: List<String> = emptyList(),
     /** Service types the platform refused, with its own error code. */
     val refusedTypes: List<String> = emptyList(),
+    /**
+     * FOUND, EMPTY or REFUSED, in the family's one vocabulary (issue 337).
+     *
+     * [listener] already carried five states, which is more than this field needs and is a
+     * DIFFERENT vocabulary from the rest of the family. A caller reading arp, wifi and Bluetooth
+     * results switches on FOUND/EMPTY/REFUSED, so mDNS answering in listener words made it the one
+     * tool that needed special handling. Both are kept: [listener] is the detail, this is the answer.
+     */
+    val outcome: String = NetworkReadOutcome.EMPTY.name,
 ) : ToolResultData
 @Serializable data class MdnsDevice(val serviceName: String, val serviceType: String, val host: String, val port: Int, val discoveredAt: Long) : ToolResultData
-@Serializable data class SsdpDiscoverResult(val success: Boolean, val message: String?, val error: String?) : ToolResultData
+/**
+ * What starting SSDP discovery reports.
+ *
+ * The same defect the mDNS start had: `success` meant "the call did not throw", so a send socket
+ * that failed to bind and one that bound and swept the network were reported identically. [outcome]
+ * separates them, and [subnet] names where the sweep went so an empty list can be read as a fact
+ * about that network.
+ */
+@Serializable data class SsdpDiscoverResult(
+    val success: Boolean,
+    val message: String?,
+    val error: String?,
+    /** FOUND, EMPTY or REFUSED, from the send socket's real state after the start. */
+    val outcome: String = NetworkReadOutcome.EMPTY.name,
+    /** The subnet the multicast group was swept from, or null when the phone has no LAN address. */
+    val subnet: String? = null,
+) : ToolResultData
 /**
  * What `ssdpListDevices` returns.
  *

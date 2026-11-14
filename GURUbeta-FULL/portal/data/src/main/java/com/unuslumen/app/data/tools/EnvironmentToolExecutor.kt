@@ -43,7 +43,54 @@ class EnvironmentToolExecutor(
 
     override suspend fun execute(toolName: String, args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         when (toolName) {
-            EnvironmentToolDefinitions.MDNS_DISCOVER -> { try { mdnsDiscoveryManager.startDiscovery(); val r = MdnsDiscoverResult(true, "mDNS discovery started", null); ToolExecutionResult.success(r, json.encodeToString(MdnsDiscoverResult.serializer(), r)) } catch (e: Exception) { val r = MdnsDiscoverResult(false, null, "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(MdnsDiscoverResult.serializer(), r)) } }
+            /*
+             * MDNS DISCOVER REPORTS WHAT THE PLATFORM ACCEPTED (issue 337).
+             *
+             * This answered `true` whenever the call did not throw. A start that watched six
+             * service types and a start the platform refused on every one were the same value, so
+             * a listener that was up and watching nothing looked healthy. The state is read back
+             * after the start, which is the difference between "mDNS is running" and "mDNS was
+             * asked to run".
+             */
+            EnvironmentToolDefinitions.MDNS_DISCOVER -> {
+                try {
+                    mdnsDiscoveryManager.startDiscovery()
+                    val report = mdnsDiscoveryManager.report()
+                    val answered = report.state == ListenerState.LISTENING ||
+                        report.state == ListenerState.FOUND
+                    val outcome = when {
+                        report.state == ListenerState.FOUND -> NetworkReadOutcome.FOUND
+                        answered -> NetworkReadOutcome.EMPTY
+                        else -> NetworkReadOutcome.REFUSED
+                    }
+                    val r = MdnsDiscoverResult(
+                        success = answered,
+                        message = if (answered) {
+                            "mDNS discovery is watching ${report.listening.size} service type(s)."
+                        } else null,
+                        error = if (answered) null else {
+                            "mDNS discovery did not start (${report.state}). " +
+                                if (report.refusedTypes.isEmpty()) {
+                                    "The listener never bound."
+                                } else {
+                                    "The platform refused: ${report.refusedTypes.joinToString(", ")}."
+                                }
+                        },
+                        outcome = outcome.name,
+                        listeningTypes = report.listening,
+                        refusedTypes = report.refusedTypes,
+                    )
+                    ToolExecutionResult.success(r, json.encodeToString(MdnsDiscoverResult.serializer(), r))
+                } catch (e: Exception) {
+                    val r = MdnsDiscoverResult(
+                        success = false,
+                        message = null,
+                        error = "mDNS discovery threw ${e.javaClass.simpleName}: ${e.message}",
+                        outcome = NetworkReadOutcome.REFUSED.name,
+                    )
+                    ToolExecutionResult.success(r, json.encodeToString(MdnsDiscoverResult.serializer(), r))
+                }
+            }
             /*
              * MDNS LIST DEVICES CARRIES THE LISTENER'S STATE (#222).
              *
@@ -63,6 +110,18 @@ class EnvironmentToolExecutor(
                     val devs = mdnsDiscoveryManager.getDiscoveredDevices()
                         .map { MdnsDevice(it.serviceName, it.serviceType, it.host, it.port, it.discoveredAt) }
                     val honest = report.state == ListenerState.LISTENING || report.state == ListenerState.FOUND
+                    /*
+                     * THE FAMILY'S VOCABULARY, NOT THE LISTENER'S (issue 337).
+                     *
+                     * The listener state is kept as detail, but the ANSWER is one of the same three
+                     * words every other discovery tool returns, so a caller does not have to know
+                     * that mDNS counts its states differently from arp and Bluetooth.
+                     */
+                    val outcome = when {
+                        report.state == ListenerState.FOUND -> NetworkReadOutcome.FOUND
+                        honest -> NetworkReadOutcome.EMPTY
+                        else -> NetworkReadOutcome.REFUSED
+                    }
                     val r = MdnsDevicesResult(
                         success = honest,
                         devices = devs,
@@ -70,6 +129,7 @@ class EnvironmentToolExecutor(
                         listener = report.state.name,
                         listeningTypes = report.listening,
                         refusedTypes = report.refusedTypes,
+                        outcome = outcome.name,
                     )
                     emitPayload(json, json.encodeToString(MdnsDevicesResult.serializer(), r), r, r.success, r.error)
                 } catch (e: Exception) {
@@ -78,12 +138,59 @@ class EnvironmentToolExecutor(
                         devices = emptyList(),
                         error = "mDNS list failed: ${e.message}",
                         listener = ListenerState.BIND_FAILED.name,
+                        outcome = NetworkReadOutcome.REFUSED.name,
                     )
                     emitPayload(json, json.encodeToString(MdnsDevicesResult.serializer(), r), r, false, r.error)
                 }
             }
             EnvironmentToolDefinitions.MDNS_STOP_DISCOVERY -> { try { mdnsDiscoveryManager.stopDiscovery(); val r = MdnsDiscoverResult(true, "Stopped", null); ToolExecutionResult.success(r, json.encodeToString(MdnsDiscoverResult.serializer(), r)) } catch (e: Exception) { val r = MdnsDiscoverResult(false, null, "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(MdnsDiscoverResult.serializer(), r)) } }
-            EnvironmentToolDefinitions.SSDP_DISCOVER -> { try { ssdpDiscoveryManager.startDiscovery(); val r = SsdpDiscoverResult(true, "SSDP discovery started", null); ToolExecutionResult.success(r, json.encodeToString(SsdpDiscoverResult.serializer(), r)) } catch (e: Exception) { val r = SsdpDiscoverResult(false, null, "Failed: ${e.message}"); ToolExecutionResult.success(r, json.encodeToString(SsdpDiscoverResult.serializer(), r)) } }
+            /*
+             * SSDP DISCOVER REPORTS WHAT THE SEND SOCKET DID (issue 337).
+             *
+             * The same defect as the mDNS start: `true` meant "the call did not throw". A send
+             * socket that never bound and one that bound and swept the network were identical.
+             */
+            EnvironmentToolDefinitions.SSDP_DISCOVER -> {
+                try {
+                    ssdpDiscoveryManager.startDiscovery()
+                    val state = ssdpDiscoveryManager.listenerState()
+                    val answered = SsdpDiscoveryManager.answered(state)
+                    val subnet = runCatching { LocalNetwork.current().prefix }.getOrNull()
+                    val outcome = when {
+                        state == ListenerState.FOUND -> NetworkReadOutcome.FOUND
+                        answered -> NetworkReadOutcome.EMPTY
+                        else -> NetworkReadOutcome.REFUSED
+                    }
+                    val r = SsdpDiscoverResult(
+                        success = answered,
+                        message = if (answered) {
+                            "SSDP discovery is listening on ${subnet ?: "this network"}."
+                        } else null,
+                        error = if (answered) {
+                            null
+                        } else {
+                            val why = if (subnet == null) {
+                                "This phone reports no LAN address, which is the usual cause."
+                            } else {
+                                "The multicast socket could not be opened on $subnet."
+                            }
+                            "SSDP discovery did not start ($state), so nothing is being listened " +
+                                "for. $why"
+                        },
+                        outcome = outcome.name,
+                        subnet = subnet,
+                    )
+                    ToolExecutionResult.success(r, json.encodeToString(SsdpDiscoverResult.serializer(), r))
+                } catch (e: Exception) {
+                    val r = SsdpDiscoverResult(
+                        success = false,
+                        message = null,
+                        error = "SSDP discovery threw ${e.javaClass.simpleName}: ${e.message}",
+                        outcome = NetworkReadOutcome.REFUSED.name,
+                    )
+                    ToolExecutionResult.success(r, json.encodeToString(SsdpDiscoverResult.serializer(), r))
+                }
+            }
             /*
              * SSDP LIST DEVICES NAMES WHY A DEVICE HAS NO NAME (#333, #332).
              *
