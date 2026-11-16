@@ -52,17 +52,30 @@ class DevicePowerIntrospectDomainHonestyTest {
     private val shadowContext
         get() = shadowOf(ApplicationProvider.getApplicationContext<android.app.Application>())
 
-    /** The five names the domain owns, kept sorted so the comparison reads as a set. */
+    /**
+     * The names the domain owns, kept sorted so the comparison reads as a set.
+     *
+     * EIGHT SINCE #127 AND #133. The three additions are the privileged power operations that
+     * had no tool at all: deviceReboot and deviceShutdown, both phrase-gated and both issued
+     * through the shell UID, and processLimit, which reads the cached-process limit
+     * unprivileged and changes it only at shell UID, reading the value back either way.
+     *
+     * A pinned list is the point of this test. Adding a tool to a domain is a decision, and
+     * this is where the decision is recorded rather than discovered later in a boot log.
+     */
     private val expectedTools = listOf(
         "batteryDetail",
+        "deviceReboot",
+        "deviceShutdown",
         "factoryReset",
         "powerControl",
+        "processLimit",
         "readLogs",
         "systemDump",
     )
 
     @Test
-    fun theDomainDeclaresExactlyTheFiveAgreedToolNames() {
+    fun theDomainDeclaresExactlyTheAgreedToolNames() {
         val declared = DevicePowerIntrospectDomainDefinitions.definitions.map { it.name }.sorted()
         println("device power tools (${declared.size}): $declared")
         assertEquals(expectedTools, declared)

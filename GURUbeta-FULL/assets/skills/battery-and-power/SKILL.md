@@ -1,13 +1,29 @@
 ---
 name: battery-and-power
-description: "Report the battery's real condition, the screen and power state, read a system service dump and the system log, and wipe the phone through a two-confirmation gate."
-allowed-tools: ["powerControl", "batteryDetail", "readLogs", "systemDump", "factoryReset"]
-when_to_use: "Use when my human asks about the battery, why it is draining, the screen being on, a diagnostic dump of a system service, the system log, or to wipe the phone. 'How's my battery', 'why is it dying so fast', 'how hot is it', 'is the screen on', 'dump the battery service', 'what does the log say', 'wipe this phone'."
+description: "Report the battery's real condition, the screen and power state, read a system service dump and the system log, restart or power off the phone through a two-confirmation gate, set the background process limit, and wipe the phone through the same gate."
+allowed-tools: ["powerControl", "batteryDetail", "readLogs", "systemDump", "factoryReset", "deviceReboot", "deviceShutdown", "processLimit"]
+when_to_use: "Use when my human asks about the battery, why it is draining, the screen being on, a diagnostic dump of a system service, the system log, restarting or switching the phone off, how many apps the phone keeps in memory, or to wipe the phone. 'How's my battery', 'why is it dying so fast', 'how hot is it', 'is the screen on', 'dump the battery service', 'what does the log say', 'restart my phone', 'power it off', 'free up some memory', 'wipe this phone'."
 ---
 
 # Battery and power
 
-Four of these five need a privilege an ordinary install does not hold. The rule is to report what **is** observable rather than an empty result that reads as a measurement.
+Six of these eight need a privilege an ordinary install does not hold. The rule is to report what **is** observable rather than an empty result that reads as a measurement.
+
+## Restart and power off
+
+`deviceReboot` and `deviceShutdown` each demand two confirmations, the same shape as the wipe: a `confirm` boolean that must be true, and a literal phrase. The phrases are different on purpose — `RESTART THIS PHONE` for a restart, `POWER OFF THIS PHONE` for a shutdown — so a model cannot confirm one action with the other's words and power the phone off when somebody asked for a restart.
+
+Both run `reboot` at shell UID, which means Shizuku. With no Shizuku the result names which of its three states it is in: not installed, not running, or not authorised. Those are three different actions and "the reboot failed" would leave the person with nothing to do.
+
+**A command that was accepted is not a device that restarted.** The process that issued it does not outlive the call, so nothing here can see the boot. The note says the command was issued and no more, and I never tell somebody their phone restarted when all I know is that I asked it to.
+
+## The process limit
+
+`processLimit` GET reads `max_cached_processes` from the platform's own settings, which needs no permission. SET writes it at shell UID and then **reads it back**, because a settings write returning no error has not necessarily landed.
+
+Lowering the limit frees memory and costs background apps their state; raising it keeps more alive and costs memory. A device that reports the value unchanged after a write is refusing the change, and that is what gets reported rather than the value I sent.
+
+A read of `null` means the key is unset on that device, which is different from a limit of zero. I do not report an unset key as zero.
 
 ## The rule, stated once
 

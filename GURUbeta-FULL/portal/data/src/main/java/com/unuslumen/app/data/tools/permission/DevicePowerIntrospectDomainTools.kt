@@ -18,6 +18,7 @@ import com.unuslumen.app.data.tools.registry.ToolResultExtractor
 import com.unuslumen.app.data.tools.registry.ToolSetRegistration
 import com.unuslumen.app.data.tools.registry.permission.DomainToolModule
 import com.unuslumen.app.data.tools.registry.permission.PermissionGrants
+import com.unuslumen.app.data.tools.registry.permission.ShellAccess
 import com.unuslumen.app.data.tools.registry.permission.TeamThreePermissions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -112,12 +113,59 @@ data class FactoryResetResult(
     val error: String? = null,
 ) : ToolResultData
 
+@Serializable
+data class DeviceBootResult(
+    val success: Boolean,
+    /** True only when the shell channel reported the command was issued. */
+    val commandIssued: Boolean = false,
+    val action: String,
+    /** Whether the shell UID was usable at the moment of the call. */
+    val shellAvailable: Boolean = false,
+    val shellState: String? = null,
+    /** What the shell said, so a refusal is answerable rather than mysterious. */
+    val output: String? = null,
+    val exitCode: Int? = null,
+    val confirmationPhraseRequired: String? = null,
+    val note: String? = null,
+    val error: String? = null,
+) : ToolResultData
+
+@Serializable
+data class ProcessLimitResult(
+    val success: Boolean,
+    /** The limit read back from the platform after any write, which is the only evidence. */
+    val limit: Int? = null,
+    val previousLimit: Int? = null,
+    val written: Boolean? = null,
+    val shellAvailable: Boolean = false,
+    val shellState: String? = null,
+    val output: String? = null,
+    val note: String? = null,
+    val error: String? = null,
+) : ToolResultData
+
 object DevicePowerIntrospectDomainDefinitions : ToolSetRegistration {
     const val POWER_CONTROL = "powerControl"
     const val BATTERY_DETAIL = "batteryDetail"
     const val READ_LOGS = "readLogs"
     const val SYSTEM_DUMP = "systemDump"
     const val FACTORY_RESET = "factoryReset"
+    const val DEVICE_REBOOT = "deviceReboot"
+    const val DEVICE_SHUTDOWN = "deviceShutdown"
+    const val PROCESS_LIMIT = "processLimit"
+
+    /**
+     * The phrase reboot and shutdown demand alongside their boolean.
+     *
+     * THE SAME SHAPE AS THE WIPE PHRASE, for the same reason: a boolean is a thing a model
+     * can pass while reasoning about a schema, and a literal phrase cannot be produced by
+     * anything except a decision to produce it. Both operations interrupt whatever the person
+     * is doing, so both get the stronger gate.
+     */
+    const val POWER_CONFIRMATION_PHRASE = "RESTART THIS PHONE"
+
+    /** The word that confirms a shutdown, which is a different action from a restart. */
+    const val SHUTDOWN_CONFIRMATION_PHRASE = "POWER OFF THIS PHONE"
 
     /**
      * The phrase factoryReset demands alongside its boolean.
@@ -253,6 +301,74 @@ object DevicePowerIntrospectDomainDefinitions : ToolSetRegistration {
             // the guard belongs.
             permissions = emptyList(),
         ),
+        ToolDefinition(
+            name = DEVICE_REBOOT,
+            description = "Restart the phone. This ends every app, every call and every unsaved " +
+                "thing on the device, so it needs both a confirm flag set true and a confirm phrase " +
+                "matching exactly RESTART THIS PHONE. It runs through the shell UID, which needs " +
+                "Shizuku installed, running and authorised; when that is missing the result says " +
+                "which of those three it is rather than claiming a restart. It never reports a " +
+                "restart it did not issue, and the note after a successful call says the command " +
+                "was accepted because the process will not survive long enough to observe the boot.",
+            category = "device_power",
+            parameters = listOf(
+                ToolParameter(
+                    "confirm", ToolParameterType.Boolean, true,
+                    "Must be true. Anything else does nothing.",
+                ),
+                ToolParameter(
+                    "alsoConfirmText", ToolParameterType.String, true,
+                    "Must be exactly RESTART THIS PHONE. Anything else does nothing.",
+                ),
+            ),
+            // NOT DECLARED. REBOOT is privileged and unholdable, so declaring it would make
+            // the dispatcher refuse every call before the confirmation could even be evaluated.
+            // The real gate is the phrase plus the shell check, which live in the executor.
+            permissions = emptyList(),
+        ),
+        ToolDefinition(
+            name = DEVICE_SHUTDOWN,
+            description = "Power the phone off. Like deviceReboot it ends everything on the device, " +
+                "and it needs both a confirm flag set true and a confirm phrase matching exactly " +
+                "POWER OFF THIS PHONE. A shutdown is a different action from a restart and has its " +
+                "own phrase so one cannot be confused for the other. It runs through the shell UID " +
+                "and names Shizuku's exact state when the channel is unavailable.",
+            category = "device_power",
+            parameters = listOf(
+                ToolParameter(
+                    "confirm", ToolParameterType.Boolean, true,
+                    "Must be true. Anything else does nothing.",
+                ),
+                ToolParameter(
+                    "alsoConfirmText", ToolParameterType.String, true,
+                    "Must be exactly POWER OFF THIS PHONE. Anything else does nothing.",
+                ),
+            ),
+            permissions = emptyList(),
+        ),
+        ToolDefinition(
+            name = PROCESS_LIMIT,
+            description = "Read the number of background processes the system keeps, and optionally " +
+                "change it. Lowering it frees memory and costs background apps their state; raising " +
+                "it keeps more alive and costs memory. The read is reported from the platform's own " +
+                "settings value and every write is read back, because a setting that did not change " +
+                "is a visible lie. Changing it needs the shell UID through Shizuku; reading needs " +
+                "nothing and works regardless.",
+            category = "device_power",
+            parameters = listOf(
+                ToolParameter(
+                    "action", ToolParameterType.Enum, false,
+                    "GET reads, SET changes. Default GET.",
+                    listOf("GET", "SET"),
+                ),
+                ToolParameter(
+                    "limit", ToolParameterType.Integer, false,
+                    "For SET: the number of background processes to keep, 0 to 50. 0 means the " +
+                        "platform's own default rather than none.",
+                ),
+            ),
+            permissions = emptyList(),
+        ),
     )
 
     override fun executorClass(): KClass<out ToolExecutor> = DevicePowerIntrospectDomainExecutor::class
@@ -269,8 +385,256 @@ class DevicePowerIntrospectDomainExecutor(private val context: Context) : ToolEx
             DevicePowerIntrospectDomainDefinitions.READ_LOGS -> readLogs(args)
             DevicePowerIntrospectDomainDefinitions.SYSTEM_DUMP -> systemDump(args)
             DevicePowerIntrospectDomainDefinitions.FACTORY_RESET -> factoryReset(args)
+            DevicePowerIntrospectDomainDefinitions.DEVICE_REBOOT -> devicePowerAction(args, reboot = true)
+            DevicePowerIntrospectDomainDefinitions.DEVICE_SHUTDOWN -> devicePowerAction(args, reboot = false)
+            DevicePowerIntrospectDomainDefinitions.PROCESS_LIMIT -> processLimit(args)
             else -> ToolExecutionResult.error("Unknown tool: $toolName")
         }
+
+    // ------------------------------------------------------------------
+    // Reboot and shutdown
+    // ------------------------------------------------------------------
+
+    /**
+     * Restart or power off, through the shell UID.
+     *
+     * THE CONFIRMATION IS CHECKED BEFORE THE SHELL, deliberately. A call that lacks the phrase
+     * must be refused on its own terms, because reporting a confirmation problem as a Shizuku
+     * problem would send the person to set up a channel that was never the obstacle.
+     *
+     * A SUCCESSFUL ISSUE IS NOT A CONFIRMED REBOOT. The process that issued it does not
+     * outlive the call, so nothing here can observe the boot. The note says the command was
+     * accepted and no more than that, which is the difference between reporting an action and
+     * reporting its outcome.
+     */
+    private suspend fun devicePowerAction(args: Map<String, Any?>, reboot: Boolean): ToolExecutionResult {
+        val action = if (reboot) "reboot" else "shutdown"
+        val requiredPhrase = if (reboot) {
+            DevicePowerIntrospectDomainDefinitions.POWER_CONFIRMATION_PHRASE
+        } else {
+            DevicePowerIntrospectDomainDefinitions.SHUTDOWN_CONFIRMATION_PHRASE
+        }
+
+        val confirm = args["confirm"] as? Boolean ?: false
+        val phrase = (args["alsoConfirmText"] as? String)?.trim()
+
+        if (!confirm || phrase != requiredPhrase) {
+            val missing = buildList {
+                if (!confirm) add("the confirm flag was not true")
+                if (phrase != requiredPhrase) {
+                    add("the confirmation phrase did not match exactly $requiredPhrase")
+                }
+            }
+            return failure(
+                DeviceBootResult.serializer(),
+                DeviceBootResult(
+                    success = false,
+                    commandIssued = false,
+                    action = action,
+                    confirmationPhraseRequired = requiredPhrase,
+                    error = "Nothing was issued. This call ${if (reboot) "restarts" else "powers off"} " +
+                        "the whole phone and interrupts anything running, so it needs both " +
+                        "confirmations: ${missing.joinToString(" and ")}.",
+                ),
+            )
+        }
+
+        // The shell state is read rather than assumed, so an unavailable channel reports which
+        // of its three states it is in. "Install Shizuku", "start Shizuku" and "allow GURU" are
+        // three different actions and a single boolean cannot tell them apart.
+        val shellState = runCatching { ShellAccess.state(context) }.getOrNull()
+        if (shellState == null || !shellState.usable) {
+            return failure(
+                DeviceBootResult.serializer(),
+                DeviceBootResult(
+                    success = false,
+                    commandIssued = false,
+                    action = action,
+                    shellAvailable = false,
+                    shellState = shellState?.name,
+                    confirmationPhraseRequired = requiredPhrase,
+                    error = "Nothing was issued. A ${action} needs the shell UID, and " +
+                        (shellState?.sentence() ?: "the shell channel could not be read at all."),
+                ),
+            )
+        }
+
+        val command = if (reboot) "reboot" else "reboot -p"
+        val result = runCatching { ShellAccess.bridge(context).execute(command) }.getOrNull()
+
+        if (result == null) {
+            return failure(
+                DeviceBootResult.serializer(),
+                DeviceBootResult(
+                    success = false,
+                    commandIssued = false,
+                    action = action,
+                    shellAvailable = true,
+                    shellState = shellState.name,
+                    error = "The shell channel accepted the command and then threw while returning, " +
+                        "so it is unknown whether the $action was issued. Treat this as not issued " +
+                        "and check the device.",
+                ),
+            )
+        }
+
+        // A zero exit is the shell saying it ran the binary. For these two commands that is as
+        // close to success as anything here can observe, because the device is about to stop.
+        val issued = result.exitCode == 0
+        val output = (result.stdout.ifBlank { result.stderr }).trim().take(300)
+
+        val r = DeviceBootResult(
+            success = issued,
+            commandIssued = issued,
+            action = action,
+            shellAvailable = true,
+            shellState = shellState.name,
+            output = output.ifBlank { null },
+            exitCode = result.exitCode,
+            confirmationPhraseRequired = requiredPhrase,
+            note = if (issued) {
+                "The $action command was accepted by the shell UID. This process will not survive " +
+                    "long enough to observe the device ${if (reboot) "coming back up" else "switching off"}, " +
+                    "so what is reported here is that the command was issued rather than that the " +
+                    "device ${if (reboot) "restarted" else "powered off"}."
+            } else {
+                "The shell ran and exited ${result.exitCode}, so the $action was not issued."
+            },
+            error = if (issued) null else "The $action command exited ${result.exitCode} without issuing it.",
+        )
+        return emit(json, DeviceBootResult.serializer(), r)
+    }
+
+    // ------------------------------------------------------------------
+    // Process limit
+    // ------------------------------------------------------------------
+
+    /** The settings key that holds the limit, which is also what the read must use. */
+    private val processLimitKey = "global" to "max_cached_processes"
+
+    private suspend fun processLimit(args: Map<String, Any?>): ToolExecutionResult {
+        val action = ((args["action"] as? String) ?: "GET").uppercase()
+        val before = readProcessLimit()
+
+        if (action == "GET") {
+            val r = ProcessLimitResult(
+                success = before != null,
+                limit = before,
+                shellAvailable = runCatching { ShellAccess.available(context) }.getOrDefault(false),
+                note = if (before == null) {
+                    "This device does not report a cached-process limit, so the read returned " +
+                        "nothing rather than a zero that would look like a limit of none."
+                } else {
+                    "Read from the platform's own settings value, which is the number of background " +
+                        "processes the system keeps before it starts evicting them."
+                },
+                error = if (before == null) "The cached-process limit could not be read on this device." else null,
+            )
+            return emit(json, ProcessLimitResult.serializer(), r)
+        }
+
+        if (action != "SET") {
+            return failure(
+                ProcessLimitResult.serializer(),
+                ProcessLimitResult(
+                    success = false,
+                    limit = before,
+                    error = "The action must be GET or SET, and '$action' is neither.",
+                ),
+            )
+        }
+
+        val requested = (args["limit"] as? Number)?.toInt()
+        if (requested == null || requested !in 0..50) {
+            return failure(
+                ProcessLimitResult.serializer(),
+                ProcessLimitResult(
+                    success = false,
+                    limit = before,
+                    error = "SET needs 'limit' as a number from 0 to 50, and " +
+                        "${requested ?: "no number"} was given. 0 restores the platform's own default.",
+                ),
+            )
+        }
+
+        val shellState = runCatching { ShellAccess.state(context) }.getOrNull()
+        if (shellState == null || !shellState.usable) {
+            return failure(
+                ProcessLimitResult.serializer(),
+                ProcessLimitResult(
+                    success = false,
+                    limit = before,
+                    written = false,
+                    shellAvailable = false,
+                    shellState = shellState?.name,
+                    error = "Nothing was changed. Setting the process limit needs the shell UID, and " +
+                        (shellState?.sentence() ?: "the shell channel could not be read at all."),
+                ),
+            )
+        }
+
+        val command = "settings put ${processLimitKey.first} ${processLimitKey.second} $requested"
+        val result = runCatching { ShellAccess.bridge(context).execute(command) }.getOrNull()
+
+        // READ IT BACK. A settings write that returns no error has not necessarily landed, and
+        // the value the platform holds is the only evidence worth reporting.
+        val after = readProcessLimit()
+
+        val landed = after != null && after == requested
+        val r = ProcessLimitResult(
+            success = landed,
+            limit = after,
+            previousLimit = before,
+            written = landed,
+            shellAvailable = true,
+            shellState = shellState.name,
+            output = result?.let { (it.stdout.ifBlank { it.stderr }).trim().take(300) }?.ifBlank { null },
+            note = when {
+                after == null ->
+                    "The write was issued and the limit could not be read back on this device, so " +
+                        "whether it landed is unknown."
+                landed ->
+                    "Set the cached-process limit to $requested and read it back as $requested. That " +
+                        "is what the platform holds now, not what was sent."
+                else ->
+                    "The write was issued and the platform holds $after, so it did not land. A " +
+                        "device that reports the limit as unchanged after a settings write is " +
+                        "refusing the change rather than ignoring the command."
+            },
+            error = if (landed) null else "The process limit did not change to $requested.",
+        )
+        return emit(json, ProcessLimitResult.serializer(), r)
+    }
+
+    /**
+     * The cached-process limit as the platform reports it.
+     *
+     * Read through `settings get` at shell UID when available, and through the app's own
+     * readable global settings when it is not. A value of "null" is the settings tool's word
+     * for an unset key, which is different from a limit of zero, so it maps to absent rather
+     * than to 0.
+     */
+    private suspend fun readProcessLimit(): Int? {
+        val shellState = runCatching { ShellAccess.state(context) }.getOrNull()
+        val raw: String? = if (shellState != null && shellState.usable) {
+            val command = "settings get ${processLimitKey.first} ${processLimitKey.second}"
+            runCatching { ShellAccess.bridge(context).execute(command) }
+                .getOrNull()
+                ?.stdout
+                ?.trim()
+        } else {
+            // The global namespace is readable by an ordinary app for this key on most builds,
+            // and when it is not, the caller reports that rather than guessing a value.
+            runCatching {
+                android.provider.Settings.Global.getInt(
+                    context.contentResolver,
+                    processLimitKey.second,
+                ).toString()
+            }.getOrNull()
+        }
+
+        return raw?.trim()?.takeIf { it.isNotEmpty() && it != "null" }?.toIntOrNull()
+    }
 
     // ------------------------------------------------------------------
     // Power
@@ -744,6 +1108,8 @@ class DevicePowerIntrospectDomainExecutor(private val context: Context) : ToolEx
             is LogReadResult -> payload.success
             is SystemDumpResult -> payload.success
             is FactoryResetResult -> payload.success
+            is DeviceBootResult -> payload.success
+            is ProcessLimitResult -> payload.success
             else -> false
         },
         error = when (payload) {
@@ -752,6 +1118,8 @@ class DevicePowerIntrospectDomainExecutor(private val context: Context) : ToolEx
             is LogReadResult -> payload.error
             is SystemDumpResult -> payload.error
             is FactoryResetResult -> payload.error
+            is DeviceBootResult -> payload.error
+            is ProcessLimitResult -> payload.error
             else -> null
         },
     )
@@ -770,6 +1138,8 @@ class DevicePowerIntrospectDomainExecutor(private val context: Context) : ToolEx
             is LogReadResult -> payload.error
             is SystemDumpResult -> payload.error
             is FactoryResetResult -> payload.error
+            is DeviceBootResult -> payload.error
+            is ProcessLimitResult -> payload.error
             else -> null
         },
     )
