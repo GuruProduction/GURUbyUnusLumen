@@ -25,6 +25,7 @@ import com.unuslumen.app.data.tools.permission.SettingsControlDomainModule
 import com.unuslumen.app.data.tools.phone.PhoneDomainModule
 import com.unuslumen.app.data.tools.senses.BluetoothDomainModule
 import com.unuslumen.app.data.tools.senses.CameraAudioDomainModule
+import com.unuslumen.app.data.tools.senses.InputInjectionDomainModule
 import com.unuslumen.app.data.tools.senses.LocationDomainModule
 import com.unuslumen.app.data.tools.senses.PrivilegedCaptureDomainModule
 import com.unuslumen.app.data.tools.senses.SensorsDomainModule
@@ -132,6 +133,10 @@ object TeamThreeToolDomains {
         // answer "why can't you read my texts" with anything but a refusal from whichever tool
         // happened to fail.
         PermissionDomainModule,
+        // Input injection (#140): the fallback that drives a screen when accessibility is
+        // switched off. It reaches the input dispatcher at shell UID, so it needs no
+        // accessibility grant at all, which is the whole reason it exists.
+        InputInjectionDomainModule,
         LocationDomainModule,
         PhoneDomainModule,
         PrivilegedCaptureDomainModule,
