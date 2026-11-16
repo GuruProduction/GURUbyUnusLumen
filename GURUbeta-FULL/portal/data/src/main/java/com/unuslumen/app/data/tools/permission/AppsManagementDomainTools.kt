@@ -22,6 +22,7 @@ import com.unuslumen.app.data.tools.registry.ToolResultExtractor
 import com.unuslumen.app.data.tools.registry.ToolSetRegistration
 import com.unuslumen.app.data.tools.registry.permission.DomainToolModule
 import com.unuslumen.app.data.tools.registry.permission.PermissionGrants
+import com.unuslumen.app.data.tools.registry.permission.ShellAccess
 import com.unuslumen.app.data.tools.registry.permission.TeamThreePermissions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -95,6 +96,24 @@ data class AppLaunchResult(
 ) : ToolResultData
 
 @Serializable
+data class AppShellActionResult(
+    val success: Boolean,
+    val packageName: String,
+    val action: String,
+    /** True only when the shell channel was usable at the moment of the call. */
+    val shellAvailable: Boolean = false,
+    val shellState: String? = null,
+    /** What was measured before, so a change is evidenced rather than asserted. */
+    val bytesBefore: Long? = null,
+    val bytesAfter: Long? = null,
+    val command: String? = null,
+    val exitCode: Int? = null,
+    val output: String? = null,
+    val note: String? = null,
+    val error: String? = null,
+) : ToolResultData
+
+@Serializable
 data class AppInstallResult(
     val success: Boolean,
     val packageName: String? = null,
@@ -114,6 +133,7 @@ object AppsManagementDomainDefinitions : ToolSetRegistration {
     const val REORDER_TASKS = "reorderTasks"
     const val REQUEST_INSTALL_APP = "requestInstallApp"
     const val REQUEST_UNINSTALL_APP = "requestUninstallApp"
+    const val LAUNCH_FROM_BACKGROUND = "launchFromBackground"
 
     override val definitions = listOf(
         ToolDefinition(
@@ -170,15 +190,21 @@ object AppsManagementDomainDefinitions : ToolSetRegistration {
         ),
         ToolDefinition(
             name = CLEAR_APP_CACHE,
-            description = "Measure another app's cache and then report honestly what can be done " +
-                "about it. Clearing another app's cache needs a system privilege this build does not " +
-                "hold, so the reachable action is the app's own storage screen, and this gives the " +
-                "intent that opens it. It never claims a cache was cleared, because it was not.",
+            description = "Clear another app's cache and prove it by measuring before and after. It " +
+                "runs the platform's own cache-only clear at shell UID, which needs Shizuku, and it " +
+                "reports the cache as cleared only when the size actually fell afterwards: the " +
+                "command exiting zero proves it ran, not that anything was removed. Without Shizuku " +
+                "it names that state and opens the app's own storage screen so the person can press " +
+                "Clear cache themselves, and it never claims a clear in that case. Refuses to target " +
+                "GURU itself, because the clear ends the process answering the call.",
             category = "apps",
             parameters = listOf(
-                ToolParameter("packageName", ToolParameterType.String, true, "The package whose cache to measure."),
+                ToolParameter("packageName", ToolParameterType.String, true, "The package whose cache to clear."),
             ),
-            permissions = listOf(TeamThreePermissions.PACKAGE_USAGE_STATS.permission),
+            // NOT DECLARED. CLEAR_APP_CACHE is privileged and unholdable, and the measurement
+            // that proves the clear needs Usage access only when it is there, so declaring either
+            // would refuse the tool on a phone where the shell route works.
+            permissions = emptyList(),
         ),
         ToolDefinition(
             name = START_ANY_ACTIVITY,
@@ -251,6 +277,27 @@ object AppsManagementDomainDefinitions : ToolSetRegistration {
             ),
             permissions = listOf(TeamThreePermissions.REQUEST_DELETE_PACKAGES.permission),
         ),
+        ToolDefinition(
+            name = LAUNCH_FROM_BACKGROUND,
+            description = "Open an app's screen while GURU is in the background, which Android " +
+                "blocks for an ordinary app: a startActivity call from the background is silently " +
+                "dropped on modern versions. This issues the launch through the shell UID instead, " +
+                "with the flag the platform requires for that case. It needs Shizuku and names which " +
+                "of its three states applies when the channel is missing. Nothing can read back what " +
+                "is on screen, so it reports that the launch was issued rather than that the app " +
+                "appeared.",
+            category = "apps",
+            parameters = listOf(
+                ToolParameter("packageName", ToolParameterType.String, true, "The package to open."),
+                ToolParameter(
+                    "activityName", ToolParameterType.String, false,
+                    "The fully qualified activity class. Omit to use the app's launcher screen.",
+                ),
+            ),
+            // NOT DECLARED. START_ACTIVITIES_FROM_BACKGROUND is privileged and unholdable, so a
+            // declaration would make the dispatcher refuse every call before the shell check.
+            permissions = emptyList(),
+        ),
     )
 
     override fun executorClass(): KClass<out ToolExecutor> = AppsManagementDomainExecutor::class
@@ -303,8 +350,143 @@ class AppsManagementDomainExecutor(private val context: Context) : ToolExecutor 
             AppsManagementDomainDefinitions.REORDER_TASKS -> reorderTasks(args)
             AppsManagementDomainDefinitions.REQUEST_INSTALL_APP -> requestInstallApp(args)
             AppsManagementDomainDefinitions.REQUEST_UNINSTALL_APP -> requestUninstallApp(args)
+            AppsManagementDomainDefinitions.LAUNCH_FROM_BACKGROUND -> launchFromBackground(args)
             else -> ToolExecutionResult.error("Unknown tool: $toolName")
         }
+
+    // ------------------------------------------------------------------
+    // Launching from the background
+    // ------------------------------------------------------------------
+
+    /**
+     * Start an app's screen while GURU is not the visible app.
+     *
+     * WHY THIS NEEDS THE SHELL. Since Android 10 a background app's `startActivity` is dropped
+     * without an error, so an ordinary call would report a launch that never happened. The
+     * platform's own `am start` at shell UID is not subject to that block, which is why the
+     * command is used here rather than a normal Intent.
+     *
+     * THE COMPONENT IS RESOLVED FIRST, so a wrong activity name is reported as a wrong name
+     * rather than as a shell failure. The launch itself has no readback: nothing here can see
+     * what is on screen, so the result says the launch was issued.
+     */
+    private suspend fun launchFromBackground(args: Map<String, Any?>): ToolExecutionResult {
+        val packageName = (args["packageName"] as? String)?.trim()
+        if (packageName.isNullOrBlank()) {
+            return failure(
+                AppShellActionResult.serializer(),
+                AppShellActionResult(
+                    success = false,
+                    packageName = "",
+                    action = "launchFromBackground",
+                    error = "This call needs 'packageName'.",
+                ),
+            )
+        }
+
+        val activityName = (args["activityName"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+
+        // Resolve the component locally first, so "there is no such screen" is distinguished
+        // from "the shell declined". Those need different answers.
+        val component: String? = if (activityName != null) {
+            val resolved = runCatching {
+                context.packageManager.getActivityInfo(
+                    android.content.ComponentName(packageName, activityName),
+                    0,
+                )
+                true
+            }.getOrDefault(false)
+            if (!resolved) {
+                return failure(
+                    AppShellActionResult.serializer(),
+                    AppShellActionResult(
+                        success = false,
+                        packageName = packageName,
+                        action = "launchFromBackground",
+                        error = "No activity named $activityName exists in $packageName. This is a " +
+                            "wrong name rather than a permission problem.",
+                    ),
+                )
+            }
+            "$packageName/$activityName"
+        } else {
+            val launch = runCatching {
+                context.packageManager.getLaunchIntentForPackage(packageName)
+            }.getOrNull()
+            val resolvedComponent = launch?.component?.flattenToShortString()
+            if (resolvedComponent == null) {
+                return failure(
+                    AppShellActionResult.serializer(),
+                    AppShellActionResult(
+                        success = false,
+                        packageName = packageName,
+                        action = "launchFromBackground",
+                        error = "$packageName has no launcher screen, so there is no default screen " +
+                            "to open. Name one with activityName.",
+                    ),
+                )
+            }
+            resolvedComponent
+        }
+
+        val shellState = runCatching { ShellAccess.state(context) }.getOrNull()
+        if (shellState == null || !shellState.usable) {
+            return failure(
+                AppShellActionResult.serializer(),
+                AppShellActionResult(
+                    success = false,
+                    packageName = packageName,
+                    action = "launchFromBackground",
+                    shellAvailable = false,
+                    shellState = shellState?.name,
+                    error = "Nothing was launched. Opening an app while GURU is in the background " +
+                        "needs the shell UID, and " +
+                        (shellState?.sentence() ?: "the shell channel could not be read at all."),
+                ),
+            )
+        }
+
+        // -n names the component explicitly. Without it, `am start` may resolve a different
+        // activity than the one asked for, which looks like the launch working.
+        val command = "am start -n $component"
+        val result = runCatching { ShellAccess.bridge(context).execute(command) }.getOrNull()
+        val output = result?.let { (it.stdout.ifBlank { it.stderr }).trim().take(300) }.orEmpty()
+
+        // `am start` reports a refusal in its own words while still exiting zero on some
+        // versions, so the output decides. "Error" or "does not exist" in it is a failure even
+        // when the shell says the command ran.
+        val refusal = output.lineSequence().firstOrNull { line ->
+            val lower = line.lowercase()
+            lower.contains("error") || lower.contains("does not exist") || lower.contains("permission denial")
+        }
+
+        val issued = result != null && result.exitCode == 0 && refusal == null
+
+        val r = AppShellActionResult(
+            success = issued,
+            packageName = packageName,
+            action = "launchFromBackground",
+            shellAvailable = true,
+            shellState = shellState.name,
+            command = command,
+            exitCode = result?.exitCode,
+            output = output.ifBlank { null },
+            note = if (issued) {
+                "The launch was issued through the shell UID, which is the only route that works " +
+                    "from the background. Nothing can read back what is on screen, so this reports " +
+                    "the launch rather than the app appearing."
+            } else {
+                "The launch was not issued: the command reported a refusal."
+            },
+            error = when {
+                result == null -> "The shell accepted the command and threw while returning."
+                refusal != null -> "The launch was refused: $refusal"
+                result.exitCode != 0 -> "The launch command exited ${result.exitCode}."
+                else -> null
+            },
+        )
+        return emit(json, AppShellActionResult.serializer(), r)
+    }
 
     // ------------------------------------------------------------------
     // Sizes
@@ -586,14 +768,28 @@ class AppsManagementDomainExecutor(private val context: Context) : ToolExecutor 
     // Cache
     // ------------------------------------------------------------------
 
+    /**
+     * Clear another app's cache, and prove it by measuring before and after.
+     *
+     * WHAT THIS REPLACED. The old version measured the cache, then opened the app's storage
+     * screen, and reported that it had done neither of the things the name says. Nothing was
+     * cleared and the person was handed a Settings page. That is the hollow success the whole
+     * batch exists to remove, so the tool now does the job: `pm clear --cache-only` at shell
+     * UID, which is the platform's own cache-clearing command.
+     *
+     * THE PROOF IS THE MEASUREMENT. A cache clear is reported as done only when the size is
+     * read back afterwards and it actually fell. The command exiting zero proves it ran, not
+     * that anything was removed, and this is exactly the class of fault issue 44 shipped.
+     *
+     * Without Shizuku it names that state rather than pretending the clear happened, and the
+     * storage screen is still offered as the route the person can take themselves.
+     */
     private suspend fun clearAppCache(args: Map<String, Any?>): ToolExecutionResult {
-        PermissionGrants.guard(context, TeamThreePermissions.PACKAGE_USAGE_STATS)?.let { return it }
-
         val packageName = (args["packageName"] as? String)?.trim()
         if (packageName.isNullOrBlank()) {
             return failure(
-                AppActionResult.serializer(),
-                AppActionResult(
+                AppShellActionResult.serializer(),
+                AppShellActionResult(
                     success = false,
                     packageName = "",
                     action = "clearCache",
@@ -602,62 +798,110 @@ class AppsManagementDomainExecutor(private val context: Context) : ToolExecutor 
             )
         }
 
-        val cacheBytes = withContext(Dispatchers.IO) {
-            runCatching {
-                val info = appInfoFor(packageName)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    val storageManager = context.getSystemService(Context.STORAGE_SERVICE) as StorageManager
-                    val statsManager = context.getSystemService(StorageStatsManager::class.java)
-                    val uuid = storageManager.getUuidForPath(java.io.File(info.sourceDir))
-                    statsManager?.queryStatsForPackage(
-                        uuid,
-                        packageName,
-                        UserHandle.getUserHandleForUid(info.uid),
-                    )?.cacheBytes
-                } else null
-            }.getOrNull()
+        if (packageName == context.packageName) {
+            return failure(
+                AppShellActionResult.serializer(),
+                AppShellActionResult(
+                    success = false,
+                    packageName = packageName,
+                    action = "clearCache",
+                    error = "Refusing to clear GURU's own cache from inside GURU: the clear call " +
+                        "ends the process that is answering it, so the result would never be " +
+                        "reported. Use the app's own storage screen instead.",
+                ),
+            )
         }
 
-        // Clearing another app's cache needs CLEAR_APP_CACHE, which is privileged. Rather than
-        // report a failure that reads like a bug, the tool names the screen that genuinely does
-        // the job and lets the person press it.
-        val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-            data = Uri.parse("package:$packageName")
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        val opened = runCatching {
-            context.startActivity(intent)
-            true
-        }.getOrDefault(false)
+        val before = cacheBytesFor(packageName)
 
-        val r = AppActionResult(
-            success = opened,
+        val shellState = runCatching { ShellAccess.state(context) }.getOrNull()
+        if (shellState == null || !shellState.usable) {
+            // The person still gets the route that works, but the result never claims a clear.
+            openStorageScreen(packageName)
+            return failure(
+                AppShellActionResult.serializer(),
+                AppShellActionResult(
+                    success = false,
+                    packageName = packageName,
+                    action = "clearCache",
+                    bytesBefore = before,
+                    shellAvailable = false,
+                    shellState = shellState?.name,
+                    note = "The app's own storage screen has been opened, where the person can press " +
+                        "Clear cache themselves.",
+                    error = "Nothing was cleared. Clearing another app's cache needs the shell UID, " +
+                        "and " + (shellState?.sentence() ?: "the shell channel could not be read at all."),
+                ),
+            )
+        }
+
+        val command = "pm clear --cache-only $packageName"
+        val result = runCatching { ShellAccess.bridge(context).execute(command) }.getOrNull()
+
+        // READ IT BACK. The exit code proves the command ran; only the size proves it worked.
+        val after = cacheBytesFor(packageName)
+        val cleared = before != null && after != null && after < before
+
+        val r = AppShellActionResult(
+            success = cleared,
             packageName = packageName,
             action = "clearCache",
-            route = if (opened) {
-                "opened the app's own storage screen"
-            } else {
-                "no route available"
+            shellAvailable = true,
+            shellState = shellState.name,
+            bytesBefore = before,
+            bytesAfter = after,
+            command = command,
+            exitCode = result?.exitCode,
+            output = result?.let { (it.stdout.ifBlank { it.stderr }).trim().take(300) }?.ifBlank { null },
+            note = when {
+                cleared ->
+                    "Cleared the cache: it held $before bytes and now holds $after. Measured before " +
+                        "and after, which is the only evidence a clear actually removed anything."
+                before == null || after == null ->
+                    "The clear was issued and the cache size could not be measured, because the " +
+                        "platform will not give this build another app's storage statistics without " +
+                        "Usage access. Whether anything was removed is therefore unknown."
+                before == 0L ->
+                    "The cache already held nothing, so there was nothing to clear and the call " +
+                        "proves nothing about the clear."
+                else ->
+                    "The clear command ran and the cache still holds $after bytes, having held " +
+                        "$before. That is the command being refused or the app rewriting its cache " +
+                        "immediately, and either way nothing was freed."
             },
-            note = buildString {
-                if (cacheBytes != null) {
-                    append("$packageName's cache holds $cacheBytes bytes. ")
-                } else {
-                    append("The cache size could not be measured, which needs Usage access. ")
-                }
-                append("Clearing another app's cache needs a system privilege this build does not ")
-                append("hold, so nothing was cleared. ")
-                if (opened) {
-                    append("The app's storage screen is open now, where the person can press Clear ")
-                    append("cache themselves, which is the route that actually works.")
-                } else {
-                    append("The storage screen could not be opened either, so the person can reach it ")
-                    append("from Settings > Apps.")
-                }
-            }.trim(),
+            error = if (cleared) null else {
+                "The cache was not cleared: ${before ?: "unknown"} bytes before, ${after ?: "unknown"} after."
+            },
         )
-        return emit(json, AppActionResult.serializer(), r)
+        return emit(json, AppShellActionResult.serializer(), r)
     }
+
+    /** Another app's cache size, or null when this build cannot measure it. */
+    private suspend fun cacheBytesFor(packageName: String): Long? = withContext(Dispatchers.IO) {
+        runCatching {
+            val info = appInfoFor(packageName)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val storageManager = context.getSystemService(Context.STORAGE_SERVICE) as StorageManager
+                val statsManager = context.getSystemService(StorageStatsManager::class.java)
+                val uuid = storageManager.getUuidForPath(java.io.File(info.sourceDir))
+                statsManager?.queryStatsForPackage(
+                    uuid,
+                    packageName,
+                    UserHandle.getUserHandleForUid(info.uid),
+                )?.cacheBytes
+            } else null
+        }.getOrNull()
+    }
+
+    private fun openStorageScreen(packageName: String): Boolean = runCatching {
+        context.startActivity(
+            Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:$packageName")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            },
+        )
+        true
+    }.getOrDefault(false)
 
     // ------------------------------------------------------------------
     // Opening
@@ -1055,6 +1299,7 @@ class AppsManagementDomainExecutor(private val context: Context) : ToolExecutor 
             is AppActionResult -> payload.success
             is AppLaunchResult -> payload.success
             is AppInstallResult -> payload.success
+            is AppShellActionResult -> payload.success
             else -> false
         },
         error = when (payload) {
@@ -1062,6 +1307,7 @@ class AppsManagementDomainExecutor(private val context: Context) : ToolExecutor 
             is AppActionResult -> payload.error
             is AppLaunchResult -> payload.error
             is AppInstallResult -> payload.error
+            is AppShellActionResult -> payload.error
             else -> null
         },
     )
@@ -1079,6 +1325,7 @@ class AppsManagementDomainExecutor(private val context: Context) : ToolExecutor 
             is AppActionResult -> payload.error
             is AppLaunchResult -> payload.error
             is AppInstallResult -> payload.error
+            is AppShellActionResult -> payload.error
             else -> null
         },
     )
