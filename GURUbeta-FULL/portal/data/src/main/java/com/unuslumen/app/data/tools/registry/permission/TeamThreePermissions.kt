@@ -465,6 +465,30 @@ object TeamThreePermissions {
         grantRoute = "Settings > Apps > GURU > Alarms & reminders > Allow",
     )
 
+    /**
+     * Notification access, which is a service toggle rather than a grant.
+     *
+     * THIS ENTRY EXISTS SO THE REFUSAL IS THE CATALOGUE'S, NOT A SECOND INVENTION.
+     * The permission string is the BIND_ guard the service declares, because that is
+     * the name the platform matches when it decides whether to bind the listener.
+     * The grant itself is recorded in `Settings.Secure.ENABLED_NOTIFICATION_LISTENERS`,
+     * which is what NotificationAccess reads, so nothing here is checked with
+     * `checkSelfPermission` and no dispatcher pre-flight ever sees this string: a
+     * tool that declared it would be refused on every phone, including one where the
+     * listener is running.
+     *
+     * SERVICE tier because that is exactly the shape of the grant: a Settings screen,
+     * a toggle per app, and a verification that reads the enabled-services list rather
+     * than the screen closing.
+     */
+    val NOTIFICATION_ACCESS = PermissionSpec(
+        permission = "android.permission.BIND_NOTIFICATION_LISTENER_SERVICE",
+        tier = PermissionTier.SERVICE,
+        label = "Notification access",
+        why = "GURU can read a notification the moment it arrives, and dismiss or act on it",
+        grantRoute = "Settings > Apps > GURU > Notification access > Allow",
+    )
+
     // ------------------------------------------------------------------
     // Network, wifi and VPN (#95 to #103)
     // ------------------------------------------------------------------
@@ -1009,6 +1033,10 @@ object TeamThreePermissions {
         // Declared by other tool sets, catalogued so the dispatcher's refusal can
         // explain them instead of calling them unknown.
         POST_NOTIFICATIONS, SCHEDULE_EXACT_ALARM,
+        // The notification listener's service toggle (#152). Its grant is read from
+        // Settings.Secure, not from the app's permission set, so this entry exists for the
+        // refusal sentence rather than for a pre-flight check.
+        NOTIFICATION_ACCESS,
         // The second wave: the permission groups that had a registry entry naming
         // an owning tool but no catalogue entry, so every tool built for #95 to #147
         // would have refused with "unknown permission" and read as a broken app.

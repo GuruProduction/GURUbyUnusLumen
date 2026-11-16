@@ -198,9 +198,14 @@ class PermissionGrantsAndroidTest {
     @Test
     fun theCatalogueCoversTheBatchScopeExactly() {
         println("catalogue=${TeamThreePermissions.all.size}")
+        // 104 since #152 added NOTIFICATION_ACCESS. That entry is a service toggle rather than
+        // a grant the app holds: the listener's own permission is the BIND_ guard the service
+        // declares, and the real state lives in Settings.Secure. It is catalogued so the refusal
+        // a notification tool returns is built here with every other refusal rather than
+        // invented at the call site.
         assertEquals(
             "the catalogue changed size, which changes what every refusal in the app says",
-            103,
+            104,
             TeamThreePermissions.all.size,
         )
     }
