@@ -60,17 +60,20 @@ class ScreenSightController(
      * frame right now (vision infrastructure missing, consent dead and not re-grantable).
      * Never throws.
      */
+    /**
+     * Grab the current screen, through the consented projection.
+     *
+     * THE SHELL FALLBACK IS GONE, DELIBERATELY (issue 41). It shelled out to `screencap`,
+     * which needs root or shell UID, so on an ordinary install it always failed. Worse, its
+     * presence implied root or ADB was the intended mechanism and made the working one look
+     * like a shortcut. A capture either comes from the session the person consented to or it
+     * does not happen, and "does not happen" is reported as null so the caller says so rather
+     * than presenting a black frame as sight.
+     */
     suspend fun grabScreen(): Bitmap? = try {
-        // Primary: persistent projection session
         val fromProjection = grabFromProjection()
-        if (fromProjection != null) {
-            lastSourceWasProjection = true
-            fromProjection
-        } else {
-            // Fallback: shell screencap (root > ADB > runtime)
-            lastSourceWasProjection = false
-            grabFromScreencap()
-        }
+        lastSourceWasProjection = fromProjection != null
+        fromProjection
     } catch (e: Exception) {
         Log.w(TAG, "Sight: grab failed: ${e.message}")
         null
@@ -187,21 +190,6 @@ class ScreenSightController(
             Log.w(TAG, "Sight: cannot start capture service from here: ${e.message}")
             false
         }
-    }
-
-    /** Fallback: shell screencap to a temp file, decode, clean up. */
-    private suspend fun grabFromScreencap(): Bitmap? {
-        val shell = com.unuslumen.app.util.shell.ShellExecutor(context)
-        val path = "${context.cacheDir.absolutePath}/sight_${System.currentTimeMillis()}.png"
-        val result = shell.execute("screencap -p '$path'")
-        val file = java.io.File(path)
-        if (!result.success || !file.exists() || file.length() == 0L) {
-            file.delete()
-            return null
-        }
-        val bitmap = android.graphics.BitmapFactory.decodeFile(path)
-        file.delete()
-        return bitmap
     }
 
     private fun currentMetrics(): DisplayMetrics {
