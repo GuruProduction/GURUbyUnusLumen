@@ -120,6 +120,11 @@ class SensesDomainHonestyTest {
                 // the five need a privilege this build lacks, so the domain reports what IS
                 // observable rather than returning an empty result that reads as a measurement.
                 "device_power_introspect",
+                // Input injection, added for #140. It sends taps, swipes, text and keys to the
+                // input dispatcher at shell UID, so it needs no accessibility grant at all. That
+                // is the whole point of it: the fallback for a person who will not switch the
+                // accessibility service on.
+                "input_injection",
                 "ir",
                 "location",
                 // Seeing and reaching every host on the wifi, not only televisions.
