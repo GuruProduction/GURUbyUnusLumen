@@ -84,78 +84,78 @@ object PermissionRegistry {
      */
     val all: List<PermissionSpec> = listOf(
         // ===== Calendar =====
-        runtime("READ_CALENDAR", "calendarRead", "calendar", "Read the device's calendars and their events."),
-        runtime("WRITE_CALENDAR", "calendarWrite", "calendar", "Create, change and delete calendar events."),
+        runtime("READ_CALENDAR", "calendarRead", "calendar-and-accounts", "Read the device's calendars and their events."),
+        runtime("WRITE_CALENDAR", "calendarWrite", "calendar-and-accounts", "Create, change and delete calendar events."),
 
         // ===== Alarms & Boot =====
-        appOp("SCHEDULE_EXACT_ALARM", "createAlarm", "alarms", "Schedule an alarm or task alarm that fires at an exact time instead of a window."),
-        normal("RECEIVE_BOOT_COMPLETED", null, "automation", "Receive the boot broadcast so jobs, hooks and alarms can be restored after a restart."),
+        appOp("SCHEDULE_EXACT_ALARM", "createAlarm", "alarms-and-automation", "Schedule an alarm or task alarm that fires at an exact time instead of a window."),
+        normal("RECEIVE_BOOT_COMPLETED", null, "alarms-and-automation", "Receive the boot broadcast so jobs, hooks and alarms can be restored after a restart."),
         runtime("POST_NOTIFICATIONS", "notify", "notifications", "Show notifications, which is how GURU reports background work and alarms."),
-        normal("USE_EXACT_ALARM", "createAlarm", "alarms", "Use exact alarms without asking, which Android grants only to alarm and clock apps."),
-        privileged("SET_ALARM", tool = "setSystemAlarm", skill = "alarms", unlocks = "Set an alarm in the system clock app. setAlarmClock reaches the same result without this permission."),
-        normal("VIBRATE", "vibrate", "device_control", "Vibrate the device."),
-        appOp("REQUEST_IGNORE_BATTERY_OPTIMIZATIONS", null, "automation", "Ask to be exempt from battery optimisation so background work is not frozen."),
+        normal("USE_EXACT_ALARM", "createAlarm", "alarms-and-automation", "Use exact alarms without asking, which Android grants only to alarm and clock apps."),
+        privileged("SET_ALARM", tool = "setSystemAlarm", skill = "alarms-and-automation", unlocks = "Set an alarm in the system clock app. setAlarmClock reaches the same result without this permission."),
+        normal("VIBRATE", "vibrate", "settings-and-device-control", "Vibrate the device."),
+        appOp("REQUEST_IGNORE_BATTERY_OPTIMIZATIONS", null, "alarms-and-automation", "Ask to be exempt from battery optimisation so background work is not frozen."),
 
         // ===== Network =====
         normal("INTERNET", null, null, "Open network connections at all."),
-        normal("ACCESS_NETWORK_STATE", "networkState", "network", "Read whether the device is online and what kind of connection it has."),
-        normal("ACCESS_WIFI_STATE", "wifiInfo", "wifi", "Read the Wi-Fi connection state, SSID and link speed."),
-        normal("CHANGE_WIFI_STATE", "wifiSetEnabled", "wifi", "Turn Wi-Fi on or off. Android refuses this at app UID on modern versions, so the answer names that limit rather than a route that does not exist."),
-        normal("CHANGE_WIFI_MULTICAST_STATE", null, "network_discovery", "Hold a multicast lock so mDNS and SSDP discovery can receive replies."),
-        normal("CHANGE_NETWORK_STATE", "networkSetEnabled", "network", "Request a change to the device's data connection, which Android blocks for apps."),
-        runtime("NEARBY_WIFI_DEVICES", "wifiNearby", "wifi", "Scan for and connect to nearby Wi-Fi devices without needing location."),
+        normal("ACCESS_NETWORK_STATE", "networkState", "network-and-wifi", "Read whether the device is online and what kind of connection it has."),
+        normal("ACCESS_WIFI_STATE", "wifiInfo", "network-and-wifi", "Read the Wi-Fi connection state, SSID and link speed."),
+        normal("CHANGE_WIFI_STATE", "wifiSetEnabled", "network-and-wifi", "Turn Wi-Fi on or off. Android refuses this at app UID on modern versions, so the answer names that limit rather than a route that does not exist."),
+        normal("CHANGE_WIFI_MULTICAST_STATE", null, "network-and-wifi", "Hold a multicast lock so mDNS and SSDP discovery can receive replies."),
+        normal("CHANGE_NETWORK_STATE", "networkSetEnabled", "network-and-wifi", "Request a change to the device's data connection, which Android blocks for apps."),
+        runtime("NEARBY_WIFI_DEVICES", "wifiNearby", "network-and-wifi", "Scan for and connect to nearby Wi-Fi devices without needing location."),
 
         // ===== Storage =====
         appOp("MANAGE_EXTERNAL_STORAGE", null, "storage", "Read and write every file on shared storage, not just GURU's own directories."),
         runtime("READ_EXTERNAL_STORAGE", null, "storage", "Read shared storage on Android 12 and below."),
         runtime("WRITE_EXTERNAL_STORAGE", null, "storage", "Write shared storage on Android 10 and below."),
-        runtime("READ_MEDIA_IMAGES", "mediaLibrary", "media_library", "Read image files from the shared media store."),
-        runtime("READ_MEDIA_VIDEO", "mediaLibrary", "media_library", "Read video files from the shared media store."),
-        runtime("READ_MEDIA_AUDIO", "mediaLibrary", "media_library", "Read audio files from the shared media store."),
-        runtime("READ_MEDIA_VISUAL_USER_SELECTED", "mediaLibrary", "media_library", "Read the specific photos and videos the user selected, on Android 14 and above."),
+        runtime("READ_MEDIA_IMAGES", "mediaLibrary", "nfc-and-media", "Read image files from the shared media store."),
+        runtime("READ_MEDIA_VIDEO", "mediaLibrary", "nfc-and-media", "Read video files from the shared media store."),
+        runtime("READ_MEDIA_AUDIO", "mediaLibrary", "nfc-and-media", "Read audio files from the shared media store."),
+        runtime("READ_MEDIA_VISUAL_USER_SELECTED", "mediaLibrary", "nfc-and-media", "Read the specific photos and videos the user selected, on Android 14 and above."),
 
         // ===== Contacts =====
-        runtime("READ_CONTACTS", "contactsList", "contacts", "Read names, numbers, emails and photos from the address book."),
-        runtime("WRITE_CONTACTS", "contactCreate", "contacts", "Create, change and delete contacts."),
-        runtime("GET_ACCOUNTS", "accountsList", "accounts", "List the accounts registered on the device."),
+        runtime("READ_CONTACTS", "contactsList", "call-log-and-contacts", "Read names, numbers, emails and photos from the address book."),
+        runtime("WRITE_CONTACTS", "contactCreate", "call-log-and-contacts", "Create, change and delete contacts."),
+        runtime("GET_ACCOUNTS", "accountsList", "calendar-and-accounts", "List the accounts registered on the device."),
 
         // ===== Phone =====
         runtime("READ_PHONE_STATE", "phoneState", "phone_state", "Read phone state: network type, SIM state and call status."),
         runtime("CALL_PHONE", "phoneCall", "phone_calls", "Place a call directly from GURU without the user tapping dial."),
-        runtime("READ_CALL_LOG", "callLogRead", "call_log", "Read the call history."),
-        runtime("WRITE_CALL_LOG", "callLogWrite", "call_log", "Write entries into the call history."),
+        runtime("READ_CALL_LOG", "callLogRead", "call-log-and-contacts", "Read the call history."),
+        runtime("WRITE_CALL_LOG", "callLogWrite", "call-log-and-contacts", "Write entries into the call history."),
         runtime("ANSWER_PHONE_CALLS", "answerCall", "call_control", "Answer and end incoming calls."),
         normal("MANAGE_OWN_CALLS", "registerCallAccount", "call_control", "Register GURU as a calling account so it can place calls through its own connection."),
         runtime("READ_PHONE_NUMBERS", "phoneNumbers", "phone_state", "Read the device's own phone number or numbers."),
         privileged("PROCESS_OUTGOING_CALLS", tool = "outgoingCallWatch", skill = "call_control", unlocks = "Observe outgoing calls before they are placed. A CallScreeningService reaches the same result through a role."),
-        runtime("USE_SIP", "sipStatus", "sip_calls", "Place and receive SIP calls."),
+        runtime("USE_SIP", "sipStatus", "phone_calls", "Place and receive SIP calls."),
         runtime("ACCEPT_HANDOVER", "handoverCall", "call_control", "Accept a call handed over from another app."),
 
         // ===== SMS =====
-        runtime("SEND_SMS", "smsSend", "sms", "Send a text message."),
-        runtime("RECEIVE_SMS", "smsWatch", "sms", "Receive incoming text messages."),
-        runtime("READ_SMS", "smsRead", "sms", "Read stored text messages."),
-        runtime("RECEIVE_MMS", null, "sms", "Receive multimedia messages."),
-        privileged("RECEIVE_WAP_PUSH", tool = null, skill = "emergency_alerts", unlocks = "Receive WAP push messages, which carrier alerts use. Not reachable at app UID."),
-        privileged("READ_CELL_BROADCASTS", tool = "cellBroadcasts", skill = "emergency_alerts", unlocks = "Read emergency cell broadcasts. The unprivileged path is the cell broadcast receiver."),
+        runtime("SEND_SMS", "smsSend", null, "Send a text message."),
+        runtime("RECEIVE_SMS", "smsWatch", null, "Receive incoming text messages."),
+        runtime("READ_SMS", "smsRead", null, "Read stored text messages."),
+        runtime("RECEIVE_MMS", null, null, "Receive multimedia messages."),
+        privileged("RECEIVE_WAP_PUSH", tool = null, skill = null, unlocks = "Receive WAP push messages, which carrier alerts use. Not reachable at app UID."),
+        privileged("READ_CELL_BROADCASTS", tool = "cellBroadcasts", skill = null, unlocks = "Read emergency cell broadcasts. The unprivileged path is the cell broadcast receiver."),
 
         // ===== Location =====
-        runtime("ACCESS_FINE_LOCATION", null, "location", "Read precise GPS location."),
-        runtime("ACCESS_COARSE_LOCATION", null, "location", "Read approximate location when precise is denied."),
-        runtime("ACCESS_BACKGROUND_LOCATION", "locationWatch", "location", "Read location while GURU is not in the foreground."),
-        runtime("ACCESS_MEDIA_LOCATION", "photoLocation", "media_library", "Read the GPS coordinates embedded in photos."),
+        runtime("ACCESS_FINE_LOCATION", null, null, "Read precise GPS location."),
+        runtime("ACCESS_COARSE_LOCATION", null, null, "Read approximate location when precise is denied."),
+        runtime("ACCESS_BACKGROUND_LOCATION", "locationWatch", null, "Read location while GURU is not in the foreground."),
+        runtime("ACCESS_MEDIA_LOCATION", "photoLocation", "nfc-and-media", "Read the GPS coordinates embedded in photos."),
 
         // ===== Camera & Microphone =====
-        runtime("CAMERA", null, "camera", "Take photos and record video, and control the torch."),
-        runtime("RECORD_AUDIO", null, "audio_capture", "Record audio from the microphone."),
+        runtime("CAMERA", null, null, "Take photos and record video, and control the torch."),
+        runtime("RECORD_AUDIO", null, null, "Record audio from the microphone."),
 
         // ===== Sensors =====
-        runtime("BODY_SENSORS", "bodySensors", "sensors", "Read heart rate and other body sensors."),
-        runtime("BODY_SENSORS_BACKGROUND", null, "sensors", "Read body sensors while GURU is in the background."),
-        runtime("ACTIVITY_RECOGNITION", "activityRecognition", "sensors", "Tell walking, running, cycling and driving apart."),
-        normal("HIGH_SAMPLING_RATE_SENSORS", "sensorStream", "sensors", "Sample motion sensors above the default rate."),
-        normal("USE_BIOMETRIC", "biometricAuth", "security", "Gate a destructive action behind the fingerprint or face prompt."),
-        normal("USE_FINGERPRINT", null, "security", "The pre-Android-9 spelling of the biometric permission, kept for old devices."),
+        runtime("BODY_SENSORS", "bodySensors", null, "Read heart rate and other body sensors."),
+        runtime("BODY_SENSORS_BACKGROUND", null, null, "Read body sensors while GURU is in the background."),
+        runtime("ACTIVITY_RECOGNITION", "activityRecognition", null, "Tell walking, running, cycling and driving apart."),
+        normal("HIGH_SAMPLING_RATE_SENSORS", "sensorStream", null, "Sample motion sensors above the default rate."),
+        normal("USE_BIOMETRIC", "biometricAuth", null, "Gate a destructive action behind the fingerprint or face prompt."),
+        normal("USE_FINGERPRINT", null, null, "The pre-Android-9 spelling of the biometric permission, kept for old devices."),
 
         // ===== Bluetooth =====
         normal("BLUETOOTH", null, "bluetooth", "The legacy Bluetooth permission used on Android 11 and below."),
@@ -171,84 +171,84 @@ object PermissionRegistry {
         normal(
             "TRANSMIT_IR",
             "irDevices",
-            "smart_home",
+            null,
             "Send infrared pulses through the phone's own emitter, which is how GURU presses a " +
                 "button on a television, an air conditioner or anything else with a remote.",
         ),
 
         // ===== NFC =====
-        normal("NFC", "nfcRead", "nfc", "Use the NFC radio at all."),
-        privileged("NFC_TRANSACTION_EVENT", tool = "nfcTransactions", skill = "nfc", unlocks = "Observe raw NFC transaction events, which the reader API covers without this."),
+        normal("NFC", "nfcRead", "nfc-and-media", "Use the NFC radio at all."),
+        privileged("NFC_TRANSACTION_EVENT", tool = "nfcTransactions", skill = "nfc-and-media", unlocks = "Observe raw NFC transaction events, which the reader API covers without this."),
 
         // ===== UWB =====
-        runtime("UWB_RANGING", "uwbRange", "sensors", "Measure precise distance to an ultra-wideband device."),
+        runtime("UWB_RANGING", "uwbRange", null, "Measure precise distance to an ultra-wideband device."),
 
         // ===== System Settings =====
-        appOp("WRITE_SETTINGS", "settingsWrite", "system_settings", "Change system settings such as brightness, ringtone and timeout."),
-        privileged("WRITE_SECURE_SETTINGS", tool = "secureSettingsWrite", skill = "system_settings", unlocks = "Change secure settings such as location mode and developer options."),
-        appOp("SYSTEM_ALERT_WINDOW", "overlayCreate", "overlays", "Draw a floating window over other apps."),
-        appOp("REQUEST_INSTALL_PACKAGES", null, "apps", "Ask the user to install an APK GURU has downloaded."),
-        normal("REQUEST_DELETE_PACKAGES", null, "apps", "Ask the system to uninstall a package, which shows the standard uninstall dialog."),
-        privileged("INSTALL_PACKAGES", mechanism = GrantMechanism.DEVICE_OWNER, tool = "installApkSilent", skill = "apps", unlocks = "Install an APK with no user interaction, which needs Device Owner or shell UID."),
-        privileged("DELETE_PACKAGES", mechanism = GrantMechanism.DEVICE_OWNER, tool = "uninstallAppSilent", skill = "apps", unlocks = "Uninstall a package with no user interaction, which needs Device Owner or shell UID."),
-        normal("QUERY_ALL_PACKAGES", null, "apps", "See every installed package rather than only the ones Android deems visible."),
-        normal("GET_PACKAGE_SIZE", "appSizes", "apps", "Read how much storage each app uses."),
-        appOp("PACKAGE_USAGE_STATS", "appUsage", "app_usage", "Read app usage history, which is also the unprivileged replacement for seeing running tasks."),
-        privileged("MANAGE_APP_OPS_MODES", tool = "appOps", skill = "permission_management", unlocks = "Read and change app-op modes for any package."),
+        appOp("WRITE_SETTINGS", "settingsWrite", "settings-and-device-control", "Change system settings such as brightness, ringtone and timeout."),
+        privileged("WRITE_SECURE_SETTINGS", tool = "secureSettingsWrite", skill = "settings-and-device-control", unlocks = "Change secure settings such as location mode and developer options."),
+        appOp("SYSTEM_ALERT_WINDOW", "overlayCreate", "settings-and-device-control", "Draw a floating window over other apps."),
+        appOp("REQUEST_INSTALL_PACKAGES", null, "app-management", "Ask the user to install an APK GURU has downloaded."),
+        normal("REQUEST_DELETE_PACKAGES", null, "app-management", "Ask the system to uninstall a package, which shows the standard uninstall dialog."),
+        privileged("INSTALL_PACKAGES", mechanism = GrantMechanism.DEVICE_OWNER, tool = "installApkSilent", skill = "app-management", unlocks = "Install an APK with no user interaction, which needs Device Owner or shell UID."),
+        privileged("DELETE_PACKAGES", mechanism = GrantMechanism.DEVICE_OWNER, tool = "uninstallAppSilent", skill = "app-management", unlocks = "Uninstall a package with no user interaction, which needs Device Owner or shell UID."),
+        normal("QUERY_ALL_PACKAGES", null, "app-management", "See every installed package rather than only the ones Android deems visible."),
+        normal("GET_PACKAGE_SIZE", "appSizes", "app-management", "Read how much storage each app uses."),
+        appOp("PACKAGE_USAGE_STATS", "appUsage", "usage-and-notifications", "Read app usage history, which is also the unprivileged replacement for seeing running tasks."),
+        privileged("MANAGE_APP_OPS_MODES", tool = "appOps", skill = null, unlocks = "Read and change app-op modes for any package."),
 
         // ===== Power & Device =====
-        normal("WAKE_LOCK", "keepAwake", "device_control", "Hold a wake lock so the CPU keeps running while GURU works."),
-        privileged("DEVICE_POWER", tool = "powerControl", skill = "device_power", unlocks = "Reboot, power off and control the display state directly."),
-        privileged("REBOOT", tool = "deviceReboot", skill = "device_power", unlocks = "Reboot the device without a user tap."),
-        privileged("SHUTDOWN", tool = "deviceShutdown", skill = "device_power", unlocks = "Power the device off without a user tap."),
-        privileged("FORCE_STOP_PACKAGES", tool = "forceStopApp", skill = "apps", unlocks = "Stop another app's processes outright."),
-        normal("KILL_BACKGROUND_PROCESSES", "killBackgroundApp", "apps", "Ask the system to kill another app's background processes, which it may refuse."),
-        privileged("SET_PROCESS_LIMIT", tool = "processLimit", skill = "device_power", unlocks = "Set the number of background processes the system keeps."),
-        privileged("SET_TIME", tool = "timeSet", skill = "system_settings", unlocks = "Set the system clock."),
-        privileged("SET_TIME_ZONE", tool = "timeSet", skill = "system_settings", unlocks = "Set the system time zone. The unprivileged AlarmManager path also exists."),
-        privileged("CHANGE_CONFIGURATION", tool = "configurationChange", skill = "system_settings", unlocks = "Change global device configuration such as locale and density."),
-        normal("MODIFY_AUDIO_SETTINGS", "audioRoute", "audio_control", "Change audio routing, volume and mode."),
-        privileged("MASTER_CLEAR", mechanism = GrantMechanism.DEVICE_OWNER, tool = "factoryReset", skill = "device_power", unlocks = "Factory reset the device, which is a destructive Device Owner operation."),
+        normal("WAKE_LOCK", "keepAwake", "settings-and-device-control", "Hold a wake lock so the CPU keeps running while GURU works."),
+        privileged("DEVICE_POWER", tool = "powerControl", skill = "battery-and-power", unlocks = "Reboot, power off and control the display state directly."),
+        privileged("REBOOT", tool = "deviceReboot", skill = "battery-and-power", unlocks = "Reboot the device without a user tap."),
+        privileged("SHUTDOWN", tool = "deviceShutdown", skill = "battery-and-power", unlocks = "Power the device off without a user tap."),
+        privileged("FORCE_STOP_PACKAGES", tool = "forceStopApp", skill = "app-management", unlocks = "Stop another app's processes outright."),
+        normal("KILL_BACKGROUND_PROCESSES", "killBackgroundApp", "app-management", "Ask the system to kill another app's background processes, which it may refuse."),
+        privileged("SET_PROCESS_LIMIT", tool = "processLimit", skill = "battery-and-power", unlocks = "Set the number of background processes the system keeps."),
+        privileged("SET_TIME", tool = "timeSet", skill = "settings-and-device-control", unlocks = "Set the system clock."),
+        privileged("SET_TIME_ZONE", tool = "timeSet", skill = "settings-and-device-control", unlocks = "Set the system time zone. The unprivileged AlarmManager path also exists."),
+        privileged("CHANGE_CONFIGURATION", tool = "configurationChange", skill = "settings-and-device-control", unlocks = "Change global device configuration such as locale and density."),
+        normal("MODIFY_AUDIO_SETTINGS", "audioRoute", null, "Change audio routing, volume and mode."),
+        privileged("MASTER_CLEAR", mechanism = GrantMechanism.DEVICE_OWNER, tool = "factoryReset", skill = "battery-and-power", unlocks = "Factory reset the device, which is a destructive Device Owner operation."),
         privileged("MOUNT_UNMOUNT_FILESYSTEMS", tool = null, skill = "storage", unlocks = "Mount and unmount filesystems, which needs system UID."),
         privileged("MOUNT_FORMAT_FILESYSTEMS", tool = null, skill = "storage", unlocks = "Format filesystems, which needs system UID."),
 
         // ===== Display =====
-        privileged("SET_WALLPAPER", tool = "setWallpaper", skill = "device_control", unlocks = "Set the wallpaper. WallpaperManager does this with no permission at all."),
-        normal("SET_WALLPAPER_HINTS", null, "wallpaper", "Set the wallpaper dimensions hint."),
-        normal("EXPAND_STATUS_BAR", "expandStatusBar", "device_control", "Open and close the notification shade, which needs no privilege."),
+        privileged("SET_WALLPAPER", tool = "setWallpaper", skill = "settings-and-device-control", unlocks = "Set the wallpaper. WallpaperManager does this with no permission at all."),
+        normal("SET_WALLPAPER_HINTS", null, null, "Set the wallpaper dimensions hint."),
+        normal("EXPAND_STATUS_BAR", "expandStatusBar", "settings-and-device-control", "Open and close the notification shade, which needs no privilege."),
         appOp("MEDIA_PROJECTION", null, "screen_capture", "Capture the screen. The grant is the user's consent dialog, backed by a foreground service."),
 
         // ===== Input =====
         privileged("INJECT_EVENTS", tool = "injectInput", skill = "ui_automation", unlocks = "Inject taps and keystrokes with no accessibility service, which needs shell UID."),
 
         // ===== App Management =====
-        privileged("GET_TASKS", tool = "runningTasks", skill = "app_usage", unlocks = "List running tasks. UsageStatsManager is the unprivileged replacement."),
-        normal("REORDER_TASKS", "reorderTasks", "app_usage", "Bring a task to the front."),
-        privileged("REAL_GET_TASKS", tool = "runningTasks", skill = "app_usage", unlocks = "The unrestricted form of task listing, which needs system UID."),
-        privileged("START_ANY_ACTIVITY", tool = "startAnyActivity", skill = "apps", unlocks = "Start any activity in any app without that app's cooperation."),
-        privileged("START_ACTIVITIES_FROM_BACKGROUND", tool = "launchFromBackground", skill = "apps", unlocks = "Start an activity while GURU is in the background, which Android blocks by default."),
-        privileged("INTERACT_ACROSS_USERS", tool = "multiUserAccess", skill = "system_introspection", unlocks = "Act in another user profile."),
-        privileged("INTERACT_ACROSS_USERS_FULL", tool = "multiUserAccess", skill = "system_introspection", unlocks = "The unrestricted form of cross-profile interaction, which needs system UID."),
-        privileged("MANAGE_USERS", mechanism = GrantMechanism.DEVICE_OWNER, tool = "userManage", skill = "system_introspection", unlocks = "Create, remove and configure user profiles."),
-        privileged("CREATE_USERS", mechanism = GrantMechanism.DEVICE_OWNER, tool = "userManage", skill = "system_introspection", unlocks = "Create a new user profile."),
-        privileged("CLEAR_APP_CACHE", tool = "clearAppCache", skill = "apps", unlocks = "Clear another app's cache, which is otherwise that app's own business."),
+        privileged("GET_TASKS", tool = "runningTasks", skill = "usage-and-notifications", unlocks = "List running tasks. UsageStatsManager is the unprivileged replacement."),
+        normal("REORDER_TASKS", "reorderTasks", "usage-and-notifications", "Bring a task to the front."),
+        privileged("REAL_GET_TASKS", tool = "runningTasks", skill = "usage-and-notifications", unlocks = "The unrestricted form of task listing, which needs system UID."),
+        privileged("START_ANY_ACTIVITY", tool = "startAnyActivity", skill = "app-management", unlocks = "Start any activity in any app without that app's cooperation."),
+        privileged("START_ACTIVITIES_FROM_BACKGROUND", tool = "launchFromBackground", skill = "app-management", unlocks = "Start an activity while GURU is in the background, which Android blocks by default."),
+        privileged("INTERACT_ACROSS_USERS", tool = "multiUserAccess", skill = null, unlocks = "Act in another user profile."),
+        privileged("INTERACT_ACROSS_USERS_FULL", tool = "multiUserAccess", skill = null, unlocks = "The unrestricted form of cross-profile interaction, which needs system UID."),
+        privileged("MANAGE_USERS", mechanism = GrantMechanism.DEVICE_OWNER, tool = "userManage", skill = null, unlocks = "Create, remove and configure user profiles."),
+        privileged("CREATE_USERS", mechanism = GrantMechanism.DEVICE_OWNER, tool = "userManage", skill = null, unlocks = "Create a new user profile."),
+        privileged("CLEAR_APP_CACHE", tool = "clearAppCache", skill = "app-management", unlocks = "Clear another app's cache, which is otherwise that app's own business."),
 
         // ===== Accounts & Authentication =====
-        privileged("AUTHENTICATE_ACCOUNTS", tool = "accountAuthenticate", skill = "accounts", unlocks = "Act as an account authenticator, which AccountManager covers without this."),
-        privileged("MANAGE_ACCOUNTS", tool = "accountsManage", skill = "accounts", unlocks = "Add and remove accounts on the device."),
-        privileged("USE_CREDENTIALS", tool = "accountToken", skill = "accounts", unlocks = "Request an auth token for an account."),
+        privileged("AUTHENTICATE_ACCOUNTS", tool = "accountAuthenticate", skill = "calendar-and-accounts", unlocks = "Act as an account authenticator, which AccountManager covers without this."),
+        privileged("MANAGE_ACCOUNTS", tool = "accountsManage", skill = "calendar-and-accounts", unlocks = "Add and remove accounts on the device."),
+        privileged("USE_CREDENTIALS", tool = "accountToken", skill = "calendar-and-accounts", unlocks = "Request an auth token for an account."),
 
         // ===== Logs & Diagnostics =====
         privileged("READ_LOGS", tool = "readLogs", skill = "diagnostics", unlocks = "Read the system log, which has been restricted to privileged callers since Jelly Bean."),
-        privileged("DUMP", tool = "systemDump", skill = "system_introspection", unlocks = "Run dumpsys and read the system's own service state. This is the fix for pmDump's false success in issue 44."),
+        privileged("DUMP", tool = "systemDump", skill = null, unlocks = "Run dumpsys and read the system's own service state. This is the fix for pmDump's false success in issue 44."),
         privileged("DIAGNOSTIC", mechanism = GrantMechanism.DEVICE_OWNER, tool = "diagnosticMode", skill = "diagnostics", unlocks = "Run vendor diagnostics, which is Device Owner only."),
-        privileged("BATTERY_STATS", tool = "batteryDetail", skill = "device_power", unlocks = "Read detailed battery statistics. BatteryManager covers the common cases without it."),
+        privileged("BATTERY_STATS", tool = "batteryDetail", skill = "battery-and-power", unlocks = "Read detailed battery statistics. BatteryManager covers the common cases without it."),
         privileged("READ_PRECISE_PHONE_STATE", tool = "precisePhoneState", skill = "phone_state", unlocks = "Read precise radio state such as signal strength in dBm per SIM."),
 
         // ===== VPN & Network =====
-        privileged("CONTROL_VPN", tool = "vpnControl", skill = "network", unlocks = "Control the device's VPN connections."),
-        privileged("MANAGE_IPSEC_TUNNELS", tool = "ipsecTunnels", skill = "network", unlocks = "Create and manage IPsec tunnels."),
-        privileged("CAPTURE_AUDIO_OUTPUT", tool = "captureOutput", skill = "audio_capture", unlocks = "Capture audio played by other apps."),
+        privileged("CONTROL_VPN", tool = "vpnControl", skill = "network-and-wifi", unlocks = "Control the device's VPN connections."),
+        privileged("MANAGE_IPSEC_TUNNELS", tool = "ipsecTunnels", skill = "network-and-wifi", unlocks = "Create and manage IPsec tunnels."),
+        privileged("CAPTURE_AUDIO_OUTPUT", tool = "captureOutput", skill = null, unlocks = "Capture audio played by other apps."),
         privileged("CAPTURE_SECURE_VIDEO_OUTPUT", tool = "captureSecureOutput", skill = "screen_capture", unlocks = "Capture video that is marked secure, such as DRM playback."),
         privileged("CAPTURE_VIDEO_OUTPUT", tool = "captureVideoOutput", skill = "screen_capture", unlocks = "Capture other apps' video output directly."),
 
@@ -275,28 +275,28 @@ object PermissionRegistry {
         guard("BIND_DEVICE_ADMIN", skill = "device_admin", unlocks = "Makes GURU's device admin receiver bindable by nobody but the system. The Device Owner path in #172 depends on it."),
 
         // ===== Input Method =====
-        guard("BIND_INPUT_METHOD", skill = "keyboard", unlocks = "Makes GURU's keyboard bindable by nobody but the system."),
+        guard("BIND_INPUT_METHOD", skill = null, unlocks = "Makes GURU's keyboard bindable by nobody but the system."),
 
         // ===== Text Service =====
-        guard("BIND_TEXT_SERVICE", skill = "text_actions", unlocks = "Makes GURU's text action service bindable by nobody but the system."),
+        guard("BIND_TEXT_SERVICE", skill = null, unlocks = "Makes GURU's text action service bindable by nobody but the system."),
 
         // ===== Wallpaper =====
-        guard("BIND_WALLPAPER", skill = "wallpaper", unlocks = "Makes GURU's live wallpaper bindable by nobody but the system."),
+        guard("BIND_WALLPAPER", skill = null, unlocks = "Makes GURU's live wallpaper bindable by nobody but the system."),
 
         // ===== Notification =====
         appOp("ACCESS_NOTIFICATION_POLICY", "dndControl", "notifications", "Change do-not-disturb state and notification policy, which is the 'I am going to bed' capability."),
 
         // ===== Dream =====
-        guard("BIND_DREAM_SERVICE", skill = "wallpaper", unlocks = "Makes GURU's screensaver bindable by nobody but the system."),
+        guard("BIND_DREAM_SERVICE", skill = null, unlocks = "Makes GURU's screensaver bindable by nobody but the system."),
 
         // ===== Print =====
-        guard("BIND_PRINT_SERVICE", skill = "printing", unlocks = "Makes GURU's print service bindable by nobody but the system."),
+        guard("BIND_PRINT_SERVICE", skill = null, unlocks = "Makes GURU's print service bindable by nobody but the system."),
 
         // ===== Quick Settings =====
         guard("BIND_QUICK_SETTINGS_TILE", skill = "quick_tiles", unlocks = "Makes GURU's quick settings tile bindable by nobody but the system."),
 
         // ===== Voice Interaction =====
-        guard("BIND_VOICE_INTERACTION", skill = "assistant_role", unlocks = "Makes GURU's voice interaction service bindable by nobody but the system."),
+        guard("BIND_VOICE_INTERACTION", skill = null, unlocks = "Makes GURU's voice interaction service bindable by nobody but the system."),
 
         // ===== Remote =====
         guard("BIND_TV_INPUT", unlocks = "Makes a TV input service private to GURU. GURU is not a TV input, so this declaration buys nothing."),
@@ -314,7 +314,7 @@ object PermissionRegistry {
         guard("BIND_SCREENING_SERVICE", skill = "call_control", unlocks = "Makes GURU's call screening service bindable by nobody but the system."),
 
         // ===== Autofill =====
-        guard("BIND_AUTOFILL_SERVICE", skill = "autofill", unlocks = "Makes GURU's autofill service bindable by nobody but the system."),
+        guard("BIND_AUTOFILL_SERVICE", skill = null, unlocks = "Makes GURU's autofill service bindable by nobody but the system."),
 
         // ===== VR =====
         guard("BIND_VR_LISTENER_SERVICE", unlocks = "Makes GURU's VR listener bindable by nobody but the system. GURU has no VR feature."),
@@ -338,10 +338,10 @@ object PermissionRegistry {
         guard("BIND_CONTENT_CAPTURE_SERVICE", skill = "ui_automation", unlocks = "Makes GURU's content capture service bindable by nobody but the system."),
 
         // ===== Augmented Reality =====
-        guard("BIND_AUGMENTED_AUTOFILL_SERVICE", skill = "autofill", unlocks = "Makes GURU's augmented autofill service bindable by nobody but the system."),
+        guard("BIND_AUGMENTED_AUTOFILL_SERVICE", skill = null, unlocks = "Makes GURU's augmented autofill service bindable by nobody but the system."),
 
         // ===== App Predictions =====
-        guard("BIND_APP_PREDICTION_SERVICE", skill = "apps", unlocks = "Makes GURU's app prediction service bindable by nobody but the system."),
+        guard("BIND_APP_PREDICTION_SERVICE", skill = "app-management", unlocks = "Makes GURU's app prediction service bindable by nobody but the system."),
 
         // ===== Time Zone =====
         guard("BIND_TIME_ZONE_DETECTOR_SERVICE", unlocks = "Makes GURU's time zone detector bindable by nobody but the system."),
@@ -350,13 +350,13 @@ object PermissionRegistry {
         guard("BIND_CROSS_PROFILE_APPS_SERVICE", unlocks = "Makes GURU's cross-profile apps service bindable by nobody but the system."),
 
         // ===== Credential Provider =====
-        guard("BIND_CREDENTIAL_PROVIDER_SERVICE", skill = "autofill", unlocks = "Makes GURU's credential provider bindable by nobody but the system."),
+        guard("BIND_CREDENTIAL_PROVIDER_SERVICE", skill = null, unlocks = "Makes GURU's credential provider bindable by nobody but the system."),
 
         // ===== Device Lock =====
         guard("BIND_DEVICE_LOCK_SERVICE", unlocks = "Makes GURU's device lock service bindable by nobody but the system."),
 
         // ===== Health =====
-        guard("BIND_HEALTH_CONNECT_SERVICE", skill = "health", unlocks = "Makes GURU's Health Connect service bindable by nobody but the system."),
+        guard("BIND_HEALTH_CONNECT_SERVICE", skill = null, unlocks = "Makes GURU's Health Connect service bindable by nobody but the system."),
 
         // ===== Tile Service =====
         guard("BIND_TILE_SERVICE", skill = "quick_tiles", unlocks = "Makes GURU's tile service bindable by nobody but the system."),

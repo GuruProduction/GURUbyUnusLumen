@@ -68,12 +68,30 @@ class PermissionSkillHonestyTest {
             ?.toSet()
             .orEmpty()
 
-    /** Every skill name the registry mentions. */
-    private fun namedSkills(): Set<String> =
-        Regex("""skill\s*=\s*"([a-z_]+)"""")
-            .findAll(registrySource().readText())
+    /**
+     * Every skill name the registry mentions, in both of the shapes the helpers accept.
+     *
+     * THE HELPERS TAKE THE SKILL TWO WAYS. `guard` and `privileged` take it by name
+     * (`skill = "..."`), while `normal`, `runtime` and `appOp` take it positionally as the third
+     * argument. A parser that reads only the named form reports most of the registry's links as
+     * missing, which is the mistake this test made on its first run.
+     */
+    private fun namedSkills(): Set<String> {
+        val text = registrySource().readText()
+
+        val byName = Regex("""skill\s*=\s*"([a-z0-9_-]+)"""")
+            .findAll(text)
             .map { it.groupValues[1] }
-            .toSet()
+
+        // helper("NAME", tool, skill, "unlocks") — the third argument, when it is not null.
+        val positional = Regex(
+            """(?:normal|runtime|appOp)\(\s*"[A-Z_.]+",\s*(?:null|"[^"]*"),\s*(?:null|"([a-z0-9_-]+)")""",
+        )
+            .findAll(text)
+            .mapNotNull { it.groupValues[1].takeIf { name -> name.isNotEmpty() } }
+
+        return (byName + positional).toSet()
+    }
 
     @Test
     fun theSkillsDirectoryWasFound() {
@@ -87,55 +105,43 @@ class PermissionSkillHonestyTest {
      * A name that does not resolve is a claim that something is there when it is not.
      */
     /**
-     * The exact set of permission entries whose named skill does not exist.
+     * THE CORE ASSERTION. A permission may name no skill, but never one that is absent.
      *
-     * ASSERTED AS A SET RATHER THAN AS AN EMPTY LIST, and that is the honest state of the work
-     * right now. Twenty of the registry's thirty-one skill names point at files that were never
-     * written, and fixing them means a careful read of the whole registry rather than a bulk
-     * rename: the helpers take the skill positionally in some lines and by name in others, and a
-     * blind replace breaks the file. An earlier attempt did exactly that and had to be reverted.
-     *
-     * So the defect is recorded here as a number that cannot grow. When a name is fixed, or a
-     * skill is written to match one, this list shrinks and the test has to be updated, which is a
-     * decision somebody made. A new name appearing is the same class of fault returning.
+     * A null skill is an honest statement that the capability has no written instructions yet.
+     * A name that does not resolve is a claim that something is there when it is not, and a model
+     * told to read it either invents a procedure or reports the app as broken.
      */
     @Test
-    fun theKnownUnwrittenSkillNamesArePinnedAndCannotGrow() {
+    fun everySkillAPermissionNamesExists() {
         val existing = existingSkills()
-        val missing = (namedSkills() - existing).sorted()
+        val named = namedSkills()
+        val missing = (named - existing).sorted()
 
-        println("unwritten skill names (${missing.size}): $missing")
-        assertEquals(
-            "the set of permissions naming a skill that does not exist changed. Shrinking it is " +
-                "progress and this list should be updated deliberately. Growing it means a claim " +
-                "with no mechanism behind it has been added: $missing",
-            listOf(
-                "accounts", "alarms", "app_usage", "apps", "assistant_role", "audio_capture",
-                "autofill", "device_control", "device_power", "emergency_alerts", "health",
-                "keyboard", "network", "nfc", "permission_management", "printing",
-                "system_introspection", "system_settings", "text_actions", "wallpaper",
-            ),
-            missing,
+        println("named skills ${named.size}, existing ${existing.size}, missing $missing")
+        assertTrue(
+            "these permissions name a skill that does not exist, so a model told to read it " +
+                "would find nothing: $missing",
+            missing.isEmpty(),
         )
     }
 
     /**
-     * Every skill that DOES exist and is named by a permission must stay named.
+     * The reverse direction, so the test above cannot be satisfied by naming nothing at all.
      *
-     * The reverse direction, so a future sweep cannot satisfy the test above by renaming
-     * everything to null and losing the connection between a capability and its instructions.
+     * These are skills that genuinely teach a capability this build has, so their link from the
+     * registry has to survive any future sweep.
      */
     @Test
     fun theSkillsThatExistAndAreNamedStayNamed() {
-        val existing = existingSkills()
         val named = namedSkills()
-        val namedAndReal = (named intersect existing).sorted()
-
-        println("permissions naming a real skill: $namedAndReal")
-        assertTrue(
-            "nothing names a real skill any more, which means the registry lost its links to " +
-                "the instructions: $namedAndReal",
-            namedAndReal.isNotEmpty(),
+        val expected = listOf(
+            "app-management", "battery-and-power", "bluetooth", "calendar-and-accounts",
+            "call-log-and-contacts", "device_admin", "diagnostics", "network-and-wifi",
+            "nfc-and-media", "notifications", "phone_calls", "phone_state", "quick_tiles",
+            "screen_capture", "settings-and-device-control", "storage", "ui_automation",
+            "usage-and-notifications",
         )
+        val lost = expected.filter { it !in named }
+        assertTrue("these skills exist but nothing names them: $lost", lost.isEmpty())
     }
 }
