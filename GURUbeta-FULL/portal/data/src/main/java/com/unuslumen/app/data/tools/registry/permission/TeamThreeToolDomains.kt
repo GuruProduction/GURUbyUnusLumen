@@ -21,6 +21,7 @@ import com.unuslumen.app.data.tools.permission.DevicePowerIntrospectDomainModule
 import com.unuslumen.app.data.tools.notification.NotificationDomainModule
 import com.unuslumen.app.data.tools.permission.NetworkWifiDomainModule
 import com.unuslumen.app.data.tools.permission.NfcMediaDomainModule
+import com.unuslumen.app.data.tools.permission.AccountCredentialsDomainModule
 import com.unuslumen.app.data.tools.permission.PermissionDomainModule
 import com.unuslumen.app.data.tools.permission.SettingsControlDomainModule
 import com.unuslumen.app.data.tools.phone.PhoneDomainModule
@@ -137,6 +138,10 @@ object TeamThreeToolDomains {
         // domain existed nothing a model could call reached either of them, so GURU could not
         // answer "why can't you read my texts" with anything but a refusal from whichever tool
         // happened to fail.
+        // Auth tokens on the modern path (#70, #71). getAuthToken needs no permission at all,
+        // because USE_CREDENTIALS and AUTHENTICATE_ACCOUNTS were deprecated in API 23 and 22,
+        // so the tools need no Shizuku and never return the token itself.
+        AccountCredentialsDomainModule,
         PermissionDomainModule,
         // Input injection (#140): the fallback that drives a screen when accessibility is
         // switched off. It reaches the input dispatcher at shell UID, so it needs no

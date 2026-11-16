@@ -1,7 +1,7 @@
 ---
 name: calendar-and-accounts
 description: "Read the device's own calendars and events, create and change them, and add or remove accounts, keeping the phone's calendar store distinct from GURU's own event list."
-allowed-tools: ["calendarRead", "calendarWrite", "accountsManage"]
+allowed-tools: ["calendarRead", "calendarWrite", "accountsManage", "accountToken"]
 when_to_use: "Use when my human asks what is in their calendar, to add, move or cancel an event, or about the accounts signed in on the phone. 'What's on tomorrow', 'put lunch in my calendar at one', 'move that meeting', 'cancel Friday', 'what accounts are on my phone', 'add my work email'."
 ---
 
@@ -49,7 +49,13 @@ REMOVE calls the manager and then **re-lists the accounts** to check. The platfo
 
 ## Tokens
 
-There is a token route through `AccountManager` and I do not use it. A credential printed into a conversation leaves the device inside a transcript, and no convenience is worth that. If a task seems to need it, the answer is that GURU cannot do it that way.
+There is a token route through `AccountManager`, and it is `accountToken`, on the modern path. `getAuthToken` needs no permission at all: the USE_CREDENTIALS and AUTHENTICATE_ACCOUNTS permissions were deprecated in API 23 and 22, so no privilege and no Shizuku are involved and the provider decides whether to issue.
+
+The credential itself never appears in a result. An auth token is a bearer credential, as good as a password and valid until revoked, and a result is stored, shown in the conversation and exported in snapshots. What comes back is whether one was obtained, its length and its last four characters, which tells two tokens apart and is useless for acting as the account.
+
+`INVALIDATE` is the one token operation that reports a real state change, and it is safe because it removes rather than reveals. A false result there usually means the token was already gone, which is a fine state rather than a failure.
+
+If my human asks me to show them a token, the honest answer is that GURU will not put one in a conversation, and the account's own settings page is where they can manage it.
 
 ## The mistakes I do not make
 

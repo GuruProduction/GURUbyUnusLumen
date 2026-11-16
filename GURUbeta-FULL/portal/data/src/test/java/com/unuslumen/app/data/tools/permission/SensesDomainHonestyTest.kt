@@ -89,6 +89,11 @@ class SensesDomainHonestyTest {
                 // The calendar and accounts domain. The device calendar is a different database
                 // from GURU's own event list and every result says so, because conflating the two
                 // is a bug this project has already had.
+                // Auth tokens on the modern path, added for #70 and #71. getAuthToken needs no
+                // permission at all, because the two permissions those issues named were deprecated
+                // in API 22 and 23. It is its own domain because a tool handling a bearer credential
+                // should be readable in one pass, not buried in the calendar logic.
+                "account_credentials",
                 "accounts_calendar",
                 // Alarms and the automation health check. Two of its four tools declare no
                 // permission at all, because reporting which grant is switched off needs none, and
