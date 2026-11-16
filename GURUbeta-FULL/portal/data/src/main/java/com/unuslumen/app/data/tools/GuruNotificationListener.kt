@@ -269,7 +269,10 @@ class GuruNotificationListener : NotificationListenerService() {
      * success from the call returning would be a lie about the person's screen.
      */
     fun dismissByKey(key: String): Boolean = runCatching {
-        dismissNotification(key)
+        // The platform method is cancelNotification even though the behaviour is a dismiss.
+        // There is no dismissNotification on NotificationListenerService, which is the name
+        // this was first written with and the reason the build caught it.
+        cancelNotification(key)
         true
     }.getOrDefault(false)
 
