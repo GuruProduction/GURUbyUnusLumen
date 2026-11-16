@@ -17,6 +17,7 @@ import com.unuslumen.app.data.tools.permission.AppUsageNotifyDomainModule
 import com.unuslumen.app.data.tools.permission.AppsManagementDomainModule
 import com.unuslumen.app.data.tools.permission.CallLogContactsDomainModule
 import com.unuslumen.app.data.tools.permission.DevicePowerIntrospectDomainModule
+import com.unuslumen.app.data.tools.notification.NotificationDomainModule
 import com.unuslumen.app.data.tools.permission.NetworkWifiDomainModule
 import com.unuslumen.app.data.tools.permission.NfcMediaDomainModule
 import com.unuslumen.app.data.tools.permission.PermissionDomainModule
@@ -118,6 +119,13 @@ object TeamThreeToolDomains {
         // the partial-access subtlety, where Android may grant only the selected photos and a
         // naive count reports a small library that is not small.
         NfcMediaDomainModule,
+        // The live notification domain (#152). The listener service was registered, bound and
+        // declared, and its callback wrote one log line, so nothing ever read what arrived and
+        // the four shade tools answer a different question: what is still on screen, not what
+        // came through. These four read the stream, wait for the next arrival, dismiss by key
+        // and press a button, and every result states whether the listener is bound so an empty
+        // list is never mistaken for a refused read.
+        NotificationDomainModule,
         // The permissions domain, which was the missing piece of the permission batch. The
         // catalogue holds 104 specs and the orchestrator knows every route, and until this
         // domain existed nothing a model could call reached either of them, so GURU could not

@@ -312,7 +312,13 @@ class GrantCheckTest {
         // REQUEST_DELETE_PACKAGES for apps_management. Two of those are protectionLevel=normal
         // and belong here anyway, because a tool that needs a permission must be able to name
         // it in a refusal and the dispatcher builds refusals from this catalogue.
-        assertEquals("catalogue size", 103, TeamThreePermissions.all.size)
+        // 104 now, with NOTIFICATION_ACCESS for #152. The listener's grant is recorded in
+        // Settings.Secure rather than in the app's permission set, so its permission string is
+        // the BIND_ guard the service declares, and the entry exists so the refusal a
+        // notification tool returns is built here with every other refusal rather than
+        // invented at the call site. No tool declares it: the dispatcher would read it as
+        // missing on every phone, including one where the listener is enabled and running.
+        assertEquals("catalogue size", 104, TeamThreePermissions.all.size)
         expected.forEach {
             assertNotNull("missing from catalogue: $it", TeamThreePermissions.forPermission(it))
         }
