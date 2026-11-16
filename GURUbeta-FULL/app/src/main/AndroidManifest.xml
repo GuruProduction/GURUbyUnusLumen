@@ -475,7 +475,73 @@
             </intent-filter>
         </activity>
 
-        <!-- The Add task tile in the quick settings -->
+        <!-- ===== Quick settings tiles (#154) =====
+
+             Four tiles, each its own component because Android identifies a tile by its
+             component name and nothing else. All four extend GuruTileServiceBase, so the
+             rule that decides what each one says lives in one tested place rather than in
+             four copies.
+
+             `AddTask` MOVED. It used to be com.unuslumen.app.presentation.AddTaskTileService
+             in the tasks module. A tile the person had already added to their shade is
+             addressed by component name, so renaming one silently removes it from their
+             shade. That class is left in place below as a forwarding entry so an existing
+             tile keeps working rather than vanishing on upgrade.
+
+             `TOGGLEABLE` is on the switch tiles so the platform draws them as switches
+             rather than as buttons, which is what they are. -->
+        <service
+            android:name="com.unuslumen.app.guru.tiles.TalkTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_send_message"
+            android:label="@string/tile_talk"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <service
+            android:name="com.unuslumen.app.guru.tiles.ListenTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_guru_orb"
+            android:label="@string/tile_listen"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.TOGGLEABLE_TILE"
+                android:value="true" />
+        </service>
+
+        <service
+            android:name="com.unuslumen.app.guru.tiles.StopTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_stop"
+            android:label="@string/tile_stop"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.TOGGLEABLE_TILE"
+                android:value="true" />
+        </service>
+
+        <service
+            android:name="com.unuslumen.app.guru.tiles.AddTaskTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_check"
+            android:label="@string/add_task_to_guru"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- The original add-task tile component, kept so a tile already in a person's
+             shade does not disappear on upgrade. It forwards to the same behaviour. -->
         <service
             android:name="com.unuslumen.app.presentation.AddTaskTileService"
             android:exported="true"

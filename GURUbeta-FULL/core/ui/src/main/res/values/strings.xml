@@ -27,6 +27,14 @@
     <string name="calendar">Calendar</string>
     <string name="add_task">Add task</string>
     <string name="add_task_to_guru">Add task to guru</string>
+
+    <!-- Quick settings tiles (#154). The label is what the person reads in the shade, so
+         each one names the action rather than the app: "Talk to GURU" says what a tap does,
+         and "GURU" alone would not. These are the default labels; a tile redraws its own
+         label from its live state when the shade opens. -->
+    <string name="tile_talk">Talk to GURU</string>
+    <string name="tile_listen">Float GURU</string>
+    <string name="tile_stop">Stop GURU</string>
     <string name="search">Search</string>
     <string name="title">Title</string>
     <string name="delete_sub_task">Delete sub task</string>
