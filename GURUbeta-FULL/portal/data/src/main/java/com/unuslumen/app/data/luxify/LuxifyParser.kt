@@ -112,12 +112,29 @@ object LuxifyParser {
         return trimmed
     }
 
+    /**
+     * A list field, in either of the two shapes a SKILL.md actually uses.
+     *
+     * THE DEFECT THIS FIXES. Both forms appear in the bundled skills: a bare comma list such as
+     * `Read, Edit` and a JSON-style array such as `["Read", "Edit"]`. The old code split on
+     * commas and stripped quotes but never removed the square brackets, so every tool in the
+     * JSON form came back as `["Read"` and `"Edit"]`. Nothing downstream matched those, which
+     * means the allowed-tools list of every skill written in that form was silently inert: it
+     * looked like a restriction and restricted nothing.
+     *
+     * The brackets are removed first, then the commas are split, then each entry is trimmed and
+     * unquoted. That handles both forms with one path rather than two that can disagree.
+     */
     private fun parseListField(value: String?): List<String> {
         if (value.isNullOrBlank()) return emptyList()
-        return value.split(",")
+
+        val withoutBrackets = value.trim().removePrefix("[").removeSuffix("]")
+
+        return withoutBrackets.split(",")
             .map { it.trim() }
             .filter { it.isNotEmpty() }
-            .map { stripQuotes(it) }
+            .map { stripQuotes(it).trim() }
+            .filter { it.isNotEmpty() }
     }
 
     fun toSkillMarkdown(skill: LuxifySkill): String {
