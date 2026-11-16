@@ -11,6 +11,7 @@ import com.unuslumen.app.data.fabric.net.NetworkDomainModule
 import com.unuslumen.app.data.fabric.smart.SmartHomeDomainModule
 import com.unuslumen.app.data.fabric.tv.TvDomainModule
 import com.unuslumen.app.data.tools.backup.BrainBackupDomainModule
+import com.unuslumen.app.data.tools.diagnostics.DiagnosticsDomainModule
 import com.unuslumen.app.data.tools.permission.AccountsCalendarDomainModule
 import com.unuslumen.app.data.tools.permission.AlarmsMiscDomainModule
 import com.unuslumen.app.data.tools.permission.AppUsageNotifyDomainModule
@@ -96,6 +97,10 @@ object TeamThreeToolDomains {
         // operation GURU can reach. Four of the five are privileged, so the domain's rule is
         // that an absent privilege reports what IS observable rather than an empty result.
         DevicePowerIntrospectDomainModule,
+        // Vendor diagnostics and factory test (#134, #131). Both are vendor-only capabilities a
+        // retail phone does not carry, so this domain's whole job is reporting absence as a fact
+        // about the device rather than as a failure the person could fix.
+        DiagnosticsDomainModule,
         // The smart home fabric's five generic tools (#182) and the IR transport's
         // three (#187. Both live here because the fabric was merged but never
         // named, so its tools did not exist in the running app at all: that is why a

@@ -120,6 +120,11 @@ class SensesDomainHonestyTest {
                 // the five need a privilege this build lacks, so the domain reports what IS
                 // observable rather than returning an empty result that reads as a measurement.
                 "device_power_introspect",
+                // Vendor diagnostics and factory test, added for #134 and #131. Both are
+                // vendor-only capabilities a retail phone does not carry, so the domain exists to
+                // say the device does not have it rather than to report a failure somebody could
+                // try to fix.
+                "diagnostics",
                 // Input injection, added for #140. It sends taps, swipes, text and keys to the
                 // input dispatcher at shell UID, so it needs no accessibility grant at all. That
                 // is the whole point of it: the fallback for a person who will not switch the
