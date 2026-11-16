@@ -6,176 +6,195 @@ package com.unuslumen.app.data.tools
 import android.content.Context
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
-import com.unuslumen.app.util.shell.ShellExecutor
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import com.unuslumen.app.data.tools.screen.ScreenCaptureEngine
 import kotlinx.serialization.json.Json
 import java.io.File
 
+/**
+ * The screen tools: a picture of the display and a recording of it.
+ *
+ * WHAT WAS WRONG (issues 41 and 43). `takeScreenshot` shelled out to `screencap`, which
+ * needs root or shell UID, so on every ordinary install it failed with an error that named
+ * root and ADB as though those were the intended mechanisms. Neither was needed:
+ * MediaProjection is what the platform offers to any app the person consents for, and it
+ * was already working in this same app through `captureScreen`.
+ *
+ * `recordScreen` shelled out to `screenrecord` with the same root problem, and it also
+ * reported `success = true` on a zero-byte file because its guard was `file.exists()`.
+ *
+ * Both now go through ScreenCaptureEngine, which is the one place that owns the projection,
+ * the frame grab and the encoder. There is no shell path left in either tool. A shell
+ * fallback here would be worse than useless: it would still fail on the phones that matter
+ * and it would make a working mechanism look like it needed a privileged one.
+ */
 class ScreenToolExecutor(
-    private val context: Context
+    private val context: Context,
 ) : ToolExecutor {
 
-    private val json = Json { ignoreUnknownKeys = true }
-    private val shellExecutor = ShellExecutor(context)
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
-    override suspend fun execute(toolName: String, args: Map<String, Any?>): ToolExecutionResult {
-        return when (toolName) {
-            ScreenToolDefinitions.TAKE_SCREENSHOT -> captureScreen()
-            ScreenToolDefinitions.RECORD_SCREEN -> screenRecord(args)
+    override suspend fun execute(toolName: String, args: Map<String, Any?>): ToolExecutionResult =
+        when (toolName) {
+            ScreenToolDefinitions.TAKE_SCREENSHOT -> takeScreenshot(args)
+            ScreenToolDefinitions.RECORD_SCREEN -> recordScreen(args)
             else -> ToolExecutionResult.error("Unknown tool: $toolName")
         }
-    }
 
-    private suspend fun captureScreen(): ToolExecutionResult = withContext(Dispatchers.IO) {
-        try {
-            val screenshotPath = "${context.cacheDir.absolutePath}/screenshot_${System.currentTimeMillis()}.png"
-            // Route through ShellExecutor: root > ADB > Runtime fallback. A raw
-            // Runtime.exec("screencap") runs as the app UID which is denied screencap
-            // access on virtually every device, which is why takeScreenshot always
-            // failed until capture permission was granted through the other tool.
-            val result = shellExecutor.execute("screencap -p '$screenshotPath'")
-            val file = File(screenshotPath)
-            if (result.success && file.exists() && file.length() > 0) {
-                val r = ScreenShotResult(true, screenshotPath, file.length(), null)
-                ToolExecutionResult.success(r, json.encodeToString(ScreenShotResult.serializer(), r))
-            } else {
-                val detail = if (result.stderr.isNotBlank()) " (${result.stderr.take(150)})" else ""
-                val r = ScreenShotResult(
-                    false, "", 0,
-                    "screencap failed even with root/ADB (exit ${result.exitCode})$detail"
-                )
-                ToolExecutionResult.success(r, json.encodeToString(ScreenShotResult.serializer(), r))
-            }
-        } catch (e: Exception) {
-            val r = ScreenShotResult(false, "", 0, "Screenshot error: ${e.message}")
-            ToolExecutionResult.success(r, json.encodeToString(ScreenShotResult.serializer(), r))
+    // ------------------------------------------------------------------
+    // Screenshot
+    // ------------------------------------------------------------------
+
+    private suspend fun takeScreenshot(args: Map<String, Any?>): ToolExecutionResult {
+        val prefix = (args["filename"] as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: "screenshot"
+
+        return when (val outcome = ScreenCaptureEngine.screenshot(context, prefix)) {
+            is ScreenCaptureEngine.ScreenshotOutcome.Captured ->
+                success(ScreenShotResult(true, outcome.path, outcome.sizeBytes, null))
+
+            is ScreenCaptureEngine.ScreenshotOutcome.Refused ->
+                failure(ScreenShotResult(false, "", 0, outcome.reason))
+
+            is ScreenCaptureEngine.ScreenshotOutcome.NoFrame ->
+                failure(ScreenShotResult(false, "", 0, outcome.reason))
+
+            is ScreenCaptureEngine.ScreenshotOutcome.Failed ->
+                failure(ScreenShotResult(false, "", 0, outcome.reason))
         }
     }
 
-    /**
-     * Start and stop screen recording, honestly.
-     *
-     * ISSUE 43: `stop` answered success with a path to a ZERO-BYTE file, because
-     * the guard was `recording.exists()` and an empty file exists. It also found
-     * its file by globbing the cache for the newest `screenrecord_*`, so it could
-     * hand back a file from an earlier session. Start reported success without
-     * checking the recorder had even launched.
-     *
-     * Three changes, each covering one of those:
-     *  - the process this call started is tracked, so `stop` only ever reports a
-     *    file THIS session created;
-     *  - success requires length() > 0, via ScreenRecordingCheck;
-     *  - `start` fails when the recorder died without writing a frame, and says
-     *    what screenrecord printed.
-     */
-    private var recordingProcess: Process? = null
-    private var recordingPath: String? = null
+    // ------------------------------------------------------------------
+    // Recording
+    // ------------------------------------------------------------------
 
-    private suspend fun screenRecord(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val action = args["action"] as? String
-            ?: return@withContext ToolExecutionResult.error("Missing 'action' parameter")
+    private suspend fun recordScreen(args: Map<String, Any?>): ToolExecutionResult {
+        val action = (args["action"] as? String)?.lowercase()
+            ?: return ToolExecutionResult.error(
+                "This call needs an 'action' of 'start' or 'stop'.",
+            )
+
         val duration = ScreenRecordingCheck.durationSeconds((args["duration"] as? Number)?.toInt())
 
-        try {
-            when (action.lowercase()) {
-                "start" -> {
-                    // A previous recording that was never collected must not be
-                    // silently abandoned; report it rather than starting over it.
-                    val live = recordingProcess
-                    if (live != null && live.isAlive) {
-                        val existing = recordingPath
-                        val r = ScreenShotResult(
-                            false, existing ?: "", 0,
-                            "A recording is already running for ${existing ?: "an unknown path"}. " +
-                                "Call stop first.",
+        return when (action) {
+            "start" -> {
+                // A duration is clamped to what the encoder can sustain. ScreenRecordingCheck
+                // owns that rule because it already owned it for the shell path, and moving
+                // the rule here rather than deleting it keeps the clamp in one tested place.
+                when (val outcome = ScreenCaptureEngine.startRecording(context, duration)) {
+                    is ScreenCaptureEngine.RecordingOutcome.Started ->
+                        success(
+                            ScreenShotResult(
+                                true,
+                                outcome.path,
+                                0,
+                                null,
+                            ),
                         )
-                        return@withContext ToolExecutionResult.success(r, json.encodeToString(ScreenShotResult.serializer(), r))
-                    }
 
-                    val path = "${context.cacheDir.absolutePath}/screenrecord_${System.currentTimeMillis()}.mp4"
-                    // Launch and KEEP the handle. The old code backgrounded this
-                    // with `&` inside sh -c and threw the handle away, which is
-                    // why it could only find the file by guessing.
-                    val process = ProcessBuilder("screenrecord", "--time-limit", duration.toString(), path)
-                        .redirectErrorStream(true)
-                        .start()
-                    recordingProcess = process
-                    recordingPath = path
+                    is ScreenCaptureEngine.RecordingOutcome.AlreadyRecording ->
+                        failure(
+                            ScreenShotResult(
+                                false,
+                                outcome.path,
+                                0,
+                                "A recording is already running to ${outcome.path}. Call stop " +
+                                    "first; starting another would silently abandon that one.",
+                            ),
+                        )
 
-                    // Give the encoder a moment to create and start filling the
-                    // file. screenrecord creates it only once the display and
-                    // encoder are configured, so this is a real readiness signal.
-                    Thread.sleep(600)
-                    val file = File(path)
-                    val bytes = if (file.exists()) file.length() else 0L
-                    val alive = process.isAlive
+                    is ScreenCaptureEngine.RecordingOutcome.Refused ->
+                        failure(ScreenShotResult(false, "", 0, outcome.reason))
 
-                    // Read whatever the recorder printed. A denied display or a
-                    // missing encoder says so here and nowhere else.
-                    val detail = runCatching {
-                        val avail = process.inputStream.available()
-                        if (avail > 0) {
-                            val buf = ByteArray(minOf(avail, 400))
-                            process.inputStream.read(buf)
-                            String(buf, Charsets.UTF_8)
-                        } else ""
-                    }.getOrDefault("")
+                    is ScreenCaptureEngine.RecordingOutcome.Failed ->
+                        failure(ScreenShotResult(false, "", 0, outcome.reason))
 
-                    val failure = ScreenRecordingCheck.startFailure(alive, bytes, detail)
-                    if (failure != null) {
-                        recordingProcess = null
-                        recordingPath = null
-                        val r = ScreenShotResult(false, path, bytes, failure)
-                        ToolExecutionResult.success(r, json.encodeToString(ScreenShotResult.serializer(), r))
-                    } else {
-                        val r = ScreenShotResult(true, path, bytes, ScreenRecordingCheck.startNote(alive, bytes, duration))
-                        ToolExecutionResult.success(r, json.encodeToString(ScreenShotResult.serializer(), r))
-                    }
-                }
-                else -> {
-                    val path = recordingPath
-                    val process = recordingProcess
-                    if (path == null) {
-                        val r = ScreenShotResult(false, "", 0, "No recording was started by this session. Call start first.")
-                        return@withContext ToolExecutionResult.success(r, json.encodeToString(ScreenShotResult.serializer(), r))
-                    }
+                    // Not reachable from start, but the sealed type is exhausted rather than
+                    // given a catch-all that would hide a future outcome.
+                    is ScreenCaptureEngine.RecordingOutcome.Stopped ->
+                        failure(ScreenShotResult(false, outcome.path, outcome.sizeBytes, "Unexpected state."))
 
-                    // Ask the recorder to finish properly. screenrecord finalises
-                    // the MP4 from its SIGINT/SIGHUP handler; a hard kill leaves a
-                    // file whose index was never written, which has bytes and will
-                    // not play.
-                    var endedCleanly = true
-                    if (process != null && process.isAlive) {
-                        runCatching { process.destroy() } // SIGTERM
-                        endedCleanly = process.waitFor(4, java.util.concurrent.TimeUnit.SECONDS)
-                        if (!endedCleanly) {
-                            process.destroyForcibly()
-                        }
-                    }
-                    recordingProcess = null
-                    recordingPath = null
-
-                    val file = File(path)
-                    val bytes = if (file.isFile) file.length() else 0L
-                    val failure = ScreenRecordingCheck.stopFailure(
-                        path = path,
-                        fileExists = file.isFile,
-                        recordedBytes = bytes,
-                        endedCleanly = endedCleanly,
-                        detail = "",
-                    )
-                    val r = if (failure == null) {
-                        ScreenShotResult(true, path, bytes, null)
-                    } else {
-                        ScreenShotResult(false, path, bytes, failure)
-                    }
-                    ToolExecutionResult.success(r, json.encodeToString(ScreenShotResult.serializer(), r))
+                    ScreenCaptureEngine.RecordingOutcome.NotRecording ->
+                        failure(ScreenShotResult(false, "", 0, "Unexpected state."))
                 }
             }
-        } catch (e: Exception) {
-            val result = ScreenShotResult(false, "", 0, "Screen record error: ${e.message}")
-            ToolExecutionResult.success(result, json.encodeToString(ScreenShotResult.serializer(), result))
+
+            "stop" -> when (val outcome = ScreenCaptureEngine.stopRecording()) {
+                is ScreenCaptureEngine.RecordingOutcome.Stopped ->
+                    success(ScreenShotResult(true, outcome.path, outcome.sizeBytes, null))
+
+                ScreenCaptureEngine.RecordingOutcome.NotRecording ->
+                    failure(
+                        ScreenShotResult(
+                            false,
+                            "",
+                            0,
+                            "No recording was started by this app run, so there is nothing to " +
+                                "stop and no file to return. Call start first.",
+                        ),
+                    )
+
+                is ScreenCaptureEngine.RecordingOutcome.Failed ->
+                    failure(ScreenShotResult(false, "", 0, outcome.reason))
+
+                is ScreenCaptureEngine.RecordingOutcome.Refused ->
+                    failure(ScreenShotResult(false, "", 0, outcome.reason))
+
+                is ScreenCaptureEngine.RecordingOutcome.Started ->
+                    failure(ScreenShotResult(false, outcome.path, 0, "Unexpected state."))
+
+                is ScreenCaptureEngine.RecordingOutcome.AlreadyRecording ->
+                    failure(ScreenShotResult(false, outcome.path, 0, "Unexpected state."))
+            }
+
+            else -> ToolExecutionResult.error(
+                "The action must be 'start' or 'stop', and '$action' is neither.",
+            )
         }
     }
+
+    // ------------------------------------------------------------------
+    // Results
+    // ------------------------------------------------------------------
+
+    /**
+     * A successful result, with the file checked rather than assumed.
+     *
+     * A tool that reports a path must report one that exists and holds something, because
+     * that is the exact lie issue 43 was filed for. Both callers above already know the byte
+     * count, so this only guards against a path that vanished between the write and the
+     * report.
+     */
+    private fun success(payload: ScreenShotResult): ToolExecutionResult {
+        val file = File(payload.path)
+        if (payload.success && (!file.isFile || file.length() <= 0L)) {
+            val failed = ScreenShotResult(
+                success = false,
+                path = payload.path,
+                sizeBytes = 0,
+                error = "The capture reported success and no file holds data at ${payload.path}.",
+            )
+            return ToolExecutionResult(
+                rawJson = json.encodeToString(ScreenShotResult.serializer(), failed),
+                resultData = failed,
+                resultObject = null,
+                success = false,
+                error = failed.error,
+            )
+        }
+
+        return ToolExecutionResult(
+            rawJson = json.encodeToString(ScreenShotResult.serializer(), payload),
+            resultData = payload,
+            resultObject = null,
+            success = payload.success,
+            error = payload.error,
+        )
+    }
+
+    private fun failure(payload: ScreenShotResult): ToolExecutionResult = ToolExecutionResult(
+        rawJson = json.encodeToString(ScreenShotResult.serializer(), payload),
+        resultData = payload,
+        resultObject = null,
+        success = false,
+        error = payload.error,
+    )
 }

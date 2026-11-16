@@ -5,48 +5,48 @@ package com.unuslumen.app.data.tools
 
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.PixelFormat
-import android.hardware.display.DisplayManager
-import android.hardware.display.VirtualDisplay
-import android.media.Image
-import android.media.ImageReader
 import android.media.projection.MediaProjection
-import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
-import com.unuslumen.app.util.shell.GuruAccessibilityService
-import com.unuslumen.app.util.service.ScreenCaptureService
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
+import com.unuslumen.app.data.tools.screen.ScreenCaptureEngine
+import com.unuslumen.app.util.service.ScreenCaptureService
+import com.unuslumen.app.util.shell.GuruAccessibilityService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
-import java.io.File
 
 class DeviceControlToolExecutor(private val context: Context) : ToolExecutor {
     private val json = Json { ignoreUnknownKeys = true }
 
     companion object {
         private const val TAG = "guru"
-        private const val SCREENSHOT_DIR = "screenshots"
-        private var mediaProjection: MediaProjection? = null
-        private var virtualDisplay: VirtualDisplay? = null
-        private var imageReader: ImageReader? = null
-        /** True when mediaProjection came from ScreenCaptureService (Android 14+ path). */
-        private var projectionFromService = false
-        /** Sentinel is Int.MIN_VALUE — RESULT_OK is -1 and must never look "unset". */
+
+        /**
+         * The consent, mirrored here so the tools and the sight controller keep the access
+         * they already use.
+         *
+         * THE ENGINE IS THE OWNER. These exist because MainActivity writes them by name and
+         * ScreenSightController reads them by name; the projection lifecycle itself lives in
+         * ScreenCaptureEngine, because two copies of it meant two chances to consume one
+         * single-use token and that failure reads as a permission problem.
+         *
+         * The sentinel is Int.MIN_VALUE: RESULT_OK is -1, so -1 can never mean "unset".
+         */
         var screenCaptureResultCode: Int = ScreenCaptureService.RESULT_CODE_UNSET
         var screenCaptureData: Intent? = null
 
         /** Access for ScreenSightController's pre-Android-14 projection reuse. */
-        fun getLiveProjection(): MediaProjection? = if (projectionFromService) null else mediaProjection
+        fun getLiveProjection(): MediaProjection? = ScreenCaptureEngine.liveProjectionForLegacy()
         fun setLiveProjection(value: MediaProjection?) {
-            mediaProjection = value
-            projectionFromService = value != null
+            // The engine owns creation, so a caller setting one here is handing over a
+            // projection it made itself. Nothing in the app does that any more; kept so the
+            // sight controller's bridge compiles and reads the engine's answer.
+            if (value == null) Unit
         }
     }
 
@@ -255,186 +255,59 @@ class DeviceControlToolExecutor(private val context: Context) : ToolExecutor {
         }
     }
 
-    private suspend fun captureScreen(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
-        val filename = args["filename"] as? String ?: "screenshot"
-        try {
-            if (screenCaptureData == null) {
-                val r = ScreenCaptureResult(success = false, error = "Screen capture permission not granted. Use requestScreenCapturePermission tool first.", filePath = null)
-                return@withContext ToolExecutionResult.success(r, json.encodeToString(ScreenCaptureResult.serializer(), r))
-            }
-            // Ensure a live projection. All of this must stay off the main thread:
-            // startForegroundService from background throws
-            // ForegroundServiceStartNotAllowedException (which used to crash the whole
-            // app), and getMediaProjection throws SecurityException when the consent
-            // token has already been consumed by a dead projection.
-            val projectionReady = ensureProjection()
-            if (!projectionReady) {
+    /**
+     * Capture the screen, through the same engine the screen tools use.
+     *
+     * WHY THIS DELEGATES RATHER THAN KEEPING ITS OWN COPY. This method was the one capture
+     * path that worked, and `takeScreenshot` failed for exactly the reason it did not use
+     * it. Keeping two implementations of one projection lifecycle means two places for the
+     * consent token to be consumed twice, and the second one fails with a SecurityException
+     * that reads like a permission problem. The engine now owns that lifecycle, so this is
+     * a shape adapter and nothing more.
+     */
+    private suspend fun captureScreen(args: Map<String, Any?>): ToolExecutionResult {
+        val filename = (args["filename"] as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: "screenshot"
+
+        return when (val outcome = ScreenCaptureEngine.screenshot(context, filename)) {
+            is ScreenCaptureEngine.ScreenshotOutcome.Captured -> {
                 val r = ScreenCaptureResult(
-                    success = false,
-                    error = "Screen capture session is not active. Screen consent needs re-granting: ask your human to run requestScreenCapturePermission and allow the dialog, then try again.",
-                    filePath = null
+                    success = true,
+                    error = "$filename",
+                    filePath = outcome.path,
                 )
-                // The token is stale or the service refused to start. Clear the dead
-                // statics so the next consent round-trip starts clean.
-                invalidateProjection()
-                return@withContext ToolExecutionResult.success(r, json.encodeToString(ScreenCaptureResult.serializer(), r))
+                ToolExecutionResult.success(r, json.encodeToString(ScreenCaptureResult.serializer(), r))
             }
-            val screenshot = captureScreenInternal()
-                ?: return@withContext run {
-                    val r = ScreenCaptureResult(success = false, error = "Failed to capture screen frame.", filePath = null)
-                    ToolExecutionResult.success(r, json.encodeToString(ScreenCaptureResult.serializer(), r))
-                }
-            val dir = File(context.filesDir, SCREENSHOT_DIR)
-            dir.mkdirs()
-            val file = File(dir, "${filename}_${System.currentTimeMillis()}.png")
-            val outputStream = java.io.FileOutputStream(file)
-            screenshot.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
-            outputStream.close()
-            screenshot.recycle()
-            val r = ScreenCaptureResult(success = true, error = null, filePath = file.absolutePath)
-            ToolExecutionResult.success(r, json.encodeToString(ScreenCaptureResult.serializer(), r))
-        } catch (e: Exception) {
-            Log.e(TAG, "captureScreen failed", e)
-            val r = ScreenCaptureResult(success = false, error = "Screen capture failed: ${e.message}", filePath = null)
-            ToolExecutionResult.success(r, json.encodeToString(ScreenCaptureResult.serializer(), r))
+
+            is ScreenCaptureEngine.ScreenshotOutcome.Refused -> {
+                val r = ScreenCaptureResult(success = false, error = outcome.reason, filePath = null)
+                ToolExecutionResult.success(r, json.encodeToString(ScreenCaptureResult.serializer(), r))
+            }
+
+            is ScreenCaptureEngine.ScreenshotOutcome.NoFrame -> {
+                val r = ScreenCaptureResult(success = false, error = outcome.reason, filePath = null)
+                ToolExecutionResult.success(r, json.encodeToString(ScreenCaptureResult.serializer(), r))
+            }
+
+            is ScreenCaptureEngine.ScreenshotOutcome.Failed -> {
+                val r = ScreenCaptureResult(success = false, error = outcome.reason, filePath = null)
+                ToolExecutionResult.success(r, json.encodeToString(ScreenCaptureResult.serializer(), r))
+            }
         }
     }
 
     /**
-     * Make sure a usable MediaProjection exists, starting the foreground service when
-     * needed. Returns false (instead of throwing/crashing) when the session cannot be
-     * established. Bounded wait — never an infinite busy-loop.
+     * Ask for screen capture consent.
+     *
+     * THE DIALOG IS AN ACTIVITY'S JOB, so this sends the broadcast MainActivity already
+     * answers rather than trying to show it from a tool, which has no Activity and cannot.
+     * The engine owns everything after the answer arrives.
      */
-    private suspend fun ensureProjection(): Boolean = withContext(Dispatchers.IO) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            if (ScreenCaptureService.mediaProjection != null) {
-                mediaProjection = ScreenCaptureService.mediaProjection
-                projectionFromService = true
-                return@withContext true
-            }
-            try {
-                val serviceIntent = Intent(context, ScreenCaptureService::class.java).apply {
-                    action = ScreenCaptureService.ACTION_START
-                    putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, screenCaptureResultCode)
-                    putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, screenCaptureData)
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(serviceIntent)
-                } else {
-                    context.startService(serviceIntent)
-                }
-            } catch (e: Exception) {
-                // ForegroundServiceStartNotAllowedException or similar — the app is in
-                // the background and Android 14+ blocks FGS start. Do not crash.
-                Log.e(TAG, "ensureProjection: failed to start ScreenCaptureService: ${e.message}")
-                return@withContext false
-            }
-            // Bounded wait for the service to create its projection
-            var waited = 0
-            while (ScreenCaptureService.mediaProjection == null && waited < 3000) {
-                Thread.sleep(50)
-                waited += 50
-            }
-            val projection = ScreenCaptureService.mediaProjection
-            mediaProjection = projection
-            projectionFromService = true
-            projection != null
-        } else {
-            if (mediaProjection == null) {
-                try {
-                    val manager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                    mediaProjection = manager.getMediaProjection(screenCaptureResultCode, screenCaptureData!!)
-                    projectionFromService = false
-                } catch (e: Exception) {
-                    // SecurityException — consent token already consumed by a dead projection
-                    Log.e(TAG, "ensureProjection: token reuse failed: ${e.message}")
-                    return@withContext false
-                }
-            }
-            mediaProjection != null
-        }
-    }
-
-    /** Tear down dead projection state so a fresh consent flow can start clean. */
-    private fun invalidateProjection() {
-        try {
-            virtualDisplay?.release()
-        } catch (_: Exception) {}
-        virtualDisplay = null
-        try {
-            imageReader?.close()
-        } catch (_: Exception) {}
-        imageReader = null
-        try {
-            mediaProjection?.stop()
-        } catch (_: Exception) {}
-        mediaProjection = null
-        projectionFromService = false
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && ScreenCaptureService.isRunning) {
-            val stopIntent = Intent(context, ScreenCaptureService::class.java).apply {
-                action = ScreenCaptureService.ACTION_STOP
-            }
-            try { context.startService(stopIntent) } catch (_: Exception) {}
-        }
-        screenCaptureData = null
-        screenCaptureResultCode = ScreenCaptureService.RESULT_CODE_UNSET
-    }
-
-    private fun captureScreenInternal(): Bitmap? {
-        val projection = mediaProjection ?: return null
-        // If the user or system stopped the projection, tear down so the next consent
-        // flow starts clean instead of throwing on a dead object.
-        if (projectionFromService &&
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
-            ScreenCaptureService.mediaProjection == null) {
-            invalidateProjection()
-            return null
-        }
-        val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        val metrics = DisplayMetrics()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val bounds = windowManager.currentWindowMetrics.bounds
-            metrics.widthPixels = bounds.width()
-            metrics.heightPixels = bounds.height()
-        } else {
-            @Suppress("DEPRECATION")
-            windowManager.defaultDisplay.getMetrics(metrics)
-        }
-        val width = metrics.widthPixels
-        val height = metrics.heightPixels
-        // A fresh DisplayMetrics has densityDpi = 0 and createVirtualDisplay rejects
-        // non-positive density. Pull the real DPI from resources as fallback.
-        val density = if (metrics.densityDpi > 0) metrics.densityDpi else {
-            val resMetrics = context.resources.displayMetrics
-            if (resMetrics.densityDpi > 0) resMetrics.densityDpi
-            else (metrics.density * 160f).toInt().coerceAtLeast(120)
-        }
-        if (imageReader == null || imageReader?.width != width || imageReader?.height != height) {
-            imageReader?.close()
-            imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        }
-        if (virtualDisplay == null) {
-            virtualDisplay = projection.createVirtualDisplay("ScreenCapture", width, height, density, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader!!.surface, null, null)
-        }
-        val image: Image? = imageReader?.acquireLatestImage()
-        if (image == null) return null
-        val planes = image.planes
-        val buffer = planes[0].buffer
-        val pixelStride = planes[0].pixelStride
-        val rowStride = planes[0].rowStride
-        val rowPadding = rowStride - pixelStride * width
-        val bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
-        bitmap.copyPixelsFromBuffer(buffer)
-        image.close()
-        val croppedBitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height)
-        bitmap.recycle()
-        return croppedBitmap
-    }
-
     private suspend fun requestScreenCapturePermission(): ToolExecutionResult = withContext(Dispatchers.Main) {
-        val serviceAlive = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE || ScreenCaptureService.mediaProjection != null
-        if (screenCaptureData != null && mediaProjection != null && serviceAlive) {
-            val r = RequestPermissionResult(success = true, error = "Permission already granted")
+        // The engine's own answer, not a second read of the same state. Asking again when a
+        // session is already live would spend the person's attention on a dialog they have
+        // already answered.
+        if (ScreenCaptureEngine.refusal(context) == null) {
+            val r = RequestPermissionResult(success = true, error = "Screen capture is already allowed for this session.")
             return@withContext ToolExecutionResult.success(r, json.encodeToString(RequestPermissionResult.serializer(), r))
         }
         return@withContext try {
@@ -557,19 +430,18 @@ class DeviceControlToolExecutor(private val context: Context) : ToolExecutor {
         }
     }
 
+    /**
+     * Record the consent the person just gave, and hand it to the engine.
+     *
+     * THE ENGINE IS THE OWNER NOW. A token establishes exactly one projection, so the app
+     * must never create one twice from the same token; that is why the copy of this logic
+     * that lived here has been removed rather than left beside the engine's. This method
+     * stays because MainActivity already calls it by name, and it is the one place the
+     * consent arrives, so it forwards rather than duplicating.
+     */
     fun setScreenCapturePermission(resultCode: Int, data: Intent) {
         screenCaptureResultCode = resultCode
         screenCaptureData = data
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            val serviceIntent = Intent(context, ScreenCaptureService::class.java).apply {
-                action = ScreenCaptureService.ACTION_START
-                putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode)
-                putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(serviceIntent) else context.startService(serviceIntent)
-        } else {
-            val manager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjection = manager.getMediaProjection(resultCode, data)
-        }
+        ScreenCaptureEngine.acceptConsent(context, resultCode, data)
     }
 }
