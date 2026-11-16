@@ -67,18 +67,21 @@ object NotificationAccess {
      * fallback, because a mismatch here would report a working listener as off and
      * send somebody to a screen that already says enabled.
      */
-    fun isEnabledInSettings(context: Context): Boolean = runCatching {
-        val enabled = Settings.Secure.getString(
-            context.contentResolver,
-            "enabled_notification_listeners",
-        ).orEmpty()
+    fun isEnabledInSettings(context: Context): Boolean {
+        val enabled = runCatching {
+            Settings.Secure.getString(
+                context.contentResolver,
+                "enabled_notification_listeners",
+            )
+        }.getOrNull().orEmpty()
+
         if (enabled.isEmpty()) return false
 
         val component = component(context)
-        enabled.contains(component.flattenToString()) ||
+        return enabled.contains(component.flattenToString()) ||
             enabled.contains(component.flattenToShortString()) ||
             enabled.split(':').any { it.startsWith(context.packageName) }
-    }.getOrDefault(false)
+    }
 
     /** Whether the service is bound right now. */
     fun isBound(): Boolean = GuruNotificationListener.instance != null
@@ -103,7 +106,7 @@ object NotificationAccess {
      * Both are `success = false`, because in neither state did the tool do the thing,
      * and a success flag on a call that read nothing is the defect issue 337 names.
      */
-    fun guard(context: Context): ToolExecutionResult? = when (val now = state(context)) {
+    fun guard(context: Context): ToolExecutionResult? = when (state(context)) {
         State.RUNNING -> null
 
         State.DISABLED -> PermissionGrants.refusal(
@@ -223,9 +226,22 @@ object NotificationStream {
 
     val posted: SharedFlow<CapturedNotification> = _posted
 
-    /** Record one arrival. Called from the listener; safe from any thread. */
+    /**
+     * Record one arrival. Called from the listener; safe from any thread.
+     *
+     * AN UPDATE REPLACES ITS PREVIOUS SELF. The platform re-posts a notification under the
+     * same key whenever it changes: a message arriving in an existing conversation, a
+     * progress bar advancing, a play button becoming a pause button. Appending each of those
+     * would make one conversation look like six notifications and make a count of what
+     * arrived read six times too high, so a matching key is removed before the new version
+     * is added and the ring holds what is true now.
+     *
+     * The flow still emits every change, because a watcher waiting for an update to a
+     * notification it already saw needs to hear about it.
+     */
     fun record(notification: CapturedNotification) {
         synchronized(lock) {
+            ring.removeAll { it.key == notification.key }
             ring.addLast(notification)
             while (ring.size > CAPACITY) ring.removeFirst()
         }

@@ -136,6 +136,25 @@ class NotificationDomainHonestyTest {
         )
     }
 
+    /**
+     * A re-post under the same key replaces its previous version.
+     *
+     * The platform does this constantly: a message arriving in an existing conversation, a
+     * progress bar advancing, a play button becoming a pause button. Appending each would
+     * make one conversation look like six notifications and make a count of what arrived
+     * read six times too high.
+     */
+    @Test
+    fun anUpdateUnderTheSameKeyReplacesRatherThanAccumulates() {
+        NotificationStream.record(sample(key = "wa:1", title = "first line"))
+        NotificationStream.record(sample(key = "wa:1", title = "second line"))
+        NotificationStream.record(sample(key = "wa:1", title = "third line"))
+
+        val recent = NotificationStream.recent(10)
+        assertEquals("one key is one notification, however many times it was updated", 1, recent.size)
+        assertEquals("the newest version is the one kept", "third line", recent.single().title)
+    }
+
     @Test
     fun aCapturedNotificationWithButtonsSaysSo() {
         assertTrue("a notification with an action must report it", sample(hasAction = true).hasActions)
