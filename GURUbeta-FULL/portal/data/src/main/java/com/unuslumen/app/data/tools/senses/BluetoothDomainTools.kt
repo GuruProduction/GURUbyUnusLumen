@@ -102,6 +102,24 @@ data class BluetoothPairResult(
 ) : ToolResultData
 
 @Serializable
+data class BluetoothAdapterResult(
+    val success: Boolean,
+    val action: String,
+    /** The adapter state as the platform reports it, not as the call intended. */
+    val enabled: Boolean = false,
+    /** True when the adapter exists at all, before any question of state. */
+    val adapterPresent: Boolean = false,
+    val address: String? = null,
+    val name: String? = null,
+    val scanMode: String? = null,
+    val isDiscovering: Boolean = false,
+    /** True when the platform refused the state change itself. */
+    val platformRefusedChange: Boolean = false,
+    val note: String? = null,
+    val error: String? = null,
+) : ToolResultData
+
+@Serializable
 data class BluetoothAdvertiseResult(
     val success: Boolean,
     val advertising: Boolean = false,
@@ -118,6 +136,7 @@ object BluetoothDomainDefinitions : ToolSetRegistration {
     const val PAIR = "bluetoothPair"
     const val UNPAIR = "bluetoothUnpair"
     const val ADVERTISE = "bluetoothAdvertise"
+    const val ADAPTER = "bluetoothAdapter"
 
     override val definitions = listOf(
         ToolDefinition(
@@ -195,6 +214,29 @@ object BluetoothDomainDefinitions : ToolSetRegistration {
             ),
             permissions = listOf(TeamThreePermissions.BLUETOOTH_ADVERTISE.permission),
         ),
+        ToolDefinition(
+            name = ADAPTER,
+            description = "Report the Bluetooth adapter's real state, and ask the platform to switch " +
+                "it on or off. STATUS needs NO permission at all and always answers: whether the phone " +
+                "has a radio, whether it is switched on, its name and address, the scan mode and " +
+                "whether a discovery is running. OFF and ON are a different matter: since Android 13 " +
+                "an ordinary app cannot change the adapter state at all, and the call is refused " +
+                "rather than silently ignored. When that happens the result says so plainly and names " +
+                "the quick settings tile, because sending somebody to a permission screen for this " +
+                "would be sending them nowhere. It never reports a state change it did not read back.",
+            category = "bluetooth",
+            parameters = listOf(
+                ToolParameter(
+                    "action", ToolParameterType.Enum, false,
+                    "STATUS reads only, ON asks for Bluetooth on, OFF asks for it off. Default STATUS.",
+                    listOf("STATUS", "ON", "OFF"),
+                ),
+            ),
+            // NOT DECLARED. STATUS needs no permission, and BLUETOOTH_ADMIN cannot be held on a
+            // modern build, so declaring either would refuse a reading that genuinely works. The
+            // executor reports the platform's refusal on the toggle path itself.
+            permissions = emptyList(),
+        ),
     )
 
     override fun executorClass(): KClass<out ToolExecutor> = BluetoothDomainExecutor::class
@@ -222,8 +264,139 @@ class BluetoothDomainExecutor(private val context: Context) : ToolExecutor {
         BluetoothDomainDefinitions.PAIR -> pair(args)
         BluetoothDomainDefinitions.UNPAIR -> unpair(args)
         BluetoothDomainDefinitions.ADVERTISE -> advertise(args)
+        BluetoothDomainDefinitions.ADAPTER -> adapterControl(args)
         else -> ToolExecutionResult.error("Unknown tool: $toolName")
     }
+
+    // ------------------------------------------------------------------
+    // The adapter itself
+    // ------------------------------------------------------------------
+
+    /**
+     * Read the adapter state, and try to change it.
+     *
+     * STATUS RUNS BEFORE ANY CHECK, deliberately: reading whether Bluetooth is on needs no
+     * permission and no adapter state, so refusing it because a toggle would need one would
+     * throw away a true answer to make a point. The toggle is guarded by the platform, which
+     * since Android 13 refuses it outright for an ordinary app.
+     */
+    @SuppressLint("MissingPermission")
+    private suspend fun adapterControl(args: Map<String, Any?>): ToolExecutionResult {
+        val action = ((args["action"] as? String) ?: "STATUS").uppercase()
+
+        val hasAdapter = PermissionGrants.hasBluetooth(context)
+        val bluetooth = adapter
+
+        if (bluetooth == null) {
+            val r = BluetoothAdapterResult(
+                success = false,
+                action = action,
+                adapterPresent = false,
+                error = "This device has no Bluetooth adapter, so there is no state to report and " +
+                    "nothing to switch. That is the hardware rather than a permission.",
+            )
+            return emitPayload(json, json.encodeToString(BluetoothAdapterResult.serializer(), r), r, false, r.error)
+        }
+
+        val before = adapterSnapshot(bluetooth, action, hasAdapter)
+        if (action == "STATUS") {
+            val r = before.copy(
+                note = buildString {
+                    append("Read from the platform's own adapter, with no permission involved. ")
+                    if (!before.enabled) {
+                        append("Bluetooth is switched off, which is separate from any grant. ")
+                    }
+                    if (hasAdapter) {
+                        append("The address Android reports may be a placeholder rather than the real " +
+                            "hardware address, because the platform hides it from apps by default.")
+                    }
+                }.trim(),
+            )
+            return emitPayload(json, json.encodeToString(BluetoothAdapterResult.serializer(), r), r, r.success, r.error)
+        }
+
+        if (action != "ON" && action != "OFF") {
+            val r = before.copy(
+                success = false,
+                error = "The action must be STATUS, ON or OFF, and '$action' is none of them.",
+            )
+            return emitPayload(json, json.encodeToString(BluetoothAdapterResult.serializer(), r), r, false, r.error)
+        }
+
+        val target = action == "ON"
+
+        // THE CHANGE IS ATTEMPTED AND ITS REFUSAL IS THE ANSWER. enable() and disable() return
+        // false rather than throwing when the platform declines, and since Android 13 it always
+        // declines for an ordinary app: the permission that used to allow it is signature-only.
+        // Reporting that plainly is more useful than a refusal that reads like a fault.
+        val requested = runCatching {
+            if (target) bluetooth.enable() else bluetooth.disable()
+        }.getOrDefault(false)
+
+        // Read the state back rather than trusting the call. A toggle that returns true has
+        // still only asked; the adapter state is the answer.
+        var after = adapterSnapshot(bluetooth, action, hasAdapter)
+        if (requested && after.enabled != target) {
+            // The change is asynchronous, so give it a moment before concluding it failed.
+            val deadline = System.currentTimeMillis() + 3_000L
+            while (System.currentTimeMillis() < deadline && after.enabled != target) {
+                delay(150)
+                after = adapterSnapshot(bluetooth, action, hasAdapter)
+            }
+        }
+
+        val landed = after.enabled == target
+        val r = after.copy(
+            success = landed,
+            platformRefusedChange = !requested,
+            note = when {
+                landed ->
+                    "Bluetooth is now ${if (target) "on" else "off"}, read back from the adapter rather " +
+                        "than from the call's return value."
+                !requested ->
+                    "Android refused the request without throwing, which is what it does for an " +
+                        "ordinary app since version 13: the old BLUETOOTH_ADMIN permission became " +
+                        "signature-only, so no dialog and no setting grants it. The quick settings " +
+                        "tile is the switch the person can reach."
+                else ->
+                    "The platform accepted the request and the adapter still reads " +
+                        "${if (after.enabled) "on" else "off"}. A toggle is asynchronous and can be " +
+                        "blocked by a policy or a connected device, so this reports what the adapter " +
+                        "holds now."
+            },
+            error = if (landed) null else {
+                "Bluetooth was not switched ${if (target) "on" else "off"}: it still reads " +
+                    "${if (after.enabled) "on" else "off"}."
+            },
+        )
+        return emitPayload(json, json.encodeToString(BluetoothAdapterResult.serializer(), r), r, r.success, r.error)
+    }
+
+    /** One read of the adapter, which is the only thing allowed to decide what is reported. */
+    @SuppressLint("MissingPermission")
+    private fun adapterSnapshot(
+        bluetooth: BluetoothAdapter,
+        action: String,
+        hasAdapter: Boolean,
+    ): BluetoothAdapterResult = BluetoothAdapterResult(
+        success = true,
+        action = action,
+        enabled = runCatching { bluetooth.isEnabled }.getOrDefault(false),
+        adapterPresent = true,
+        // The address and name are only readable with the Nearby devices grant, so a refusal
+        // there leaves them absent rather than invented.
+        address = runCatching { bluetooth.address }.getOrNull(),
+        name = runCatching { bluetooth.name }.getOrNull(),
+        scanMode = runCatching {
+            when (bluetooth.scanMode) {
+                BluetoothAdapter.SCAN_MODE_CONNECTABLE -> "connectable"
+                BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE -> "connectable_discoverable"
+                BluetoothAdapter.SCAN_MODE_NONE -> "none"
+                else -> "unknown"
+            }
+        }.getOrNull(),
+        isDiscovering = runCatching { bluetooth.isDiscovering }.getOrDefault(false),
+    )
 
     /**
      * A shared pre-flight for the three state checks every Bluetooth tool needs.
