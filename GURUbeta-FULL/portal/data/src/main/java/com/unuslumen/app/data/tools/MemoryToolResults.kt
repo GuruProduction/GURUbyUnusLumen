@@ -33,3 +33,18 @@ import kotlinx.serialization.Serializable
 @Serializable data class ToolResultHit(val id: String, val toolName: String, val resultText: String, val timestamp: Long, val conversationId: String) : ToolResultData
 @Serializable data class UnifiedSearchResult(val facts: List<MemoryFactInfo>, val messages: List<MessageSearchHit>, val toolResults: List<ToolResultHit>) : ToolResultData
 @Serializable data class ConversationWithMessagesResult(val conversation: ConversationInfo, val messages: List<MessageSearchHit>) : ToolResultData
+
+/**
+ * The graph around a subject: what the walk covered, and the facts it reached.
+ *
+ * `subject`, `edgeType` and `depth` are echoed because the engine chooses its own
+ * start node from the text rather than being handed one. Without them a caller
+ * cannot tell which walk it got, and a shallow walk over one edge type would
+ * look identical to a deep walk over the whole graph.
+ */
+@Serializable data class TraverseMemoryGraphResult(
+    val subject: String,
+    val edgeType: String,
+    val depth: Int,
+    val connected: List<MemoryFactInfo>,
+) : ToolResultData

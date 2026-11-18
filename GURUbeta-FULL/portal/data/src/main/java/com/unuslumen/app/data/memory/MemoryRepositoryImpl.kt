@@ -195,6 +195,35 @@ class MemoryRepositoryImpl(
         Unit
     }
 
+    /**
+     * Graph traversal around a subject.
+     *
+     * The engine takes the caller's words and picks the start node itself, so
+     * this passes text through rather than an id. The edge type is lower-cased
+     * and checked against the four real views before it reaches the wire, and an
+     * unrecognised value falls back to composite, because a traversal over the
+     * whole graph is a useful answer while a 400 is not.
+     */
+    override suspend fun traverseGraph(
+        subject: String,
+        edgeType: String,
+        maxDepth: Int,
+        maxNodes: Int,
+    ): List<MemoryFact> {
+        if (subject.isBlank()) return emptyList()
+        val engineType = when (edgeType.trim().lowercase()) {
+            "semantic" -> "Semantic"
+            "temporal" -> "Temporal"
+            "causal" -> "Causal"
+            "entity" -> "Entity"
+            else -> "Composite"
+        }
+        val depth = maxDepth.coerceIn(1, 6)
+        val nodes = maxNodes.coerceIn(1, 200)
+        return brainService.graphTraverse(subject.trim(), engineType, depth, nodes)
+            .map { hit -> hit.fact }
+    }
+
     // =====================================================================
     // thread rows
     // =====================================================================

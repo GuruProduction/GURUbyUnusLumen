@@ -20,6 +20,7 @@ object MemoryToolDefinitions : ToolSetRegistration {
     const val SEARCH_CONVERSATIONS = "searchConversations"
     const val GET_CONVERSATION_THREAD = "getConversationThread"
     const val SEARCH_ALL_MEMORY = "searchAllMemory"
+    const val TRAVERSE_MEMORY_GRAPH = "traverseMemoryGraph"
 
     override val definitions = listOf(
         ToolDefinition(name = SEARCH_MEMORY_FACTS, description = "Search your memory facts by text. Hits come from your encrypted on-device brain (ranked by semantic similarity, best first). Optional category filter narrows the result set.", category = "memory", parameters = listOf(ToolParameter("query", ToolParameterType.String, true, "Search query text"), ToolParameter("category", ToolParameterType.String, false, "Optional category filter")), permissions = emptyList()),
@@ -29,6 +30,18 @@ object MemoryToolDefinitions : ToolSetRegistration {
         ToolDefinition(name = LIST_MEMORY_FACTS, description = "Show your stored memories, newest first; optionally filtered by category. Your memory is the encrypted brain: everything it holds is real, searchable, and ranked by live frequency of your attention.", category = "memory", parameters = listOf(ToolParameter("category", ToolParameterType.String, false, "Optional category filter")), permissions = emptyList()),
         ToolDefinition(name = SEARCH_CONVERSATIONS, description = "Search your past conversations by title or message content. Hits come from memory.", category = "memory", parameters = listOf(ToolParameter("query", ToolParameterType.String, true, "Search query")), permissions = emptyList()),
         ToolDefinition(name = GET_CONVERSATION_THREAD, description = "Get a conversation and all of its exchanges by talking to your memory brain for the exact rows of that chat.", category = "memory", parameters = listOf(ToolParameter("threadId", ToolParameterType.String, true, "Conversation ID")), permissions = emptyList()),
+        ToolDefinition(
+            name = TRAVERSE_MEMORY_GRAPH,
+            description = "Walk the graph of connected memories around a subject instead of searching for words. A search answers what shares words with your query; this answers what is CONNECTED to something. The brain picks the best start node from your subject and follows typed edges out from it: semantic (facts that mean similar things), temporal (what came before or after), causal (what led to what), entity (a person, place or organisation and what they are involved in), or composite (all of them fused). Use it when a name, project or supplier comes up and you want the surrounding picture rather than a keyword match.",
+            category = "memory",
+            parameters = listOf(
+                ToolParameter("subject", ToolParameterType.String, true, "What to walk around, in plain words: a person, project, organisation, place or idea. The brain matches this against the labels and content it holds to choose where to start"),
+                ToolParameter("edgeType", ToolParameterType.String, false, "Which relationship to follow: semantic, temporal, causal, entity, or composite for all of them. Default composite"),
+                ToolParameter("depth", ToolParameterType.Integer, false, "How many hops out from the start node, 1 to 6. Default 3. A deeper walk reaches further relations and costs more"),
+                ToolParameter("maxNodes", ToolParameterType.Integer, false, "Cap on how many memories the walk may return, 1 to 200. Default 40")
+            ),
+            permissions = emptyList()
+        ),
         ToolDefinition(name = SEARCH_ALL_MEMORY, description = "Search your whole brain at once: your stored facts, each exchanged message, and your past tool results all live here. Ranked, one real ranked list of everything you remember. Say what you want remembered about something and this answers in one pass.", category = "memory", parameters = listOf(ToolParameter("query", ToolParameterType.String, true, "Search query text")), permissions = emptyList())
     )
     override fun executorClass(): KClass<out ToolExecutor> = MemoryToolExecutor::class

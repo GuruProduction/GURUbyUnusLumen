@@ -228,6 +228,33 @@ class BrainService(
     fun isBrainId(candidate: String): Boolean =
         candidate.length == 64 && candidate.all { it in "0123456789abcdef" }
 
+    /**
+     * Walk the memory graph around a subject and return the connected facts.
+     *
+     * The engine picks the start node from the text, so the caller asks about a
+     * subject rather than nominating an id. Edges are typed: SEMANTIC ties facts
+     * that mean similar things, TEMPORAL orders them in time, CAUSAL records
+     * what led to what, and ENTITY ties a person, place or organisation to what
+     * they are involved in. A graph hit carries a score and no body, so each id
+     * is resolved to its row here; a hit the brain cannot retrieve is dropped
+     * rather than reported with empty text.
+     */
+    suspend fun graphTraverse(
+        subject: String,
+        edgeType: String = "Composite",
+        maxDepth: Int = 3,
+        maxNodes: Int = 40,
+    ): List<DomainSearchResult> = withContext(Dispatchers.Default) {
+        brainApi.graphTraverse(subject, edgeType, maxDepth, maxNodes).mapNotNull { hit ->
+            val body = brainApi.retrieveDeepOrShallow(hit.idHex, wantDeep = true) ?: return@mapNotNull null
+            DomainSearchResult(
+                fact = buildDomainFactFrom(body),
+                score = hit.score,
+                source = "CEREBRUM_GRAPH",
+            )
+        }
+    }
+
     /** One consolidation result, including how many entries changed. */
     suspend fun consolidate(): Boolean = withContext(Dispatchers.Default) {
         brainApi.runDreamConsolidation()

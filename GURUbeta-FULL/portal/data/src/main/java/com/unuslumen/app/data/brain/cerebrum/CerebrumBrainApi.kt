@@ -563,34 +563,59 @@ object CerebrumBrainApi {
     // 5. graph query. Real wire, the engine's own shape; hits mirror SEARCH.
     // --------------------------------------------------------------------
 
-    fun graphTraverseFromLabelledStart(startIdHex: String, maxDepth: Int, maxNodes: Int): List<BrainHit> {
+    /**
+     * Traverse the memory graph around a subject, ranked by the engine.
+     *
+     * THE WIRE SHAPE IS THE ENGINE'S, NOT OURS. The graph crate parses a
+     * `Query { text, budget: { max_nodes, max_depth }, query_type }` and chooses
+     * its own start node: a labelled node whose label holds a token of the text,
+     * or the highest-degree node in that view when no label matches. So this
+     * sends text and a real budget, NOT a start memory id.
+     *
+     * The previous version sent `{"start":{...},"budget":{"max_tokens":..}}`,
+     * which is the shape of an older engine. It named a start id the graph does
+     * not accept and a token budget that no longer exists, so `maxDepth` was
+     * silently dropped and every traverse either errored or answered about
+     * whatever node the engine picked. Anything built on it was reading a
+     * different subject than the one it asked for.
+     *
+     * `queryType` is one of Semantic, Temporal, Causal, Entity or Composite. The
+     * engine's own spelling is used because serde matches the variant name.
+     */
+    fun graphTraverse(
+        subjectText: String,
+        queryType: String = "Composite",
+        maxDepth: Int = 3,
+        maxNodes: Int = 100,
+    ): List<BrainHit> {
         if (brainDown()) return emptyList()
-        val startJsonArray = memoryIdArrayJson(startIdHex)
-        val askJson = "{\"start\":{\"memory_id\":[$startJsonArray]},\"query_type\":\"Composite\"," +
-            "\"budget\":{\"max_tokens\":$maxNodes,\"used_tokens\":0}}"
+        val askJson = "{\"text\":\"" + jsonEscape(subjectText) + "\"," +
+            "\"query_type\":\"" + jsonEscape(queryType) + "\"," +
+            "\"budget\":{\"max_nodes\":$maxNodes,\"max_depth\":$maxDepth}}"
         val replyBody = dispatchOrNull(FRAME_GRAPH_TRAVERSE, askJson) ?: return emptyList()
         val parser = runCatching { wire.parseToJsonElement(replyBody).jsonArray }.getOrNull() ?: return emptyList()
         val parsed = mutableListOf<BrainHit>()
         for (valueElement in parser) {
-            runCatching {
-                val objectEntry = when {
-                    valueElement.toString().startsWith("[", false) -> null
-                    else -> valueElement.jsonObject
-                }
-                if (objectEntry != null) {
-                    // graph hits may also be a 2-list `[id, score]`
-                    val idHexValue = if (objectEntry.containsKey("0")) (objectEntry["0"]!!.jsonPrimitive.content) else null
-                    val idScoreValue = if (objectEntry.containsKey("1")) (objectEntry["1"]!!.jsonPrimitive.content.toFloatOrNull()) else null
-                    if (idHexValue != null && idScoreValue != null) {
-                        parsed.add(BrainHit(idHexValue, idScoreValue, ""))
-                    }
-                } else {
-                    val arrayPairEntry = valueElement.jsonArray
-                    val hexId = arrayPairEntry[0].jsonPrimitive.content
-                    val scoreIn = arrayPairEntry[1].jsonPrimitive.content.toFloatOrNull() ?: 0f
-                    parsed.add(BrainHit(hexId, scoreIn, ""))
-                }
+            // The engine returns `[(MemoryId, f32)]`, which serialises as an array
+            // of two-element arrays: `[[byte, ...32], score]`. The id is a BYTE
+            // ARRAY, not a hex string, so it is hexed here with the same rule the
+            // search and listing parsers use. Reading it as a string was the old
+            // bug: a 32-byte array read through `jsonPrimitive.content` yields a
+            // number, so every id came back wrong or the whole parse was dropped.
+            val pair = runCatching { valueElement.jsonArray }.getOrNull() ?: continue
+            if (pair.size < 2) continue
+            val idBytes = runCatching { pair[0].jsonArray }.getOrNull() ?: continue
+            if (idBytes.size != 32) continue
+            val hexBuilder = StringBuilder(64)
+            var readable = true
+            for (byteValueElement in idBytes) {
+                val byteValueIn = byteValueElement.jsonPrimitive.content.toIntOrNull()
+                if (byteValueIn == null) { readable = false; break }
+                hexBuilder.append("%02x".format(byteValueIn and 0xFF))
             }
+            if (!readable) continue
+            val scoreIn = pair[1].jsonPrimitive.content.toFloatOrNull() ?: 0f
+            parsed.add(BrainHit(hexBuilder.toString(), scoreIn, ""))
         }
         return parsed
     }
