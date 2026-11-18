@@ -38,8 +38,6 @@ Public traffic goes over Tor by default. LAN and loopback go direct. If Tor has 
 
 API keys sit in the Android Keystore, one AES-256-GCM key per service, non-exportable. Memory is encrypted at rest with Argon2id and XChaCha20-Poly1305. With a cloud model, whatever it recalls goes into the prompt and leaves the phone. Cloud backup is off.
 
-There are no analytics SDKs, no advertising ID, no IMEI and no ANDROID_ID. 
-
 Prompts, skills, tool definitions and agent templates come from `api.unuslumen.com`, so a new capability reaches you the day it's built with no APK update. The fetch is a plain GET with no login, no cookie and no install ID, and it goes over Tor. The server is closed source. What it serves isn't secret, because all of it lands on your phone and you can read it in the app. If the server's down GURU still boots, and you write your own prompts.
 
 ## Limits
