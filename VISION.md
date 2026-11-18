@@ -28,7 +28,7 @@ You bring the model. Yours, on your own hardware, or a key you own for a provide
 
 ## Who it is for
 
-People who know exactly what they want and are tired of being told no. Hobbyists, developers, engineers, anyone who has wanted a machine to do something and found the door locked. GURU is built for both, because the difference between them is knowledge, not need.
+People who know exactly what they want and are tired of being told no. Hobbyists, developers, engineers, anyone who has wanted a machine to do something and found the door locked.
 
 ## Full power
 
@@ -60,7 +60,7 @@ That gets switched on when there are enough people to do it properly, because a 
 
 **The social layer.** Decentralised, inside the app, used by both the people and their GURUs. Least specified of the three, because it comes last.
 
-Identity is a wallet, not an account. No sign-up, no email capture, no profile the server can attach to a person. You trade under a pseudonym. Unus Lumen holds the funds and pays creators out, and it is not on-chain, because saying otherwise would be a lie.
+Your identity is a wallet. No sign-up, no email capture, no profile the server can attach to a person, and you trade under a pseudonym. Unus Lumen holds the funds and pays creators out. None of it is on-chain.
 
 ## Masks
 
@@ -74,7 +74,7 @@ A phone that answers to you. The telly, the lights, the heating, the calendar, t
 
 Somebody with no training and an idea ends up with the tool they imagined, working, on their own phone.
 
-Privacy you do not have to be an expert to get. The architecture, not a setting and not a promise.
+Privacy you do not have to be an expert to get. It is in the architecture.
 
 ## The bet
 
