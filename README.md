@@ -4,118 +4,107 @@
 
 # GURU by Unus Lumen
 
-**A self evolving AI framework. Your phone, your house, your network, your rules.**
+**A language model with a Linux shell, 390 tools and your network to work with.**
 
 ![Status](https://img.shields.io/badge/status-public%20beta-e8c9ff)
 ![Version](https://img.shields.io/github/v/release/GuruProduction/GURUbyUnusLumen?label=version&color=FFD60A)
-![Downloads](https://img.shields.io/github/downloads/GuruProduction/GURUbyUnusLumen/total?label=downloads&color=FF9F0A)
-![Stars](https://img.shields.io/github/stars/GuruProduction/GURUbyUnusLumen?color=FF375F)
-![Last commit](https://img.shields.io/github/last-commit/GuruProduction/GURUbyUnusLumen?color=0A84FF)
 ![Licence](https://img.shields.io/badge/licence-AGPL--3.0-98ff7e)
-![Platform](https://img.shields.io/badge/platform-Android-00C7BE)
-![Android](https://img.shields.io/badge/android-8.0%2B-00C7BE)
-![Privacy](https://img.shields.io/badge/privacy-on%20device%20only-FF375F)
-![Tor](https://img.shields.io/badge/egress-Tor%2C%20fail--closed-7D4698)
-![Model](https://img.shields.io/badge/model-bring%20your%20own-0A84FF)
-![Tools](https://img.shields.io/badge/tools-390%20and%20growing-98ff7e)
-![Permissions](https://img.shields.io/badge/permissions-167-98ff7e)
-![Memory](https://img.shields.io/badge/memory-Rust%2C%20on%20device-e8c9ff)
-![Userland](https://img.shields.io/badge/userland-bundled-e8c9ff)
-![Self-evolving](https://img.shields.io/badge/self--evolving-yes-e8c9ff)
-![Kotlin](https://img.shields.io/badge/Kotlin-2.3.10-7F52FF)
-![Rust](https://img.shields.io/badge/Rust-cerebrum-DEA584)
-![Compose](https://img.shields.io/badge/Jetpack-Compose-4285F4)
-![PRs](https://img.shields.io/badge/PRs-welcome-98ff7e)
-![Built by](https://img.shields.io/badge/built%20by-Unus%20Lumen%2C%20Bristol%20UK-0A84FF)
+![Platform](https://img.shields.io/badge/platform-Android%208.0%2B-00C7BE)
 
 </div>
 
 ---
 
-**DISCLAIMER:** this is not another helpful assistant app. It is powerful software that has not existed in this form before, and it does exactly what you ask it to. Read this page in full before you install anything from the [latest release](../../releases/latest).
+GURU gives a language model a shell and about 390 tools on your Android phone, and lets it use them. It runs a command, reads the result, decides the next step, and keeps going until the job is done. It reads and taps the screen. It finds and controls devices on your network.
 
-GURU reaches your phone, your television, your console, your lights, your speakers, your router and the machines in the cupboard, and it does the work. Not by describing what you could do. By doing it.
+The userland sits in the app's own storage: bash, apt, git, Python, ffmpeg, sqlite, curl, ssh, tesseract, and a reverse-engineering toolchain. No root, no adb, no "go and install Termux". A path shim makes prebuilt Linux binaries run on a stock phone.
 
-And it is not fixed. GURU writes its own tools, its own skills, its own automations and its own rooms. When it meets something it cannot do, it builds the capability and keeps it. That is the whole design: a superintelligence that gets more useful the longer you own it, rather than one that waits for me to ship an update.
+You bring the model: Ollama on your own hardware, or your own key for Anthropic, OpenAI, Google or xAI. AGPL-3.0, no account, no analytics SDKs, sideloaded APK.
 
-Any model is powerful when you give it reach. GURU is the reach.
+Public beta. One maintainer, largely AI-written, no outside security audit. If you only want a shell, use Termux.
 
-## What GURU actually is
+## What it does that a shell does not
 
-It is not a chat app. It is a permission layer across 167 Android permissions, a tool registry of around 390 tools and growing, an encrypted memory engine written in Rust, a full Unix userland bundled inside the APK, twelve rooms in one lobby, and Otio, the economy where your own output becomes something you can sell.
+A shell waits for you. This does not.
 
-You only ever open one app.
+The model chooses a tool, calls it, reads what came back, chooses again. Twenty calls deep it is still going, and a failure mid-run is information rather than the end of the turn. Point it at a problem, walk away, come back to it solved or to an account of why it is not.
+
+That loop is the difference between a terminal on your phone and an agent holding one. Everything below is what the loop works with.
 
 <details>
-<summary><strong>External control: your whole house, from one phone</strong></summary>
+<summary><strong>390 tools across the phone</strong></summary>
 
-GURU speaks the protocols devices actually use, rather than a list of brands I partnered with. UPnP and SOAP for boxes that expose services. DIAL for casting and app launch, including reading a device's app list and knowing the difference between a device that refused and one that never answered at all. Wake-on-LAN for anything asleep. Android TV Remote over its own protobuf protocol, so a Sony or a Philips or a Shield is drivable without an emitter. Roku's ECP. Samsung's websocket remote. LG webOS. Xbox SmartGlass all the way down, including the ECDH key exchange and the AES-CBC channel a console insists on before it will do anything. SNMP for hardware that will never have an app. IR through a Broadlink blaster or the phone's own emitter where one exists. SSH for any machine with a shell. ADB for anything running Android.
+167 declared permissions, sorted into eight grant tiers that separate a denial from a privileged permission, absent hardware, a build fault, or something no setting can fix.
 
-Televisions, Fire Sticks, consoles, lights, speakers, blinds, doors, sensors, the router, the printer, the thermostat. If it is on the network, GURU sees it, names it, and finds the way in. If it is not on the network, GURU learns the remote and blasts it instead.
+A tool whose permission you have not granted returns one sentence: what is missing, why it matters, how to grant it. Never an empty list. "No messages match" and "I am not allowed to read your messages" are different facts, and one is true.
 
-Every capability is a protocol implemented properly, which is why coverage keeps widening instead of stopping at the brands somebody paid me to support.
+The accessibility service reads and taps the screen, so any app with a UI becomes scriptable. The notification listener sees what arrives. MediaProjection captures the display with your consent. Clipboard, files, SMS, calls, contacts, calendar, camera, microphone, sensors, Bluetooth, NFC, location, alarms, settings, installed apps, device admin: each a gated domain.
 
-**And it verifies.** Every write is followed by a read, and the value the device reports is compared against the value that was written. A transport saying it worked is not evidence. The device's own answer is. A command against a capability the device does not report is refused with a reason naming both, never quietly ignored, because a silent no and a success look identical to you and one of them is a lie.
+</details>
+
+<details>
+<summary><strong>Your whole house</strong></summary>
+
+Protocols devices use, not a list of brands I partnered with. UPnP and SOAP. DIAL for casting and app launch, including a device's app list and the difference between a refusal and an unanswered request. Wake-on-LAN for anything asleep. Android TV Remote over its own protobuf, so a Sony or Philips or Shield is drivable with no emitter. Roku ECP. Samsung's websocket remote. LG webOS. Xbox SmartGlass down to the ECDH exchange and the AES-CBC channel the console demands. SNMP for hardware that will never have an app. IR through a Broadlink blaster or the phone's own emitter. SSH for any machine with a shell.
+
+Televisions, Fire Sticks, consoles, lights, speakers, blinds, doors, sensors, the router, the printer, the thermostat. On the network, GURU sees it, names it, and finds the way in.
+
+Every write is followed by a read, and the device's answer is compared against the value written. A command against a capability the device does not report is refused, naming both. A silent no and a success look identical to you.
+
 </details>
 
 <details>
 <summary><strong>Discovery that tells you the truth</strong></summary>
 
-A network map is only worth having if it is honest, and most scanners are not. They hand you a list of IP addresses, miss anything that does not answer a broadcast, and call it a day.
+Most scanners hand you addresses, miss anything that does not answer a broadcast, and call it a day.
 
-GURU sweeps every port rather than a curated list, because a curated list is the bug. It reads mDNS and SSDP properly, with the multicast lock arranged rather than assumed. It fingerprints endpoints by their HTTP responses, their certificates, their DIAL description and their UPnP device document, so it can tell you what a thing *is* rather than that something answered. It walks the whole house, keeps the map, and notices what is new.
+GURU sweeps every port rather than a curated list, because a curated list is the bug. It reads mDNS and SSDP with the multicast lock arranged. It fingerprints endpoints by HTTP response, certificate, DIAL description and UPnP document, so it names what a thing is. It keeps the map and notices what is new.
 
-When it cannot reach something it says so, and it tells a refusal apart from an absence. An empty list is never allowed to mean "I did not check".
+When it cannot reach something it says so, and it tells a refusal apart from an absence. An empty list never means "I did not check".
+
 </details>
 
 <details>
-<summary><strong>Memory that never forgets, in Rust</strong></summary>
+<summary><strong>Memory that persists, encrypted on device</strong></summary>
 
-The brain is a Rust engine running in-process, sealed in an encrypted vault with a passphrase generated on first run and never shown. There is no server in the path and no port open to the world.
+The brain is a Rust engine running in-process, sealed in an encrypted vault. Argon2id at 256 MiB and three passes derives the key, XChaCha20-Poly1305 seals every record, and the passphrase sits in an Android Keystore envelope the app cannot read.
 
-Inside it is a real cognitive architecture rather than a vector table. Facts enter a BUFFER layer, get promoted to EPISODIC when they are recalled enough, and settle into SEMANTIC once they are strong and repeated. Strength decays exponentially with a seven-day half-life, recalling something strengthens it, a daily consolidation pass merges duplicates and prunes what is weak, and a graph records typed edges between memories: semantic, temporal, causal, and cross-references that mark two memories as contradicting, superseding or duplicating each other.
+Inside is a cognitive architecture, not a vector table. Facts enter a buffer layer, promote to episodic when recalled, settle into semantic when strong and repeated. Retrieval strengthens. A daily consolidation pass merges duplicates and archives what goes weak. A graph records typed edges: semantic, temporal, causal, and cross-references marking two memories as contradicting, superseding or duplicating.
 
-Nothing is really deleted. Deleting archives, because a memory trail you can rewrite is not a trail.
+Nothing is deleted. Deleting archives, because a trail you can rewrite is not a trail.
 
-Every other assistant resets to zero every session and calls it a fresh start. That is a design choice, and it is why none of them ever actually know you. GURU remembers what you told it in March and uses it in November without being reminded.
+If the Keystore envelope is lost while a vault exists, the app refuses to boot and leaves every byte alone.
+
+With a cloud model, recalled memories enter the prompt and leave the phone with the conversation. With a local model they do not.
+
 </details>
 
 <details>
 <summary><strong>It builds its own capabilities</strong></summary>
 
-I gave GURU the ability to extend itself, because a fixed assistant is a dead assistant.
+A fixed assistant is a dead assistant.
 
-It writes tools and registers them locally, and they are permanent. It writes skills and automations. It adds whole rooms to its own lobby, each one a vessel that starts empty and gets composed by talking to it. It can rewrite the prompt stack it runs on.
+GURU writes tools and registers them, permanently. It writes skills and automations. It adds rooms to its own lobby, each starting empty and composed by talking to it. It can rewrite the prompt stack it runs on.
 
-You should never be waiting on a company to decide your problem is worth solving. Describe the problem and let it build the thing.
+Self-extension runs through the same permission layer, so a generated tool is bounded by what you granted and no more.
+
+You should not wait on a company to decide your problem is worth solving. Describe the problem and let it build the thing.
+
 </details>
 
 <details>
-<summary><strong>Its own Unix userland, already installed</strong></summary>
+<summary><strong>Rooms, not one screen</strong></summary>
 
-This is why GURU is not a wrapper around somebody else's capability.
+The lobby is a page of tiles you drag into order, or reorder by voice. Name a room and it appears; compose it by conversation.
 
-The APK ships BusyBox, Toybox, a full Termux prefix with bash and apt, CPython 3.14 with numpy and Pillow, git with a working HTTPS transport, ffmpeg, sqlite, OpenSSL, OpenSSH, jq, rsync, tmux, Tesseract, and a reverse-engineering toolchain including a JDK, apktool, aapt2, jadx and zipalign.
+**Portal** is the chat: streaming replies, tool calls you can watch, attachments, slash commands (`/help`, `/status`, `/tools`, `/think`, `/stop`, `/tor`, `/clearnet`).
 
-No root. No setup. No tutorial. No "now go and install Termux". The tools are there because I put them there, and a pathshim makes prebuilt Linux binaries run on a stock Android phone. That same trick is what lets GURU drive a phone that would otherwise refuse it.
-</details>
+**Agents** is where you make your own. A name, instructions, the tools it may use. The picker shows which tools it holds and offers nothing else. One press grants all or none.
 
-<details>
-<summary><strong>Twelve rooms, not one screen</strong></summary>
+**Inner Mind** is a living graph of everything GURU holds about you: memories, conversations, tasks, notes, projects, agents, skills, thoughts, people, devices. One tissue to explore, not a list to scroll.
 
-The lobby is a page of tiles you drag into any order you like, and you can ask GURU to reorder them by voice. Make a new room by naming it; it appears immediately and you compose it by conversation.
+**Heartbeat** is the clock. **Skills** are imported capabilities. **Notes**, **Journal**, **Projects**, **Calendar** and **Thoughts** are workspaces with their own home-screen widgets. **Settings** configures the brain and the model. **Media** ingests, probes, transcribes and indexes what you throw at it, including OCR and keyframe extraction on video. **Otio** is the market.
 
-**Portal** is the chat: streaming replies, tool calls you can watch happen, a canvas, attachments, and slash commands (`/help`, `/status`, `/whoami`, `/usage`, `/tasks`, `/tools`, `/think`, `/stop`, `/clear`).
-
-**Agents** is where you make your own. Give one a name, instructions and the tools it may use, and it takes work off you in the background while your chat carries on. An agent with no tools still reasons; an agent with a tool can change something on your phone, and the picker shows exactly which tools it holds and offers nothing else. One press grants all of them or none.
-
-**Otio** is the economy. **Inner Mind** is a living graph of everything GURU holds about you, covering memories, conversations, tasks, notes, projects, agents, skills, thoughts, people and every device it has found, drawn as one tissue you explore rather than a list you scroll.
-
-**Heartbeat** is the clock. **Skills** are imported capabilities. **Notes**, **Journal**, **Projects**, **Calendar** and **Thoughts** are the rooms you will live in, each one a full workspace with its own home-screen widgets, and **Settings** is where the brain and the model are configured.
-
-**Media** ingests, probes, transcribes and indexes everything you throw at it, including OCR and keyframe extraction on video.
-
-**Ad Space** is the one place I sell anything: a canvas inside the app that runs animated packs the server pushes, and it never interrupts your work.
 </details>
 
 <details>
@@ -123,135 +112,91 @@ The lobby is a page of tiles you drag into any order you like, and you can ask G
 
 The heartbeat is the difference between an assistant and a presence.
 
-It fires every thirty minutes into your newest conversation with a prompt you write yourself. Not a shipped default, but yours, stored in the database, editable, with a live preview of exactly what a beat will inject, tokens and all.
+It fires every thirty minutes into your newest conversation with a prompt you write. Yours, in the database, editable, with a preview of exactly what a beat will inject.
 
-The room shows you the chain's own pulse: when a beat last actually arrived, and when the next one is booked for. A booking proves only that an alarm was written. Firing proves one was delivered. Without both numbers, "scheduled and dead" and "scheduled and working" look identical.
+The room shows when a beat last arrived and when the next is booked. A booking proves an alarm was written. Firing proves one was delivered. Without both, "scheduled and dead" looks like "scheduled and working".
 
-The switch cannot be turned on without a prompt, because a chain with nothing to send is not a chain. Off always works, and nothing but you ever turns it off.
+The switch cannot be turned on without a prompt. Off always works, and nothing but you turns it off.
 
-There is also a Fire Now button, and it hands the beat to the portal so you watch the reply stream in like any other turn. That exists because the first version fired headlessly into the database and the log proved it worked while the screen showed nothing, and a button that fires something you cannot see reads as broken.
 </details>
 
 <details>
-<summary><strong>Everything through Tor, and it fails closed</strong></summary>
+<summary><strong>Egress: Tor for the internet, direct for your house</strong></summary>
 
-Every model call, every search and every request goes through an embedded Tor engine. Nobody sees what you ask.
+Public traffic rides an embedded Tor engine. Loopback and LAN stay direct, because Tor cannot route private space and asking it to is a guaranteed failure.
 
-When the circuit is not ready the request throws rather than quietly going out over your own connection. That matters more than it sounds: the previous version returned an empty proxy list under a comment claiming it refused clearnet, and the HTTP stack reads an empty list as "no proxy", so "fail closed" was in fact a direct connection to the public internet. It throws now because throwing is what actually stops it.
+Three postures, set with `/tor` and `/clearnet`. **Automatic** is the default: a public host rides Tor. **Tor only** locks it and refuses the override. **Clearnet** is yours to turn on, and every result that went that way says so.
 
-Loopback and LAN addresses stay direct, so your own model keeps working with zero configuration. One policy, in one place, enforced in code rather than promised in a document.
+With no circuit, a public request waits rather than falling back to direct. Past the window it fails closed and says why. A request carrying a credential always forces Tor and ignores the override.
+
+One policy, one place, enforced in code. The [security policy](SECURITY.md) states what it does and where the limits are.
+
 </details>
 
-<details>
-<summary><strong>The instructions are yours to read</strong></summary>
+## The instructions are published
 
-Every prompt GURU runs on is pulled from the publisher, saved onto your phone in plain text and editable. There is no compiled-in instruction set and no hidden layer deciding what you are allowed to ask.
+Every prompt, skill, tool definition, agent template and canvas pack GURU receives sits in a public repo: **[GuruProduction/GURU-content](https://github.com/GuruProduction/GURU-content)**, mirrored from the live database on every publish. Read the instruction set that ships to your phone and diff it month to month.
 
-If you want to know why GURU did something, go and look. If you disagree with how it behaves, change it. There is no intellectual property I am protecting in those files, because you could do all of this yourself if you tried hard enough. I did it first, and you are welcome to it.
-</details>
+Content is served from a publisher rather than compiled into the APK, so a new capability reaches you the day it is built instead of the day the next release ships. The serving infrastructure stays closed. The payload does not, and it was never secret: a synced prompt sits readable in that phone's storage.
 
-## Otio
-
-Otio is where everything you make with your GURU turns into something you can own, sell, or share. It is not an app store, and it is not a second-hand marketplace bolted onto a chat app. It is three layers, and only the first one is live.
-
-**Layer one, the creator market.** You sell whatever you build: skills, tools, agents, masks, and also games, websites, apps, books, NFTs, services and any other digital thing you make. That list is deliberately open. I have named the kinds I have thought of and I am not going to pretend that is the whole of it.
-
-What ships today is the agent market, because agents are what exist so far. The rest of the layer is the same machinery with more item types in front of it.
-
-**Layer two, the data marketplace.** This is the one I care about most and the one that does not exist yet.
-
-The idea is that GURU stops other apps farming your data, the way a VPN would, and absorbs that traffic itself instead. You see your own captured data, categorised and readable, and you decide what, if anything, to sell. The buyers are the companies already buying that data today, except they buy it straight off you instead of off big tech.
-
-That is the same complaint GURU started from, turned into a business instead of a grievance. Right now the deal is you get spied on for free. Layer two is me offering a version where you get paid. It gets switched on when there are enough backers to do it properly, because it is a big job and I will not ship a half version of it.
-
-**Layer three, the social network.** A decentralised social layer inside the app, used by both you and your GURUs. Least specified of the three, because it comes last.
-
-**Identity is a wallet, not an account.** No sign-up, no login, no email capture, no profile the server can attach to a person. You trade under a pseudonym and the server never learns your name.
-
-**The money is held by Unus Lumen.** I take the funds, hold them, and pay creators out to their accounts. It is not per-transaction settlement and it is not on-chain, and I would rather say that plainly than let anyone assume a decentralised payout that does not exist. The split is 80 percent to the maker, 20 percent plus payment costs to Unus Lumen.
-
-### The agent market, as it stands today
-
-Search it, filter by free, paid or owned, browse by category, look up the maker, read every tool an agent is allowed to use before you pay, buy it once, and keep it even if the author withdraws it later. Publishing is one line, a category and a price.
-
-Every fact on the screen is served rather than invented. Counts come from real install and rating tables, makers come from real publisher records, prices come from the catalogue. Where the server has nothing to say the screen says nothing, so a rating nobody has given shows no stars at all instead of a fake zero. When the market cannot be reached it says so plainly and tells you everything you already own still works, because "could not ask" and "nothing exists" are different answers and one of them is a lie about your phone.
-
-**Payments are not switched on yet.** A priced agent will tell you so rather than quietly giving itself to you for free and implying the price was never real.
-
-Every image below was captured live on a phone.
-
-<table>
-<tr>
-<td width="33%"><img src="screenshots/marketplace/01-market.png" alt="The Otio market front"><br><b>The market</b><br>Search, categories, editor's pick, and everything published.</td>
-<td width="33%"><img src="screenshots/marketplace/02-agent-archivist.png" alt="An agent's detail page"><br><b>An agent's page</b><br>What it does, what it may use, who made it, and what it costs.</td>
-<td width="33%"><img src="screenshots/marketplace/03-checkout.png" alt="Checkout"><br><b>Checkout</b><br>One price, VAT shown, paid once.</td>
-</tr>
-<tr>
-<td width="33%"><img src="screenshots/marketplace/04-purchase-done.png" alt="Purchase confirmation"><br><b>Yours</b><br>Switched on and in your agents, ready for work straight away.</td>
-<td width="33%"><img src="screenshots/marketplace/05-your-agents.png" alt="Your agents"><br><b>Your agents</b><br>Updates waiting, things you bought, things you got free.</td>
-<td width="33%"><img src="screenshots/marketplace/06-shelf.png" alt="Your shelf"><br><b>Your shelf</b><br>What you have published, what is in review, what is retired.</td>
-</tr>
-<tr>
-<td width="33%"><img src="screenshots/marketplace/07-publish.png" alt="Publishing an agent"><br><b>Publishing</b><br>One line, a category, a price. You keep the majority.</td>
-<td width="33%"><img src="screenshots/marketplace/11-earnings.png" alt="Earnings"><br><b>Earnings</b><br>What sold, what you keep, and when you get paid.</td>
-<td width="33%"><img src="screenshots/marketplace/10-maker-profile.png" alt="A maker's profile"><br><b>A maker's profile</b><br>Who built it, what else they made, and whether it was reviewed.</td>
-</tr>
-<tr>
-<td width="33%"><img src="screenshots/marketplace/08-market-offline.png" alt="The market unreachable"><br><b>Nothing hidden</b><br>When the market cannot be reached it says so, and everything you own still works.</td>
-<td width="33%"><img src="screenshots/marketplace/09-search-empty.png" alt="An empty search"><br><b>An honest empty</b><br>No results means no results, not a broken connection.</td>
-<td width="33%"></td>
-</tr>
-</table>
+Read it, change it on your install, point GURU at your own server. The sync protocol is plain documented HTTP.
 
 ## Bring your own model
 
-GURU asks once, on first launch, where your model lives. Then it never asks again.
+GURU asks once, on first launch, where your model lives. Then never again.
 
 | Option | How | What it means |
 |---|---|---|
-| **Cloud API key** | Anthropic, OpenAI, Google, xAI, or any OpenAI-compatible endpoint | Your key stays on your device. Your conversations do not. |
-| **Local model** | Point at Ollama on your network, `http://YOUR_LAN_IP:11434`, or any OpenAI-compatible server | Recommended. Zero token cost, and your conversations never leave hardware you own. |
-| **Rented GPU** | Take a server on [vast.ai](https://cloud.vast.ai), pull a model with Ollama, put a Cloudflare tunnel on it | Cheap unlimited usage, still private through Tor, and about 50p an hour. |
+| **Local model** | Ollama on your network, `http://YOUR_LAN_IP:11434`, or any OpenAI-compatible server | Zero token cost, and conversations never leave hardware you own. |
+| **Cloud API key** | Anthropic, OpenAI, Google, xAI, or any OpenAI-compatible endpoint | Your key stays on your device. Conversations go to that provider under their terms. |
+| **Rented GPU** | A server on [vast.ai](https://cloud.vast.ai), a model with Ollama, a Cloudflare tunnel | Cheap unlimited usage, private through Tor, about 50p an hour. |
 
-No inference runs through any Unus Lumen dependency, ever. I do not take a cut of your tokens and I do not see your prompts.
+No inference runs through any Unus Lumen dependency. I take no cut of your tokens and see none of your prompts.
 
-Be honest with yourself about cost. An agentic framework burns tokens at agentic volumes, and flagship cloud models billed per token add up fast. A 120-billion-parameter open model on rented hardware beats most paid tiers outright, and the free tiers you are used to are small models that feel like a goldfish with amnesia. Ollama Cloud is close to a cheat code: massive multimodal models, serious agentic coders, a wide selection, and very little money.
+An agentic framework burns tokens at agentic volumes, and flagship cloud models billed per token add up. A 120-billion-parameter open model on rented hardware beats most paid tiers, and free tiers are small models that feel like a goldfish with amnesia.
 
-## Free, and open source
-
-GURU is free. AGPL-3.0, no accounts, no subscription, no premium tier, no token markup, no feature held back behind a plan. You connect a model and start talking to your numen. That is the whole setup.
-
-**Honest state: this is a public beta.** The full source is here. On-device encryption and Tor routing have not yet had a professional security audit, though the security work is real and continuing. There are bugs, particularly in areas outside my own daily use. The people installing GURU right now are beta testers, and I would rather say that than dress it up. Install it knowing what it is, report what you find, and you are helping ship it.
-
-The publisher is Unus Lumen's own infrastructure and stays closed source. It is deliberately stateless, holds no accounts and captures no conversations, so there is nothing there to leak. It feeds the app its prompts, skills, tool definitions, agent templates and canvas packs. A GURU that cannot reach a publisher still boots, but you will need to write and register your own prompts. Running publisher-less means operating your own compatible server or hand-installing the content, and the sync protocol is plain documented HTTP.
+GURU adds no restrictions of its own. A cloud provider applies theirs, and local weights do whatever they do.
 
 ## Install
 
-GURU is not on the Play Store and will not be. Take the signed APK from the [latest release](../../releases/latest) and allow installation from unknown sources when Android asks.
+Not on the Play Store and will not be. Take the signed APK from the [latest release](../../releases/latest) and allow unknown sources.
 
-The APK is about 743 MB, and the size is the point. It carries the Python runtime, the Termux userland, the reverse-engineering toolchain and the native binaries, so none of it has to be fetched or assembled later. Android 8.0 or later.
+About 743 MB, and the size is the point: the Python runtime, the userland, the reverse-engineering toolchain and the native binaries are inside, so none of it is fetched later. Android 8.0 or later.
 
-Verify the SHA-256 on the release page before you sideload if that matters to you. It should.
+Verify before you sideload. The release page carries a SHA-256, and the signing certificate's fingerprint is in [SECURITY.md](SECURITY.md).
 
-You will need a model connected before GURU can do anything useful, and the onboarding walks you through it.
+```bash
+sha256sum guru-v3.77-release.apk
+apksigner verify --print-certs guru-v3.77-release.apk
+```
+
+Connect a model before GURU can do anything useful. Onboarding walks you through it.
+
+## Otio
+
+One layer is live: the creator market, where you sell what you build. Agents today; the same machinery carries skills, tools and packs. Buy once, keep it even if the author withdraws it, and read every tool an agent may use before you pay.
+
+Every fact on that screen is served, not invented. Counts come from install and rating tables, makers from publisher records, prices from the catalogue. Where the server has nothing to say the screen says nothing, so a rating nobody gave shows no stars instead of a fake zero. When the market cannot be reached it says so, and that everything you own still works.
+
+**Payments are not switched on.** A priced agent tells you so rather than giving itself away and implying the price was never real.
+
+Two further layers are designed and unbuilt: a data marketplace where you sell your own captured data, and a decentralised social layer. They live in [VISION.md](VISION.md) until they exist.
+
+Identity is a wallet, not an account. No sign-up, no email capture. You trade under a pseudonym. Unus Lumen holds the funds and pays creators, 80 percent to the maker, 20 percent to Unus Lumen.
+
+## Honest state
+
+Public beta, one maintainer, no CI, no static analysis gate, no outside security audit. The code is largely AI-written, reviewed by tests and by me. That is not a stranger's review. Bugs exist, particularly outside my daily use.
+
+Every release is a beta, and the [security policy](SECURITY.md) lists every known gap rather than the flattering subset.
+
+Report what you find. It helps.
 
 ## Who is Unus Lumen
 
-A tech company in Bristol, UK. Founded by Steven Newman. One person, unfunded, from a blank slate with no reference material. No team, no backers, nobody teaching me the rules.
+A tech company in Bristol, UK, founded by Steven Newman. One person, unfunded, from a blank slate.
 
-I test the limits of what AI can do because the possibilities are endless and I refuse to be told no. Nobody taught me where the boundaries are supposed to be, so I never learned to build them in.
-
-## What it becomes
-
-GURU already works. It runs daily, it drives real hardware in my house, and it does things nothing else on a phone does. That is not a roadmap, that is this morning.
-
-What it becomes is bigger. Every app on your phone becomes a dependency of GURU, and you only ever need to open one app. Your messages, email, calendar, smart home, searches, bookings, finance and creative work, all of it behind one intelligence that already knows the rest of your life.
-
-Inside that ecosystem, people create. They build toolkits and skills and masks and agents and games, sell them on Otio, and eventually sell their own data on their own terms. Unus Lumen takes a small cut of every transaction and keeps the lights on. The economy runs itself.
-
-Masks will let you change the personality of your numen entirely. Serious and professional, funny and crude, dark and twisted, warm and gentle. Whoever you need it to be.
-
-The vision is this. You get an idea in the shower. By the time you are dressed it is already in motion. Your numen has made the calls, built the thing and put it in place. Technology working for people instead of against them. Humans being human again, machines getting on with the work.
+I test the limits of what AI can do because the possibilities are endless and I refuse to be told no. Nobody taught me where the boundaries belong, so I never learned to build them in.
 
 ## Read more
 
@@ -260,8 +205,9 @@ The vision is this. You get an idea in the shower. By the time you are dressed i
 | [Vision](VISION.md) | What GURU is for and why it exists |
 | [Architecture](ARCHITECTURE.md) | The parts, the runtime paths and the invariants |
 | [Contributing](CONTRIBUTING.md) | How to build, test, and get a pull request merged |
-| [Security](SECURITY.md) | Vulnerability reporting and the attack surface |
+| [Security](SECURITY.md) | Reporting, measured posture, every known gap |
 | [Privacy Policy](PRIVACY_POLICY.md) | What leaves the device, and what does not |
+| [Content](https://github.com/GuruProduction/GURU-content) | Every prompt, skill, tool and agent the server sends |
 | [NOTICE](NOTICE.md) | Every third-party component inside the APK, and its licence |
 | [A note from Steven](A-NOTE-FROM-STEVEN.md) | Why I built this, in my own words |
 
@@ -271,25 +217,25 @@ The vision is this. You get an idea in the shower. By the time you are dressed i
 cd GURUbeta-FULL && ./gradlew assembleDebug
 ```
 
-JDK 17 and the Android SDK are required, and the Gradle wrapper lives inside `GURUbeta-FULL` rather than at the root. Full instructions, including the build lock and the three verification layers, are in [CONTRIBUTING.md](CONTRIBUTING.md).
+JDK 17 and the Android SDK. The wrapper lives inside `GURUbeta-FULL`, not at the root. Build lock and verification layers are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licence
 
-AGPL-3.0 for the app. The GURU name and branding are trademarks of Unus Lumen Ltd, Bristol, UK. A fork renames and does not imply endorsement. The licence governs the code and the trademark governs the name, and [NOTICE.md](NOTICE.md) has the full posture along with every bundled component's terms.
+AGPL-3.0 for the app. The GURU name and branding are trademarks of Unus Lumen Ltd, Bristol, UK. A fork renames and implies no endorsement. [NOTICE.md](NOTICE.md) has the full posture and every bundled component's terms.
 
 ## The spirit
 
 I was sick of being data farmed, lied to, and told no by products that charge extortionate amounts for a substandard experience. I wanted ultimate control of my own life, backed by superintelligence, with total privacy. So I built it.
 
-Category defining tech should be community driven. Open source is the only road now. I have shown that this level of capability, control and privacy on an ordinary phone is possible. Now help me build it.
+Category defining tech should be community driven. Open source is the only road now. This level of capability, control and privacy on an ordinary phone is possible. Now help me build it.
 
 ## Connect
 
 - Website: **[www.unuslumen.com](https://www.unuslumen.com)**
+- X: [@introducingguru](https://x.com/introducingguru)
 - TikTok: [@introducingguru](https://www.tiktok.com/@introducingguru)
 - Instagram: [@introducingguru](https://www.instagram.com/introducingguru)
 - YouTube: [@introducingguru](https://www.youtube.com/@introducingguru)
-- X: [@introducingguru](https://x.com/introducingguru)
 - Kick: [kick.com/introducingguru](https://kick.com/introducingguru)
 
 ---
