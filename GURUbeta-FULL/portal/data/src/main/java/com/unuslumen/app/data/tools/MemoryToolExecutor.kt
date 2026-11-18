@@ -190,6 +190,37 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) : ToolE
             }
         }
 
+        MemoryToolDefinitions.TRAVERSE_MEMORY_GRAPH -> {
+            val subject = args["subject"] as? String ?: return ToolExecutionResult.error("Missing 'subject'")
+            if (subject.trim().length < 2) {
+                return ToolExecutionResult.error("Subject too short. Name the person, project or thing to walk around.")
+            }
+            val edgeType = (args["edgeType"] as? String ?: "composite").trim().lowercase()
+            val depth = (args["depth"] as? Number)?.toInt() ?: 3
+            val maxNodes = (args["maxNodes"] as? Number)?.toInt() ?: 40
+            try {
+                val connected = memoryRepository.traverseGraph(subject.trim(), edgeType, depth, maxNodes)
+                if (connected.isEmpty()) {
+                    // An empty walk means the graph reached nothing from that
+                    // subject, which is a real answer about the brain's shape and
+                    // not a failure. It is reported as an empty list plus the
+                    // subject echoed back, so a caller can tell it apart from a
+                    // search that simply had no word matches.
+                    val empty = TraverseMemoryGraphResult(subject.trim(), edgeType, depth.coerceIn(1, 6), emptyList())
+                    return ToolExecutionResult.success(empty, json.encodeToString(TraverseMemoryGraphResult.serializer(), empty))
+                }
+                val result = TraverseMemoryGraphResult(
+                    subject = subject.trim(),
+                    edgeType = edgeType,
+                    depth = depth.coerceIn(1, 6),
+                    connected = connected.map { it.toInfo() },
+                )
+                ToolExecutionResult.success(result, json.encodeToString(TraverseMemoryGraphResult.serializer(), result))
+            } catch (e: Exception) {
+                ToolExecutionResult.error("brain graph walk rejected: ${e.message?.take(200)}")
+            }
+        }
+
         MemoryToolDefinitions.SEARCH_ALL_MEMORY -> {
             val query = args["query"] as? String ?: return ToolExecutionResult.error("Missing 'query'")
             val facts = memoryRepository.searchFacts(query, null)

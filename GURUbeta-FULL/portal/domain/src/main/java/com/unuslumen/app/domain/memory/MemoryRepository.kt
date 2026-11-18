@@ -56,6 +56,25 @@ interface MemoryRepository {
     suspend fun markFactRecalled(factId: String)
     suspend fun deleteFact(factId: String)
 
+    /**
+     * Walk the graph around a subject and return the connected facts.
+     *
+     * A relevance search answers "which memories share words with this", and a
+     * listing answers "what do I hold". Neither can answer "what is connected to
+     * this", because the connection is an edge rather than a shared word. That
+     * third question is what this exposes: typed edges (semantic, temporal,
+     * causal, entity) traversed from whatever node best represents the subject.
+     *
+     * [edgeType] is one of semantic, temporal, causal, entity or composite, and
+     * anything unrecognised falls back to composite rather than failing.
+     */
+    suspend fun traverseGraph(
+        subject: String,
+        edgeType: String = "composite",
+        maxDepth: Int = 3,
+        maxNodes: Int = 40,
+    ): List<MemoryFact>
+
     suspend fun persistThreads(threads: List<ConversationThread>)
     suspend fun getAllThreads(): List<ConversationThread>
 
