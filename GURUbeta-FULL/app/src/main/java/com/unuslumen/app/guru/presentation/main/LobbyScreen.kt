@@ -410,8 +410,7 @@ private fun rankRooms(tiles: List<LobbyTile>, counts: Map<String, Int>): List<Ra
     return busy + idle
 }
 
-private fun isComingSoon(tile: LobbyTile): Boolean =
-    tile.key == "static:journal" || tile.key == "static:projects"
+private fun isComingSoon(tile: LobbyTile): Boolean = false
 
 /** Move one room by a number of positions, clamped. */
 private fun moveInOrder(
@@ -442,7 +441,8 @@ private fun openRoom(navController: NavHostController, tile: LobbyTile) {
         tile.key == "static:ottio" -> navController.navigate(Screen.AgentMarketScreen)
         tile.key == "static:heartbeat" -> navController.navigate(Screen.HeartbeatScreen)
         tile.key == "static:innermind" -> navController.navigate(Screen.InnerMindScreen)
-        // journal and projects are built but closed: tapping does nothing.
+        tile.key == "static:journal" -> navController.navigate(Screen.JournalScreen)
+        tile.key == "static:projects" -> navController.navigate(Screen.ProjectsScreen)
         else -> Unit
     }
 }

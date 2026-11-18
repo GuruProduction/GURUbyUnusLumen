@@ -3,42 +3,43 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.presentation
 
-import android.content.res.Configuration.UI_MODE_NIGHT_YES
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyItemScope
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.unuslumen.app.domain.model.CalendarEvent
 import com.unuslumen.app.ui.R
-import com.unuslumen.app.ui.theme.guruTheme
+import com.unuslumen.app.ui.theme.Memphis
+import com.unuslumen.app.ui.theme.MemphisSurface
+import com.unuslumen.app.ui.theme.captionStyle
+import com.unuslumen.app.ui.theme.posterStyle
 import com.unuslumen.app.util.date.formatEventStartEnd
 
+/**
+ * One event as a ruled row, in the house language.
+ *
+ * The card keeps the calendar's own colour, but it carries it as a solid spine down
+ * the left edge rather than a rounded pill, and the whole thing sits in a hard ink
+ * frame with a printed drop. The title is in the poster face, the time is a caption.
+ */
 @Composable
 fun LazyItemScope.CalendarEventItem(
     event: CalendarEvent,
@@ -46,38 +47,40 @@ fun LazyItemScope.CalendarEventItem(
     onClick: (CalendarEvent) -> Unit
 ) {
     val context = LocalContext.current
-    Card(
+
+    MemphisSurface(
         modifier = modifier
-            .animateItem(),
-        shape = RoundedCornerShape(20.dp),
-        elevation = CardDefaults.elevatedCardElevation(4.dp)
+            .fillMaxWidth()
+            .animateItem()
+            .clickable { onClick(event) },
+        color = Memphis.Paper,
+        borderWidth = 2.5.dp,
+        shadowOffset = 3.dp,
     ) {
         Row(
+            modifier = Modifier.fillMaxWidth().height(58.dp),
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(start = 12.dp)
         ) {
             Box(
-                modifier = Modifier
-                    .width(8.dp)
-                    .height(34.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(Color(event.color)),
+                Modifier
+                    .width(7.dp)
+                    .fillMaxHeight()
+                    .background(Color(event.color))
             )
             Column(
-                modifier = Modifier
-                    .clickable { onClick(event) }
-                    .padding(start = 12.dp, top = 12.dp, bottom = 12.dp, end = 6.dp)
+                Modifier
+                    .padding(start = 11.dp, end = 9.dp)
                     .fillMaxWidth()
             ) {
                 Text(
-                    event.title,
-                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                    text = event.title,
+                    style = posterStyle(12.5f),
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
                 )
-                Spacer(Modifier.height(2.dp))
+                Spacer(Modifier.height(3.dp))
                 Text(
-                    context.formatEventStartEnd(
+                    text = context.formatEventStartEnd(
                         start = event.start,
                         end = event.end,
                         allDayString = stringResource(R.string.all_day),
@@ -86,39 +89,9 @@ fun LazyItemScope.CalendarEventItem(
                         location = event.location,
                         allDay = event.allDay,
                     ),
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.55f)),
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-
-            }
-        }
-    }
-}
-
-@Preview
-@Preview(uiMode = UI_MODE_NIGHT_YES)
-@Composable
-fun CalendarEventItemPreview() {
-    val sampleEvent = CalendarEvent(
-        title = "Sample Event",
-        start = System.currentTimeMillis(),
-        end = System.currentTimeMillis() + 60 * 60 * 1000L,
-        color = Color.Red.toArgb(),
-        location = "Office",
-        allDay = false,
-        id = 2,
-        calendarId = 1
-    )
-
-    guruTheme {
-        LazyColumn(
-            contentPadding = PaddingValues(8.dp)
-        ) {
-            item {
-                CalendarEventItem(
-                    event = sampleEvent,
-                    onClick = {}
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }

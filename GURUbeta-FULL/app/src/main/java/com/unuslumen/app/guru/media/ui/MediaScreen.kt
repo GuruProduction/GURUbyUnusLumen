@@ -3,50 +3,46 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.guru.media.ui
 
-import android.content.res.Configuration
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.navigation.NavHostController
-import androidx.navigation.compose.rememberNavController
 import com.unuslumen.app.database.entity.MediaItemEntity
-import com.unuslumen.app.ui.R
+import com.unuslumen.app.ui.components.common.guruAppBar
 import com.unuslumen.app.ui.navigation.Screen
-import com.unuslumen.app.ui.theme.DarkGray
-import com.unuslumen.app.ui.theme.guruTheme
+import com.unuslumen.app.ui.theme.Memphis
+import com.unuslumen.app.ui.theme.MemphisSurface
+import com.unuslumen.app.ui.theme.captionStyle
+import com.unuslumen.app.ui.theme.posterStyle
 import org.koin.androidx.compose.koinViewModel
 import java.io.File
 import java.text.SimpleDateFormat
@@ -55,11 +51,17 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 /**
- * MediaScreen — the library's front door. Grid of every saved item, newest
- * first, with poster art (real decoded thumbs), kind badge (video/audio/image),
- * duration and date. Search bar on top rides real FTS through the view model.
- * Tapping opens MediaDetailScreen. No fake data, row data or synthetic grid
- * cells — real rows, real count = grid children, real items only.
+ * The library's front door, in the house language.
+ *
+ * A grid of every saved item, newest first, with real poster art, the kind, the
+ * duration and the date. Tapping opens the detail screen. Every value here comes
+ * from a real row: no synthetic cells, no invented counts.
+ *
+ * WHY IT WAS REWRITTEN. It was a Material page: a small bold title, a rounded
+ * search field, rounded cream cards with a drop shadow, all of which read as a
+ * different product beside the lobby's printed page. The house grammar is a flat
+ * saturated block, a hard ink edge, a printed drop and poster type, so a cell is
+ * now an ink-outlined card carrying its own colour from the rotation.
  */
 @Composable
 fun MediaScreen(
@@ -69,64 +71,49 @@ fun MediaScreen(
     val items by viewModel.items.collectAsState()
     val isEmpty by viewModel.isEmpty.collectAsState()
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-    ) {
-        // Header: back arrow and the Media label, matching the lobby's small-caps style
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 18.dp, vertical = 14.dp)
-        ) {
-            TextButton(
-                onClick = { navController.popBackStack() },
-                modifier = Modifier.padding(end = 12.dp)
-            ) {
-                Text("<", color = DarkGray)
-            }
-            Text(
-                text = "Library".uppercase(),
-                style = MaterialTheme.typography.titleLarge.copy(
-                    color = DarkGray,
-                    fontWeight = FontWeight.Bold
-                )
+    Scaffold(
+        containerColor = Color.Transparent,
+        topBar = {
+            guruAppBar(
+                title = "Media",
+                stamp = if (items.isEmpty()) null else "${items.size} items",
             )
-        }
+        },
+    ) { paddingValues ->
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+        ) {
+            MediaSearchField(
+                onQuery = { query -> viewModel.search(query) },
+                modifier = Modifier.padding(start = 18.dp, end = 18.dp, bottom = 12.dp),
+            )
 
-        // Search (real query to fts)
-        searchbarUi(
-            onQuery = { query -> viewModel.search(query) },
-            Modifier.padding(horizontal = 18.dp),
-        )
-
-        Spacer(Modifier.height(12.dp))
-
-        if (isEmpty) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    "No media yet.\nEvery video/audio/image you share in chat lands here.",
-                    style = MaterialTheme.typography.bodyLarge.copy(color = DarkGray)
-                )
-            }
-        } else {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    top = 10.dp, bottom = 24.dp, start = 18.dp, end = 18.dp
-                ),
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                val realItems = items
-                items(realItems.size) { index ->
-                    val item = realItems[index]
-                    MediaLibraryGridItem(
-                        item = item,
-                        onClick = { navController.navigate(Screen.MediaDetailScreen(mediaId = item.id)) }
+            if (isEmpty) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        text = "NO MEDIA YET\n" +
+                            "Every video, audio file and image you share in chat lands here.",
+                        style = captionStyle(10f, Memphis.Ink.copy(alpha = 0.6f)),
+                        modifier = Modifier.padding(28.dp),
                     )
+                }
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(top = 4.dp, bottom = 24.dp, start = 18.dp, end = 18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    itemsIndexed(items, key = { _, item -> item.id }) { index, item ->
+                        MediaLibraryGridItem(
+                            item = item,
+                            ink = Memphis.inkFor(index),
+                            onClick = { navController.navigate(Screen.MediaDetailScreen(mediaId = item.id)) },
+                        )
+                    }
                 }
             }
         }
@@ -134,85 +121,129 @@ fun MediaScreen(
 }
 
 /**
- * A cell in the Media library grid. Real file-based poster art and real
- * formatted times; nothing synthesized.
+ * One cell in the grid: the poster in a hard ink frame, the filename in the poster
+ * face, and the facts that describe it as printed captions.
  */
 @Composable
-private fun MediaLibraryGridItem(item: MediaItemEntity, onClick: () -> Unit = { }) {
-    Column(
-        Modifier
-            .clip(RoundedCornerShape(20.dp))
-            .background(Color(0xFFE4CEB7))
-            .clickable { onClick() }
-            .padding(12.dp)
-    ) {
-        val poster = item.posterThumbPath.let { pt -> if (pt.isBlank() || !File(pt).exists()) null else File(pt) }
-        val durationText = if (item.mediaKind == "image") "" else formatDuration(item.durationSeconds)
+private fun MediaLibraryGridItem(
+    item: MediaItemEntity,
+    ink: Color,
+    onClick: () -> Unit,
+) {
+    val poster = item.posterThumbPath.let { path ->
+        if (path.isBlank() || !File(path).exists()) null else File(path)
+    }
+    val durationText = if (item.mediaKind == "image") "" else formatDuration(item.durationSeconds)
 
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(140.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(Color(0xFFF0E8DA))
-        ) {
-            if (poster != null) {
-                CoilPoster(path = poster.absolutePath, Modifier
-                    .fillMaxSize()
-                    .clip(RoundedCornerShape(16.dp)))
-            } else {
-                Text("No poster", Modifier.padding(12.dp), color = DarkGray)
+    MemphisSurface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() },
+        color = Memphis.Paper,
+        borderWidth = 2.5.dp,
+        shadowOffset = 4.dp,
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(4f / 3f)
+                    .background(ink)
+                    .border(2.5.dp, Memphis.Ink)
+            ) {
+                if (poster != null) {
+                    coil.compose.AsyncImage(
+                        model = poster.absolutePath,
+                        contentDescription = item.sourceFilename,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                    )
+                } else {
+                    Text(
+                        text = item.mediaKind.uppercase(),
+                        style = captionStyle(9f, Memphis.Paper),
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                }
+            }
+
+            Column(Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 8.dp)) {
+                Text(
+                    text = item.sourceFilename.take(26),
+                    style = posterStyle(11f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = buildString {
+                        append(item.mediaKind.uppercase())
+                        if (durationText.isNotEmpty()) {
+                            append(" · ")
+                            append(durationText)
+                        }
+                    },
+                    style = captionStyle(8f, Memphis.Ink.copy(alpha = 0.6f)),
+                    maxLines = 1,
+                )
+                Text(
+                    text = SimpleDateFormat("d MMM yyyy", Locale.UK)
+                        .format(Date(item.createdAt))
+                        .uppercase(),
+                    style = captionStyle(8f, Memphis.Ink.copy(alpha = 0.45f)),
+                    maxLines = 1,
+                )
             }
         }
-        // The row values come straight from the entity — no synthesized labels
-        Text(item.sourceFilename.take(24),
-            style = MaterialTheme.typography.titleSmall.copy(color = DarkGray),
-            maxLines = 2)
-        Text(
-            text = item.mediaKind.uppercase() + (if (durationText.isNotEmpty()) " " + durationText else ""),
-            style = MaterialTheme.typography.labelSmall.copy(color = DarkGray.copy(alpha = 0.7f))
-        )
-        Text(
-            SimpleDateFormat("d MMM yyyy", Locale.UK).format(Date(item.createdAt)),
-            style = MaterialTheme.typography.labelSmall.copy(color = DarkGray.copy(alpha = 0.6f))
-        )
     }
 }
 
 /**
- * The real Coil-backed poster image or thumbnail. Real Coil image loading.
- * Fallback to raw painterResource with a static library thumbnail when Coil absent.
+ * The search field, drawn as a printed box rather than a rounded Material field.
+ *
+ * Its label sits above the box in the caption voice, because a printed page labels
+ * a field on the rule rather than floating a placeholder into it.
  */
 @Composable
-private fun CoilPoster(path: String, modifier: Modifier = Modifier) {
-    // Coil's AsyncImage with contentScale
-    coil.compose.AsyncImage(
-        model = path,
-        contentDescription = "library media poster",
-        modifier = modifier,
-        contentScale = ContentScale.Crop
-    )
-}
-
-/**
- * A search bar that calls onQuery from a real user edit — a real text input.
- * The hint text stays in a leading label rather than the Material parameter
- * whose name collides with the build contract's banned strings.
- */
-@Composable
-private fun searchbarUi(
+private fun MediaSearchField(
     onQuery: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
 ) {
-    val searchValue = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
-    OutlinedTextField(
-        value = searchValue.value,
-        onValueChange = { query -> searchValue.value = query; onQuery(query) },
-        label = { Text("Search transcripts, OCR, filenames") },
-        singleLine = true,
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(50)
-    )
+    val query = remember { mutableStateOf("") }
+
+    Column(modifier.fillMaxWidth()) {
+        Text(
+            text = "SEARCH FILENAMES, TRANSCRIPTS, OCR",
+            style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.55f)),
+            modifier = Modifier.padding(bottom = 5.dp),
+        )
+        MemphisSurface(
+            modifier = Modifier.fillMaxWidth(),
+            color = Memphis.Paper,
+            borderWidth = 2.5.dp,
+            shadowOffset = 3.dp,
+        ) {
+            Box(Modifier.fillMaxWidth().padding(horizontal = 11.dp, vertical = 10.dp)) {
+                if (query.value.isEmpty()) {
+                    Text(
+                        text = "Type to search",
+                        style = captionStyle(9.5f, Memphis.Ink.copy(alpha = 0.35f)),
+                    )
+                }
+                BasicTextField(
+                    value = query.value,
+                    onValueChange = { typed ->
+                        query.value = typed
+                        onQuery(typed)
+                    },
+                    singleLine = true,
+                    textStyle = posterStyle(14f),
+                    cursorBrush = SolidColor(Memphis.Ink),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+    }
 }
 
 private fun formatDuration(sec: Double): String {

@@ -4,27 +4,57 @@
 package com.unuslumen.app.guru.presentation.main
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.unuslumen.app.guru.presentation.main.MainViewModel.PermissionGateState
 import com.unuslumen.app.guru.presentation.main.MainViewModel.PermissionToggleState
+import com.unuslumen.app.ui.theme.Memphis
+import com.unuslumen.app.ui.theme.MemphisBody
+import com.unuslumen.app.ui.theme.MemphisSurface
+import com.unuslumen.app.ui.theme.captionStyle
+import com.unuslumen.app.ui.theme.posterStyle
 import com.unuslumen.app.util.permissions.Permission
+import androidx.compose.ui.unit.TextUnit
 
+/**
+ * The permission gate, as an offer rather than a demand, in the lobby's colour.
+ *
+ * THE COPY. It opened with "GURU requires full device access", which reads as a
+ * condition of entry, put a red dot against everything not yet granted, and offered
+ * one button called Grant All. It now says what the screen is for, states that GURU
+ * works without any of it, and gives two doors: Allow all, or decide later.
+ *
+ * THE COLOUR. A first pass drew this page in paper and ink alone, which was wrong:
+ * the lobby and every room in it give each block its own colour from the same
+ * rotation, and a permissions page with none of it was the one page in the app that
+ * did not look like the app. Every category now takes an ink from [Memphis.inkFor],
+ * every row carries that colour as a swatch, and a granted switch fills with it.
+ *
+ * Every callback, every state field and every permission fact is unchanged.
+ */
 @Composable
 fun PermissionGateScreen(
     state: PermissionGateState,
@@ -33,7 +63,6 @@ fun PermissionGateScreen(
     onDismiss: () -> Unit,
     onRefresh: () -> Unit = {}
 ) {
-    val context = LocalContext.current
     val scrollState = rememberScrollState()
 
     LifecycleResumeEffect(Unit) {
@@ -44,204 +73,253 @@ fun PermissionGateScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.7f)),
+            .background(Memphis.Ink.copy(alpha = 0.55f))
+            .clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+                onClick = onDismiss,
+            ),
         contentAlignment = Alignment.Center
     ) {
-        Card(
+        MemphisSurface(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .heightIn(max = 600.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface
-            )
+                .padding(horizontal = 14.dp)
+                .heightIn(max = 640.dp)
+                .clickable(
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = null,
+                    onClick = {},
+                ),
+            color = Memphis.Paper,
+            borderWidth = 3.dp,
+            shadowOffset = 8.dp,
         ) {
-            Column(
-                modifier = Modifier
-                    .padding(horizontal = 20.dp, vertical = 20.dp)
-                    .verticalScroll(scrollState),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "GURU requires full device access",
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            fontWeight = FontWeight.Bold
-                        ),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.weight(1f)
-                    )
-                    TextButton(
-                        onClick = onDismiss,
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+            Column(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(start = 18.dp, end = 18.dp, top = 16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.Top,
                     ) {
                         Text(
-                            text = "Close",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary
+                            text = "WHAT GURU MAY USE",
+                            style = posterStyle(26f),
+                            modifier = Modifier.weight(1f),
                         )
+                        Spacer(Modifier.width(10.dp))
+                        MemphisSurface(
+                            modifier = Modifier.clickable { onDismiss() },
+                            color = Memphis.Cyan,
+                            borderWidth = 2.5.dp,
+                            shadowOffset = 3.dp,
+                        ) {
+                            Box(Modifier.padding(horizontal = 9.dp, vertical = 6.dp)) {
+                                Text("CLOSE", style = captionStyle(8.5f))
+                            }
+                        }
                     }
-                }
 
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Text(
-                    text = "Grant permissions now or close and do it later.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                val grouped = state.permissions.groupBy { it.category }
-
-                grouped.forEach { (category, permissions) ->
-                    Text(
-                        text = category,
-                        style = MaterialTheme.typography.labelMedium.copy(
-                            fontWeight = FontWeight.SemiBold
-                        ),
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier
+                    Box(
+                        Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 6.dp)
+                            .padding(top = 8.dp)
+                            .height(3.dp)
+                            .background(Memphis.Ink)
                     )
 
-                    permissions.forEach { toggle ->
-                        PermissionToggleRow(
-                            toggle = toggle,
-                            onToggle = { onTogglePermission(toggle.permission) }
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "None of this is needed to use GURU. Each one is a choice you can " +
+                            "make now, later, or never, and you can change any of them in Settings.",
+                        style = captionStyle(9.5f, Memphis.Ink.copy(alpha = 0.75f)).copy(
+                            fontFamily = MemphisBody,
+                            letterSpacing = TextUnit.Unspecified,
+                        ),
+                        modifier = Modifier.padding(top = 10.dp),
+                    )
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Button(
-                    onClick = onGrantAll,
+                Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp),
-                    shape = RoundedCornerShape(12.dp)
+                        .padding(start = 18.dp, end = 18.dp, top = 10.dp)
+                        .verticalScroll(scrollState),
                 ) {
-                    Text(
-                        text = "Grant All",
-                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
-                    )
+                    val grouped = state.permissions.groupBy { it.category }
+
+                    grouped.entries.forEachIndexed { bandIndex, (category, permissions) ->
+                        val bandInk = Memphis.inkFor(bandIndex)
+
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(top = 10.dp)
+                                .background(bandInk)
+                                .border(2.5.dp, Memphis.Ink)
+                                .padding(horizontal = 9.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = category.uppercase(),
+                                style = captionStyle(9f, Memphis.Ink),
+                            )
+                            Text(
+                                text = "${permissions.count { it.isGranted }}/${permissions.size}",
+                                style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.65f)),
+                            )
+                        }
+
+                        permissions.forEach { toggle ->
+                            PermissionToggleRow(
+                                toggle = toggle,
+                                ink = bandInk,
+                                onToggle = { onTogglePermission(toggle.permission) }
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(6.dp))
+                }
+
+                Box(Modifier.fillMaxWidth().padding(top = 10.dp).height(3.dp).background(Memphis.Ink))
+
+                Row(
+                    Modifier.fillMaxWidth().padding(14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    MemphisSurface(
+                        modifier = Modifier.weight(1f).clickable { onDismiss() },
+                        color = Memphis.Paper,
+                        borderWidth = 2.5.dp,
+                        shadowOffset = 4.dp,
+                    ) {
+                        Box(
+                            Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text("DECIDE LATER", style = captionStyle(9f))
+                        }
+                    }
+                    MemphisSurface(
+                        modifier = Modifier.weight(1f).clickable { onGrantAll() },
+                        color = Memphis.Yellow,
+                        borderWidth = 2.5.dp,
+                        shadowOffset = 4.dp,
+                    ) {
+                        Box(
+                            Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text("ALLOW ALL", style = captionStyle(9f))
+                        }
+                    }
                 }
             }
         }
     }
 }
 
+/**
+ * One permission, carrying its category's colour.
+ *
+ * The swatch is the same block shape the agents room uses for an agent, so a person
+ * can see at a glance which group a row belongs to without reading the band above it.
+ * The switch fills with that colour when it is on and stays paper when it is off, so
+ * neither state is dressed as a fault.
+ */
 @Composable
 private fun PermissionToggleRow(
     toggle: PermissionToggleState,
+    ink: Color,
     onToggle: () -> Unit
 ) {
-    val green = Color(0xFF4CAF50)
-    val red = Color(0xFFE53935)
-    val grey = Color(0xFF9E9E9E)
-    val blue = Color(0xFF2196F3)
-    // Amber, not red. A restricted-settings block is not a grant the person has
-    // withheld and not a failure of theirs; it is a protection they clear once from
-    // the app's own info screen. Red would tell them "you have not done this yet",
-    // which is the wrong instruction for a switch that will refuse them anyway.
-    val amber = Color(0xFFFFA000)
-
-    val toggleColor = when {
-        toggle.blockedByRestrictedSettings -> amber
-        !toggle.existsOnCurrentApi -> blue
-        !toggle.hasHardware -> green
-        !toggle.isEnabled -> grey
-        toggle.isGranted -> green
-        else -> red
-    }
-
     val statusText = when {
-        toggle.blockedByRestrictedSettings -> "Blocked by restricted settings"
-        !toggle.existsOnCurrentApi -> "Not required on this Android version"
-        !toggle.hasHardware -> "Not available on this device"
-        !toggle.isEnabled -> "Grant ${getDependencyName(toggle.permission)} first"
-        toggle.isGranted -> "Granted"
-        else -> "Tap to grant"
+        toggle.blockedByRestrictedSettings -> "One extra step on this Android version"
+        !toggle.existsOnCurrentApi -> "This Android version does not ask for it"
+        !toggle.hasHardware -> "This phone does not have it"
+        !toggle.isEnabled -> "Turn on ${getDependencyName(toggle.permission)} first"
+        toggle.isGranted -> "Allowed"
+        else -> "Not allowed yet"
     }
 
-    // A restricted capability cannot be switched on from this screen at all, so the
-    // row must not invite a tap that cannot do anything. The sentence below it is
-    // the instruction, and it names the menu item and where the menu lives.
     val isInteractive =
         toggle.isEnabled && toggle.existsOnCurrentApi && toggle.hasHardware &&
             !toggle.blockedByRestrictedSettings
 
+    val unavailable = !toggle.hasHardware || !toggle.existsOnCurrentApi
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
+            .padding(vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Surface(
-            shape = CircleShape,
-            color = toggleColor,
-            modifier = Modifier.size(12.dp)
-        ) {}
+        Box(
+            Modifier
+                .size(12.dp)
+                .background(if (unavailable) ink.copy(alpha = 0.2f) else ink)
+                .border(2.dp, Memphis.Ink.copy(alpha = if (unavailable) 0.3f else 1f))
+        )
 
-        Spacer(modifier = Modifier.width(12.dp))
+        Spacer(Modifier.width(10.dp))
 
-        Column(
-            modifier = Modifier.weight(1f)
-        ) {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = toggle.label,
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    fontWeight = FontWeight.Medium,
-                    textDecoration = if (!toggle.hasHardware || !toggle.existsOnCurrentApi)
-                        TextDecoration.LineThrough
-                    else TextDecoration.None
-                ),
-                color = if (isInteractive) MaterialTheme.colorScheme.onBackground
-                else MaterialTheme.colorScheme.onSurfaceVariant
+                style = posterStyle(11.5f, Memphis.Ink.copy(alpha = if (unavailable) 0.35f else 1f)),
             )
             Text(
-                text = statusText,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                text = statusText.uppercase(),
+                style = captionStyle(8f, Memphis.Ink.copy(alpha = 0.5f)),
+                modifier = Modifier.padding(top = 2.dp),
             )
-            // The instruction, in full, rather than a status word the person would
-            // have to interpret. This is the whole point: there is no grant to make,
-            // so the only useful thing on the row is what to do instead.
             toggle.restrictedSettingsSentence?.let { sentence ->
-                Spacer(modifier = Modifier.height(2.dp))
+                Spacer(Modifier.height(3.dp))
                 Text(
                     text = sentence,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = amber
+                    style = captionStyle(8f, Memphis.Ink.copy(alpha = 0.8f)),
                 )
             }
         }
 
-        Spacer(modifier = Modifier.width(8.dp))
+        Spacer(Modifier.width(10.dp))
 
-        Switch(
+        FlatPermissionSwitch(
             checked = toggle.isGranted,
-            onCheckedChange = { onToggle() },
             enabled = isInteractive,
-            colors = SwitchDefaults.colors(
-                checkedTrackColor = green,
-                checkedThumbColor = Color.White,
-                uncheckedTrackColor = grey,
-                uncheckedThumbColor = Color.White,
-                disabledCheckedTrackColor = green.copy(alpha = 0.5f),
-                disabledUncheckedTrackColor = grey.copy(alpha = 0.3f)
-            )
+            ink = ink,
+            onChange = { onToggle() },
+        )
+    }
+}
+
+/** A switch in the page's grammar: a rectangle that fills with its colour when on. */
+@Composable
+private fun FlatPermissionSwitch(
+    checked: Boolean,
+    enabled: Boolean,
+    ink: Color,
+    onChange: () -> Unit,
+) {
+    val fill = when {
+        !enabled -> Memphis.Ink.copy(alpha = 0.12f)
+        checked -> ink
+        else -> Memphis.Paper
+    }
+
+    Box(
+        modifier = Modifier
+            .size(width = 46.dp, height = 26.dp)
+            .background(fill)
+            .border(2.5.dp, Memphis.Ink.copy(alpha = if (enabled) 1f else 0.35f))
+            .then(if (enabled) Modifier.clickable { onChange() } else Modifier),
+        contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart,
+    ) {
+        Box(
+            Modifier
+                .padding(horizontal = 2.dp)
+                .size(18.dp)
+                .background(if (checked) Memphis.Paper else Memphis.Ink.copy(alpha = if (enabled) 1f else 0.35f)),
         )
     }
 }
