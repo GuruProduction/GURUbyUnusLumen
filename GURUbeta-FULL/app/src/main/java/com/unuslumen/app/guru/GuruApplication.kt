@@ -153,6 +153,9 @@ class GuruApplication : Application() {
                 // is built from. Registered here for the same reason as the two
                 // rooms above, since it is its own Gradle module.
                 com.unuslumen.app.innermind.innermindModule,
+                // The prompts room: what GURU is told, and the owner's own override.
+                // Registered here for the same reason as the rooms above.
+                com.unuslumen.app.prompts.promptsModule,
             )
             workManagerFactory()
         }

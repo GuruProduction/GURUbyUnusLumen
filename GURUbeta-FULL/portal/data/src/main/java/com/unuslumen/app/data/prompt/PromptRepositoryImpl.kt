@@ -37,6 +37,17 @@ class PromptRepositoryImpl(
         const val HUMAN_TOKEN = "\${human}"
         /** Fallback when the user has not saved a name yet. */
         const val FALLBACK_NAME = "your human"
+
+        /**
+         * Where an owner-written prompt lives.
+         *
+         * NOT `guru_prompts`, WHICH IS THE PUBLISHER'S. PromptFetcher rewrites that file
+         * on every boot and refresh and would erase an override without a word. These
+         * two constants are the contract between this read path and the Prompts room's
+         * write path; changing one without the other produces a save that nothing reads.
+         */
+        const val OVERRIDE_PREFS = "guru_prompt_override"
+        const val OVERRIDE_KEY = "override_text"
     }
 
     /**
@@ -48,10 +59,38 @@ class PromptRepositoryImpl(
      * with no restart and no prompt re-fetch.
      */
     override suspend fun getSystemPrompt(): String = withContext(Dispatchers.IO) {
-        val raw = PromptFetcher.getCachedPrompt(context) ?: ""
+        /*
+         * THE OWNER'S OVERRIDE WINS, AND IT WINS HERE RATHER THAN IN THE CACHE.
+         *
+         * The assembled prompt is fetched from the publisher and rewritten on every boot
+         * and every refresh, so anything stored in that slot is temporary by design. An
+         * override kept in its own file survives, and it is read first: a person who has
+         * written their own instructions expects the model to run on them, not on the
+         * server's, and a room that saves text nothing reads is a lie on screen.
+         *
+         * A BLANK OVERRIDE IS NOT AN EMPTY PROMPT. It means "no override", so the
+         * published text is used and a fresh install behaves exactly as it did before
+         * this setting existed. Reading a blank as an instruction to send nothing would
+         * break every install that never opened the room.
+         */
+        val override = overrideText()
+        val raw = if (override.isNotBlank()) override else PromptFetcher.getCachedPrompt(context) ?: ""
         if (!NameTokens.hasUnsubstitutedToken(raw)) return@withContext raw
         NameTokens.substitute(raw, humanName = readUserName(), guruName = readGuruName())
     }
+
+    /**
+     * The owner's own instructions, or blank when the published text is in force.
+     *
+     * THE SAME PREFERENCE FILE THE PROMPTS ROOM WRITES. The key name and the file name
+     * live here as constants so the two surfaces cannot disagree about where an
+     * override is kept, which would produce a room that saves into one place and a send
+     * path that reads another.
+     */
+    private fun overrideText(): String = runCatching {
+        context.getSharedPreferences(OVERRIDE_PREFS, Context.MODE_PRIVATE)
+            .getString(OVERRIDE_KEY, "") ?: ""
+    }.getOrDefault("")
 
     /**
      * Replace every name token with the saved names.

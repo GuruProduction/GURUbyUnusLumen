@@ -513,6 +513,12 @@ fun guruApp(
                 ) {
                     com.unuslumen.app.innermind.InnerMindScreen(navController = navController)
                 }
+                composable<Screen.PromptsScreen>(
+                    enterTransition = { slideInTransition() },
+                    exitTransition = { slideOutTransition() },
+                ) {
+                    com.unuslumen.app.prompts.PromptsScreen(navController = navController)
+                }
                 composable<Screen.ThoughtCyclesScreen>(
                     enterTransition = { slideInTransition() },
                     exitTransition = { slideOutTransition() },
