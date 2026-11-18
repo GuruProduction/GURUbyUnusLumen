@@ -1,6 +1,6 @@
 # Security Policy — GURU by Unus Lumen
 
-GURU is an Android app that gives a language model real hands on a phone: a Linux userland, the device's native permissions, the hosts on your network, and its own agents working to a permission set you choose. That power is the product, so this document says exactly what it reaches, what leaves the device, how releases are signed, and how to report a flaw.
+GURU is an Android app that gives a language model a Linux userland, the device's native permissions, reach into the local network, and its own agents working to a permission set you choose. This document covers what that reaches, what leaves the device, how releases are signed, and how to report a flaw.
 
 Every claim below names where in the source it comes from.
 
@@ -13,15 +13,15 @@ Report privately, never in a public issue.
 - Use GitHub's private vulnerability reporting on this repository (Security tab, then Report a vulnerability). It is enabled.
 - Or email **steven@unuslumen.com**.
 
-Include what you found, how you found it, the build you tested (the version name from the APK, plus your Android version and device), and the steps to reproduce it. Logs, screenshots and proof-of-concept scripts are all welcome.
+Include what you found, how you found it, the build you tested (the version name from the APK, plus your Android version and device), and the steps to reproduce it. Logs, screenshots and proof-of-concept scripts all help.
 
-You will get a human acknowledgment within **72 hours**. Do not publish details until a fix is released and we have agreed disclosure timing together. Credit is yours if you want it, in the release notes and in this file, and anonymous reports are equally welcome.
+You get a human acknowledgment within **72 hours**. Do not publish details until a fix is released and we have agreed disclosure timing. Credit is yours if you want it, in the release notes and in this file. Anonymous reports are welcome too.
 
 One person maintains this, so expect a gap between the acknowledgment and the fix.
 
 ## Supported versions
 
-Security fixes land on the latest tagged release. Older tags get fixes on a best-effort basis only, so test against the newest release before reporting. A sideloaded GURU updates by installing a newer APK from the Releases page, which carries a SHA-256 checksum you can check against your download.
+Security fixes land on the latest tagged release. Older tags get best-effort fixes, so test against the newest release before reporting. A sideloaded GURU updates by installing a newer APK from the Releases page, which carries a SHA-256 checksum to check your download against.
 
 ## What counts as a vulnerability
 
@@ -50,17 +50,17 @@ If you are unsure which side of the line something falls on, report it anyway an
 
 ## What GURU can reach
 
-GURU declares **167 permissions** in `GURUbeta-FULL/app/src/main/AndroidManifest.xml`. Declaring is not holding: a normal install gets the runtime permissions the owner allows plus the install-time ones, and Android refuses every signature and privileged permission outright.
+GURU declares **167 permissions** in `GURUbeta-FULL/app/src/main/AndroidManifest.xml`. Declaring is not holding. A normal install gets the runtime permissions the owner allows plus the install-time ones, and Android refuses every signature and privileged permission outright.
 
-The permission layer names that difference rather than pretending every permission is obtainable. `PermissionTier.kt` sorts each one into a tier and `GrantCheck.kt` turns each into one sentence the model and the owner can act on. Five of those tiers exist to stop a tool telling you to grant something you cannot:
+The permission layer names that difference rather than pretending every permission is obtainable. `PermissionTier.kt` sorts each one into a tier, and `GrantCheck.kt` turns each into one sentence the model and the owner can act on.
 
 - **RUNTIME** is the normal dialog.
 - **INSTALL** is granted at install with no dialog, so a denial means the manifest lost a line and is reported as a build fault.
 - **PRIVILEGED** is reserved for system apps and reachable only through Shizuku, and only when the platform marks the permission `development`.
-- **NOT_GRANTABLE** is reserved with no `development` flag, so no setting, no Shizuku and no Device Owner provisioning can grant it, and the app says exactly that instead of sending you to a screen that will never work.
+- **NOT_GRANTABLE** is reserved with no `development` flag, so no setting, no Shizuku and no Device Owner provisioning can grant it. The app says exactly that instead of sending you to a screen that will never work.
 - **APPOP**, **ROLE**, **SERVICE**, **SELF_GUARD** and **HARDWARE** each name their own real route, or say plainly that none exists.
 
-A tool whose permission you have not granted therefore returns one sentence naming what is missing, why it matters and how to grant it, and it never returns an empty list. That was a real defect class, which `GrantCheck.kt` calls a lie a tool tells by omission, and it is closed.
+A tool whose permission you have not granted returns one sentence naming what is missing, why it matters and how to grant it. It does not return an empty list. That was a real defect class, which `GrantCheck.kt` calls a lie a tool tells by omission, and it is closed.
 
 The accessibility service, the notification listener and MediaProjection screen capture each need you to switch them on yourself in Settings. The app cannot grant them to itself.
 
@@ -70,29 +70,29 @@ The accessibility service, the notification listener and MediaProjection screen 
 
 GURU fetches from `https://api.unuslumen.com` at startup and on a refresh cadence. That fetch supplies the assembled system prompt, the model runtime configuration, the sensory-context settings, the optional skills library and the ad-pack artwork. It is a plain GET with no auth header, no cookie jar and no install identifier, and it rides Tor like every other public call, so the server sees a Tor exit rather than your address.
 
-The content endpoints carry no account and store no conversation. The market endpoints do write rows: publishing, buying, rating and installing each one, which is why a wallet pseudonym exists. The content feed is stateless and the market is not, and neither sees your conversations.
+The content endpoints carry no account and store no conversation. The market endpoints do write rows, one each for publishing, buying, rating and installing, which is why a wallet pseudonym exists. The content feed is stateless and the market is not, and neither sees your conversations.
 
 ### Model inference
 
-GURU runs no language model on the device. It talks to the endpoint you connect: OpenAI, Anthropic, Google, xAI, a local Ollama server, or any OpenAI-compatible endpoint on your network, with the fixed endpoints in `AiProvider.kt`. Your prompts, the conversation context and any image you attach go to that endpoint and to nothing else. When your model is on your own LAN, inference traffic never leaves your network.
+GURU runs no language model on the device. It talks to the endpoint you connect: OpenAI, Anthropic, Google, xAI, a local Ollama server, or any OpenAI-compatible endpoint on your network, with the fixed endpoints in `AiProvider.kt`. Your prompts, the conversation context and any image you attach go to that endpoint and nowhere else. When your model is on your own LAN, inference traffic never leaves your network.
 
 Your API keys are held by `CredentialVault.kt`: one AES-256-GCM key per service, generated inside the Android Keystore so the key material is never readable by the app, by root, or by copying any file. Every write seals with a fresh IV, and the envelope lives in the app's private files directory.
 
 ### Web search and weather
 
-Web search queries go to a rotating list of SearXNG instances over Tor in `WebSearchService.kt`, and weather is fetched from `wttr.in` through Tor in `MetadataConfigFetcher.kt`. Tool calls you make through the web tools go where you point them, through the same egress policy.
+Web search queries go to a rotating list of SearXNG instances over Tor in `WebSearchService.kt`. Weather is fetched from `wttr.in` through Tor in `MetadataConfigFetcher.kt`. Tool calls you make through the web tools go where you point them, through the same egress policy.
 
-### Egress policy, precisely
+### Egress policy
 
-`EgressClassifier.kt` is the one routing decision every outbound connection asks for. It is a pure object with no Android dependency, so its whole truth table is unit tested on the JVM.
+`EgressClassifier.kt` is the one routing decision every outbound connection asks for. It has no Android dependency, so its whole truth table is unit tested on the JVM.
 
-Three postures exist, selected by `/tor` and `/clearnet` in `EgressMode.kt`:
+Three postures, selected by `/tor` and `/clearnet` in `EgressMode.kt`:
 
 - **AUTO** is the default on a fresh install, and a public host rides Tor.
 - **TOR_ONLY** is the lock, where a public host rides Tor and the clearnet override is refused while it is active.
 - **CLEARNET** is the owner's override, where a public host may go direct and every result that went that way says so.
 
-Three properties survive every posture. A loopback or LAN address always goes direct, because Tor cannot route private space and asking it to is a guaranteed failure. A request carrying a credential forces Tor and ignores the override entirely. When Tor has no circuit, a public request **waits** for one for up to thirty seconds rather than falling back to a direct connection, and if the window expires the request fails closed with a message naming the wait.
+Four rules hold under every posture. A loopback or LAN address always goes direct, because Tor cannot route private space and asking it to is a guaranteed failure. A request carrying a credential forces Tor and ignores the override. When Tor has no circuit, a public request **waits** for one for up to thirty seconds rather than falling back to a direct connection. Past that window the request fails closed with a message naming the wait.
 
 `network_security_config.xml` sets `cleartextTrafficPermitted="true"` across the app, because LAN devices such as Sonos, Hue, DIAL, UPnP and routers speak plain HTTP. Nothing stops a cleartext connection if a tool is pointed at one.
 
@@ -112,7 +112,7 @@ The brain is encrypted at rest. `cerebrum-crypto` derives a 32-byte key with Arg
 
 Each save writes a new generation with a fresh file id and therefore a fresh nonce base, which is what stops nonce reuse across passes. The key is zeroized on drop. The passphrase lives nowhere except sealed in a Keystore-wrapped AES-256-GCM envelope and, briefly, inside the brain's RAM.
 
-When the Keystore envelope is lost while a vault exists, the app **refuses to boot** and leaves every byte alone. An earlier version deleted the brain in that state, and `CerebrumHost.kt` documents at length why it no longer does.
+When the Keystore envelope is lost while a vault exists, the app **refuses to boot** and leaves every byte alone. An earlier version deleted the brain in that state. `CerebrumHost.kt` documents why it no longer does.
 
 ## Builds and signing
 
@@ -123,7 +123,7 @@ Releases are signed with the `guru-release` key:
 - **Subject:** `CN=Steven Newman, OU=Unus Lumen, O=Unus Lumen Ltd, L=Bristol, C=GB`
 - **Valid:** 26 September 2026 to 11 February 2054.
 
-Every published GURU is signed with this key and no other. Android refuses to install a build signed with a different key over an existing install, so a matching fingerprint with a matching checksum is what proves a download is really ours.
+Every published GURU is signed with this key and no other. Android refuses to install a build signed with a different key over an existing install, so a matching fingerprint and a matching checksum are what prove a download is ours.
 
 Verify a download before installing it:
 
@@ -132,7 +132,7 @@ apksigner verify --print-certs guru-v3.77-release.apk
 sha256sum guru-v3.77-release.apk
 ```
 
-The shipped v3.77 APK verifies under signature schemes v2 and v3. The build requests all four, and `apksigner` reports v1 as false because it only inspects the JAR signature below a certain `minSdk`; the v1 signature is present in the file. v4 produces a separate `.idsig` beside the APK rather than an embedded block.
+The shipped v3.77 APK verifies under signature schemes v2 and v3. The build requests all four, and `apksigner` reports v1 as false because it only inspects the JAR signature below a certain `minSdk`. The v1 signature is present in the file. v4 produces a separate `.idsig` beside the APK rather than an embedded block.
 
 To build from source:
 
@@ -140,7 +140,7 @@ To build from source:
 cd GURUbeta-FULL && ./gradlew assembleDebug
 ```
 
-JDK 17 and the Android SDK are required, and the Gradle wrapper lives inside `GURUbeta-FULL`. `CONTRIBUTING.md` covers the build lock, the three verification layers and the release credentials.
+JDK 17 and the Android SDK are required, and the Gradle wrapper lives inside `GURUbeta-FULL`. `CONTRIBUTING.md` covers the build lock, the verification layers and the release credentials.
 
 Builds are **not reproducible**. The same commit built on a different machine produces a different APK byte for byte, so compare against the published SHA-256 and the certificate rather than expecting a matching binary.
 
@@ -148,7 +148,7 @@ There is **no CI**. The repository's only workflow file is `FUNDING.yml`, so not
 
 ## The privacy gate
 
-`scripts/hooks/pre-commit` runs `scripts/privacy-scan.mjs` on every commit. It refuses a commit that would publish an IP address outside the documentation ranges, a MAC address, a credential, a private key, or a path naming the author's machine. It fails closed, so a missing scanner or a missing runtime refuses the commit rather than allowing an unscanned one, and `--no-verify` is banned by policy.
+`scripts/hooks/pre-commit` runs `scripts/privacy-scan.mjs` on every commit. It refuses a commit that would publish an IP address outside the documentation ranges, a MAC address, a credential, a private key, or a path naming the author's machine. It fails closed, so a missing scanner or a missing runtime refuses the commit rather than allowing an unscanned one. `--no-verify` is banned by policy.
 
 It was built after the author published his own addresses more than once.
 
@@ -164,7 +164,7 @@ What guards it:
 - The privacy gate above, on every commit.
 - A pull request body that must state what was run and what was not, since that statement is the basis for the release test.
 
-The limits, stated honestly:
+The gaps:
 
 - Detekt is configured with a baseline, but **no module enables it**, so static analysis does not run.
 - There is no CI, so nothing runs automatically before a merge.
@@ -176,9 +176,9 @@ The limits, stated honestly:
 
 GURU assumes the phone's owner is the operator and is authorised to control that device and the network it sits on.
 
-It defends against a hostile network peer, because the classifier routes public traffic through Tor by default and a public request never silently falls back to direct. It defends against a hostile model endpoint, because the permission layer gates every tool whatever a model asks for. It defends against another app on the device, because the vault, credentials and database sit in the app's private sandbox and credentials additionally sit behind Keystore keys the app cannot read. It defends against a stolen or backed-up database, because records are sealed with keys that never leave the device and cloud backup is excluded by rule. It also fails closed when the Keystore envelope is lost, keeping the vault intact rather than starting clean.
+A hostile network peer is covered by the classifier, which routes public traffic through Tor by default and never silently falls back to direct. A hostile model endpoint is covered by the permission layer, which gates every tool whatever a model asks for. Another app on the device is covered by the sandbox, where the vault, credentials and database sit, and credentials additionally behind Keystore keys the app cannot read. A stolen or backed-up database is covered by keys that never leave the device and by cloud backup being excluded by rule. Loss of the Keystore envelope is covered by refusing to boot and keeping the vault intact rather than starting clean.
 
-### The publisher's authority, stated precisely
+### The publisher's authority
 
 A web page GURU fetches is data. The assembled system prompt is the instruction set, and the model holding it has a shell, the accessibility service and LAN control. Whoever controls `api.unuslumen.com` can change what every install is told to do at its next refresh. Today that is Steven. It is also anyone who compromises the host, the domain or the account, and any future owner of the company.
 
@@ -186,7 +186,9 @@ A web page GURU fetches is data. The assembled system prompt is the instruction 
 
 Three things narrow the gap. Signing the bundle with a key kept off the serving host, with the public key pinned in the app, so a compromised web server cannot serve content the app accepts. Publishing the payload at [GuruProduction/GURU-content](https://github.com/GuruProduction/GURU-content), so what the server served is a public record. Showing the bundle version and hash in the app, so an install can be told apart from the one advertised.
 
-It does not defend against a rooted device or a hostile privileged app, since root defeats every boundary here. It does not defend against Tor's own traffic-analysis adversary, which can see that something was sent even though it cannot see where from. It does not protect your prompts from the model provider you chose. It does not defend against an owner who grants everything and installs anything, because GURU does what you allow it to do and that is the design. It does not defend against physical access to an unlocked device, and it does not defend against a compromised build machine.
+### Out of reach
+
+A rooted device or a hostile privileged app defeats every boundary here. Tor's own traffic-analysis adversary can see that something was sent even though it cannot see where from. Your prompts are visible to the model provider you chose. An owner who grants everything and installs anything gets what they granted, because GURU does what you allow it to do. Physical access to an unlocked device is outside the model, and so is a compromised build machine.
 
 ## Known limitations
 
