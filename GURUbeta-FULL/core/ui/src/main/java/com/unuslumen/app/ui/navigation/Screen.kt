@@ -117,6 +117,10 @@ sealed class Screen {
     @Serializable
     data object InnerMindScreen : Screen()
 
+    // Prompts: what GURU is told, and the owner's own replacement for it
+    @Serializable
+    data object PromptsScreen : Screen()
+
     // Media — the persistent on-device media library every attachment lands in
     @Serializable
     data object MediaScreen : Screen()

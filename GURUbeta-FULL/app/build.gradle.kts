@@ -223,6 +223,8 @@ dependencies {
     implementation(project(":agents"))
     implementation(project(":heartbeat"))
     implementation(project(":innermind"))
+    // The prompts room: what GURU is told, and the owner's own override.
+    implementation(project(":prompts"))
 
     implementation(project(":notes:data"))
     implementation(project(":tasks:data"))
