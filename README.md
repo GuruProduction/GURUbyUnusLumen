@@ -4,30 +4,67 @@
 
 # GURU by Unus Lumen
 
-**A language model with a Linux shell, 390 tools and your network to work with.**
+**An AI that runs on your phone, controls the machine and your network, remembers you across sessions, and builds whatever it needs.**
 
 ![Status](https://img.shields.io/badge/status-public%20beta-e8c9ff)
 ![Version](https://img.shields.io/github/v/release/GuruProduction/GURUbyUnusLumen?label=version&color=FFD60A)
+![Downloads](https://img.shields.io/github/downloads/GuruProduction/GURUbyUnusLumen/total?label=downloads&color=FF9F0A)
+![Stars](https://img.shields.io/github/stars/GuruProduction/GURUbyUnusLumen?color=FF375F)
+![Last commit](https://img.shields.io/github/last-commit/GuruProduction/GURUbyUnusLumen?color=0A84FF)
 ![Licence](https://img.shields.io/badge/licence-AGPL--3.0-98ff7e)
-![Platform](https://img.shields.io/badge/platform-Android%208.0%2B-00C7BE)
+![Platform](https://img.shields.io/badge/platform-Android-00C7BE)
+![Android](https://img.shields.io/badge/android-8.0%2B-00C7BE)
+![Kotlin](https://img.shields.io/badge/Kotlin-2.3.10-7F52FF)
+![Rust](https://img.shields.io/badge/Rust-cerebrum-DEA584)
+![Compose](https://img.shields.io/badge/Jetpack-Compose-4285F4)
+![Tools](https://img.shields.io/badge/tools-390-98ff7e)
+![Permissions](https://img.shields.io/badge/permissions-167-98ff7e)
+![Userland](https://img.shields.io/badge/userland-Linux%20in%20the%20APK-e8c9ff)
+![Shell](https://img.shields.io/badge/shell-bash%20%2B%20apt-e8c9ff)
+![Python](https://img.shields.io/badge/Python-3.14-3776AB)
+![Memory](https://img.shields.io/badge/memory-encrypted%2C%20on%20device-e8c9ff)
+![Tor](https://img.shields.io/badge/egress-Tor-7D4698)
+![Model](https://img.shields.io/badge/model-bring%20your%20own-0A84FF)
+![Offline](https://img.shields.io/badge/runs-on%20your%20LAN-0A84FF)
+![Self-evolving](https://img.shields.io/badge/self--extending-yes-e8c9ff)
+![Agents](https://img.shields.io/badge/agents-yours%20to%20build-e8c9ff)
+![Root](https://img.shields.io/badge/root-not%20required-98ff7e)
+![ADB](https://img.shields.io/badge/adb-not%20required-98ff7e)
+![Account](https://img.shields.io/badge/account-not%20required-98ff7e)
+![Telemetry](https://img.shields.io/badge/telemetry-none-98ff7e)
+![Home](https://img.shields.io/badge/smart%20home-UPnP%20%C2%B7%20DIAL%20%C2%B7%20SSH-e8c9ff)
+![TV](https://img.shields.io/badge/TV-Android%20TV%20%C2%B7%20Roku%20%C2%B7%20webOS-e8c9ff)
+![Console](https://img.shields.io/badge/console-Xbox%20SmartGlass-e8c9ff)
+![Size](https://img.shields.io/badge/APK-743%20MB-FF9F0A)
+![PRs](https://img.shields.io/badge/PRs-welcome-98ff7e)
+![Built by](https://img.shields.io/badge/built%20by-Unus%20Lumen%2C%20Bristol%20UK-0A84FF)
 
 </div>
 
 ---
 
-GURU gives a language model a shell and about 390 tools on an Android phone, and lets it use them. It runs a command, reads the output, and decides what to do next, repeating until the task is finished or it has run out of ways to try. It also reads and taps the screen through the accessibility service, and finds and controls devices on the local network.
+GURU is an AI that owns your phone. Not a chat window that tells you what you could do, and not a voice assistant that sets a timer and gives up. It has a real shell, 390 tools, and your whole network, and it uses them until the job is done.
 
-The userland lives in the app's own storage: bash, apt, git, Python, ffmpeg, sqlite, curl, ssh, tesseract, and a reverse-engineering toolchain. No root and no adb are needed. A path shim lets prebuilt Linux binaries run on a stock phone.
+You open one app. It drives the rest.
 
-Bring your own model: Ollama on your hardware, or a key for Anthropic, OpenAI, Google or xAI. AGPL-3.0, no account, no analytics SDKs, sideloaded APK.
+- **It runs a real Linux machine.** bash, apt, git, Python 3.14, ffmpeg, sqlite, curl, ssh, tmux, Tesseract, and a reverse-engineering toolchain with a JDK, apktool and jadx. All of it inside the APK, in the app's own storage. No root, no adb, no second app to install.
+- **It acts on the phone itself.** 167 Android permissions arranged so every capability either works or tells you the exact reason it cannot. It reads and taps any screen through the accessibility service, so apps without an API become scriptable.
+- **It sees and controls your network.** Televisions, consoles, lights, speakers, the router, the printer. UPnP, DIAL, Android TV Remote, Roku ECP, Samsung, LG webOS, Xbox SmartGlass, SNMP, Wake-on-LAN, IR, SSH.
+- **It remembers you.** An encrypted Rust brain on the device, with layers that decay and consolidate, so it knows what you told it in March without being reminded in November.
+- **It extends itself.** When it meets something it cannot do, it writes the tool, registers it, and keeps it.
+- **It thinks on its own clock.** A heartbeat every thirty minutes into a prompt you write, so it is running when you are not.
 
-Public beta. One maintainer, largely AI-written, no outside security audit. If you only want a shell, use Termux.
+You bring the model: Ollama on your own hardware, or your own key for Anthropic, OpenAI, Google or xAI. AGPL-3.0, no account, no analytics SDKs, sideloaded APK.
 
-## What it does that a shell does not
+Public beta. One maintainer, largely AI-written, no outside security audit.
 
-The model picks a tool, calls it, reads the result, and chooses the next call. Twenty calls deep it is still going, and a failure mid-run gives it something to work with rather than ending the turn. Point it at a problem and come back to it solved, or to an account of why it is not.
+## Why it is not Termux with a chat window
 
-Termux gives you a shell. This gives a model one, with that loop as the thing that uses it.
+Termux gives you a shell and waits for you to type in it.
+
+GURU gives the model the shell. It picks a tool, calls it, reads what came back, picks the next one. Twenty calls deep it is still going, and a failure partway through gives it something to work with instead of ending the turn. Point it at a problem and come back to it solved, or to a straight account of why it is not.
+
+That loop is the whole product. Everything else is what it has to work with: the userland on the left, the tools in the middle, your network on the right.
 
 <details>
 <summary><strong>390 tools across the phone</strong></summary>
