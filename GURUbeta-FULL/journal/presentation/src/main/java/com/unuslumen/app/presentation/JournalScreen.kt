@@ -9,7 +9,10 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -21,14 +24,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -42,22 +40,37 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
 import com.unuslumen.app.preferences.domain.model.Order
 import com.unuslumen.app.preferences.domain.model.OrderType
 import com.unuslumen.app.ui.R
-import com.unuslumen.app.ui.components.common.LiquidFloatingActionButton
 import com.unuslumen.app.ui.components.common.guruAppBar
 import com.unuslumen.app.ui.navigation.Screen
+import com.unuslumen.app.ui.theme.Memphis
+import com.unuslumen.app.ui.theme.MemphisSurface
+import com.unuslumen.app.ui.theme.captionStyle
+import com.unuslumen.app.ui.theme.posterStyle
 import com.unuslumen.app.ui.titleRes
 import com.unuslumen.app.util.date.formatTime
-import io.github.fletchmckee.liquid.liquefiable
-import io.github.fletchmckee.liquid.rememberLiquidState
 import org.koin.androidx.compose.koinViewModel
 
+/**
+ * The journal's front door, in the house language.
+ *
+ * WHAT IT WAS. A Material page: two icon buttons floating over the list, a liquid
+ * floating button hovering above the last card, rounded elevated cards for each
+ * entry and a row of radio buttons for the order. Beside the lobby it read as a
+ * settings page that happened to share the background.
+ *
+ * WHAT IT IS NOW. The add door is a full-width printed block at the top of the list
+ * rather than a button floating over it, the day is an ink band, the order is chosen
+ * by pressing a block that fills with ink, and the chart is a printed block in the
+ * masthead. Every event, navigation target and string resource is the one the page
+ * already used: this is a skin over the same code.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun JournalScreen(
@@ -67,62 +80,54 @@ fun JournalScreen(
     val uiState = viewModel.uiState
     var orderSettingsVisible by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    val liquidState = rememberLiquidState()
+
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
             guruAppBar(
                 title = stringResource(R.string.journal),
                 actions = {
-                    IconButton(onClick = {
-                        navController.navigate(Screen.JournalChartScreen)
-                    }) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_chart),
-                            contentDescription = stringResource(R.string.journal_chart),
-                            modifier = Modifier.size(34.dp)
-                        )
+                    MemphisSurface(
+                        modifier = Modifier.clickable {
+                            navController.navigate(Screen.JournalChartScreen)
+                        },
+                        color = Memphis.Paper,
+                        borderWidth = 2.5.dp,
+                        shadowOffset = 4.dp,
+                    ) {
+                        Box(Modifier.padding(7.dp)) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_chart),
+                                contentDescription = stringResource(R.string.journal_chart),
+                                modifier = Modifier.size(22.dp),
+                                tint = Memphis.Ink,
+                            )
+                        }
                     }
                 }
-            )
-        },
-        floatingActionButton = {
-            LiquidFloatingActionButton(
-                onClick = {
-                    navController.navigate(
-                        Screen.JournalDetailScreen()
-                    )
-                },
-                iconPainter = painterResource(R.drawable.ic_add),
-                contentDescription = stringResource(R.string.add_entry),
-                liquidState = liquidState
             )
         }
     ) { paddingValues ->
         if (uiState.entries.isEmpty()) {
             NoEntriesMessage()
         }
-        Column(Modifier.padding(paddingValues).liquefiable(liquidState)) {
+        Column(Modifier.padding(paddingValues)) {
             Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 18.dp, end = 18.dp, bottom = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                IconButton(onClick = { orderSettingsVisible = !orderSettingsVisible }) {
-                    Icon(
-                        modifier = Modifier.size(25.dp),
-                        painter = painterResource(R.drawable.ic_settings_sliders),
-                        contentDescription = stringResource(R.string.order_by)
-                    )
-                }
-                IconButton(onClick = {
-                    navController.navigate(Screen.JournalSearchScreen)
-                }) {
-                    Icon(
-                        modifier = Modifier.size(25.dp),
-                        painter = painterResource(id = R.drawable.ic_search),
-                        contentDescription = stringResource(R.string.search)
-                    )
-                }
+                PageButton(
+                    label = stringResource(R.string.order_by),
+                    onClick = { orderSettingsVisible = !orderSettingsVisible },
+                )
+                PageButton(
+                    label = stringResource(R.string.search),
+                    onClick = {
+                        navController.navigate(Screen.JournalSearchScreen)
+                    },
+                )
             }
             AnimatedVisibility(visible = orderSettingsVisible) {
                 JournalSettingsSection(
@@ -133,26 +138,29 @@ fun JournalScreen(
                 )
             }
             LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(9.dp),
+                contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 2.dp, bottom = 24.dp),
                 modifier = Modifier.weight(1f)
             ) {
+                item(key = "new-entry") {
+                    NewEntryBar(
+                        onClick = {
+                            navController.navigate(
+                                Screen.JournalDetailScreen()
+                            )
+                        }
+                    )
+                }
+                // Each entry takes its colour from the same rotation the lobby
+                // uses, counted per day so a short day still starts on ink.
                 uiState.entries.forEach { (day, entries) ->
                     stickyHeader {
-                        Text(
-                            text = day,
-                            style = MaterialTheme.typography.titleLarge,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(MaterialTheme.colorScheme.background)
-                                .padding(bottom = 4.dp)
-                                .padding(horizontal = 12.dp)
-                        )
+                        DayBand(day)
                     }
-                    items(entries) { entry ->
+                    itemsIndexed(entries) { index, entry ->
                         JournalEntryItem(
-                            modifier = Modifier.padding(horizontal = 12.dp),
                             entry = entry,
+                            ink = Memphis.inkFor(index),
                             timeText = entry.createdDate.formatTime(context),
                             onClick = {
                                 navController.navigate(
@@ -165,6 +173,67 @@ fun JournalScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+/** The add door: a full-width printed bar, so nothing floats over the page. */
+@Composable
+private fun NewEntryBar(onClick: () -> Unit) {
+    MemphisSurface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() },
+        color = Memphis.Ink,
+        borderWidth = 2.5.dp,
+        shadowOffset = 4.dp,
+    ) {
+        Box(
+            Modifier.fillMaxWidth().padding(vertical = 13.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = "+ New entry",
+                style = posterStyle(14f, Memphis.Paper),
+            )
+        }
+    }
+}
+
+/** The day, as the ink band that separates one group of entries from the next. */
+@Composable
+private fun DayBand(label: String) {
+    Text(
+        text = label.uppercase(),
+        style = captionStyle(9.5f, Memphis.Paper),
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Memphis.Ink)
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+    )
+}
+
+/** One control on the page, as a printed block rather than a Material icon button. */
+@Composable
+private fun PageButton(
+    label: String,
+    onClick: () -> Unit,
+) {
+    MemphisSurface(
+        modifier = Modifier.clickable { onClick() },
+        color = Memphis.Paper,
+        borderWidth = 2.5.dp,
+        shadowOffset = 3.dp,
+    ) {
+        Box(
+            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = label.uppercase(),
+                style = captionStyle(9f),
+                maxLines = 1,
+            )
         }
     }
 }
@@ -185,78 +254,98 @@ fun JournalSettingsSection(order: Order, onOrderChange: (Order) -> Unit) {
         )
     }
     Column(
-        Modifier.background(color = MaterialTheme.colorScheme.background)
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 18.dp, end = 18.dp, bottom = 10.dp)
     ) {
         Text(
-            text = stringResource(R.string.order_by),
-            style = MaterialTheme.typography.bodyLarge,
-            modifier = Modifier.padding(start = 8.dp)
+            text = stringResource(R.string.order_by).uppercase(),
+            style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.55f)),
         )
-        FlowRow(
-            modifier = Modifier.padding(end = 8.dp)
-        ) {
-            orders.forEach {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(
-                        selected = order::class == it::class,
-                        onClick = {
-                            if (order != it)
-                                onOrderChange(
-                                    it.copyOrder(orderType = order.orderType)
-                                )
-                        }
-                    )
-                    Text(
-                        text = stringResource(it.titleRes),
-                        style = MaterialTheme.typography.bodyLarge
-                    )
-                }
-            }
-        }
-        HorizontalDivider()
-        FlowRow {
-            orderTypes.forEach {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(
-                        selected = order.orderType == it,
-                        onClick = {
-                            if (order != it)
-                                onOrderChange(
-                                    order.copyOrder(it)
-                                )
-                        }
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = stringResource(it.titleRes),
-                        style = MaterialTheme.typography.bodyLarge
-                    )
-                }
+        Spacer(Modifier.height(6.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            orders.forEach { option ->
+                OrderChip(
+                    label = stringResource(option.titleRes),
+                    on = order::class == option::class,
+                    onClick = {
+                        if (order != option)
+                            onOrderChange(
+                                option.copyOrder(orderType = order.orderType)
+                            )
+                    },
+                )
             }
         }
         Spacer(Modifier.height(8.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            orderTypes.forEach { option ->
+                OrderChip(
+                    label = stringResource(option.titleRes),
+                    on = order.orderType == option,
+                    onClick = {
+                        if (order != option)
+                            onOrderChange(
+                                order.copyOrder(option)
+                            )
+                    },
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+    }
+}
+
+/**
+ * One order option, as a printed block that fills with ink when chosen.
+ *
+ * The chosen block is the only one on the row carrying paper type, so which option
+ * is in force reads before any word does. Pressing it makes exactly the call the
+ * radio button made.
+ */
+@Composable
+private fun OrderChip(
+    label: String,
+    on: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier
+            .background(if (on) Memphis.Ink else Memphis.Paper)
+            .border(2.5.dp, Memphis.Ink)
+            .clickable { onClick() }
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label.uppercase(),
+            style = captionStyle(9f, if (on) Memphis.Paper else Memphis.Ink),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
 @Composable
 fun NoEntriesMessage() {
     Column(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(28.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            text = stringResource(R.string.no_entries_message),
-            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
-            color = Color.Gray,
+            text = stringResource(R.string.no_entries_message).uppercase(),
+            style = captionStyle(10f, Memphis.Ink.copy(alpha = 0.6f)),
             textAlign = TextAlign.Center
         )
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(Modifier.height(12.dp))
         Image(
             modifier = Modifier.size(125.dp),
             painter = painterResource(id = R.drawable.journal_img),
             contentDescription = stringResource(R.string.no_entries_message),
-            alpha = 0.7f
+            alpha = 0.5f
         )
     }
 }

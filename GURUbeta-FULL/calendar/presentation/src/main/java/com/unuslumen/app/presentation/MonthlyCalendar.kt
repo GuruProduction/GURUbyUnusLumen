@@ -15,7 +15,6 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -98,8 +97,8 @@ fun MonthlyCalendar(
         ) {
             weekDays.forEach { day ->
                 Text(
-                    text = day.getDisplayName(),
-                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+                    text = day.getDisplayName().uppercase(),
+                    style = com.unuslumen.app.ui.theme.captionStyle(8.5f),
                     modifier = Modifier.weight(1f),
                     textAlign = TextAlign.Center
                 )

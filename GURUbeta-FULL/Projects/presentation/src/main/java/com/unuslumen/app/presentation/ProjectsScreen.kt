@@ -5,8 +5,8 @@
 
 package com.unuslumen.app.presentation
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,102 +19,86 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Work
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
 import com.unuslumen.app.domain.model.Project
-import com.unuslumen.app.domain.model.ProjectSummary
 import com.unuslumen.app.ui.R
-import com.unuslumen.app.ui.components.common.LiquidFloatingActionButton
 import com.unuslumen.app.ui.components.common.guruAppBar
 import com.unuslumen.app.ui.navigation.Screen
-import com.unuslumen.app.ui.snackbar.showSnackbar
-import io.github.fletchmckee.liquid.liquefiable
-import io.github.fletchmckee.liquid.rememberLiquidState
-import kotlinx.coroutines.launch
+import com.unuslumen.app.ui.theme.Memphis
+import com.unuslumen.app.ui.theme.MemphisBody
+import com.unuslumen.app.ui.theme.MemphisSurface
+import com.unuslumen.app.ui.theme.captionStyle
+import com.unuslumen.app.ui.theme.posterStyle
 import org.koin.androidx.compose.koinViewModel
 
+/**
+ * The projects room, in the house language.
+ *
+ * WHAT IT WAS. A Material grid of rounded cards, each one filled with a colour parsed
+ * from a hex string, an icon in a circle, a Material overflow menu, a liquid floating
+ * button over the last card and a Material dialog to create one. It was the last room
+ * still dressed by a different hand.
+ *
+ * WHAT IT IS NOW. Ruled cards on paper carrying the project's own colour as a spine,
+ * a swatch-and-posters page, a printed add bar on the page rather than a button over
+ * it, and a create sheet in the same geometry as the lobby's add-a-room and the
+ * heartbeat's booking sheet.
+ *
+ * Every event, every navigation target and every string resource is the one the page
+ * already used.
+ */
 @Composable
 fun ProjectsScreen(
     navController: NavHostController,
     viewModel: ProjectsViewModel = koinViewModel()
 ) {
-    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
-    val scope = rememberCoroutineScope()
-    val snackbarHostState = remember { SnackbarHostState() }
     var showCreateDialog by remember { mutableStateOf(false) }
     var projectToEdit by remember { mutableStateOf<Project?>(null) }
-    val liquidState = rememberLiquidState()
-    
+
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        containerColor = Color.Transparent,
         topBar = {
             guruAppBar(
                 title = stringResource(R.string.projects),
-                actions = {
-                    IconButton(onClick = { /* TODO: Search */ }) {
-                        Icon(Icons.Default.Search, contentDescription = "Search projects")
-                    }
-                }
-            )
-        },
-        floatingActionButton = {
-            LiquidFloatingActionButton(
-                onClick = { showCreateDialog = true },
-                iconPainter = androidx.compose.ui.res.painterResource(R.drawable.ic_add),
-                contentDescription = stringResource(R.string.add_project),
-                liquidState = liquidState
+                stamp = if (uiState.projects.isEmpty()) null else "${uiState.projects.size} projects",
             )
         },
     ) { paddingValues ->
@@ -122,51 +106,56 @@ fun ProjectsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .liquefiable(liquidState)
         ) {
             if (uiState.projects.isEmpty()) {
-                NoProjectsMessage()
+                NoProjectsMessage(
+                    onAdd = { showCreateDialog = true },
+                )
             } else {
                 ProjectsGrid(
                     projects = uiState.projects,
+                    onAdd = { showCreateDialog = true },
                     onProjectClick = { project ->
                         navController.navigate(Screen.ProjectDetailScreen(project.id))
                     },
                     onProjectLongPress = { project ->
                         projectToEdit = project
-                    }
+                    },
                 )
             }
         }
     }
-    
-    // Create/Edit Project Dialog
+
     if (showCreateDialog || projectToEdit != null) {
         ProjectDialog(
             project = projectToEdit,
-            onDismiss = { 
+            onDismiss = {
                 showCreateDialog = false
                 projectToEdit = null
             },
             onSave = { title, description, promptOverlay, color, icon ->
                 if (projectToEdit != null) {
-                    viewModel.onEvent(ProjectsEvent.UpdateProject(
-                        projectToEdit!!.copy(
+                    viewModel.onEvent(
+                        ProjectsEvent.UpdateProject(
+                            projectToEdit!!.copy(
+                                title = title,
+                                description = description,
+                                promptOverlay = promptOverlay,
+                                color = color,
+                                icon = icon
+                            )
+                        )
+                    )
+                } else {
+                    viewModel.onEvent(
+                        ProjectsEvent.CreateProject(
                             title = title,
                             description = description,
                             promptOverlay = promptOverlay,
                             color = color,
                             icon = icon
                         )
-                    ))
-                } else {
-                    viewModel.onEvent(ProjectsEvent.CreateProject(
-                        title = title,
-                        description = description,
-                        promptOverlay = promptOverlay,
-                        color = color,
-                        icon = icon
-                    ))
+                    )
                 }
                 showCreateDialog = false
                 projectToEdit = null
@@ -176,187 +165,193 @@ fun ProjectsScreen(
 }
 
 @Composable
-fun NoProjectsMessage() {
+fun NoProjectsMessage(onAdd: () -> Unit) {
     Column(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(28.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Icon(
-            imageVector = Icons.Default.Folder,
-            contentDescription = null,
-            modifier = Modifier.size(80.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-        )
-        Spacer(modifier = Modifier.height(16.dp))
         Text(
-            text = "No Projects Yet",
-            style = MaterialTheme.typography.headlineMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            text = "NO PROJECTS YET",
+            style = captionStyle(10f, Memphis.Ink.copy(alpha = 0.6f)),
         )
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(Modifier.height(8.dp))
         Text(
-            text = "Create a project to start working with Guru on specific tasks",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = 32.dp)
+            text = "A project is a place to work with GURU on one thing, with its own " +
+                "instructions and its own history.",
+            style = captionStyle(9.5f, Memphis.Ink.copy(alpha = 0.55f)).copy(
+                fontFamily = MemphisBody,
+                letterSpacing = androidx.compose.ui.unit.TextUnit.Unspecified,
+            ),
+            modifier = Modifier.padding(horizontal = 8.dp),
         )
+        Spacer(Modifier.height(18.dp))
+        PrintedBar(label = "+ New project", onClick = onAdd)
     }
 }
 
 @Composable
 fun ProjectsGrid(
     projects: List<Project>,
+    onAdd: () -> Unit,
     onProjectClick: (Project) -> Unit,
     onProjectLongPress: (Project) -> Unit
 ) {
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 160.dp),
-        contentPadding = PaddingValues(16.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 4.dp, bottom = 28.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        items(projects, key = { it.id }) { project ->
+        item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+            PrintedBar(label = "+ New project", onClick = onAdd)
+        }
+
+        itemsIndexed(projects, key = { _, project -> project.id }) { index, project ->
             ProjectCard(
                 project = project,
+                ink = projectInk(project, index),
                 onClick = { onProjectClick(project) },
-                onLongPress = { onProjectLongPress(project) }
+                onLongPress = { onProjectLongPress(project) },
             )
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * The project's own colour, or the rotation when it has none.
+ *
+ * A project carries a hex string from the creator. It is honoured where it parses,
+ * because that is the colour the owner chose, and falls back to the lobby's rotation
+ * so a project made before the picker existed still gets a real one.
+ */
+private fun projectInk(project: Project, index: Int): Color = try {
+    Color(android.graphics.Color.parseColor(project.color))
+} catch (_: Exception) {
+    Memphis.inkFor(index)
+}
+
+/** A full-width printed bar, used for the one action a page exists to offer. */
+@Composable
+private fun PrintedBar(label: String, onClick: () -> Unit) {
+    MemphisSurface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() },
+        color = Memphis.Ink,
+        borderWidth = 2.5.dp,
+        shadowOffset = 4.dp,
+    ) {
+        Box(
+            Modifier.fillMaxWidth().padding(vertical = 13.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(label, style = posterStyle(14f, Memphis.Paper))
+        }
+    }
+}
+
 @Composable
 fun ProjectCard(
     project: Project,
+    ink: Color = Memphis.inkForName(project.title),
     onClick: () -> Unit,
     onLongPress: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
-    
-    Card(
+
+    MemphisSurface(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = try {
-                Color(android.graphics.Color.parseColor(project.color))
-            } catch (e: Exception) {
-                MaterialTheme.colorScheme.surfaceVariant
-            }
-        )
+        color = Memphis.Paper,
+        borderWidth = 2.5.dp,
+        shadowOffset = 4.dp,
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+        Column(Modifier.fillMaxWidth()) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(46.dp)
+                    .background(ink)
+                    .border(2.5.dp, Memphis.Ink)
             ) {
-                // Icon
                 Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.2f)),
-                    contentAlignment = Alignment.Center
+                    Modifier.align(Alignment.CenterStart).padding(start = 9.dp),
                 ) {
                     Icon(
                         imageVector = getProjectIcon(project.icon),
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(24.dp)
+                        tint = Memphis.Ink,
+                        modifier = Modifier.size(22.dp),
                     )
                 }
-                
-                // Menu
-                IconButton(onClick = { showMenu = true }) {
+                Box(
+                    Modifier.align(Alignment.CenterEnd).padding(end = 2.dp),
+                ) {
                     Icon(
                         imageVector = Icons.Default.MoreVert,
                         contentDescription = "More options",
-                        tint = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f)
+                        tint = Memphis.Ink,
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clickable { showMenu = true },
                     )
-                }
-                
-                DropdownMenu(
-                    expanded = showMenu,
-                    onDismissRequest = { showMenu = false }
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Edit") },
-                        onClick = {
-                            showMenu = false
-                            onLongPress()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Delete") },
-                        onClick = {
-                            showMenu = false
-                            // TODO: Delete project
-                        }
-                    )
+                    DropdownMenu(
+                        expanded = showMenu,
+                        onDismissRequest = { showMenu = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("EDIT", style = captionStyle(9.5f)) },
+                            onClick = {
+                                showMenu = false
+                                onLongPress()
+                            }
+                        )
+                    }
                 }
             }
-            
-            Spacer(modifier = Modifier.height(12.dp))
-            
-            // Title
-            Text(
-                text = project.title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onPrimary,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-            
-            // Description
-            if (project.description.isNotBlank()) {
-                Spacer(modifier = Modifier.height(4.dp))
+
+            Column(Modifier.fillMaxWidth().padding(10.dp)) {
                 Text(
-                    text = project.description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f),
+                    text = project.title.uppercase(),
+                    style = posterStyle(13f),
                     maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
                 )
-            }
-            
-            Spacer(modifier = Modifier.height(12.dp))
-            
-            // Stats
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                StatChip(
-                    label = "${project.messageCount} msgs",
-                    color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
-                )
-                StatChip(
-                    label = "${project.documentCount} docs",
-                    color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
-                )
+                if (project.description.isNotBlank()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = project.description,
+                        style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.6f)).copy(
+                            fontFamily = MemphisBody,
+                            letterSpacing = androidx.compose.ui.unit.TextUnit.Unspecified,
+                        ),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    StatChip(label = "${project.messageCount} msgs")
+                    StatChip(label = "${project.documentCount} docs")
+                }
             }
         }
     }
 }
 
 @Composable
-fun StatChip(
-    label: String,
-    color: Color
-) {
+fun StatChip(label: String) {
     Text(
-        text = label,
-        style = MaterialTheme.typography.labelSmall,
-        color = color
+        text = label.uppercase(),
+        style = captionStyle(7.5f, Memphis.Ink.copy(alpha = 0.55f)),
+        modifier = Modifier
+            .background(Memphis.Paper)
+            .border(1.5.dp, Memphis.Ink.copy(alpha = 0.25f))
+            .padding(horizontal = 5.dp, vertical = 2.dp),
     )
 }
 
@@ -370,7 +365,14 @@ fun getProjectIcon(iconName: String): ImageVector {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Create or edit a project, on a printed sheet.
+ *
+ * The same geometry as the lobby's add-a-room and the heartbeat's booking sheet: a
+ * scrim, a paper sheet with a heavier border and a bigger drop than anything behind
+ * it, a fixed masthead and foot, and a body that scrolls. Create stays disabled until
+ * a title exists, because a project with no name is not a project.
+ */
 @Composable
 fun ProjectDialog(
     project: Project?,
@@ -382,126 +384,231 @@ fun ProjectDialog(
     var promptOverlay by remember { mutableStateOf(project?.promptOverlay ?: "") }
     var selectedColor by remember { mutableStateOf(project?.color ?: "#6366f1") }
     var selectedIcon by remember { mutableStateOf(project?.icon ?: "folder") }
-    
+
     val colors = listOf(
-        "#6366f1", // Indigo
-        "#8b5cf6", // Purple
-        "#ec4899", // Pink
-        "#ef4444", // Red
-        "#f97316", // Orange
-        "#eab308", // Yellow
-        "#22c55e", // Green
-        "#14b8a6", // Teal
-        "#0ea5e9", // Sky
-        "#64748b"  // Slate
+        "#FFCE1B", "#5BC8E0", "#EE5B45", "#7A5AF8",
+        "#15807A", "#FF8FA8", "#C9B8FF", "#FFB020",
     )
-    
+
     val icons = listOf("folder", "code", "work", "description")
-    
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (project == null) "Create Project" else "Edit Project") },
-        text = {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    label = { Text("Title") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                
-                OutlinedTextField(
-                    value = description,
-                    onValueChange = { description = it },
-                    label = { Text("Description") },
-                    maxLines = 3,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                
-                OutlinedTextField(
-                    value = promptOverlay,
-                    onValueChange = { promptOverlay = it },
-                    label = { Text("Custom Instructions (Optional)") },
-                    placeholder = { Text("E.g., 'You are helping with wedding planning...'") },
-                    maxLines = 5,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                
-                // Color picker
-                Text("Color", style = MaterialTheme.typography.labelMedium)
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Memphis.Ink.copy(alpha = 0.45f))
+            .clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+                onClick = onDismiss,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        MemphisSurface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .heightIn(max = 640.dp)
+                .clickable(
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = null,
+                    onClick = {},
+                ),
+            color = Memphis.Paper,
+            borderWidth = 3.dp,
+            shadowOffset = 8.dp,
+        ) {
+            Column(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 15.dp)) {
+                    Text(
+                        text = if (project == null) "NEW PROJECT" else "EDIT PROJECT",
+                        style = posterStyle(24f),
+                    )
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 7.dp)
+                            .height(3.dp)
+                            .background(Memphis.Ink),
+                    )
+                }
+
+                Column(
+                    Modifier
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(start = 16.dp, end = 16.dp, top = 10.dp),
                 ) {
-                    colors.forEach { color ->
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(Color(android.graphics.Color.parseColor(color)))
-                                .clickable { selectedColor = color },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (selectedColor == color) {
+                    FieldLabel("Title")
+                    SheetField(
+                        value = title,
+                        placeholder = "The thing you are working on",
+                        onChange = { title = it },
+                    )
+
+                    FieldLabel("Description")
+                    SheetField(
+                        value = description,
+                        placeholder = "One line so you know which one this is",
+                        onChange = { description = it },
+                    )
+
+                    FieldLabel("Instructions GURU works to here")
+                    SheetField(
+                        value = promptOverlay,
+                        placeholder = "You are helping with wedding planning. Always check dates before answering.",
+                        onChange = { promptOverlay = it },
+                        minHeight = 84.dp,
+                    )
+
+                    FieldLabel("Colour")
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                        colors.forEach { colour ->
+                            val chosen = selectedColor == colour
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .background(Color(android.graphics.Color.parseColor(colour)))
+                                    .border(if (chosen) 3.dp else 2.dp, Memphis.Ink)
+                                    .clickable { selectedColor = colour },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                if (chosen) {
+                                    Text("×", style = posterStyle(15f))
+                                }
+                            }
+                        }
+                    }
+
+                    FieldLabel("Icon")
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                        icons.forEach { icon ->
+                            val chosen = selectedIcon == icon
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .background(if (chosen) Memphis.Ink else Memphis.Paper)
+                                    .border(2.5.dp, Memphis.Ink)
+                                    .clickable { selectedIcon = icon },
+                                contentAlignment = Alignment.Center,
+                            ) {
                                 Icon(
-                                    imageVector = androidx.compose.material.icons.Icons.Default.Check,
+                                    imageVector = getProjectIcon(icon),
                                     contentDescription = null,
-                                    tint = Color.White
+                                    tint = if (chosen) Memphis.Paper else Memphis.Ink,
+                                    modifier = Modifier.size(20.dp),
                                 )
                             }
                         }
                     }
+
+                    Spacer(Modifier.height(14.dp))
                 }
-                
-                // Icon picker
-                Text("Icon", style = MaterialTheme.typography.labelMedium)
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+
+                Box(Modifier.fillMaxWidth().height(3.dp).background(Memphis.Ink))
+                Row(
+                    Modifier.fillMaxWidth().padding(14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    icons.forEach { icon ->
+                    MemphisSurface(
+                        modifier = Modifier.weight(1f).clickable { onDismiss() },
+                        color = Memphis.Paper,
+                        borderWidth = 2.5.dp,
+                        shadowOffset = 4.dp,
+                    ) {
                         Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (selectedIcon == icon) 
-                                        MaterialTheme.colorScheme.primary
-                                    else 
-                                        MaterialTheme.colorScheme.surfaceVariant
-                                )
-                                .clickable { selectedIcon = icon },
-                            contentAlignment = Alignment.Center
+                            Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                            contentAlignment = Alignment.Center,
                         ) {
-                            Icon(
-                                imageVector = getProjectIcon(icon),
-                                contentDescription = null,
-                                tint = if (selectedIcon == icon) 
-                                    MaterialTheme.colorScheme.onPrimary 
-                                else 
-                                    MaterialTheme.colorScheme.onSurfaceVariant
+                            Text("CANCEL", style = captionStyle(9.5f))
+                        }
+                    }
+                    val ready = title.isNotBlank()
+                    MemphisSurface(
+                        modifier = Modifier
+                            .weight(1f)
+                            .then(
+                                if (ready) {
+                                    Modifier.clickable {
+                                        onSave(title, description, promptOverlay, selectedColor, selectedIcon)
+                                    }
+                                } else {
+                                    Modifier
+                                }
+                            ),
+                        color = if (ready) Memphis.Ink else Memphis.Paper,
+                        borderWidth = 2.5.dp,
+                        shadowOffset = 4.dp,
+                    ) {
+                        Box(
+                            Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = if (project == null) "CREATE" else "SAVE",
+                                style = captionStyle(
+                                    9.5f,
+                                    if (ready) Memphis.Paper else Memphis.Ink.copy(alpha = 0.4f),
+                                ),
                             )
                         }
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    if (title.isNotBlank()) {
-                        onSave(title, description, promptOverlay, selectedColor, selectedIcon)
-                    }
-                }
-            ) {
-                Text(if (project == null) "Create" else "Save")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
         }
+    }
+}
+
+/** A small printed label above a field. */
+@Composable
+private fun FieldLabel(text: String) {
+    Text(
+        text = text.uppercase(),
+        style = captionStyle(8f, Memphis.Ink.copy(alpha = 0.55f)),
+        modifier = Modifier.padding(top = 12.dp, bottom = 5.dp),
     )
+}
+
+/** A field the owner types into, in the same surface as every other object. */
+@Composable
+private fun SheetField(
+    value: String,
+    placeholder: String,
+    onChange: (String) -> Unit,
+    minHeight: androidx.compose.ui.unit.Dp = 44.dp,
+) {
+    MemphisSurface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Memphis.Paper,
+        borderWidth = 2.5.dp,
+        shadowOffset = 3.dp,
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = minHeight)
+                .padding(11.dp),
+        ) {
+            if (value.isEmpty()) {
+                Text(
+                    placeholder,
+                    style = captionStyle(9.5f, Memphis.Ink.copy(alpha = 0.4f)).copy(
+                        fontFamily = MemphisBody,
+                        letterSpacing = androidx.compose.ui.unit.TextUnit.Unspecified,
+                    ),
+                )
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onChange,
+                textStyle = androidx.compose.ui.text.TextStyle(
+                    fontFamily = MemphisBody,
+                    fontSize = 12.5.sp,
+                    lineHeight = 17.sp,
+                    color = Memphis.Ink,
+                ),
+                cursorBrush = SolidColor(Memphis.Ink),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
 }

@@ -233,19 +233,46 @@ private fun DevelopmentNotice(onDismiss: () -> Unit) {
     }
 }
 
-/** The floating search, drawn as one more block in the page. */
+/**
+ * The search field, drawn as a printed box rather than a rounded Material field.
+ *
+ * It was a pill: a fully rounded OutlinedTextField with a hairline border and a floating
+ * placeholder, which was the one soft object on a page of hard-edged blocks. It is now
+ * the same paper box with an ink edge that every other field in the app uses.
+ */
 @Composable
 private fun SearchBar(query: String, onQuery: (String) -> Unit) {
     Box(Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 12.dp)) {
-        OutlinedTextField(
-            value = query,
-            onValueChange = onQuery,
+        MemphisSurface(
             modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            placeholder = { Text("Search the mind", style = captionStyle(9f, Memphis.Ink.copy(alpha = 0.45f))) },
-            textStyle = captionStyle(10f),
-            shape = CircleShape,
-        )
+            color = Memphis.Paper,
+            borderWidth = 2.5.dp,
+            shadowOffset = 3.dp,
+        ) {
+            Box(Modifier.fillMaxWidth().padding(horizontal = 11.dp, vertical = 11.dp)) {
+                if (query.isEmpty()) {
+                    Text(
+                        text = "Search the mind",
+                        style = captionStyle(9.5f, Memphis.Ink.copy(alpha = 0.4f)),
+                    )
+                }
+                androidx.compose.foundation.text.BasicTextField(
+                    value = query,
+                    onValueChange = onQuery,
+                    singleLine = true,
+                    textStyle = androidx.compose.ui.text.TextStyle(
+                        fontFamily = com.unuslumen.app.ui.theme.MemphisBody,
+                        fontSize = androidx.compose.ui.unit.TextUnit(
+                            11f,
+                            androidx.compose.ui.unit.TextUnitType.Sp
+                        ),
+                        color = Memphis.Ink,
+                    ),
+                    cursorBrush = androidx.compose.ui.graphics.SolidColor(Memphis.Ink),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
     }
 }
 
@@ -267,15 +294,20 @@ private fun FamilyRail(
             val on = family in visible
             val ink = MindStyle.inkFor(family)
             Row(
+                // SQUARE, NOT A PILL. The family chips were the last rounded objects on
+                // this page; every block in the house language is a hard-edged rectangle.
                 modifier = Modifier
-                    .clip(CircleShape)
-                    .border(2.dp, Memphis.Ink, CircleShape)
-                    .background(if (on) Memphis.Paper else Memphis.Paper.copy(alpha = 0.4f))
+                    .background(if (on) ink else Memphis.Paper)
+                    .border(2.5.dp, Memphis.Ink)
                     .clickable { onToggle(family) }
                     .padding(horizontal = 9.dp, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(Modifier.size(7.dp).clip(CircleShape).background(if (on) ink else ink.copy(alpha = 0.25f)))
+                Box(
+                    Modifier
+                        .size(7.dp)
+                        .background(if (on) Memphis.Ink else ink.copy(alpha = 0.25f))
+                )
                 Spacer(Modifier.width(5.dp))
                 Text(
                     text = family.label.uppercase(),
@@ -667,12 +699,14 @@ private fun ZoomControls(
 
 @Composable
 private fun ZoomButton(label: String, onClick: () -> Unit, small: Boolean = false) {
+    // A printed square rather than a circle: the three zoom controls were the only
+    // round things left on the canvas, and a round button beside a hard-edged page
+    // reads as something borrowed from a different app.
     Box(
         modifier = Modifier
             .size(38.dp)
-            .clip(CircleShape)
             .background(Memphis.Paper)
-            .border(2.dp, Memphis.Ink, CircleShape)
+            .border(2.5.dp, Memphis.Ink)
             .clickable { onClick() },
         contentAlignment = Alignment.Center,
     ) {
@@ -729,7 +763,7 @@ private fun NodePanel(
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         val ink = if (node.kind == NodeKind.CORE) MindStyle.Core else MindStyle.inkFor(node.family)
-                        Box(Modifier.size(9.dp).clip(CircleShape).background(ink).border(1.dp, Memphis.Ink, CircleShape))
+                        Box(Modifier.size(10.dp).background(ink).border(2.dp, Memphis.Ink))
                         Spacer(Modifier.width(6.dp))
                         Text(
                             text = when (node.kind) {

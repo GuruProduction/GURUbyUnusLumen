@@ -4,10 +4,12 @@
 package com.unuslumen.app.presentation.thoughts
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,13 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -32,33 +28,40 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.em
 import androidx.navigation.NavHostController
 import com.unuslumen.app.thoughts.domain.model.GuruInsight
 import com.unuslumen.app.thoughts.domain.model.GuruThoughtCycle
 import com.unuslumen.app.thoughts.domain.model.ThoughtTriggerType
+import com.unuslumen.app.ui.components.common.guruAppBar
+import com.unuslumen.app.ui.theme.Memphis
+import com.unuslumen.app.ui.theme.MemphisBodyText
+import com.unuslumen.app.ui.theme.MemphisSwitch
+import com.unuslumen.app.ui.theme.MemphisSurface
+import com.unuslumen.app.ui.theme.captionStyle
+import com.unuslumen.app.ui.theme.posterStyle
 import org.koin.androidx.compose.koinViewModel
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val DividerSlate = Color(0xFF9A9384)
-private val GoldAccent = Color(0xFFDAA520)
-private val PaperCard = Color(0xFFF0E8DA)
-
 /**
- * Thought Cycles overview — the background mind's own room, per the approved
- * design: portal paper gradient, small-caps header with ink divider, totals
- * strip, cycle cards (plain-English trigger line, counts, last thought,
- * run-now, enable toggle), then the mixed insights feed with acknowledge and
- * dismiss. One scrollable list so no list nests inside another. Light warm
- * paper only — these screens never render a dark variant.
+ * The background mind's own room, in the house language.
+ *
+ * WHAT IT WAS. The last untouched Material page in the app: a grey rounded stat pill
+ * floating over the artwork, rounded 16dp elevated cards on cream, a Material switch in
+ * green, a gold-accented "run now" pill with a circle in it, and insight cards with
+ * translucent green and red tinted buttons. It was the room that most obviously belonged
+ * to a different product.
+ *
+ * WHAT IT IS NOW. The same page every other room wears: a masthead with a stamp, an ink
+ * band per group, paper cards with hard edges and printed drops, the totals as three
+ * printed blocks that each carry a colour, the enable switch as a printed rectangle, and
+ * run and acknowledge and dismiss as printed cells.
+ *
+ * Every view model call and every callback is unchanged.
  */
 @Composable
 fun ThoughtCyclesScreen(
@@ -71,68 +74,53 @@ fun ThoughtCyclesScreen(
     val runningCycleId by viewModel.runningCycleId.collectAsState()
     val lastRunMessage by viewModel.lastRunMessage.collectAsState()
     val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+    val waiting = summary?.unacknowledgedInsights ?: 0
 
-    Box(Modifier.fillMaxSize()) {
-        // No page wash: the app root owns the one background.
-        LazyColumn(Modifier.fillMaxSize()) {
-            // Header
-            item {
+    Scaffold(
+        containerColor = Color.Transparent,
+        topBar = {
+            guruAppBar(
+                title = "Thought cycles",
+                stamp = if (waiting > 0) "$waiting waiting" else null,
+                stampColor = if (waiting > 0) Memphis.Coral else Memphis.Cyan,
+            )
+        },
+    ) { paddingValues ->
+        LazyColumn(
+            Modifier.fillMaxSize().padding(paddingValues),
+            contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 28.dp),
+        ) {
+            // The totals, as three printed blocks that each carry a colour.
+            item(key = "totals") {
                 Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(top = 14.dp, start = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text(
-                        text = "‹",
-                        style = MaterialTheme.typography.titleLarge.copy(color = DividerSlate),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { navController.popBackStack() }
-                            .padding(horizontal = 14.dp, vertical = 6.dp)
+                    StatBlock(
+                        modifier = Modifier.weight(1f),
+                        number = "${summary?.enabledCycles ?: 0}",
+                        label = "Active",
+                        ink = Memphis.Yellow,
                     )
-                    Text(
-                        text = "THOUGHT CYCLES",
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.26.em
-                        )
+                    StatBlock(
+                        modifier = Modifier.weight(1f),
+                        number = "${summary?.totalRuns ?: 0}",
+                        label = "Runs",
+                        ink = Memphis.Cyan,
+                    )
+                    StatBlock(
+                        modifier = Modifier.weight(1f),
+                        number = "$waiting",
+                        label = "Waiting",
+                        ink = if (waiting > 0) Memphis.Coral else Memphis.Lilac,
                     )
                 }
-                Box(
-                    Modifier
-                        .padding(start = 54.dp, top = 2.dp)
-                        .width(38.dp)
-                        .height(2.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(DividerSlate)
-                )
-                Spacer(Modifier.height(12.dp))
             }
 
-            // Totals strip
-            item {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 18.dp)
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(PaperCard)
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
-                    horizontalArrangement = Arrangement.spacedBy(24.dp)
-                ) {
-                    StripItem("${summary?.enabledCycles ?: 0}", "Cycles active")
-                    StripItem("${summary?.totalRuns ?: 0}", "Runs total")
-                    StripItem(
-                        "${summary?.unacknowledgedInsights ?: 0}",
-                        "Waiting",
-                        warn = (summary?.unacknowledgedInsights ?: 0) > 0
-                    )
-                }
-                Spacer(Modifier.height(14.dp))
+            item(key = "cycles-band") {
+                Band("Your cycles", "${cycles.size}", Modifier.padding(top = 14.dp))
             }
 
-            // Cycle cards
             items(cycles, key = { it.id }) { cycle ->
                 ThoughtCycleCard(
                     cycle = cycle,
@@ -144,70 +132,89 @@ fun ThoughtCyclesScreen(
                         else viewModel.disableCycle(cycle.id)
                     }
                 )
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(9.dp))
             }
 
             if (cycles.isEmpty()) {
-                item {
+                item(key = "no-cycles") {
                     Text(
-                        text = "No cycles yet. Ask Guru in chat to create one — it writes the steps itself.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp)
+                        text = "NO CYCLES YET. ASK GURU IN CHAT TO MAKE ONE AND IT WRITES THE STEPS ITSELF.",
+                        style = captionStyle(9.5f, Memphis.Ink.copy(alpha = 0.6f)),
+                        modifier = Modifier.padding(vertical = 10.dp),
                     )
                 }
             }
 
-            if (!lastRunMessage.isNullOrBlank()) {
-                item {
-                    Text(
-                        text = lastRunMessage!!,
-                        style = MaterialTheme.typography.labelMedium.copy(color = GoldAccent),
-                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)
-                    )
+            lastRunMessage?.takeIf { it.isNotBlank() }?.let { message ->
+                item(key = "last-run") {
+                    MemphisSurface(
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                        color = Memphis.Sun,
+                        borderWidth = 2.5.dp,
+                        shadowOffset = 3.dp,
+                    ) {
+                        Text(
+                            text = message,
+                            style = captionStyle(9f),
+                            modifier = Modifier.padding(10.dp),
+                        )
+                    }
                 }
             }
 
-            // Insights feed
-            item {
-                Text(
-                    text = "INSIGHTS",
-                    style = MaterialTheme.typography.titleSmall.copy(
-                        color = DividerSlate,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.18.em
-                    ),
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp)
-                )
+            item(key = "insights-band") {
+                Band("Insights", "${insights.size}", Modifier.padding(top = 16.dp))
             }
+
             items(insights, key = { it.id }) { insight ->
                 InsightCard(
                     insight = insight,
                     onAcknowledge = { viewModel.acknowledgeInsight(insight.id) },
                     onDismiss = { viewModel.dismissInsight(insight.id) }
                 )
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(9.dp))
             }
-            item { Spacer(Modifier.height(24.dp)) }
         }
     }
 }
 
+/** One number and its label, on a coloured printed block. */
 @Composable
-private fun StripItem(number: String, label: String, warn: Boolean = false) {
-    Column {
+private fun StatBlock(
+    modifier: Modifier = Modifier,
+    number: String,
+    label: String,
+    ink: Color,
+) {
+    MemphisSurface(
+        modifier = modifier,
+        color = ink,
+        borderWidth = 2.5.dp,
+        shadowOffset = 4.dp,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(10.dp)) {
+            Text(number, style = posterStyle(26f))
+            Text(label.uppercase(), style = captionStyle(8f, Memphis.Ink.copy(alpha = 0.7f)))
+        }
+    }
+}
+
+/** An ink bar with the label in paper type and the count on a paper tab. */
+@Composable
+private fun Band(label: String, note: String?, modifier: Modifier = Modifier) {
+    Row(
+        modifier
+            .fillMaxWidth()
+            .background(Memphis.Ink)
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label.uppercase(), style = captionStyle(9.5f, Memphis.Paper))
         Text(
-            text = number,
-            style = MaterialTheme.typography.titleLarge.copy(
-                fontWeight = FontWeight.Bold,
-                color = if (warn) Color(0xFFD53A2F) else MaterialTheme.colorScheme.onBackground
-            )
-        )
-        Text(
-            text = label.uppercase(),
-            style = MaterialTheme.typography.labelSmall.copy(
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                letterSpacing = 0.08.em
-            )
+            text = note ?: "",
+            style = captionStyle(8.5f, Memphis.Ink),
+            modifier = Modifier.background(Memphis.Paper).padding(horizontal = 6.dp),
         )
     }
 }
@@ -220,16 +227,15 @@ private fun ThoughtCycleCard(
     onRun: () -> Unit,
     onToggle: (Boolean) -> Unit,
 ) {
-    Card(
-        shape = RoundedCornerShape(16.dp),
-        elevation = CardDefaults.elevatedCardElevation(4.dp),
-        colors = CardDefaults.elevatedCardColors(containerColor = PaperCard),
+    MemphisSurface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 18.dp)
-            .alpha(if (cycle.enabled) 1f else 0.45f)
+            .alpha(if (cycle.enabled) 1f else 0.5f),
+        color = Memphis.Paper,
+        borderWidth = 2.5.dp,
+        shadowOffset = 4.dp,
     ) {
-        Column(Modifier.padding(16.dp)) {
+        Column(Modifier.fillMaxWidth().padding(11.dp)) {
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -237,96 +243,81 @@ private fun ThoughtCycleCard(
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        text = cycle.displayName,
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold
-                        ),
+                        text = cycle.displayName.uppercase(),
+                        style = posterStyle(14f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Spacer(Modifier.height(3.dp))
                     Text(
-                        text = triggerLine(cycle),
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = Color(0xFF5B7C99)
-                        )
+                        text = triggerLine(cycle).uppercase(),
+                        style = captionStyle(8f, Memphis.Ink.copy(alpha = 0.55f))
                     )
                 }
-                Spacer(Modifier.width(12.dp))
-                Switch(
+                Spacer(Modifier.width(10.dp))
+                MemphisSwitch(
                     checked = cycle.enabled,
-                    onCheckedChange = onToggle,
-                    colors = SwitchDefaults.colors(
-                        checkedTrackColor = Color(0xFF1E9651)
-                    )
+                    onChange = onToggle,
+                    ink = Memphis.Teal,
                 )
             }
 
-            Spacer(Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Spacer(Modifier.height(7.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                 Text(
-                    text = "${cycle.runCount} runs",
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    text = "${cycle.runCount} RUNS",
+                    style = captionStyle(7.5f, Memphis.Ink.copy(alpha = 0.55f))
                 )
                 Text(
-                    text = "${cycle.insightCount} insights",
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    text = "${cycle.insightCount} INSIGHTS",
+                    style = captionStyle(7.5f, Memphis.Ink.copy(alpha = 0.55f))
                 )
                 cycle.lastRunAt?.let {
                     Text(
-                        text = "last: ${timeFormat.format(Date(it))}",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        text = "LAST ${timeFormat.format(Date(it))}",
+                        style = captionStyle(7.5f, Memphis.Ink.copy(alpha = 0.55f))
                     )
                 }
             }
 
             cycle.lastResult?.let { result ->
                 Spacer(Modifier.height(8.dp))
-                Text(
-                    text = "LAST THOUGHT",
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        color = GoldAccent,
-                        fontWeight = FontWeight.Bold
-                    )
-                )
+                Text("LAST THOUGHT", style = captionStyle(8f, Memphis.Ink.copy(alpha = 0.6f)))
+                Spacer(Modifier.height(2.dp))
                 Text(
                     text = result,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MemphisBodyText,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
             }
 
-            Spacer(Modifier.height(8.dp))
-            Row(
-                Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(GoldAccent.copy(alpha = 0.15f))
-                    .clickable(enabled = !isRunning, onClick = onRun)
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
+            Spacer(Modifier.height(9.dp))
+            MemphisSurface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (isRunning) Modifier else Modifier.clickable { onRun() }),
+                color = if (isRunning) Memphis.Paper else Memphis.Ink,
+                borderWidth = 2.5.dp,
+                shadowOffset = 3.dp,
             ) {
-                Box(
-                    Modifier
-                        .width(8.dp)
-                        .height(8.dp)
-                        .clip(CircleShape)
-                        .background(if (isRunning) GoldAccent else Color(0xFF1E9651))
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = if (isRunning) "RUNNING…" else "RUN NOW",
-                    style = MaterialTheme.typography.labelMedium.copy(
-                        color = GoldAccent,
-                        fontWeight = FontWeight.Bold
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 9.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier
+                            .width(7.dp)
+                            .height(7.dp)
+                            .background(if (isRunning) Memphis.Ink.copy(alpha = 0.4f) else Memphis.Yellow)
                     )
-                )
+                    Spacer(Modifier.width(7.dp))
+                    Text(
+                        text = if (isRunning) "RUNNING…" else "RUN NOW",
+                        style = captionStyle(9f, if (isRunning) Memphis.Ink.copy(alpha = 0.4f) else Memphis.Paper)
+                    )
+                }
             }
         }
     }
@@ -339,90 +330,73 @@ private fun InsightCard(
     onDismiss: () -> Unit,
 ) {
     val insightTimeFormat = remember { SimpleDateFormat("dd MMM HH:mm", Locale.getDefault()) }
-    Card(
-        shape = RoundedCornerShape(14.dp),
-        elevation = CardDefaults.elevatedCardElevation(3.dp),
-        colors = CardDefaults.elevatedCardColors(containerColor = PaperCard),
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 18.dp)
+    val ink = typeColor(insight.type.name)
+
+    MemphisSurface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Memphis.Paper,
+        borderWidth = 2.5.dp,
+        shadowOffset = 4.dp,
     ) {
-        Column(Modifier.padding(14.dp)) {
+        Column(Modifier.fillMaxWidth().padding(11.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = insight.type.name.uppercase(),
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontWeight = FontWeight.Bold,
-                        color = typeColor(insight.type.name)
-                    )
+                    style = captionStyle(8f),
+                    modifier = Modifier
+                        .background(ink)
+                        .border(1.5.dp, Memphis.Ink)
+                        .padding(horizontal = 5.dp, vertical = 1.dp),
                 )
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(7.dp))
                 Text(
-                    text = insight.cycleName.ifBlank { "cycle" },
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                    )
+                    text = insight.cycleName.ifBlank { "CYCLE" }.uppercase(),
+                    style = captionStyle(7.5f, Memphis.Ink.copy(alpha = 0.55f))
                 )
                 Spacer(Modifier.weight(1f))
                 Text(
                     text = String.format(Locale.getDefault(), "%.2f", insight.confidence),
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                    )
+                    style = captionStyle(7.5f, Memphis.Ink.copy(alpha = 0.5f))
                 )
             }
 
+            Spacer(Modifier.height(6.dp))
+            Text(text = insight.title, style = posterStyle(12.5f))
+            Spacer(Modifier.height(3.dp))
+            Text(text = insight.content, style = MemphisBodyText)
             Spacer(Modifier.height(4.dp))
             Text(
-                text = insight.title,
-                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
-            )
-            Text(
-                text = insight.content,
-                style = MaterialTheme.typography.bodySmall
-            )
-            Text(
-                text = insightTimeFormat.format(Date(insight.createdAt)),
-                style = MaterialTheme.typography.labelSmall.copy(
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                )
+                text = insightTimeFormat.format(Date(insight.createdAt)).uppercase(),
+                style = captionStyle(7.5f, Memphis.Ink.copy(alpha = 0.5f))
             )
 
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color(0xFF1E9651).copy(alpha = 0.12f))
-                        .clickable(onClick = onAcknowledge)
-                        .padding(vertical = 7.dp),
-                    contentAlignment = Alignment.Center
+                MemphisSurface(
+                    modifier = Modifier.weight(1f).clickable { onAcknowledge() },
+                    color = Memphis.Teal,
+                    borderWidth = 2.5.dp,
+                    shadowOffset = 3.dp,
                 ) {
-                    Text(
-                        text = "ACKNOWLEDGE",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            color = Color(0xFF1E9651),
-                            fontWeight = FontWeight.Bold
-                        )
-                    )
+                    Box(
+                        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("ACKNOWLEDGE", style = captionStyle(8.5f, Memphis.Paper))
+                    }
                 }
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color(0xFFD53A2F).copy(alpha = 0.08f))
-                        .clickable(onClick = onDismiss)
-                        .padding(vertical = 7.dp),
-                    contentAlignment = Alignment.Center
+                MemphisSurface(
+                    modifier = Modifier.weight(1f).clickable { onDismiss() },
+                    color = Memphis.Paper,
+                    borderWidth = 2.5.dp,
+                    shadowOffset = 3.dp,
                 ) {
-                    Text(
-                        text = "DISMISS",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            color = Color(0xFFD53A2F),
-                            fontWeight = FontWeight.Bold
-                        )
-                    )
+                    Box(
+                        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("DISMISS", style = captionStyle(8.5f))
+                    }
                 }
             }
         }
@@ -431,14 +405,14 @@ private fun InsightCard(
 
 /** Name-based so it stays correct whatever constants the enum carries. */
 private fun typeColor(typeName: String): Color = when (typeName.uppercase(Locale.ROOT)) {
-    "ANOMALY" -> Color(0xFFD53A2F)
-    "SUGGESTION" -> Color(0xFF1E9651)
-    "PREDICTION" -> Color(0xFF6F4CAD)
-    else -> Color(0xFF5B7C99)
+    "ANOMALY" -> Memphis.Coral
+    "SUGGESTION" -> Memphis.Teal
+    "PREDICTION" -> Memphis.Purple
+    else -> Memphis.Cyan
 }
 
 private fun triggerLine(cycle: GuruThoughtCycle): String = when (cycle.triggerType) {
-    ThoughtTriggerType.SCHEDULED -> "Scheduled · on its configured interval"
-    ThoughtTriggerType.EVENT -> "Event · fires when the subscribed event happens"
-    ThoughtTriggerType.THRESHOLD -> "Threshold · fires when its metric crosses the line"
+    ThoughtTriggerType.SCHEDULED -> "Scheduled on its own interval"
+    ThoughtTriggerType.EVENT -> "Fires when the subscribed event happens"
+    ThoughtTriggerType.THRESHOLD -> "Fires when its metric crosses the line"
 }

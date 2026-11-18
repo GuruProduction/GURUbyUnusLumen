@@ -11,10 +11,10 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -23,8 +23,18 @@ import androidx.compose.ui.unit.dp
 import com.unuslumen.app.domain.model.CalendarDay
 import com.unuslumen.app.domain.model.CalendarEvent
 import com.unuslumen.app.ui.R
+import com.unuslumen.app.ui.theme.Memphis
+import com.unuslumen.app.ui.theme.captionStyle
+import com.unuslumen.app.ui.theme.posterStyle
 import com.unuslumen.app.util.date.formattedEventsDayName
 
+/**
+ * The events for the chosen day, in the house language.
+ *
+ * The day's name is set in the poster face as the page's own heading, and an empty
+ * day says so in the caption voice rather than as grey Material body text. The
+ * slide animation between days is unchanged.
+ */
 @Composable
 fun DayEventsList(
     modifier: Modifier = Modifier,
@@ -46,21 +56,21 @@ fun DayEventsList(
         LazyColumn(
             modifier = modifier,
             state = state,
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(9.dp)
         ) {
             item {
                 Text(
-                    text = selectedDate.date.formattedEventsDayName,
-                    style = MaterialTheme.typography.headlineSmall
+                    text = selectedDate.date.formattedEventsDayName.uppercase(),
+                    style = posterStyle(15f),
+                    modifier = Modifier.padding(bottom = 2.dp),
                 )
             }
             if (selectedDate.events.isEmpty()) {
                 item {
                     Text(
-                        text = stringResource(R.string.no_events),
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        text = stringResource(R.string.no_events).uppercase(),
+                        style = captionStyle(9f, Memphis.Ink.copy(alpha = 0.5f)),
                     )
                 }
             } else {

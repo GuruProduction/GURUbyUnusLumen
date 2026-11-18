@@ -8,28 +8,19 @@ package com.unuslumen.app.presentation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -39,23 +30,38 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import com.unuslumen.app.ui.ItemView
 import com.unuslumen.app.ui.R
-import com.unuslumen.app.ui.components.common.LiquidFloatingActionButton
 import com.unuslumen.app.ui.components.common.guruAppBar
 import com.unuslumen.app.ui.components.notes.NoteCard
 import com.unuslumen.app.ui.navigation.Screen
 import com.unuslumen.app.ui.snackbar.LocalisedSnackbarHost
-import io.github.fletchmckee.liquid.liquefiable
-import io.github.fletchmckee.liquid.rememberLiquidState
+import com.unuslumen.app.ui.theme.Memphis
+import com.unuslumen.app.ui.theme.MemphisBodyText
+import com.unuslumen.app.ui.theme.MemphisEmpty
+import com.unuslumen.app.ui.theme.MemphisField
+import com.unuslumen.app.ui.theme.MemphisPill
+import com.unuslumen.app.ui.theme.MemphisSheet
+import com.unuslumen.app.ui.theme.MemphisSheetButton
 import org.koin.androidx.compose.koinViewModel
 import org.koin.core.parameter.parametersOf
 
+/**
+ * One folder's notes, in the house language.
+ *
+ * WHAT IT WAS. A Material page: two icon buttons in the app bar, a liquid floating
+ * button hovering over the last card, and two rounded dialogs in pure red and white.
+ *
+ * WHAT IT IS NOW. Printed blocks for delete and rename on the masthead, the add door as
+ * the first row of the list rather than a button over it, and both dialogs on the shared
+ * printed sheet.
+ *
+ * Every view model call, navigation target and string resource is unchanged.
+ */
 @Composable
 fun NoteFolderDetailsScreen(
     navController: NavHostController,
@@ -69,53 +75,57 @@ fun NoteFolderDetailsScreen(
     var openDeleteDialog by remember { mutableStateOf(false) }
     var openEditDialog by remember { mutableStateOf(false) }
 
-    val liquidState = rememberLiquidState()
     LaunchedEffect(uiState.navigateUp) {
         if (uiState.navigateUp) {
             navController.navigateUp()
         }
     }
+
     Scaffold(
+        containerColor = Color.Transparent,
         snackbarHost = { LocalisedSnackbarHost(snackbarHostState) },
         topBar = {
             guruAppBar(
-                title = folder?.name ?: "",
+                title = folder?.name ?: "Folder",
+                stamp = if (uiState.folderNotes.isEmpty()) null else "${uiState.folderNotes.size} notes",
                 actions = {
-                    IconButton(onClick = { openDeleteDialog = true }) {
-                        Icon(Icons.Default.Delete, stringResource(R.string.delete_folder))
-                    }
-                    IconButton(onClick = { openEditDialog = true }) {
-                        Icon(Icons.Default.Edit, stringResource(R.string.delete_folder))
-                    }
+                    MemphisPill(
+                        label = "Rename",
+                        selected = false,
+                        onClick = { openEditDialog = true },
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    MemphisPill(
+                        label = "Delete",
+                        selected = false,
+                        ink = Memphis.Coral,
+                        onClick = { openDeleteDialog = true },
+                    )
                 }
             )
         },
-        floatingActionButton = {
-            LiquidFloatingActionButton(
-                onClick = {
-                    navController.navigate(
-                        Screen.NoteDetailsScreen(folderId = id)
-                    )
-                },
-                iconPainter = painterResource(R.drawable.ic_add),
-                contentDescription = stringResource(R.string.add_note),
-                liquidState = liquidState
-            )
-        }
     ) { contentPadding ->
         Column(
-            Modifier.fillMaxSize().padding(contentPadding).liquefiable(liquidState)
+            Modifier.fillMaxSize().padding(contentPadding)
         ) {
             if (uiState.noteView == ItemView.LIST) {
                 LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(9.dp),
                     contentPadding = PaddingValues(
                         top = 12.dp,
-                        bottom = 24.dp,
-                        start = 12.dp,
-                        end = 12.dp
+                        bottom = 28.dp,
+                        start = 18.dp,
+                        end = 18.dp
                     ),
                 ) {
+                    item(key = "add") {
+                        com.unuslumen.app.ui.theme.MemphisBarButton(
+                            label = "+ New note",
+                            onClick = {
+                                navController.navigate(Screen.NoteDetailsScreen(folderId = id))
+                            },
+                        )
+                    }
                     items(uiState.folderNotes, key = { it.id }) { note ->
                         NoteCard(
                             note = note,
@@ -129,20 +139,36 @@ fun NoteFolderDetailsScreen(
                             }
                         )
                     }
+                    if (uiState.folderNotes.isEmpty()) {
+                        item(key = "empty") {
+                            MemphisEmpty(
+                                title = "Nothing in here yet",
+                                line = "Notes you put in this folder land here.",
+                                modifier = Modifier.fillMaxWidth().height(240.dp),
+                            )
+                        }
+                    }
                 }
             } else {
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(150.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                     contentPadding = PaddingValues(
                         top = 12.dp,
-                        bottom = 24.dp,
-                        start = 12.dp,
-                        end = 12.dp
+                        bottom = 28.dp,
+                        start = 18.dp,
+                        end = 18.dp
                     ),
-                    modifier = Modifier.liquefiable(liquidState)
                 ) {
+                    item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                        com.unuslumen.app.ui.theme.MemphisBarButton(
+                            label = "+ New note",
+                            onClick = {
+                                navController.navigate(Screen.NoteDetailsScreen(folderId = id))
+                            },
+                        )
+                    }
                     items(uiState.folderNotes) { note ->
                         key(note.id) {
                             NoteCard(
@@ -164,81 +190,68 @@ fun NoteFolderDetailsScreen(
                 }
             }
         }
-        if (openDeleteDialog)
-            AlertDialog(
-                shape = RoundedCornerShape(25.dp),
-                onDismissRequest = { openDeleteDialog = false },
-                title = { Text(stringResource(R.string.delete_note_confirmation_title)) },
-                text = {
-                    Text(
-                        stringResource(
-                            R.string.delete_folder_confirmation_message,
-                        )
+
+        if (openDeleteDialog) {
+            MemphisSheet(
+                title = stringResource(R.string.delete_note_confirmation_title),
+                subtitle = stringResource(R.string.delete_folder_confirmation_message),
+                onDismiss = { openDeleteDialog = false },
+                accent = Memphis.Coral,
+                footer = {
+                    MemphisSheetButton(
+                        label = stringResource(R.string.cancel),
+                        onClick = { openDeleteDialog = false },
                     )
-                },
-                confirmButton = {
-                    Button(
-                        colors = ButtonDefaults.buttonColors(containerColor = Color.Red),
-                        shape = RoundedCornerShape(25.dp),
+                    MemphisSheetButton(
+                        label = stringResource(R.string.delete_folder),
+                        filled = true,
+                        ink = Memphis.Coral,
                         onClick = {
                             viewModel.deleteCurrentFolder()
                             openDeleteDialog = false
                         },
-                    ) {
-                        Text(stringResource(R.string.delete_folder), color = Color.White)
-                    }
+                    )
                 },
-                dismissButton = {
-                    Button(
-                        shape = RoundedCornerShape(25.dp),
-                        onClick = {
-                            openDeleteDialog = false
-                        }) {
-                        Text(stringResource(R.string.cancel), color = Color.White)
-                    }
-                }
+                body = {
+                    Text(
+                        text = "This cannot be undone.",
+                        style = MemphisBodyText,
+                        modifier = Modifier.padding(vertical = 14.dp),
+                    )
+                },
             )
+        }
+
         if (openEditDialog) {
             var folderName by remember { mutableStateOf(folder?.name ?: "") }
-            AlertDialog(
-                onDismissRequest = { openEditDialog = false },
-                title = {
-                    Text(
-                        text = stringResource(id = R.string.edit_folder),
-                        style = MaterialTheme.typography.titleLarge
+            MemphisSheet(
+                title = stringResource(id = R.string.edit_folder),
+                subtitle = "What this folder is called",
+                onDismiss = { openEditDialog = false },
+                footer = {
+                    MemphisSheetButton(
+                        label = stringResource(R.string.cancel),
+                        onClick = { openEditDialog = false },
                     )
-                },
-                text = {
-                    TextField(
-                        value = folderName,
-                        onValueChange = { folderName = it },
-                        label = {
-                            Text(
-                                text = stringResource(id = R.string.name),
-                                style = MaterialTheme.typography.bodyLarge
-                            )
-                        },
-                    )
-                },
-                confirmButton = {
-                    Button(
-                        shape = RoundedCornerShape(25.dp),
+                    MemphisSheetButton(
+                        label = stringResource(R.string.save),
+                        filled = true,
                         onClick = {
                             viewModel.updateCurrentFolderName(folderName)
                             openEditDialog = false
                         },
-                    ) {
-                        Text(stringResource(R.string.save), color = Color.White)
-                    }
+                    )
                 },
-                dismissButton = {
-                    TextButton(
-                        shape = RoundedCornerShape(25.dp),
-                        onClick = { openEditDialog = false },
-                    ) {
-                        Text(stringResource(R.string.cancel), color = Color.White)
-                    }
-                }
+                body = {
+                    MemphisField(
+                        label = stringResource(id = R.string.name),
+                        value = folderName,
+                        onChange = { folderName = it },
+                        placeholder = "A name you will recognise",
+                        singleLine = true,
+                    )
+                    Spacer(Modifier.height(14.dp))
+                },
             )
         }
     }

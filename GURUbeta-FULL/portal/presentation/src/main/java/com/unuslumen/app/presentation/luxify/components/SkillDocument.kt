@@ -3,29 +3,30 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.presentation.luxify.components
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.unuslumen.app.ui.theme.Memphis
+import com.unuslumen.app.ui.theme.MemphisBodyText
+import com.unuslumen.app.ui.theme.MemphisSurface
+import com.unuslumen.app.ui.theme.captionStyle
+import com.unuslumen.app.ui.theme.posterStyle
 
 /**
  * A single step inside a rendered skill document.
@@ -58,11 +59,17 @@ data class SkillDocumentData(
 )
 
 /**
- * Scrollable card that renders the final skill document for confirmation.
+ * The skill document a person confirms before it is saved, in the house language.
  *
- * @param skill The skill document data to display.
- * @param onConfirm Called when the user taps the primary Confirm button.
- * @param onBack Called when the user taps Back to keep editing.
+ * WHAT IT WAS. A rounded 20dp Material card with a soft elevation, a primary-coloured
+ * section label, lavender tool badges, grey step cards, an outlined Back button and a
+ * filled primary Confirm. Every one of those shapes is the one this pass removes.
+ *
+ * NOW. A paper page with a hard ink edge and a printed drop, an ink band per section, the
+ * skill's own colour from the lobby's rotation as the masthead, printed tags for the tools
+ * and numbered printed blocks for the steps.
+ *
+ * Both callbacks are unchanged: Back keeps editing, Confirm saves.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -72,109 +79,133 @@ fun SkillDocument(
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val ink = Memphis.inkForName(skill.name)
 
-    Card(
+    MemphisSurface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        elevation = CardDefaults.cardElevation(2.dp)
+        color = Memphis.Paper,
+        borderWidth = 3.dp,
+        shadowOffset = 6.dp,
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            Text(
-                text = skill.name,
-                style = MaterialTheme.typography.headlineSmall.copy(
-                    fontWeight = FontWeight.Bold
-                ),
-                color = MaterialTheme.colorScheme.onSurface
-            )
-
-            Spacer(Modifier.size(8.dp))
-
-            Text(
-                text = skill.description,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Spacer(Modifier.size(16.dp))
-            SectionLabel("When to use")
-            Spacer(Modifier.size(4.dp))
-            Card(
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                ),
-                elevation = CardDefaults.cardElevation(0.dp),
-                modifier = Modifier.fillMaxWidth()
+        Column(Modifier.fillMaxWidth()) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .background(ink)
+                    .border(2.5.dp, Memphis.Ink)
+                    .padding(horizontal = 14.dp, vertical = 12.dp)
             ) {
                 Text(
-                    text = skill.whenToUse,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(12.dp)
+                    text = skill.name.uppercase(),
+                    style = posterStyle(20f),
                 )
             }
 
-            if (skill.allowedTools.isNotEmpty()) {
-                Spacer(Modifier.size(16.dp))
-                SectionLabel("Tools")
-                Spacer(Modifier.size(6.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+            Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                if (skill.description.isNotBlank()) {
+                    Text(text = skill.description, style = MemphisBodyText)
+                }
+
+                Band("When to use")
+                Text(text = skill.whenToUse, style = MemphisBodyText)
+
+                if (skill.allowedTools.isNotEmpty()) {
+                    Band("Tools", "${skill.allowedTools.size}")
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        skill.allowedTools.forEach { tool ->
+                            Text(
+                                text = tool,
+                                style = captionStyle(7.5f),
+                                modifier = Modifier
+                                    .background(Memphis.Paper)
+                                    .border(2.dp, Memphis.Ink)
+                                    .padding(horizontal = 6.dp, vertical = 3.dp),
+                            )
+                        }
+                    }
+                }
+
+                if (skill.steps.isNotEmpty()) {
+                    Band("Steps", "${skill.steps.size}")
+                    skill.steps.forEachIndexed { index, step ->
+                        StepCard(number = index + 1, step = step, ink = Memphis.inkFor(index))
+                        Spacer(Modifier.height(9.dp))
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+                Box(Modifier.fillMaxWidth().height(3.dp).background(Memphis.Ink))
+                Spacer(Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    skill.allowedTools.forEach { tool ->
-                        ToolBadge(tool)
+                    MemphisSurface(
+                        modifier = Modifier.weight(1f),
+                        color = Memphis.Paper,
+                        borderWidth = 2.5.dp,
+                        shadowOffset = 4.dp,
+                    ) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickableNoRipple(onBack)
+                                .padding(vertical = 12.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text("BACK", style = captionStyle(9.5f))
+                        }
+                    }
+                    MemphisSurface(
+                        modifier = Modifier.weight(1f),
+                        color = Memphis.Yellow,
+                        borderWidth = 2.5.dp,
+                        shadowOffset = 4.dp,
+                    ) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickableNoRipple(onConfirm)
+                                .padding(vertical = 12.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text("CONFIRM", style = captionStyle(9.5f))
+                        }
                     }
                 }
             }
+        }
+    }
+}
 
-            if (skill.steps.isNotEmpty()) {
-                Spacer(Modifier.size(16.dp))
-                SectionLabel("Steps")
-                Spacer(Modifier.size(4.dp))
-                skill.steps.forEachIndexed { index, step ->
-                    StepCard(number = index + 1, step = step)
-                    if (index < skill.steps.lastIndex) {
-                        Spacer(Modifier.size(10.dp))
-                    }
-                }
-            }
+/** A small helper so both buttons share one press behaviour. */
+private fun Modifier.clickableNoRipple(onClick: () -> Unit): Modifier =
+    this.clickable(onClick = onClick)
 
-            Spacer(Modifier.size(20.dp))
-            HorizontalDivider(
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                thickness = 0.5.dp
+/** A section rule: an ink bar with the label in paper type. */
+@Composable
+private fun Band(label: String, note: String? = null) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 12.dp, bottom = 7.dp)
+            .background(Memphis.Ink)
+            .padding(horizontal = 9.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label.uppercase(), style = captionStyle(9f, Memphis.Paper))
+        if (note != null) {
+            Text(
+                text = note,
+                style = captionStyle(8f, Memphis.Ink),
+                modifier = Modifier.background(Memphis.Paper).padding(horizontal = 5.dp),
             )
-            Spacer(Modifier.size(16.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedButton(
-                    onClick = onBack,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("Back")
-                }
-                Button(
-                    onClick = onConfirm,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary
-                    )
-                ) {
-                    Text("Confirm")
-                }
-            }
         }
     }
 }
@@ -183,96 +214,44 @@ fun SkillDocument(
 private fun StepCard(
     number: Int,
     step: SkillStepData,
+    ink: androidx.compose.ui.graphics.Color,
     modifier: Modifier = Modifier
 ) {
-    Card(
+    MemphisSurface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        ),
-        elevation = CardDefaults.cardElevation(0.dp)
+        color = Memphis.Paper,
+        borderWidth = 2.5.dp,
+        shadowOffset = 3.dp,
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Card(
-                    shape = RoundedCornerShape(8.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer
-                    ),
-                    elevation = CardDefaults.cardElevation(0.dp)
+        Column(Modifier.fillMaxWidth().padding(11.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .background(ink)
+                        .border(2.dp, Memphis.Ink)
+                        .padding(horizontal = 9.dp, vertical = 3.dp)
                 ) {
-                    Text(
-                        text = number.toString(),
-                        style = MaterialTheme.typography.labelLarge.copy(
-                            fontWeight = FontWeight.Bold
-                        ),
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                    )
+                    Text(number.toString(), style = posterStyle(12f))
                 }
-                Spacer(Modifier.size(8.dp))
+                Spacer(Modifier.width(8.dp))
                 Text(
-                    text = step.title,
-                    style = MaterialTheme.typography.titleSmall.copy(
-                        fontWeight = FontWeight.Bold
-                    ),
-                    color = MaterialTheme.colorScheme.onSurface
+                    text = step.title.uppercase(),
+                    style = posterStyle(12f),
                 )
             }
 
             if (step.description.isNotBlank()) {
-                Spacer(Modifier.size(6.dp))
-                Text(
-                    text = step.description,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Spacer(Modifier.height(6.dp))
+                Text(text = step.description, style = MemphisBodyText)
             }
 
             if (step.successCriteria.isNotBlank()) {
-                Spacer(Modifier.size(6.dp))
+                Spacer(Modifier.height(6.dp))
                 Text(
-                    text = "Done when: ${step.successCriteria}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary
+                    text = "DONE WHEN: ${step.successCriteria}",
+                    style = captionStyle(8f, Memphis.Ink.copy(alpha = 0.6f))
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun SectionLabel(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelLarge.copy(
-            fontWeight = FontWeight.SemiBold
-        ),
-        color = MaterialTheme.colorScheme.primary
-    )
-}
-
-@Composable
-private fun ToolBadge(tool: String) {
-    Card(
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer
-        ),
-        elevation = CardDefaults.cardElevation(0.dp)
-    ) {
-        Text(
-            text = tool,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onPrimaryContainer,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-        )
     }
 }

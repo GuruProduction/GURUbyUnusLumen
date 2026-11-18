@@ -5,6 +5,10 @@ package com.unuslumen.app.presentation.integrations
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -13,16 +17,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -31,8 +29,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.foundation.layout.Box
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -51,6 +47,10 @@ import com.unuslumen.app.presentation.components.SettingsSectionCard
 import com.unuslumen.app.presentation.components.SettingsSwitchRow
 import com.unuslumen.app.presentation.components.SettingsTextField
 import com.unuslumen.app.ui.R
+import com.unuslumen.app.ui.theme.Memphis
+import com.unuslumen.app.ui.theme.MemphisSurface
+import com.unuslumen.app.ui.theme.captionStyle
+import com.unuslumen.app.ui.theme.posterStyle
 
 /**
  * Model Connect — where Guru gets wired to an AI model. Portal design
@@ -203,74 +203,76 @@ private fun ModelConnectBody(
     var dropdownExpanded by remember { mutableStateOf(false) }
 
     Column {
-        // Provider picker: exposed dropdown, NOT a text field with a tap hack.
-        // The old code wrapped an editable OutlinedTextField in clickable{} — the
-        // field stole focus, raised the IME and the menu never opened (the bug
-        // where the keyboard appeared and the dropdown didn't). readOnly + menu
-        // anchor means the whole field is a menu trigger: tap opens the list,
-        // no keyboard, matching AiProviderSection's working pattern.
-        ExposedDropdownMenuBox(
-            expanded = dropdownExpanded,
-            onExpandedChange = { dropdownExpanded = it },
-        ) {
-            OutlinedTextField(
-                value = providerLabel(localProvider),
-                onValueChange = {},
-                readOnly = true,
-                label = { Text(stringResource(R.string.model_provider)) },
-                trailingIcon = {
-                    Icon(
-                        imageVector = Icons.Default.ArrowDropDown,
-                        contentDescription = null,
-                        tint = SettingsGold,
-                    )
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-                colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = SettingsGold.copy(alpha = 0.8f),
-                    unfocusedBorderColor = SettingsGold.copy(alpha = 0.3f),
-                    focusedTextColor = SettingsInk,
-                    unfocusedTextColor = SettingsInk,
-                    cursorColor = SettingsGold,
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .menuAnchor(),
+        // THE PROVIDER PICKER, AS A PRINTED BLOCK.
+        //
+        // It was an ExposedDropdownMenuBox wrapping a read-only OutlinedTextField with a
+        // Material menu anchor. That worked, and it looked like a Material form sitting
+        // on a printed page, which is the one thing this pass exists to remove. A printed
+        // block that opens a printed menu does the same job in the page's own grammar and
+        // carries none of the Material field machinery: no focus, no IME, no underline.
+        Column(Modifier.fillMaxWidth()) {
+            Text(
+                text = stringResource(R.string.model_provider).uppercase(),
+                style = captionStyle(8.5f, SettingsInk.copy(alpha = 0.6f)),
+                modifier = Modifier.padding(start = 2.dp, bottom = 5.dp),
             )
-            ExposedDropdownMenu(
-                expanded = dropdownExpanded,
-                onDismissRequest = { dropdownExpanded = false },
-            ) {
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.provider_unuslumen) + " - " + stringResource(R.string.provider_unuslumen_coming_soon)) },
-                    enabled = false,
-                    onClick = { },
-                )
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.provider_openai)) },
-                    onClick = { localProvider = AiProvider.OpenAI; dropdownExpanded = false },
-                )
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.provider_anthropic)) },
-                    onClick = { localProvider = AiProvider.Anthropic; dropdownExpanded = false },
-                )
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.provider_google)) },
-                    onClick = { localProvider = AiProvider.Google; dropdownExpanded = false },
-                )
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.provider_xai)) },
-                    onClick = { localProvider = AiProvider.XAI; dropdownExpanded = false },
-                )
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.provider_ollama)) },
-                    onClick = { localProvider = AiProvider.Ollama; dropdownExpanded = false },
-                )
-                DropdownMenuItem(
-                    text = { Text(stringResource(R.string.provider_openai_compat)) },
-                    onClick = { localProvider = AiProvider.OpenAICompat; dropdownExpanded = false },
-                )
+            Box {
+                MemphisSurface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { dropdownExpanded = true },
+                    color = Memphis.Paper,
+                    borderWidth = 2.5.dp,
+                    shadowOffset = 3.dp,
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 11.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = providerLabel(localProvider),
+                            style = posterStyle(13f),
+                        )
+                        Text(text = "▾", style = posterStyle(12f))
+                    }
+                }
+                DropdownMenu(
+                    expanded = dropdownExpanded,
+                    onDismissRequest = { dropdownExpanded = false },
+                    modifier = Modifier
+                        .background(Memphis.Paper)
+                        .border(2.5.dp, Memphis.Ink),
+                ) {
+                    val picks = listOf(
+                        AiProvider.OpenAI to stringResource(R.string.provider_openai),
+                        AiProvider.Anthropic to stringResource(R.string.provider_anthropic),
+                        AiProvider.Google to stringResource(R.string.provider_google),
+                        AiProvider.XAI to stringResource(R.string.provider_xai),
+                        AiProvider.Ollama to stringResource(R.string.provider_ollama),
+                        AiProvider.OpenAICompat to stringResource(R.string.provider_openai_compat),
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = (stringResource(R.string.provider_unuslumen) + " - " +
+                                    stringResource(R.string.provider_unuslumen_coming_soon)).uppercase(),
+                                style = captionStyle(9f, SettingsInk.copy(alpha = 0.4f)),
+                            )
+                        },
+                        enabled = false,
+                        onClick = { },
+                    )
+                    picks.forEach { (kind, label) ->
+                        DropdownMenuItem(
+                            text = { Text(text = label.uppercase(), style = captionStyle(9f)) },
+                            onClick = {
+                                localProvider = kind
+                                dropdownExpanded = false
+                            },
+                        )
+                    }
+                }
             }
         }
 

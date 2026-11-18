@@ -663,10 +663,18 @@ private fun SlotRow(
         )
 
         if (booking == null) {
+            // THE EMPTY SLOT CARRIES ITS OWN PAPER.
+            //
+            // It used to be a bare hairline with no fill, so the artwork behind the
+            // page ran straight through forty-eight rows and the diary read as a
+            // texture rather than a list. Paper behind it makes the slot a real cell
+            // and the row a real line, which is what a diary has to look like for a
+            // person to read times down the left of it.
             Box(
                 Modifier
                     .weight(1f)
                     .height(27.dp)
+                    .background(Memphis.Paper)
                     .border(1.5.dp, Memphis.Ink.copy(alpha = 0.22f))
                     .clickable { onOpen() }
                     .padding(horizontal = 10.dp),
@@ -674,7 +682,7 @@ private fun SlotRow(
             ) {
                 Text(
                     "Open. Tap to book.",
-                    style = captionStyle(7.5f, Memphis.Ink.copy(alpha = 0.32f)),
+                    style = captionStyle(7.5f, Memphis.Ink.copy(alpha = 0.42f)),
                 )
             }
             return@Row
