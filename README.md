@@ -85,7 +85,7 @@ GURU adds no content filter of its own. A cloud provider applies its own rules. 
 
 Otio is the market inside the app. You build an agent, publish it and set a price. Buyers pay once and keep it, even if you pull it later. Unus Lumen runs the market and holds the money. The split is 80% to the maker and 20% plus payment costs to Unus Lumen, and that's what keeps GURU free. It isn't on-chain. You trade under a pseudonym with no sign-up.
 
-The market keeps records on the server: installs, ratings, purchases. Reading the feed doesn't. The agent market is live. Payments aren't switched on yet. The rest of the plan is in [VISION.md](VISION.md).
+The market keeps records on the server: installs, ratings, purchases. Reading the feed doesn't. The agent market is live. Payments aren't switched on yet.
 
 ## Why
 
@@ -95,7 +95,7 @@ I'm Steven, Unus Lumen, Bristol. One person, no funding, no team. Break it and t
 
 ## Docs
 
-[Vision](VISION.md) · [Architecture](ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Privacy policy](PRIVACY_POLICY.md) · [Notice](NOTICE.md) · [A note from Steven](A-NOTE-FROM-STEVEN.md)
+[Architecture](ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Privacy policy](PRIVACY_POLICY.md) · [Notice](NOTICE.md) · [A note from Steven](A-NOTE-FROM-STEVEN.md)
 
 ## Licence
 
