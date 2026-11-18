@@ -42,14 +42,11 @@ Prompts, skills, tool definitions and agent templates come from `api.unuslumen.c
 
 ## Limits
 
-This is a beta and I'm one person. What's weaker than you'd assume:
+I am one man. I don't have a computer science background and I'm not claiming to be technical. I'm completely self taught and I use language models to do 90% of the coding work. I know exactly what I want the app to do and I direct the workload across multiple agentic CLI sessions, burning about 8 billion tokens a week.
 
-- **No outside audit.** The encryption and the Tor routing have had my review and nobody else's.
-- **No CI.** Tests run on my machine and I check releases on my own phone. About 160 JVM test files, 40 instrumented and 43 Rust files with tests.
-- **A lot of the code is AI-written.** Every changed file gets read in full before it's edited. A test only counts if it fails when I put the bug back. A pre-commit gate keeps IPs, MAC addresses, keys and machine paths out of the repo.
-- **Builds aren't reproducible.** Check the SHA-256 and the signing key.
-- **Cleartext HTTP is allowed app-wide,** because LAN gear speaks plain HTTP. Nothing stops a tool being pointed at an http:// address.
-- **It's a lot of recent code.** Assume there are bugs I haven't found.
+The project hasn't had a professional security audit, there are bugs I haven't come across and none that have been reported to me yet, and I have to spread my time very thin.
+
+So the app is good. It's usable and very powerful already, but it's in its infancy, so please bear with me. Thank you for your support.
 
 ## Install
 
