@@ -28,13 +28,7 @@ You bring the model. Yours, on your own hardware, or a key you own for a provide
 
 ## Who it is for
 
-My nan rings me because her television is on the wrong input. It costs her twenty minutes and a phone call, and nobody builds products for that problem because she will not read a manual.
-
-Today she can say "GURU, my telly won't work again" and it fixes it. She does not learn anything. She does not install anything. She does not know what a permission is.
-
-That is the test. A person who has never installed anything unusual, using it without being taught.
-
-The other half of the test is people who know exactly what they want and are tired of being told no. Hobbyists, developers, engineers, anyone who has wanted a machine to do something and found the door locked. GURU is built for both, because the difference between them is knowledge, not need.
+People who know exactly what they want and are tired of being told no. Hobbyists, developers, engineers, anyone who has wanted a machine to do something and found the door locked. GURU is built for both, because the difference between them is knowledge, not need.
 
 ## Full power
 
