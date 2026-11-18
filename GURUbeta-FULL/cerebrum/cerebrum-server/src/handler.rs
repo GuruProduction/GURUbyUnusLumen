@@ -853,7 +853,16 @@ fn build_semantic_and_entity_edges(
             });
     }
 
-    // Entity pass: match capitalized-content tokens into a name-to-ids map.
+    // Entity pass: match this memory's proper nouns against every other memory.
+    //
+    // THE COMPARISON IS CASE-INSENSITIVE ON BOTH SIDES, which is the whole point
+    // of this pass. `entity_words_from` returns LOWERCASED words, because the
+    // entity has to resolve to the same node however a name was capitalised in
+    // one sentence. Matching those lowercase words against raw content with
+    // `contains` meant searching for "steven" inside "...Steven Newman...", which
+    // never matches. So the entity view stayed empty no matter how many memories
+    // named a person, and every entity walk honestly answered "nothing
+    // connected" about a name the brain held dozens of facts about.
     let entity_words = entity_words_from(content);
     if !entity_words.is_empty() {
         let entity_targets: Vec<(String, MemoryId)> = state
@@ -861,9 +870,10 @@ fn build_semantic_and_entity_edges(
             .entries()
             .filter(|other| other.id != current_id)
             .flat_map(|other| {
+                let other_lower = other.content.to_lowercase();
                 entity_words
                     .iter()
-                    .filter(|word| other.content.contains(&word.to_string()))
+                    .filter(|word| other_lower.contains(word.as_str()))
                     .map(|word| (word.clone(), other.id))
                     .collect::<Vec<_>>()
             })

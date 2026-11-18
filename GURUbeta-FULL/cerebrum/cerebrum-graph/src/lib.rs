@@ -862,12 +862,25 @@ impl GraphStore {
     /// Attach a textual label to a memory node.
     ///
     /// Labels are stored lowercased so start-node lookup is a fast substring scan.
-    /// The id is registered as a node inside the SEMANTIC view so labeled,
-    /// not-yet-linked memories participate in traversal and node counts
-    /// (isolated nodes exist before their first edge, like real memories do).
+    ///
+    /// THE NODE IS REGISTERED IN ALL FOUR VIEWS, NOT JUST SEMANTIC.
+    ///
+    /// A memory is a node in every view from the moment it exists: it simply has
+    /// no causal edge yet, or no entity edge yet. Registering it only in the
+    /// semantic view made those other views unable to answer at all, because
+    /// start-node selection skips any labelled id the view does not hold, and a
+    /// query with no start node returned NodeNotFound. So "walk the causal
+    /// relations around Steven" failed outright on a brain that had causal edges
+    /// for other memories but had not yet built one through this node, which is
+    /// the normal state of a young graph rather than a broken request.
+    ///
+    /// An isolated node traverses to nothing, which is a true answer.
     pub fn add_label(&mut self, id: MemoryId, label: impl Into<String>) {
         self.labels.insert(id, label.into().to_lowercase());
-        self.semantic.nodes.insert(id);
+        self.semantic.ensure_node(id);
+        self.temporal.ensure_node(id);
+        self.causal.ensure_node(id);
+        self.entity.ensure_node(id);
     }
 
     pub fn total_nodes(&self) -> usize {
@@ -1000,10 +1013,21 @@ impl GraphStore {
                 let graph = self
                     .graph_for(single)
                     .ok_or(GraphError::InvalidStrategy)?;
-                let start = self
-                    .find_start_node(single, &query.text)
-                    .ok_or_else(|| GraphError::NodeNotFound(MemoryId::default()))?;
-                graph.traverse(start, plan.strategy)
+                // NO START NODE IS AN EMPTY ANSWER, NOT A FAILURE.
+                //
+                // The caller names a subject by TEXT, so "nothing in this view
+                // matches it" is a true statement about the graph rather than a
+                // malformed request. Erroring made an empty view look like a
+                // broken query, and an empty view is the normal state of a brain
+                // that has not built that relation type yet.
+                //
+                // A caller that names a specific NODE still gets NodeNotFound
+                // from the id-addressed paths, where the id either exists or it
+                // does not.
+                match self.find_start_node(single, &query.text) {
+                    Some(start) => graph.traverse(start, plan.strategy),
+                    None => Ok(Vec::new()),
+                }
             }
         }
     }
