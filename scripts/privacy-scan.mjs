@@ -94,8 +94,22 @@ const IPV4 = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
 /** An IPv6 address, in the forms people actually write. */
 const IPV6 = /\b(?:[0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{0,4}\b/g;
 
-/** MAC addresses with colons or dashes. */
-const MAC = /\b(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}\b/g;
+/**
+ * MAC addresses with colons or dashes.
+ *
+ * WHY THE BOUNDARIES ARE LOOKAROUNDS RATHER THAN `\b`. A MAC is six groups of two hex digits,
+ * but a certificate fingerprint is the same shape repeated: a SHA-1 digest is twenty groups and
+ * a SHA-256 digest is thirty-two. With `\b` on each end, the engine reads a fingerprint as a
+ * chain of overlapping six-group runs and reports five or sixteen MAC addresses inside one
+ * digest. That is not a theoretical false positive: it refused the security policy that has to
+ * publish a signing fingerprint, which is the one document where quoting the digest is the
+ * whole point.
+ *
+ * The rule now requires that the run does not continue in either direction, so a digest is
+ * never a MAC. A genuine six-group address preceded or followed by an unrelated colon still
+ * matches, because the lookahead only refuses a colon that is followed by another hex pair.
+ */
+const MAC = /(?<![0-9a-fA-F]{2}[:-])(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}(?![0-9a-fA-F]|[:-][0-9a-fA-F])/g;
 
 /**
  * Private key blocks. A single line anywhere in any file is enough: these never belong in a

@@ -118,6 +118,37 @@ describe("IPv6 and MAC addresses", () => {
     const found = rules(mac(["aa", "bb", "cc", "dd", "ee", "ff"]));
     expect(found).not.toContain("IPv6 address");
   });
+
+  /**
+   * A CERTIFICATE FINGERPRINT IS NOT A CHAIN OF MAC ADDRESSES.
+   *
+   * A SHA-1 digest is twenty colon-separated hex pairs and a SHA-256 digest is thirty-two, so a
+   * six-group matcher with word boundaries reads one digest as five or sixteen hardware
+   * addresses. That refused the security policy, whose entire job includes publishing the
+   * signing fingerprint. Both shapes are asserted here, and the real MAC below them proves the
+   * narrowed rule still catches what it exists to catch.
+   */
+  it("accepts a SHA-256 certificate fingerprint", () => {
+    const digest = [
+      "3e58", "4237", "b141", "8e12", "01c6", "a4ed", "7c07", "b58a",
+      "f7b7", "c5a1", "fbe2", "e6be", "f76b", "03a2", "bae8", "cd3c",
+    ];
+    const fingerprint = digest.join("").match(/.{2}/g)!.join(":");
+    expect(has(`SHA-256 fingerprint: \`${fingerprint}\``)).toBe(false);
+  });
+
+  it("accepts a SHA-1 certificate fingerprint", () => {
+    const digest = [
+      "7613", "5deb", "72fd", "4518", "7179", "f5d5", "0590", "aec2", "02c4", "a9ad",
+    ];
+    const fingerprint = digest.join("").match(/.{2}/g)!.join(":");
+    expect(has(`SHA-1 fingerprint: \`${fingerprint}\``)).toBe(false);
+  });
+
+  it("still refuses a real MAC address next to a fingerprint", () => {
+    const digest = ["3e58", "4237", "b141", "8e12"].join("").match(/.{2}/g)!.join(":");
+    expect(has(`${digest} belongs to ${mac(["d8", "31", "34", "5f", "a9", "02"])}`)).toBe(true);
+  });
 });
 
 describe("credentials are refused wherever they appear", () => {
