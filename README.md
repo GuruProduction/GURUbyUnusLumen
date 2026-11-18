@@ -29,14 +29,14 @@ A shell waits for you. This does not.
 
 The model chooses a tool, calls it, reads what came back, chooses again. Twenty calls deep it is still going, and a failure mid-run is information rather than the end of the turn. Point it at a problem, walk away, come back to it solved or to an account of why it is not.
 
-That loop is the difference between a terminal on your phone and an agent holding one. Everything below is what the loop works with.
+That loop is the difference between a terminal on your phone and an agent holding one.
 
 <details>
 <summary><strong>390 tools across the phone</strong></summary>
 
 167 declared permissions, sorted into eight grant tiers that separate a denial from a privileged permission, absent hardware, a build fault, or something no setting can fix.
 
-A tool whose permission you have not granted returns one sentence: what is missing, why it matters, how to grant it. Never an empty list. "No messages match" and "I am not allowed to read your messages" are different facts, and one is true.
+A tool whose permission you have not granted returns one sentence: what is missing, why it matters, how to grant it. Never an empty list. "No messages match" and "I am not allowed to read your messages" are different facts.
 
 The accessibility service reads and taps the screen, so any app with a UI becomes scriptable. The notification listener sees what arrives. MediaProjection captures the display with your consent. Clipboard, files, SMS, calls, contacts, calendar, camera, microphone, sensors, Bluetooth, NFC, location, alarms, settings, installed apps, device admin: each a gated domain.
 
@@ -49,7 +49,7 @@ Protocols devices use, not a list of brands I partnered with. UPnP and SOAP. DIA
 
 Televisions, Fire Sticks, consoles, lights, speakers, blinds, doors, sensors, the router, the printer, the thermostat. On the network, GURU sees it, names it, and finds the way in.
 
-Every write is followed by a read, and the device's answer is compared against the value written. A command against a capability the device does not report is refused, naming both. A silent no and a success look identical to you.
+Every write is followed by a read, and the device's answer is compared against the value written. A command against a capability the device does not report is refused, naming both. A silent no and a success look identical.
 
 </details>
 
@@ -139,7 +139,7 @@ Every prompt, skill, tool definition, agent template and canvas pack GURU receiv
 
 Content is served from a publisher rather than compiled into the APK, so a new capability reaches you the day it is built instead of the day the next release ships. The serving infrastructure stays closed. The payload does not, and it was never secret: a synced prompt sits readable in that phone's storage.
 
-Read it, change it on your install, point GURU at your own server. The sync protocol is plain documented HTTP.
+Read it, change it on your install, point GURU at your own server. The sync protocol is documented HTTP.
 
 ## Bring your own model
 
@@ -188,13 +188,13 @@ Identity is a wallet, not an account. No sign-up, no email capture. You trade un
 
 Public beta, one maintainer, no CI, no static analysis gate, no outside security audit. The code is largely AI-written, reviewed by tests and by me. That is not a stranger's review. Bugs exist, particularly outside my daily use.
 
-Every release is a beta, and the [security policy](SECURITY.md) lists every known gap rather than the flattering subset.
+Every release is a beta. The [security policy](SECURITY.md) lists every known gap.
 
-Report what you find. It helps.
+Report what you find.
 
 ## Who is Unus Lumen
 
-A tech company in Bristol, UK, founded by Steven Newman. One person, unfunded, from a blank slate.
+A tech company in Bristol, UK, founded by Steven Newman. One person, unfunded.
 
 I test the limits of what AI can do because the possibilities are endless and I refuse to be told no. Nobody taught me where the boundaries belong, so I never learned to build them in.
 

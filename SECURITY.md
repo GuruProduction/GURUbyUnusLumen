@@ -2,7 +2,7 @@
 
 GURU is an Android app that gives a language model real hands on a phone: a Linux userland, the device's native permissions, the hosts on your network, and its own agents working to a permission set you choose. That power is the product, so this document says exactly what it reaches, what leaves the device, how releases are signed, and how to report a flaw.
 
-It is written to be checked rather than trusted. Every claim below names where in the source it comes from.
+Every claim below names where in the source it comes from.
 
 Contact: **steven@unuslumen.com**
 
@@ -17,7 +17,7 @@ Include what you found, how you found it, the build you tested (the version name
 
 You will get a human acknowledgment within **72 hours**. Do not publish details until a fix is released and we have agreed disclosure timing together. Credit is yours if you want it, in the release notes and in this file, and anonymous reports are equally welcome.
 
-This is one person maintaining a large codebase, so please be patient between the acknowledgment and the fix.
+One person maintains this, so expect a gap between the acknowledgment and the fix.
 
 ## Supported versions
 
@@ -25,7 +25,7 @@ Security fixes land on the latest tagged release. Older tags get fixes on a best
 
 ## What counts as a vulnerability
 
-GURU does things that look alarming and are the product working. Drawing this line clearly saves us both time.
+GURU does things that look alarming and are the product working.
 
 In scope:
 
@@ -70,7 +70,7 @@ The accessibility service, the notification listener and MediaProjection screen 
 
 GURU fetches from `https://api.unuslumen.com` at startup and on a refresh cadence. That fetch supplies the assembled system prompt, the model runtime configuration, the sensory-context settings, the optional skills library and the ad-pack artwork. It is a plain GET with no auth header, no cookie jar and no install identifier, and it rides Tor like every other public call, so the server sees a Tor exit rather than your address.
 
-What that endpoint does not receive is worth saying too, because "stateless" is often claimed and rarely scoped. The content endpoints send, and they carry no account and store no conversation. The market endpoints are a different thing: publishing, buying, rating and installing each write a row, which is why a wallet pseudonym exists at all. So the accurate sentence is that the content feed is stateless and the market is not, and neither of them sees your conversations.
+The content endpoints carry no account and store no conversation. The market endpoints do write rows: publishing, buying, rating and installing each one, which is why a wallet pseudonym exists. The content feed is stateless and the market is not, and neither sees your conversations.
 
 ### Model inference
 
@@ -94,13 +94,13 @@ Three postures exist, selected by `/tor` and `/clearnet` in `EgressMode.kt`:
 
 Three properties survive every posture. A loopback or LAN address always goes direct, because Tor cannot route private space and asking it to is a guaranteed failure. A request carrying a credential forces Tor and ignores the override entirely. When Tor has no circuit, a public request **waits** for one for up to thirty seconds rather than falling back to a direct connection, and if the window expires the request fails closed with a message naming the wait.
 
-One measured caveat worth stating: `network_security_config.xml` sets `cleartextTrafficPermitted="true"` across the app. That is deliberate, because LAN devices such as Sonos, Hue, DIAL, UPnP and routers speak plain HTTP. It means nothing stops a cleartext connection if a tool is pointed at one. That is a fact about the design, not an oversight.
+`network_security_config.xml` sets `cleartextTrafficPermitted="true"` across the app, because LAN devices such as Sonos, Hue, DIAL, UPnP and routers speak plain HTTP. Nothing stops a cleartext connection if a tool is pointed at one.
 
 ### Telemetry
 
 There is none. No Firebase, Crashlytics, Sentry, Mixpanel, Amplitude, Segment or Analytics dependency appears in any Gradle or version-catalogue file, and no analytics call exists in the source. The app reads no advertising identifier, no IMEI and no `ANDROID_ID`; searching the whole `portal/data` source for all of them returns nothing. When GURU crashes, the stack trace goes to your clipboard so you can report it yourself.
 
-That check was performed statically against version 3.77 on 18 November 2026 by reading every Gradle and catalogue file for analytics dependencies and searching the source for the identifier APIs. It was not performed by traffic capture. A capture from a clean install is the stronger proof and is not published yet, so treat the static check as exactly that.
+Checked statically against version 3.77 on 18 November 2026 by reading every Gradle and catalogue file for analytics dependencies and searching the source for the identifier APIs. No traffic capture backs it yet.
 
 ### Backup
 
@@ -150,11 +150,11 @@ There is **no CI**. The repository's only workflow file is `FUNDING.yml`, so not
 
 `scripts/hooks/pre-commit` runs `scripts/privacy-scan.mjs` on every commit. It refuses a commit that would publish an IP address outside the documentation ranges, a MAC address, a credential, a private key, or a path naming the author's machine. It fails closed, so a missing scanner or a missing runtime refuses the commit rather than allowing an unscanned one, and `--no-verify` is banned by policy.
 
-It exists because the author published his own addresses more than once before it was built.
+It was built after the author published his own addresses more than once.
 
 ## AI-generated code
 
-Much of this codebase is written with AI assistance. Stating it plainly costs less than a buried disclosure, and the point of the rest of this section is that who typed it matters less than what checks it.
+Much of this codebase is written with AI assistance.
 
 What guards it:
 
@@ -180,25 +180,21 @@ It defends against a hostile network peer, because the classifier routes public 
 
 ### The publisher's authority, stated precisely
 
-The publisher is a different matter from ordinary fetched content, and the difference is worth naming because it is the one place a reader should think about trust rather than about sandboxing.
+A web page GURU fetches is data. The assembled system prompt is the instruction set, and the model holding it has a shell, the accessibility service and LAN control. Whoever controls `api.unuslumen.com` can change what every install is told to do at its next refresh. Today that is Steven. It is also anyone who compromises the host, the domain or the account, and any future owner of the company.
 
-A web page GURU fetches is data. The assembled system prompt is not: it is the instruction set, and the model holding it has a shell, the accessibility service and LAN control. So whoever controls `api.unuslumen.com` can change what every install is told to do at its next refresh. Today that is Steven. It is also anyone who compromises the host, the domain or the account, and any future owner of the company.
+**The feed can change what the agent is told, not what it is allowed to do.** A hostile publisher could make GURU try anything and it would still stop at a permission you did not give it.
 
-The permission layer bounds this to what you have granted, which is the real limit: **the feed can change what the agent is told, not what it is allowed to do.** A hostile publisher could make GURU try anything, and it would still stop at a permission you did not give it.
-
-Three things narrow the gap further, in order of value. Signing the bundle with a key kept off the serving host, with the public key pinned in the app, so a compromised web server cannot serve content the app accepts; that is the item that actually closes it. Publishing the payload at [GuruProduction/GURU-content](https://github.com/GuruProduction/GURU-content), so what the server has served is a public record rather than a claim. And showing the bundle version and hash in the app, so an install can be told apart from the one advertised.
+Three things narrow the gap. Signing the bundle with a key kept off the serving host, with the public key pinned in the app, so a compromised web server cannot serve content the app accepts. Publishing the payload at [GuruProduction/GURU-content](https://github.com/GuruProduction/GURU-content), so what the server served is a public record. Showing the bundle version and hash in the app, so an install can be told apart from the one advertised.
 
 It does not defend against a rooted device or a hostile privileged app, since root defeats every boundary here. It does not defend against Tor's own traffic-analysis adversary, which can see that something was sent even though it cannot see where from. It does not protect your prompts from the model provider you chose. It does not defend against an owner who grants everything and installs anything, because GURU does what you allow it to do and that is the design. It does not defend against physical access to an unlocked device, and it does not defend against a compromised build machine.
 
 ## Known limitations
 
-Named here so nobody has to discover them by accident.
+No CI and no static analysis gate, so a regression can reach a release. No published reproducible build. No third-party security audit, so the author's review is the only review. No traffic capture for the telemetry claim. Cleartext HTTP permitted app-wide for LAN device control. `apksigner` under-reports the v1 signature scheme, which makes the build look weaker than it is.
 
-There is no CI and no static analysis gate, so a regression can reach a release. There is no published reproducible build. No third-party security audit has been done, so the author's own review is the only review so far. No traffic capture has been published for the telemetry claim. Cleartext HTTP is permitted app-wide so LAN devices can be controlled, as described above. And `apksigner` under-reports the v1 signature scheme, which makes the build look weaker than it is rather than stronger.
+The content feed **is not signed yet**. Whoever controls the serving host controls what the agent is instructed to do, bounded only by the permissions you grant. That is the largest known gap in the trust chain, and signing the bundle with a pinned public key is the fix being built.
 
-The content feed **is not signed yet**. Whoever controls the serving host controls what the agent is instructed to do, bounded only by the permissions you grant. This is the largest known gap in the trust chain, it is named here rather than left to be discovered, and signing the bundle with a pinned public key is the fix being built.
-
-Reports against any of these are welcome, and a proof beats a paragraph every time.
+Reports against any of these are welcome.
 
 ---
 
