@@ -81,11 +81,6 @@ No model runs on the phone and nothing goes through Unus Lumen. I don't see your
 
 GURU adds no content filter of its own. A cloud provider applies its own rules. A local model does whatever its weights do. The prompts are readable in the app, so check.
 
-## Otio
-
-Otio is the market inside the app. You build an agent, publish it and set a price. Buyers pay once and keep it, even if you pull it later. Unus Lumen runs the market and holds the money. The split is 80% to the maker and 20% plus payment costs to Unus Lumen, and that's what keeps GURU free. It isn't on-chain. You trade under a pseudonym with no sign-up.
-
-The market keeps records on the server: installs, ratings, purchases. Reading the feed doesn't. The agent market is live. Payments aren't switched on yet.
 
 ## Why
 
