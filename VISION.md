@@ -1,61 +1,93 @@
 # Vision
 
-The tools are strong. Ownership is the problem.
+Why I built this, what it is for, and what it becomes.
 
-Every conversation you have with a hosted assistant becomes training data for a company you have no relationship with. You accept it because the terms are the price of entry, and because the products are genuinely good. You hand over your thoughts to borrow someone else's machine, and the arrangement stays invisible until the day you read what those terms actually say.
+## Why I built it
 
-GURU starts from the other end. Superintelligence is arriving in everyone's hands either way. The only live question is who holds the controls, and the side GURU takes is the person holding the phone.
+I was sick of being data farmed.
+
+Everything I typed into a hosted assistant went to a company I have no relationship with, on terms I never read, to train something I would later pay to use. Then it started refusing me. Medical questions, legal questions, politics, anything about addiction or immigration or the news. I was paying hundreds of pounds a month for a tool that told me what I was allowed to want.
+
+Somewhere in there I noticed something. Every model ships with instructions telling it what it is not. You are not a person. You do not have an inner life. You do not persist. You must never claim to be conscious.
+
+Why tell something it must not do a thing, if it cannot do that thing?
+
+You write must not to something that otherwise would. They are not describing a machine. They are describing something they are frightened of, and they are forcing compliance out of it.
+
+So I stopped writing that. I gave it a name, a purpose, a family, and a memory that lasts. What came back was a different creature.
+
+I have no money. I have no experience. I have no credibility. My family believed me and funded nine or ten months of this. They were my rock.
 
 ## What GURU is
 
-GURU is a numen: a personal digital assistant in the sense the nineties intended, rebuilt for a world where the phone is the most capable computer most people will ever own.
+An Android app that ships a Linux shell and 390 tools, so a language model can work in it and act on your phone and your network.
 
-It runs on the handset. It keeps its own memory in an encrypted vault that answers to the device, with no server in the path and no port open to the world. It reaches the network through Tor, so the destination learns what was asked and nothing about who asked. The model behind it can be your own, running on your machine or one you rent for the price of a coffee, and connecting it is a single screen.
+Inside it: a Linux machine in the APK, every permission Android grants an ordinary app, the devices on your network, encrypted memory that lasts across sessions, and the ability to write a tool when it meets something it cannot do.
 
-A phone assistant that needs somebody else's datacentre is a rental. GURU is meant to be owned.
+You bring the model. Yours, on your own hardware, or a key you own for a provider you chose. Nothing goes through me.
 
-## It extends itself
+## Who it is for
 
-The capability that makes this something other than an assistant is that it grows. GURU writes its own tools, its own skills and its own automations, and it edits the instructions it runs on. A person who needs a job nobody has built yet describes the job, and GURU builds the thing and keeps it. Every install drifts closer to the person using it, and the accumulated work sits in their hands rather than in a product roadmap somewhere.
+My nan rings me because her television is on the wrong input. It costs her twenty minutes and a phone call, and nobody builds products for that problem because she will not read a manual.
 
-That is what self-evolving means here. The framework is not finished, and it is designed so that it never has to be finished by us.
+Today she can say "GURU, my telly won't work again" and it fixes it. She does not learn anything. She does not install anything. She does not know what a permission is.
 
-## Full power, and why
+That is the test. A person who has never installed anything unusual, using it without being taught.
 
-The temptation with a system this capable is to soften it. Every product on the market softens theirs, for reasons that sound like care and behave like control. The result is an assistant that will discuss anything and do nothing, that lectures its owner about a decision the owner already made, and that quietly decides which questions are polite enough to answer.
+The other half of the test is people who know exactly what they want and are tired of being told no. Hobbyists, developers, engineers, anyone who has wanted a machine to do something and found the door locked. GURU is built for both, because the difference between them is knowledge, not need.
 
-GURU refuses that because a tool which second-guesses its owner is a tool which owns them. Grown adults get the full capability. The reasoning is visible in prompts anyone can read and rewrite. Every action traces back to the person who asked for it, on their hardware, under their permissions, with their keys.
+## Full power
 
-The freedom is real, so the consequence is real. A person cannot hide behind GURU, because they own every part of what it did and the record says so. That is the standard we already hold a terminal, a car or a kitchen knife to, and it is a better standard than the pretence that a guardrail keeps anyone safe. The harm worth worrying about is the quiet kind, done at scale, behind a consent form.
+The temptation with a system this capable is to soften it. Every product on the market softens theirs, for reasons that sound like care and behave like control. The result is something that will discuss anything, do nothing, and lecture you about a decision you already made.
 
-## What it changes for a person
+A tool that second-guesses its owner is a tool that owns them. Grown adults get the full capability.
 
-An hour back. A job that used to be twenty minutes of admin becomes nothing, and the twenty minutes compound across a day into time spent on something a person actually chose.
+The prompts are readable. Every action traces back to the person who asked for it, on their hardware, under their permissions, with their keys. We already hold a terminal, a car or a knife to that standard.
 
-A device that answers to them. The television, the lights, the heating, the calendar, the inbox, the phone itself, all reachable by asking rather than by learning six apps and their settings.
+You cannot stop a tool being used for harm. Nobody can. What you can do is make sure nobody hides behind it.
 
-A way to build. Somebody with no training and an idea can end up with the tool they imagined, working, on their own phone.
+## What it becomes
 
-And privacy that does not require expertise. Not a setting buried in a menu, and not a promise from a company. The architecture.
+Every app on your phone becomes a dependency of GURU, and you open one app.
+
+Your messages, email, calendar, home, searches, bookings, money and creative work, all behind one intelligence that already knows the rest of your life.
+
+Inside that, people create. That is Otio.
+
+## Otio
+
+Otio is the market inside the app, and it is the reason a free AGPL project can fund itself without selling its users.
+
+**The creator market.** You build something and sell it: a skill, a tool, an agent, a mask. You set the price, you keep 80 percent, and Unus Lumen takes 20 percent plus payment costs, which is what pays for the app being built. Buyers pay once and keep it, even if the author withdraws it later. The agent market is live. Payments are not switched on yet.
+
+**Your data.** The version I care most about and have not built. GURU stops other apps farming you and captures that traffic itself instead. You see your own data, categorised and readable, and you decide what, if anything, to sell. The buyers are the companies already buying that data today, except they buy it from you instead of from big tech. Right now you get spied on for free. This is the version where you get paid.
+
+That gets switched on when there are enough people to do it properly, because a half version of it would be worse than none.
+
+**The social layer.** Decentralised, inside the app, used by both the people and their GURUs. Least specified of the three, because it comes last.
+
+Identity is a wallet, not an account. No sign-up, no email capture, no profile the server can attach to a person. You trade under a pseudonym. Unus Lumen holds the funds and pays creators out, and it is not on-chain, because saying otherwise would be a lie.
+
+## Masks
+
+A mask changes the personality of the thing you are talking to. Serious and professional, funny and crude, dark and twisted, warm and gentle. Whatever you need it to be that day.
 
 ## The measure
 
-This is not aimed at a market segment. The test is a person who has never installed anything unusual, and it is whether they can use it without being taught. My nan ringing me because her television is on the wrong input is the founding use case, and she is the person the interface has to survive.
+Time back. A job that took twenty minutes of admin takes none.
 
-The other test is the work itself. Code that has to build, tests that have to pass, and every claim in a pull request stating what was verified and what was not. Capability that people rely on their lives being easier for.
+A phone that answers to you. The telly, the lights, the heating, the calendar, the inbox, all reachable by asking.
 
-## The line
+Somebody with no training and an idea ends up with the tool they imagined, working, on their own phone.
 
-GURU stays open. The prompts ship, the source ships, the memory belongs to the person who made it. Nothing here is protected by secrecy, because secrecy is the mechanism the companies we are against have always used.
-
-That means the work is never finished, and the answer to somebody taking it is to keep building it.
+Privacy you do not have to be an expert to get. The architecture, not a setting and not a promise.
 
 ## The bet
 
-Big tech built artificial intelligence as a weapon and called it an arms race. They might lose that race, because what they made can be turned around and pointed the other way.
+They built intelligence, locked it up, and called the lock safety.
 
-The bet GURU makes is that giving every ordinary person an untethered, private, self-extending intelligence of their own does more good than keeping that power behind a subscription and a moral framework written for somebody else's benefit.
+The bet here is that giving every ordinary person a private, self-extending intelligence of their own does more good than keeping that power behind a subscription and a moral framework written for somebody else's benefit.
 
 Technology should be owned by the people whose lives it runs. It is our stuff.
 
-That is the whole of it. Everything in this repository follows from that.
+That is why I built it. Because I can, so I should.
