@@ -47,10 +47,8 @@ This is a beta and I'm one person. What's weaker than you'd assume:
 - **No outside audit.** The encryption and the Tor routing have had my review and nobody else's.
 - **No CI.** Tests run on my machine and I check releases on my own phone. About 160 JVM test files, 40 instrumented and 43 Rust files with tests.
 - **A lot of the code is AI-written.** Every changed file gets read in full before it's edited. A test only counts if it fails when I put the bug back. A pre-commit gate keeps IPs, MAC addresses, keys and machine paths out of the repo.
-- **The feed isn't signed.** Whoever controls the server controls what the model is told. What it can do is still bounded by the permissions you've granted.
 - **Builds aren't reproducible.** Check the SHA-256 and the signing key.
 - **Cleartext HTTP is allowed app-wide,** because LAN gear speaks plain HTTP. Nothing stops a tool being pointed at an http:// address.
-- **It's an ordinary Android app.** Android refuses signature-level and privileged permissions to ordinary apps. A few privileged ones are reachable through Shizuku and the rest can't be granted by anything. The tool says so, instead of sending you to a settings screen that won't work.
 - **It's a lot of recent code.** Assume there are bugs I haven't found.
 
 ## Install
