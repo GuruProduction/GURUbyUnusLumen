@@ -42,6 +42,7 @@ class AgentToolExecutor(
         return when (toolName) {
             AgentToolDefinitions.LIST_AGENTS -> listAgents()
             AgentToolDefinitions.SPAWN_AGENT -> spawnAgent(args)
+            AgentToolDefinitions.RESUME_AGENT -> resumeAgent(args)
             AgentToolDefinitions.BROWSE_AGENT_CATALOGUE -> browseCatalogue()
             AgentToolDefinitions.FETCH_CATALOGUE_AGENT -> fetchCatalogueAgent(args)
             AgentToolDefinitions.INSTALL_CATALOGUE_AGENT -> installCatalogueAgent(args)
@@ -90,16 +91,58 @@ class AgentToolExecutor(
         }
 
         val outcome = agentRuntime.spawn(agentName, job).last()
+        return asSpawnResult(outcome)
+    }
+
+    /**
+     * Answer the question a waiting agent asked, and let it carry on.
+     *
+     * THIS IS THE SECOND HALF OF A CONVERSATION. Without it the question that
+     * spawnAgent hands back would be a dead end: the agent would be waiting, the
+     * answer would have nowhere to arrive, and the work would be stranded exactly
+     * where the old one-shot design left it.
+     */
+    private suspend fun resumeAgent(args: Map<String, Any?>): ToolExecutionResult {
+        val sessionId = (args["sessionId"] as? String)?.trim()
+            ?: return ToolExecutionResult.error("Missing 'sessionId' parameter")
+        val answer = (args["answer"] as? String)?.trim()
+            ?: return ToolExecutionResult.error("Missing 'answer' parameter")
+
+        if (sessionId.isEmpty()) return ToolExecutionResult.error("'sessionId' was empty")
+        if (answer.isEmpty()) {
+            return ToolExecutionResult.error(
+                "'answer' was empty. The agent is waiting on a real answer, so say something it can act on."
+            )
+        }
+
+        val outcome = agentRuntime.resume(sessionId, answer).last()
+        return asSpawnResult(outcome)
+    }
+
+    /**
+     * One shape for every turn of an agent conversation.
+     *
+     * ASKING IS A SUCCESS, NOT A FAILURE. The tool call worked; the agent is simply
+     * waiting. Reporting it as an error would make a working conversation look broken
+     * and tempt the assistant to abandon a job that is going fine. The caller reads
+     * [SpawnAgentResult.status] to know which of the three it got.
+     */
+    private fun asSpawnResult(outcome: AgentRuntime.SpawnResult): ToolExecutionResult {
         val result = SpawnAgentResult(
             success = outcome.success,
             agent = outcome.agentName,
+            status = outcome.status.name,
             report = outcome.report,
             toolRounds = outcome.toolRounds,
-            error = outcome.error
+            sessionId = outcome.sessionId,
+            question = outcome.question,
+            why = outcome.why,
+            options = outcome.options,
+            error = outcome.error,
         )
         return ToolExecutionResult.success(
             result,
-            json.encodeToString(SpawnAgentResult.serializer(), result)
+            json.encodeToString(SpawnAgentResult.serializer(), result),
         )
     }
 

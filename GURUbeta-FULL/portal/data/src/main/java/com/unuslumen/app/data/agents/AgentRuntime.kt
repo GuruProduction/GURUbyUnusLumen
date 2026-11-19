@@ -14,6 +14,7 @@ import com.unuslumen.app.data.buildChatPrompt
 import com.unuslumen.app.data.getRootCause
 import com.unuslumen.app.data.gurutools.GuruToolSchemaMapper
 import com.unuslumen.app.data.repository.UnusLumenStreamingClient
+import com.unuslumen.app.data.tools.AgentToolDefinitions
 import com.unuslumen.app.data.tools.registry.ToolDefinition
 import com.unuslumen.app.data.tools.registry.ToolDispatcher
 import com.unuslumen.app.data.tools.registry.ToolRegistry
@@ -42,12 +43,20 @@ import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
 /**
- * Spawns a saved agent and returns its report.
+ * Runs a saved agent in conversation with the main assistant.
  *
- * WHAT THIS IS. The main GURU hands a job to a named agent. The agent runs with
- * its own system prompt and exactly the tools it declares, and answers with a
- * report. It has no conversation of its own and writes nothing to the person's
- * chat history — it exists for the length of the job.
+ * WHAT THIS IS. GURU hands a job to a named agent. The agent runs with its own
+ * system prompt and exactly the tools it declares, and it can stop mid-run to ask
+ * the assistant a question. The answer comes back through [resume], and the agent
+ * carries on with everything it had already worked out. A session is the
+ * conversation; a report is how it ends.
+ *
+ * WHY THE SESSION EXISTS AT ALL. The question and the answer are separated by a
+ * model round trip through the assistant, which cannot happen while that assistant
+ * is itself blocked inside a tool call. So the exchange travels as tool calls:
+ * spawn returns a question, the assistant's next turn answers it with resume, and
+ * the loop continues. That is what makes the conversation visible, and it is why
+ * the round cap could go.
  *
  * THROUGH THE DISPATCHER, NOT AROUND IT. Every tool call goes through
  * [ToolDispatcher], which is where permissions are checked against the device,
@@ -71,9 +80,11 @@ import kotlin.uuid.Uuid
  * exists, and this does exactly the same, because an agent on OpenAI must not be
  * sent down an Ollama wire.
  *
- * COST IS BOUNDED. [MAX_TOOL_ROUNDS] rounds, one model call each. The main
- * conversation's limit is far larger because a person is waiting; an agent is
- * background work and has to be cheap enough to be worth calling.
+ * COST IS COUNTED, NOT CAPPED. [SpawnResult.toolRounds] reports what a job took.
+ * The old twelve-round cap existed to stop a runaway, but it also killed real work
+ * halfway through and made a two-question clarification ruinous. The loop ends when
+ * the model stops asking, which is the only honest stopping condition; the exchange
+ * count bounds the conversation in [MAX_EXCHANGES] rather than the work.
  */
 @OptIn(ExperimentalUuidApi::class)
 @Factory
@@ -86,18 +97,50 @@ class AgentRuntime(
 ) {
 
     companion object {
-        /** Tool rounds one spawned agent may take before it must answer. */
-        const val MAX_TOOL_ROUNDS = 12
+        /**
+         * Tool rounds are not capped.
+         *
+         * THE CAP WAS THE WRONG TOOL FOR THE PROBLEM. Twelve rounds was set when a
+         * round could only be a tool call, and its job was to stop a runaway loop
+         * costing money. Now a round can also be an exchange with the assistant, so
+         * the same counter would let a two-question clarification eat the budget for
+         * the work itself, and a real job would die halfway through with the agent
+         * still holding a half-built answer.
+         *
+         * What actually stops a runaway is the loop's own shape: it ends when the
+         * model stops asking for tools or questions, and every round needs a real
+         * model response to continue. A model that is not making progress stops
+         * asking. Cost is reported per session in [SpawnResult.toolRounds], so a
+         * person can see what a job took rather than being told it was not allowed
+         * to finish.
+         */
+        const val TOOL_ROUNDS_UNLIMITED = Int.MAX_VALUE
 
         /** Tool names no agent may ever call, whatever its definition says. */
         val NEVER_SPAWNABLE = setOf(
             "spawnAgent",
+            "resumeAgent",
             "listAgents",
             "saveAgent",
             "deleteAgent"
         )
 
         private const val MAX_REPORT_CHARS = 8_000
+
+        /** How many agent conversations may be live at once before the oldest is dropped. */
+        const val MAX_LIVE_SESSIONS = 8
+
+        /**
+         * How many exchanges one session may take before it has to finish.
+         *
+         * This is NOT the old tool cap. It bounds the conversation, not the work:
+         * an agent may take as many tool rounds as the job needs, but it cannot
+         * keep asking questions indefinitely, because every question costs the
+         * person an answer and a session that asks forty times is not collaborating,
+         * it is failing to think. When a session reaches this, it is told to finish
+         * with what it has and say what remains unknown.
+         */
+        const val MAX_EXCHANGES = 24
 
         private val NO_TIMEOUTS = ai.koog.prompt.executor.clients.ConnectionTimeoutConfig(
             requestTimeoutMillis = Long.MAX_VALUE,
@@ -108,13 +151,78 @@ class AgentRuntime(
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** What one spawn produced, honest about whether it finished or failed. */
+    /**
+     * What a turn of an agent produced.
+     *
+     * THREE OUTCOMES, NOT TWO. The old result could only say finished or failed,
+     * because an agent had no way to speak mid-run. [status] now carries
+     * [Status.FINISHED], [Status.ASKING] or [Status.FAILED], so a caller can tell
+     * "here is the work" from "it is waiting on you" from "it could not run at all".
+     * Collapsing ASKING into FAILED would strand the work, and collapsing it into
+     * FINISHED would hand back an empty report as though it were an answer.
+     */
     data class SpawnResult(
         val success: Boolean,
         val agentName: String,
         val report: String,
         val toolRounds: Int,
+        /** Present whenever the agent is waiting on an answer, and null otherwise. */
+        val sessionId: String? = null,
+        val status: Status = Status.FINISHED,
+        /** The question the agent is waiting on, when [status] is ASKING. */
+        val question: String? = null,
+        /** Why the agent needed to ask, when it said. */
+        val why: String? = null,
+        /** The answers it said it could act on, when it offered any. */
+        val options: List<String> = emptyList(),
         val error: String? = null
+    ) {
+        enum class Status { FINISHED, ASKING, FAILED }
+    }
+
+    /**
+     * One agent's live session: the conversation so far, and what it is waiting on.
+     *
+     * A SESSION IS THE WHOLE POINT. An agent that runs one turn and dies cannot ask
+     * anything, because the answer has nowhere to arrive. Keeping the message list
+     * and the agent's identity alive between calls is what turns a dispatch into a
+     * conversation, and it is why the round cap could then go: the agent is not
+     * burning rounds in a void, it is waiting for a person to speak through the
+     * assistant.
+     *
+     * Held in memory on purpose. A session is live work, not a record; the durable
+     * artefact is the report, and a session that outlives the process it was talking
+     * through has nobody left to answer it.
+     */
+    private data class Session(
+        val id: String,
+        val agent: GuruAgent,
+        val wiring: Wiring,
+        val allowed: List<ToolDefinition>,
+        val descriptors: List<ToolDescriptor>,
+        val systemPrompt: String,
+        var messages: List<AiMessage>,
+        var rounds: Int = 0,
+        var exchangeCount: Int = 0,
+        var pendingQuestion: String? = null
+    ) {
+        /** Exchanges this session has already spent asking the assistant something. */
+        fun exchangesUsed(): Int = exchangeCount
+    }
+
+    /**
+     * Live sessions by id.
+     *
+     * A LinkedHashMap so the oldest can be evicted when the store is full, and
+     * capped because every session holds a message history and a model wiring
+     * alive. A person running several agents at once should not be able to fill
+     * the device's memory with abandoned conversations.
+     */
+    private val sessions = java.util.Collections.synchronizedMap(
+        object : LinkedHashMap<String, Session>(16, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Session>): Boolean =
+                size > MAX_LIVE_SESSIONS
+        }
     )
 
     /**
@@ -129,11 +237,13 @@ class AgentRuntime(
     )
 
     /**
-     * Run one job.
+     * Start a job, and run it until it finishes or stops to ask something.
      *
-     * The flow emits once, at the end. An agent's work is a report rather than a
-     * conversation, so there is nothing to stream to a person; [onEvent] exists
-     * for a caller that wants to show progress while it waits.
+     * ONE TURN PER CALL, ONE SESSION ACROSS CALLS. This used to be fire-and-forget:
+     * the agent got a job, ran to completion, and returned a report, so it could not
+     * ask what it did not know. Now it can pause on a question and hand it back, and
+     * [resume] carries the answer in and lets it continue. The assistant is the one
+     * that answers, because the assistant is what the person is talking to.
      */
     fun spawn(
         slugOrName: String,
@@ -142,84 +252,142 @@ class AgentRuntime(
     ) = flow {
         val agent = agentRepository.resolveAgent(slugOrName)
         if (agent == null) {
-            emit(
-                SpawnResult(
-                    success = false,
-                    agentName = slugOrName,
-                    report = "",
-                    toolRounds = 0,
-                    error = "No agent called '$slugOrName'. Check the listing for the exact name."
-                )
-            )
+            emit(failed(slugOrName, "No agent called '$slugOrName'. Check the listing for the exact name."))
             return@flow
         }
         if (!agent.enabled) {
-            emit(
-                SpawnResult(
-                    success = false,
-                    agentName = agent.name,
-                    report = "",
-                    toolRounds = 0,
-                    error = "'${agent.name}' is switched off, so it was not called."
-                )
-            )
+            emit(failed(agent.name, "'${agent.name}' is switched off, so it was not called."))
             return@flow
         }
 
         val wiring = wiring()
         if (wiring == null) {
+            emit(failed(agent.name, "No model is connected right now, so '${agent.name}' could not run."))
+            return@flow
+        }
+
+        val allowed = allowedTools(agent)
+        val session = Session(
+            id = Uuid.random().toString(),
+            agent = agent,
+            wiring = wiring,
+            allowed = allowed,
+            descriptors = allowed.map { GuruToolSchemaMapper.definitionToDescriptor(it) },
+            systemPrompt = buildSystemPrompt(agent, allowed),
+            messages = listOf(
+                AiMessage.UserMessage(
+                    uuid = Uuid.random().toString(),
+                    content = job,
+                    time = System.currentTimeMillis()
+                )
+            )
+        )
+        sessions[session.id] = session
+
+        emit(bounded(session, onEvent))
+    }
+
+    /**
+     * Hand a waiting agent the answer it asked for, and let it carry on.
+     *
+     * The answer is appended as a user message, which is exactly what it is from the
+     * agent's point of view: something the assistant said to it. Nothing else about
+     * the session changes, so it keeps its instructions, its tools and everything it
+     * has already found.
+     */
+    fun resume(
+        sessionId: String,
+        answer: String,
+        onEvent: ((String) -> Unit)? = null
+    ) = flow {
+        val session = sessions[sessionId.trim()]
+        if (session == null) {
             emit(
-                SpawnResult(
-                    success = false,
-                    agentName = agent.name,
-                    report = "",
-                    toolRounds = 0,
-                    error = "No model is connected right now, so '${agent.name}' could not run."
+                failed(
+                    "",
+                    "No live session called '$sessionId'. A session lasts while the app is running; " +
+                        "if this one has gone, start the job again with spawnAgent."
                 )
             )
             return@flow
         }
+        if (answer.isBlank()) {
+            emit(bounded(session, onEvent, errorOverride = "The answer was empty, so the agent is still waiting."))
+            return@flow
+        }
 
-        val result = try {
-            runLoop(agent, job, wiring, onEvent)
+        session.pendingQuestion = null
+        session.messages = session.messages + AiMessage.UserMessage(
+            uuid = Uuid.random().toString(),
+            content = answer.trim(),
+            time = System.currentTimeMillis()
+        )
+        emit(bounded(session, onEvent))
+    }
+
+    /** Run one turn of a session, turning any throw into an honest failure. */
+    private suspend fun bounded(
+        session: Session,
+        onEvent: ((String) -> Unit)?,
+        errorOverride: String? = null,
+    ): SpawnResult {
+        if (errorOverride != null) {
+            return SpawnResult(
+                success = false,
+                agentName = session.agent.name,
+                report = "",
+                toolRounds = session.rounds,
+                sessionId = session.id,
+                status = SpawnResult.Status.ASKING,
+                question = session.pendingQuestion,
+                error = errorOverride,
+            )
+        }
+        return try {
+            runTurn(session, onEvent)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
+            sessions.remove(session.id)
             val reason = e.getRootCause().message ?: e.message ?: e::class.simpleName
-            SpawnResult(
-                success = false,
-                agentName = agent.name,
-                report = "",
-                toolRounds = 0,
-                error = "${agent.name} failed: $reason"
-            )
+            failed(session.agent.name, "${session.agent.name} failed: $reason")
         }
-        emit(result)
     }
 
-    private suspend fun runLoop(
-        agent: GuruAgent,
-        job: String,
-        wiring: Wiring,
+    private fun failed(agentName: String, message: String) = SpawnResult(
+        success = false,
+        agentName = agentName,
+        report = "",
+        toolRounds = 0,
+        status = SpawnResult.Status.FAILED,
+        error = message,
+    )
+
+    /**
+     * Run one turn of an agent's conversation.
+     *
+     * It ends in exactly one of three ways, and the caller must be able to tell
+     * which: the model answered without asking for anything, so the job is done; the
+     * model called [AgentToolDefinitions.ASK_ASSISTANT], so it is waiting on a person
+     * through the assistant; or it threw, and the error says what happened.
+     */
+    private suspend fun runTurn(
+        session: Session,
         onEvent: ((String) -> Unit)?
     ): SpawnResult {
-        val allowed = allowedTools(agent)
-        val descriptors = allowed.map { GuruToolSchemaMapper.definitionToDescriptor(it) }
-        val systemPrompt = buildSystemPrompt(agent, allowed)
+        val agent = session.agent
+        val allowed = session.allowed
+        val descriptors = session.descriptors
+        val systemPrompt = session.systemPrompt
+        val wiring = session.wiring
 
-        var messages: List<AiMessage> = listOf(
-            AiMessage.UserMessage(
-                uuid = Uuid.random().toString(),
-                content = job,
-                time = System.currentTimeMillis()
-            )
-        )
-
-        var rounds = 0
+        var messages = session.messages
+        var rounds = session.rounds
         var lastText = ""
 
-        while (rounds < MAX_TOOL_ROUNDS) {
+        while (rounds < TOOL_ROUNDS_UNLIMITED) {
             rounds++
+            session.rounds = rounds
 
             val prompt = messages.buildChatPrompt(
                 systemMessage = systemPrompt,
@@ -269,12 +437,95 @@ class AgentRuntime(
 
             lastText = textBuilder.toString()
 
-            if (toolCalls.isEmpty()) {
+            // A QUESTION IS A PAUSE, NOT A TOOL CALL.
+            //
+            // This is checked before anything is dispatched, because askAssistant is
+            // the one "tool" that must not run: its whole purpose is to stop the loop
+            // and hand the question outward. If it were dispatched like an ordinary
+            // tool it would return a result and the agent would carry on talking to a
+            // wall, which is exactly the defect this build removes.
+            val questionCall = toolCalls.firstOrNull { it.name == AgentToolDefinitions.ASK_ASSISTANT }
+            if (questionCall != null) {
+                val args = runCatching {
+                    json.parseToJsonElement(questionCall.content) as? JsonObject
+                }.getOrNull() ?: buildJsonObject { }
+                val asked = (args["question"] as? JsonPrimitive)?.content?.trim().orEmpty()
+                val why = (args["why"] as? JsonPrimitive)?.content?.trim().orEmpty()
+                val options = (args["options"] as? JsonPrimitive)?.content
+                    ?.split('|')?.map { it.trim() }?.filter { it.isNotEmpty() }
+                    .orEmpty()
+
+                if (asked.isEmpty()) {
+                    // A question with no question in it. Tell the agent rather than
+                    // passing an empty prompt to the assistant, and let it retry.
+                    val repaired = AiMessage.ToolCall(
+                        uuid = Uuid.random().toString(),
+                        id = questionCall.id ?: Uuid.random().toString(),
+                        name = AgentToolDefinitions.ASK_ASSISTANT,
+                        rawContent = questionCall.content,
+                        resultRawContent = """{"error":"askAssistant needs a 'question'. Ask one clear question, then wait."}""",
+                        time = System.currentTimeMillis(),
+                        isFailed = true,
+                    )
+                    messages = messages + repaired
+                    session.messages = messages
+                    continue
+                }
+
+                if (session.exchangesUsed() >= MAX_EXCHANGES) {
+                    // Out of exchanges. Do not strand the work: tell it to finish.
+                    val stopped = AiMessage.ToolCall(
+                        uuid = Uuid.random().toString(),
+                        id = questionCall.id ?: Uuid.random().toString(),
+                        name = AgentToolDefinitions.ASK_ASSISTANT,
+                        rawContent = questionCall.content,
+                        resultRawContent = """{"error":"No more exchanges. Finish the job with what you already have, and say plainly what remains unknown."}""",
+                        time = System.currentTimeMillis(),
+                        isFailed = true,
+                    )
+                    messages = messages + stopped
+                    session.messages = messages
+                    continue
+                }
+
+                session.pendingQuestion = asked
+                session.exchangeCount += 1
+                onEvent?.invoke("${agent.name} is asking you something")
+
+                // Record the ask in the session so a resumed conversation shows what
+                // it asked, and so the transcript has the agent's own words in it.
+                session.messages = messages + AiMessage.ToolCall(
+                    uuid = Uuid.random().toString(),
+                    id = questionCall.id ?: Uuid.random().toString(),
+                    name = AgentToolDefinitions.ASK_ASSISTANT,
+                    rawContent = questionCall.content,
+                    resultRawContent = """{"status":"waiting","question":${jsonString(asked)}}""",
+                    time = System.currentTimeMillis(),
+                    isFailed = false,
+                )
+
                 return SpawnResult(
                     success = true,
                     agentName = agent.name,
                     report = lastText.take(MAX_REPORT_CHARS),
-                    toolRounds = rounds
+                    toolRounds = rounds,
+                    sessionId = session.id,
+                    status = SpawnResult.Status.ASKING,
+                    question = asked,
+                    why = why.ifEmpty { null },
+                    options = options,
+                )
+            }
+
+            if (toolCalls.isEmpty()) {
+                sessions.remove(session.id)
+                return SpawnResult(
+                    success = true,
+                    agentName = agent.name,
+                    report = lastText.take(MAX_REPORT_CHARS),
+                    toolRounds = rounds,
+                    sessionId = session.id,
+                    status = SpawnResult.Status.FINISHED,
                 )
             }
 
@@ -320,29 +571,35 @@ class AgentRuntime(
             }
 
             messages = messages + executed
+            session.messages = messages
         }
 
-        return SpawnResult(
-            success = true,
-            agentName = agent.name,
-            report = (lastText.ifBlank {
-                "${agent.name} used its $MAX_TOOL_ROUNDS tool rounds without writing a report."
-            }).take(MAX_REPORT_CHARS),
-            toolRounds = rounds
+        return failed(
+            agent.name,
+            "${agent.name} stopped without answering or asking, which should not be possible. " +
+                "The job did not complete.",
         )
     }
 
     /**
-     * The complete tool set this agent may use: what it declares, filtered to
-     * what actually exists in the registry and what no agent is ever allowed to
-     * call. An empty declaration yields an empty list on purpose.
+     * The tool set this agent may use: its own declaration, filtered to what exists
+     * in the registry and what no agent may ever call, plus [ASK_ASSISTANT].
+     *
+     * An agent that declares nothing still gets the question tool, because a blank
+     * brief should produce a question rather than a guess.
      */
     fun allowedTools(agent: GuruAgent): List<ToolDefinition> {
-        if (agent.toolPermissions.isEmpty()) return emptyList()
-        return agent.toolPermissions
+        // THE QUESTION TOOL IS ALWAYS OFFERED. Every spawned agent can stop and ask
+        // the assistant something, whatever its own definition declares, because the
+        // alternative is an agent that guesses or gives up when it hits a gap. It is
+        // added here rather than listed in every agent's permissions so no agent
+        // arrives without it and nobody has to remember to grant it.
+        val ask = toolRegistry.getDefinition(AgentToolDefinitions.ASK_ASSISTANT)
+        val declared = agent.toolPermissions
             .filter { it.isNotBlank() }
             .filter { it !in NEVER_SPAWNABLE }
             .mapNotNull { name -> toolRegistry.getDefinition(name) }
+        return if (ask == null) declared else listOf(ask) + declared.filter { it.name != ask.name }
     }
 
     private fun buildSystemPrompt(agent: GuruAgent, allowed: List<ToolDefinition>): String {
@@ -358,6 +615,16 @@ class AgentRuntime(
             appendLine("You were handed one job. Complete it and answer with a report.")
             appendLine("Your report is read by the assistant that called you, not by a person.")
             appendLine("Say what you did, what you found, and anything that blocked you.")
+            // It has to know it can talk, or it will guess or give up instead.
+            if (allowed.any { it.name == AgentToolDefinitions.ASK_ASSISTANT }) {
+                appendLine(
+                    "YOU CAN ASK BEFORE YOU GUESS. If you genuinely cannot finish without " +
+                        "knowing something, call askAssistant with one clear question and stop. " +
+                        "You will be paused and the assistant will answer, then you carry on with " +
+                        "everything you had already found. Ask only when the answer changes what " +
+                        "you do, and never to ask permission for work you were already given."
+                )
+            }
             appendLine(toolLine)
             if (agent.description.isNotBlank()) {
                 appendLine("Your role: ${agent.description}")
