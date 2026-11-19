@@ -308,6 +308,66 @@ object CerebrumBrainApi {
      * dispatch, enabling tool-side honest round trips. */
     fun realIdFor(factText: String): String = deterministicBrainId(factText)
 
+    /**
+     * Store one record with the FULL typed hierarchy (issue 486).
+     *
+     * WHY THIS IS A SECOND WRITER RATHER THAN A WIDER `storeFact`. `storeFact` is
+     * the lane every automatic writer uses: the hive, tool-result dumps, thought
+     * cycles. Those callers have a category and no hierarchy, so widening that
+     * signature would make every one of them carry three empty parameters and
+     * would not tell a reader which lane meant what.
+     *
+     * This is the caller-facing lane, where an agent has decided where a memory
+     * belongs and how it connects. The wire shape is the same `Upsert` the brain
+     * already accepts; what changes is that domain, topic, subtopic, rationale and
+     * relations reach it instead of being discarded one layer up.
+     *
+     * `relations` arrives as 64-hex ids because that is what a tool result hands
+     * back, and it is decoded to the brain's 32-byte array shape here. An id that
+     * is not 64 hex characters is a caller error and is refused by the tool layer
+     * before it reaches this point, so a malformed relation cannot silently become
+     * a wire-level parse failure.
+     */
+    fun storeRecord(
+        contentText: String,
+        domainLabel: String,
+        topicLabel: String,
+        subtopicLabel: String,
+        provenanceLabel: String,
+        rationaleText: String,
+        relationIdsHex: List<String>,
+        createdAtMillis: Long,
+    ): CurateAck {
+        require(contentText.isNotBlank()) { "empty record text refuses" }
+        if (isRawMachineBlob(contentText) && !isStructuredMarkerRow(contentText)) {
+            Log.w(TAG, "storeRecord GATED: raw machine blob refused; domain='$domainLabel' first=${contentText.take(60)}")
+            return CurateAck(
+                success = false, createdInEngine = 0, rawCounts = zeroCounts,
+                perItem = emptyList(), raw = "write gate: raw tool-result/JSON blobs are not memory facts",
+            )
+        }
+        val idHex = deterministicBrainId(contentText)
+        val relationsJson = relationIdsHex.joinToString(",") { oneId ->
+            "[" + memoryIdArrayJson(oneId.lowercase()) + "]"
+        }
+        val upsertJson = "{\"Upsert\":{\"entry\":{" +
+            "\"memory_id\":[" + memoryIdArrayJson(idHex) + "]," +
+            "\"domain\":\"" + jsonEscape(domainLabel.ifBlank { "memory" }) + "\"," +
+            "\"topic\":\"" + jsonEscape(topicLabel.ifBlank { "general" }) + "\"," +
+            "\"subtopic\":\"" + jsonEscape(subtopicLabel.ifBlank { "general" }) + "\"," +
+            "\"content\":\"" + jsonEscape(contentText) + "\"," +
+            "\"relations\":[" + relationsJson + "]," +
+            "\"provenance\":\"" + jsonEscape(provenanceLabel) + "\"," +
+            "\"rationale\":\"" + jsonEscape(rationaleText) + "\"," +
+            "\"created_at\":\"" + rfc3339Of(createdAtMillis) + "\"," +
+            "\"modified_at\":\"" + rfc3339Of(now()) + "\"" +
+            "},\"reason\":\"" + jsonEscape(rationaleText.ifBlank { "cortex record" }) + "\"}}"
+        val ack = curateJsonOps(listOf(upsertJson))
+        return if (ack.success && ack.perItem.isEmpty()) {
+            ack.copy(perItem = listOf(ExecutedDetail(memory_id = idHex, status = "upserted", detail = "cortex record")))
+        } else ack
+    }
+
     fun upsertJsonShape(
         idHexLower: String,
         domainIn: String,

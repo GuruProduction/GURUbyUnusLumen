@@ -24,6 +24,19 @@ object MemoryToolDefinitions : ToolSetRegistration {
     const val TRAVERSE_MEMORY_GRAPH = "traverseMemoryGraph"
 
     /**
+     * The full curation surface, under the name an agent recognises (issue 486).
+     *
+     * The Archivist prompt calls this `cortex.record` and nothing in the repo
+     * answered to it. Building it is the honest fix rather than deleting the line,
+     * because everything it should do already exists in the brain and was
+     * unreachable: `cerebrum_curate` accepts the whole typed entry, and the four
+     * memory tools flattened it to a fact, a category and a confidence. This is the
+     * second door, for a caller that has decided where a memory belongs and what
+     * it connects to.
+     */
+    const val CORTEX_RECORD = "cortexRecord"
+
+    /**
      * The category list every memory tool carries, in one string.
      *
      * WHY IT IS IN THE SCHEMA (issue 485). The category argument was free text with
@@ -56,7 +69,23 @@ object MemoryToolDefinitions : ToolSetRegistration {
             ),
             permissions = emptyList()
         ),
-        ToolDefinition(name = SEARCH_ALL_MEMORY, description = "Search your whole brain at once: your stored facts, each exchanged message, and your past tool results all live here. Ranked, one real ranked list of everything you remember. Say what you want remembered about something and this answers in one pass.", category = "memory", parameters = listOf(ToolParameter("query", ToolParameterType.String, true, "Search query text")), permissions = emptyList())
+        ToolDefinition(name = SEARCH_ALL_MEMORY, description = "Search your whole brain at once: your stored facts, each exchanged message, and your past tool results all live here. Ranked, one real ranked list of everything you remember. Say what you want remembered about something and this answers in one pass.", category = "memory", parameters = listOf(ToolParameter("query", ToolParameterType.String, true, "Search query text")), permissions = emptyList()),
+        ToolDefinition(
+            name = CORTEX_RECORD,
+            description = "Write one memory with its full place in the knowledge graph: where it belongs (domain, topic, subtopic), why it is worth keeping, and which other memories it connects to. Use this instead of addMemoryFact when you have decided WHERE a memory belongs and HOW it relates, rather than just that it should be remembered. addMemoryFact stores a line of prose with a category; this stores a node in the graph. Returns the brain's real 64-hex id for the record, which you can cite later and pass to deleteMemoryFact or updateMemoryFact.",
+            category = "memory",
+            parameters = listOf(
+                ToolParameter("content", ToolParameterType.String, true, "What the memory says, in prose"),
+                ToolParameter("domain", ToolParameterType.String, false, "The top-level branch it belongs under, such as the_human, guru, work or home. Default memory"),
+                ToolParameter("topic", ToolParameterType.String, false, "The branch inside the domain, such as preferences, projects or tools. Default general"),
+                ToolParameter("subtopic", ToolParameterType.String, false, "The leaf inside the topic, such as food, guru_itself or network. Default general"),
+                ToolParameter("rationale", ToolParameterType.String, false, "Why this memory is worth keeping, in your own words. Required when revising a belief, because the reason for a change is part of the change"),
+                ToolParameter("relatedTo", ToolParameterType.String, false, "Comma-separated 64-hex memory ids this record connects to, taken from search results"),
+                ToolParameter("provenance", ToolParameterType.String, false, "Where it came from: conversation, tool_result, web, inference. Default guru"),
+                ToolParameter("confidence", ToolParameterType.Float, false, "How far you believe it, 0.0 to 1.0. Default 0.9"),
+            ),
+            permissions = emptyList(),
+        )
     )
     override fun executorClass(): KClass<out ToolExecutor> = MemoryToolExecutor::class
     override fun extractorClass(): KClass<out ToolResultExtractor>? = null

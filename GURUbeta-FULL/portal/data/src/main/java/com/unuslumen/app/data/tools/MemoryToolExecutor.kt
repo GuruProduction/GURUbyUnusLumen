@@ -116,6 +116,48 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) : ToolE
             }
         }
 
+        MemoryToolDefinitions.CORTEX_RECORD -> {
+            val content = (args["content"] as? String)?.trim()
+                ?: return ToolExecutionResult.error("Missing 'content'")
+            if (content.isEmpty()) {
+                return ToolExecutionResult.error("'content' must not be blank")
+            }
+            // Relation ids are checked HERE rather than at the wire, because a
+            // malformed id dropped silently is a link the caller believes exists.
+            // A refusal names the value it refused.
+            val relationIds = (args["relatedTo"] as? String)
+                ?.split(',')
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
+                .orEmpty()
+            val malformed = relationIds.firstOrNull { candidate ->
+                candidate.length != 64 || candidate.any { it !in "0123456789abcdefABCDEF" }
+            }
+            if (malformed != null) {
+                return ToolExecutionResult.error(
+                    "'relatedTo' contains \"$malformed\", which is not a 64-character memory id. " +
+                        "Use the ids from searchMemoryFacts or searchAllMemory hits.",
+                )
+            }
+            val confidence = (args["confidence"] as? Number)?.toFloat() ?: 0.9f
+            try {
+                val stored = memoryRepository.storeRecord(
+                    content = content,
+                    domain = (args["domain"] as? String).orEmpty(),
+                    topic = (args["topic"] as? String).orEmpty(),
+                    subtopic = (args["subtopic"] as? String).orEmpty(),
+                    provenance = (args["provenance"] as? String).orEmpty(),
+                    rationale = (args["rationale"] as? String).orEmpty(),
+                    relatedTo = relationIds.map { it.lowercase() },
+                    confidence = confidence.coerceIn(0f, 1f),
+                )
+                val result = MemoryFactResult(stored.toInfo())
+                ToolExecutionResult.success(result, json.encodeToString(MemoryFactResult.serializer(), result))
+            } catch (e: Exception) {
+                ToolExecutionResult.error("brain record store rejected: ${e.message?.take(200)}")
+            }
+        }
+
         MemoryToolDefinitions.LIST_MEMORY_FACTS -> {
             val category = args["category"] as? String
             try {

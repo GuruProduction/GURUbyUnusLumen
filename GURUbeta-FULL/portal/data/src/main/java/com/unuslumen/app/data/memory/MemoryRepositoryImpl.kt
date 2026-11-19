@@ -142,6 +142,26 @@ class MemoryRepositoryImpl(
         return storedRows
     }
 
+    override suspend fun storeRecord(
+        content: String,
+        domain: String,
+        topic: String,
+        subtopic: String,
+        provenance: String,
+        rationale: String,
+        relatedTo: List<String>,
+        confidence: Float,
+    ): MemoryFact = brainService.storeRecord(
+        content = content,
+        domain = domain,
+        topic = topic,
+        subtopic = subtopic,
+        provenance = provenance,
+        rationale = rationale,
+        relatedTo = relatedTo,
+        confidence = confidence,
+    )
+
     override suspend fun getAllFacts(): List<MemoryFact> = brainService.getAllFacts()
 
     override suspend fun getFact(factId: String): MemoryFact? = brainService.getFact(factId)

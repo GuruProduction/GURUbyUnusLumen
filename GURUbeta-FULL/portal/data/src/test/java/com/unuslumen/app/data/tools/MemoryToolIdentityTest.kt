@@ -73,6 +73,41 @@ class MemoryToolIdentityTest {
             return out
         }
 
+        /**
+         * The typed record path, answered the way the brain answers it.
+         *
+         * `storeRecord` was added to MemoryRepository for issue 486 and this fake
+         * stopped implementing the interface, which broke compilation of the whole
+         * unit suite. It is implemented properly rather than as an empty stub,
+         * because a stub here would let a cortex test pass without proving anything:
+         * the id has to be the deterministic content id, and the hierarchy has to be
+         * what the caller asked for.
+         */
+        override suspend fun storeRecord(
+            content: String,
+            domain: String,
+            topic: String,
+            subtopic: String,
+            provenance: String,
+            rationale: String,
+            relatedTo: List<String>,
+            confidence: Float,
+        ): MemoryFact {
+            val id = digestOf(content)
+            val row = MemoryFact(
+                id = id,
+                category = domain.ifBlank { "memory" },
+                fact = content,
+                confidence = confidence,
+                extractedDate = System.currentTimeMillis(),
+                domain = domain.ifBlank { "memory" },
+                topic = topic.ifBlank { "general" },
+                subtopic = subtopic.ifBlank { "general" },
+            )
+            stored[id] = row
+            return row
+        }
+
         override suspend fun getAllFacts(): List<MemoryFact> = stored.values.toList()
 
         override suspend fun getFact(factId: String): MemoryFact? = stored[factId]
@@ -204,9 +239,12 @@ class MemoryToolIdentityTest {
         val repository = BrainLikeRepository()
         val executor = MemoryToolExecutor(repository)
 
+        // `home` is not one of the permitted categories (issue 485), so this fixture
+        // used a word the vocabulary now refuses. The test is about the ID SHAPE,
+        // not about the category, so it uses a real one.
         val addResult = executor.execute(
             MemoryToolDefinitions.ADD_MEMORY_FACT,
-            mapOf("fact" to "the boiler service is booked for tuesday", "category" to "home"),
+            mapOf("fact" to "the boiler service is booked for tuesday", "category" to "personal_info"),
         )
 
         // A uuid is 36 characters with hyphens; a brain id is 64 hex characters.
