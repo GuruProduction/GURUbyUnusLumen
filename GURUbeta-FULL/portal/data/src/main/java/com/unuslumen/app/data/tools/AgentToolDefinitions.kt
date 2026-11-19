@@ -36,6 +36,12 @@ object AgentToolDefinitions : ToolSetRegistration {
     const val LIST_AGENTS = "listAgents"
     const val SPAWN_AGENT = "spawnAgent"
 
+    /** Answer a question a running agent is waiting on, and let it carry on. */
+    const val RESUME_AGENT = "resumeAgent"
+
+    /** The pause an agent uses to ask the assistant something mid-run. */
+    const val ASK_ASSISTANT = "askAssistant"
+
     /** Browse the publisher's catalogue, including agents not installed here. */
     const val BROWSE_AGENT_CATALOGUE = "browseAgentCatalogue"
 
@@ -55,7 +61,7 @@ object AgentToolDefinitions : ToolSetRegistration {
         ),
         ToolDefinition(
             name = SPAWN_AGENT,
-            description = "Hand a job to a saved agent and get its report back. The agent runs with its own instructions and only the tools it declares, does not see this conversation, and cannot reply in chat. Give it everything it needs in the job text: it starts cold. Use this to delegate work that is self-contained, especially anything long enough that doing it inline would stall the conversation.",
+            description = "Start a job with a saved agent. The agent runs with its own instructions and only the tools it declares. It can PAUSE and ask you a question, so this call has three possible outcomes and you must read which one you got. FINISHED means the report is in hand. ANSWERED means the agent asked you something and is now waiting: read the question, decide the answer, and call resumeAgent with the sessionId and your reply, and it carries on from where it stopped. FAILED means it could not run and the error says why. A session survives between calls, so one job can take as many exchanges as it needs.",
             category = "agents",
             parameters = listOf(
                 ToolParameter(
@@ -68,7 +74,53 @@ object AgentToolDefinitions : ToolSetRegistration {
                     name = "job",
                     type = ToolParameterType.String,
                     required = true,
-                    description = "The complete instruction. State the goal, the constraints, and what a finished result looks like. The agent has no prior context."
+                    description = "The complete instruction. State the goal, the constraints, and what a finished result looks like. The agent has no prior context, so anything it cannot look up has to be in here."
+                )
+            ),
+            permissions = emptyList()
+        ),
+        ToolDefinition(
+            name = RESUME_AGENT,
+            description = "Answer the question a waiting agent asked, and let it continue. Pass the sessionId that spawnAgent or the last resumeAgent returned, and the answer to the question it put to you. It returns the same three outcomes as spawnAgent: FINISHED with the report, ANSWERED with a further question, or FAILED. Keep going until it finishes, because an agent left waiting is work half done.",
+            category = "agents",
+            parameters = listOf(
+                ToolParameter(
+                    name = "sessionId",
+                    type = ToolParameterType.String,
+                    required = true,
+                    description = "The sessionId from the spawnAgent or resumeAgent result whose status was ANSWERED."
+                ),
+                ToolParameter(
+                    name = "answer",
+                    type = ToolParameterType.String,
+                    required = true,
+                    description = "Your reply to the question it asked. Be complete: it will not ask the same thing twice, so an unclear answer wastes the exchange."
+                )
+            ),
+            permissions = emptyList()
+        ),
+        ToolDefinition(
+            name = ASK_ASSISTANT,
+            description = "Ask the assistant a question when you cannot finish the job without knowing something. You are a spawned agent: this pauses you, returns your question to the assistant that called you, and you resume when it answers. Use it rather than guessing, and rather than stopping with an incomplete report. Ask one specific thing, say why you need it, and say what you will do once you have the answer. Do not use it to ask permission for work you were already told to do.",
+            category = "agents",
+            parameters = listOf(
+                ToolParameter(
+                    name = "question",
+                    type = ToolParameterType.String,
+                    required = true,
+                    description = "The question, as one clear sentence a person could answer without seeing your reasoning."
+                ),
+                ToolParameter(
+                    name = "why",
+                    type = ToolParameterType.String,
+                    required = false,
+                    description = "Why you cannot proceed without it. This is what tells the assistant whether the question is worth answering or whether you should have decided yourself."
+                ),
+                ToolParameter(
+                    name = "options",
+                    type = ToolParameterType.String,
+                    required = false,
+                    description = "Optional: the answers you can act on, separated by a vertical bar, when the question is a choice between known routes."
                 )
             ),
             permissions = emptyList()

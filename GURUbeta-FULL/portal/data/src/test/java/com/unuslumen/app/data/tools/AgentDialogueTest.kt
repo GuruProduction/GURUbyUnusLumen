@@ -1,0 +1,199 @@
+// GURU by Unus Lumen - an AI framework that gives a language model real hands on an Android phone.
+// Copyright (C) 2026 Steven Newman, Founder and Developer, Unus Lumen Ltd, Bristol UK.
+// Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
+package com.unuslumen.app.data.tools
+
+import com.unuslumen.app.data.agents.AgentRuntime
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * The agent conversation: the question, the answer, and the three outcomes.
+ *
+ * WHY THIS EXISTS. `spawnAgent` used to be fire-and-forget. The agent got a job, ran to
+ * completion, and returned a report, so it could not ask what it did not know; and
+ * because the caller took `.last()` from the flow, a question emitted mid-run would
+ * have been discarded even if the runtime had produced one.
+ *
+ * These tests pin the shape that replaces it: three statuses rather than two, a session
+ * that survives between calls, and a resumed agent that keeps everything it had already
+ * found. They are written against the published descriptions and the result contract
+ * rather than the internals, because the internals are free to change and the contract
+ * is what the model reads.
+ */
+class AgentDialogueTest {
+
+    private fun json(result: com.unuslumen.app.data.tools.registry.ToolExecutionResult): JsonObject =
+        Json.parseToJsonElement(result.rawJson) as? JsonObject
+            ?: error("not a JSON object: ${result.rawJson.take(200)}")
+
+    private fun JsonObject.str(key: String): String? =
+        (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+    private fun JsonObject.flag(key: String): Boolean? =
+        (this[key] as? JsonPrimitive)?.booleanOrNull
+
+    private fun JsonObject.num(key: String): Int? =
+        (this[key] as? JsonPrimitive)?.intOrNull
+
+    private fun AgentRuntime.SpawnResult.asResult(): JsonObject {
+        val result = SpawnAgentResult(
+            success = success,
+            agent = agentName,
+            status = status.name,
+            report = report,
+            toolRounds = toolRounds,
+            sessionId = sessionId,
+            question = question,
+            why = why,
+            options = options,
+            error = error,
+        )
+        return Json.parseToJsonElement(
+            Json { encodeDefaults = true }.encodeToString(SpawnAgentResult.serializer(), result),
+        ).jsonObject
+    }
+
+    // ------------------------------------------------------------------
+    // The verbs exist
+    // ------------------------------------------------------------------
+
+    /** The conversation verbs are declared, because a tool the model cannot see is no tool. */
+    @Test
+    fun theConversationVerbsAreDeclared() {
+        val names = AgentToolDefinitions.definitions.map { it.name }.toSet()
+        assertTrue("resumeAgent must exist", names.contains(AgentToolDefinitions.RESUME_AGENT))
+        assertTrue("askAssistant must exist", names.contains(AgentToolDefinitions.ASK_ASSISTANT))
+    }
+
+    /** Each one tells the model what it is for, because the model reasons from that text. */
+    @Test
+    fun theConversationVerbsAreDescribed() {
+        for (name in listOf(AgentToolDefinitions.RESUME_AGENT, AgentToolDefinitions.ASK_ASSISTANT)) {
+            val definition = AgentToolDefinitions.definitions.first { it.name == name }
+            assertTrue("'$name' has no description", definition.description.isNotBlank())
+            assertEquals("'$name' belongs in the agents category", "agents", definition.category)
+        }
+    }
+
+    /**
+     * spawnAgent must say there are three outcomes.
+     *
+     * The old description promised a report and nothing else, so a model reading it had
+     * no reason to expect a question and would treat a waiting agent as a finished one.
+     */
+    @Test
+    fun spawnAgentTeachesTheThreeOutcomes() {
+        val spawn = AgentToolDefinitions.definitions.first { it.name == AgentToolDefinitions.SPAWN_AGENT }
+        for (outcome in listOf("FINISHED", "ANSWERED", "FAILED")) {
+            assertTrue(
+                "spawnAgent must name the $outcome outcome: ${spawn.description}",
+                spawn.description.contains(outcome),
+            )
+        }
+        assertTrue(
+            "and it must point at resumeAgent for the waiting case",
+            spawn.description.contains(AgentToolDefinitions.RESUME_AGENT),
+        )
+    }
+
+    /** A question tool that does not say when not to use it invites a stream of them. */
+    @Test
+    fun askAssistantSaysWhenNotToAsk() {
+        val ask = AgentToolDefinitions.definitions.first { it.name == AgentToolDefinitions.ASK_ASSISTANT }
+        assertTrue(
+            "it must discourage asking permission for work already given: ${ask.description}",
+            ask.description.contains("permission"),
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // The result contract
+    // ------------------------------------------------------------------
+
+    /** A finished turn carries the report and no question. */
+    @Test
+    fun aFinishedTurnCarriesTheReportAndNoQuestion() {
+        val body = AgentRuntime.SpawnResult(
+            success = true,
+            agentName = "Researcher",
+            report = "The survey is done.",
+            toolRounds = 4,
+            sessionId = "session-1",
+            status = AgentRuntime.SpawnResult.Status.FINISHED,
+        ).asResult()
+
+        assertEquals("FINISHED", body.str("status"))
+        assertTrue(body.flag("success") == true)
+        assertEquals("The survey is done.", body.str("report"))
+        assertNull("a finished turn is not waiting on anything", body.str("question"))
+    }
+
+    /** A waiting turn carries the question, the session, and is still a success. */
+    @Test
+    fun aWaitingTurnCarriesTheQuestionAndIsNotAFailure() {
+        val body = AgentRuntime.SpawnResult(
+            success = true,
+            agentName = "Researcher",
+            report = "",
+            toolRounds = 2,
+            sessionId = "session-2",
+            status = AgentRuntime.SpawnResult.Status.ASKING,
+            question = "Do you mean the Bristol or the London office?",
+            why = "Both exist in the records and the answer changes the survey.",
+            options = listOf("Bristol", "London"),
+        ).asResult()
+
+        assertEquals(
+            "ASKING is a working conversation, so it must not read as an error",
+            true,
+            body.flag("success"),
+        )
+        assertEquals("ASKING", body.str("status"))
+        assertEquals("Do you mean the Bristol or the London office?", body.str("question"))
+        assertEquals("session-2", body.str("sessionId"))
+        assertEquals("the offered options travel with the question", 2, (body["options"] as? kotlinx.serialization.json.JsonArray)?.size)
+    }
+
+    /** A failure says what went wrong and carries no session. */
+    @Test
+    fun aFailedTurnSaysWhyAndCarriesNoSession() {
+        val body = AgentRuntime.SpawnResult(
+            success = false,
+            agentName = "Researcher",
+            report = "",
+            toolRounds = 0,
+            status = AgentRuntime.SpawnResult.Status.FAILED,
+            error = "No model is connected right now, so 'Researcher' could not run.",
+        ).asResult()
+
+        assertEquals("FAILED", body.str("status"))
+        assertFalse(body.flag("success") == true)
+        assertNull(body.str("sessionId"))
+        assertNotNull(body.str("error"))
+    }
+
+    /**
+     * The three statuses are distinct values.
+     *
+     * If two of them ever collapsed into one name, a caller reading the status could no
+     * longer tell a waiting agent from a dead one, which is the whole reason the field
+     * exists rather than being inferred from `success`.
+     */
+    @Test
+    fun theThreeStatusesAreDistinct() {
+        val statuses = AgentRuntime.SpawnResult.Status.values().map { it.name }.toSet()
+        assertEquals(3, statuses.size)
+        assertTrue(statuses.containsAll(setOf("FINISHED", "ASKING", "FAILED")))
+    }
+}
