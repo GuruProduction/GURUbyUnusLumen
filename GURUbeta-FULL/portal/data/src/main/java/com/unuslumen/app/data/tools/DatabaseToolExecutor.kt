@@ -9,6 +9,7 @@ import android.net.Uri
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
 import com.unuslumen.app.domain.portal.SqlDatabasePath
+import com.unuslumen.app.domain.portal.SqlStatementRisk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -28,6 +29,51 @@ class DatabaseToolExecutor(private val context: Context) : ToolExecutor {
      */
     private fun databaseDir(): String =
         context.getDatabasePath("guru_db").parent ?: context.filesDir.absolutePath
+
+    /**
+     * Copy a database aside before a destructive statement, and prove the copy.
+     *
+     * WHY A FILE COPY RATHER THAN SQLITE'S OWN BACKUP API. A WAL-mode database has
+     * committed rows sitting in a `-wal` file that a plain copy of the main file
+     * misses. Opening the database read-only and running `VACUUM INTO` produces one
+     * self-contained file, which is the shape a restore actually needs.
+     *
+     * THE COPY IS VERIFIED BEFORE IT IS TRUSTED. Vault's section 6 says never claim a
+     * backup exists without verifying it, so the snapshot is opened and its
+     * `sqlite_master` read back. A snapshot that cannot be opened is not a snapshot,
+     * and the destructive statement is refused rather than run against a hope.
+     */
+    private fun takeSnapshot(target: File): String {
+        val snapshotDir = File(context.filesDir, "sql-snapshots").apply { mkdirs() }
+        val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+            .format(java.util.Date())
+        val snapshot = File(snapshotDir, "${target.name}.$stamp.bak")
+
+        // VACUUM INTO writes one consistent file even while the source is in WAL mode.
+        val source = SQLiteDatabase.openDatabase(target.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
+        try {
+            source.execSQL("VACUUM INTO '${snapshot.absolutePath.replace("'", "''")}'")
+        } finally {
+            source.close()
+        }
+
+        // Verify: open the copy and read its own schema table. Every real database
+        // answers this; a truncated or missing file throws.
+        val verify = SQLiteDatabase.openDatabase(snapshot.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
+        try {
+            val c = verify.rawQuery("SELECT COUNT(*) FROM sqlite_master", null)
+            val objects = if (c.moveToFirst()) c.getInt(0) else 0
+            c.close()
+            if (!snapshot.exists() || snapshot.length() <= 0L || objects <= 0) {
+                snapshot.delete()
+                error("the snapshot carried no schema objects, so it is not a usable copy")
+            }
+        } finally {
+            verify.close()
+        }
+        android.util.Log.i("guru_sql", "snapshot taken and verified: ${snapshot.absolutePath} (${snapshot.length()} bytes)")
+        return snapshot.absolutePath
+    }
 
     override suspend fun execute(toolName: String, args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         when (toolName) {
@@ -63,29 +109,113 @@ class DatabaseToolExecutor(private val context: Context) : ToolExecutor {
                     }
                 }
             }
+            /**
+             * Run a statement, gated by what it can cost (issue 496).
+             *
+             * THE OLD BODY was a bare open-write-execute:
+             *
+             *     val d = SQLiteDatabase.openDatabase(db, args, SQLiteDatabase.OPEN_READWRITE)
+             *     val s = d.compileStatement(stmt); s.execute()
+             *
+             * `DROP TABLE` was one call away against any path on the device, with no
+             * confirmation, no target check, no snapshot and no transaction. Every
+             * agent prompt in the app carries a rule against exactly this — Vault's
+             * sections 6 and 16, Archivist's section 10, the Self Improvement Engine's
+             * section 14 — so the prompts were doing safety work that belongs in the
+             * tool. A rule a model can only satisfy by remembering four documents is a
+             * rule that holds until the model is in a hurry.
+             *
+             * THE GATE IS ON CONSEQUENCE, NOT ON THE TOOL. Vault's whole remit depends
+             * on this call, so it must stay useful: an integrity check, a schema
+             * inspection and a careful migration all remain possible. Reading is free.
+             * A change to structure or to bulk data costs `confirm: true`, and a
+             * destructive one also costs a snapshot taken before it runs.
+             */
             DatabaseToolDefinitions.SQL_EXECUTE -> {
                 val stmt = args["statement"] as? String
                     ?: return@withContext ToolExecutionResult.error("Missing 'statement'")
+                val risk = SqlStatementRisk.classify(stmt)
+                val confirmed = args["confirm"] as? Boolean ?: false
+
+                // THE REFUSAL SAYS WHAT WOULD HAPPEN AND HOW TO PROCEED. A gate that
+                // only says "refused" teaches a caller to guess; this one names the
+                // risk class and the exact argument that authorises it.
+                if (SqlStatementRisk.requiresGate(risk) && !confirmed) {
+                    val r = SqlExecuteResult(
+                        false, 0,
+                        "Refused: this statement is ${risk.name.lowercase()} and needs confirmation. " +
+                            "Re-call with confirm=true to run it" +
+                            if (SqlStatementRisk.requiresSnapshot(risk)) {
+                                ", and a snapshot of the target will be taken first."
+                            } else {
+                                "."
+                            } + " Statement: ${stmt.trim().take(200)}",
+                    )
+                    return@withContext ToolExecutionResult.success(r, json.encodeToString(SqlExecuteResult.serializer(), r))
+                }
+
                 when (val target = SqlDatabasePath.resolve(args["database"] as? String, databaseDir())) {
                     is SqlDatabasePath.Resolution.Refused -> {
                         val r = SqlExecuteResult(false, 0, target.reason)
                         return@withContext ToolExecutionResult.success(r, json.encodeToString(SqlExecuteResult.serializer(), r))
                     }
-                    is SqlDatabasePath.Resolution.Open -> try {
-                        val d = SQLiteDatabase.openDatabase(target.path, null, SQLiteDatabase.OPEN_READWRITE)
-                        val s = d.compileStatement(stmt); s.execute(); s.close()
-                        val c = d.rawQuery("SELECT changes()", null)
-                        var changed = 0
-                        if (c.moveToFirst()) changed = c.getInt(0)
-                        c.close(); d.close()
-                        val r = SqlExecuteResult(true, changed, null)
-                        ToolExecutionResult.success(r, json.encodeToString(SqlExecuteResult.serializer(), r))
-                    } catch (e: Exception) {
-                        val r = SqlExecuteResult(
-                            false, 0,
-                            SqlDatabasePath.openFailureMessage(target.path, databaseDir(), e.message),
-                        )
-                        ToolExecutionResult.success(r, json.encodeToString(SqlExecuteResult.serializer(), r))
+                    is SqlDatabasePath.Resolution.Open -> {
+                        // A WRITE THROUGH A SECOND HANDLE IS HOW A WAL GETS INCONSISTENT,
+                        // which Vault's section 6 warns about. The file being absent is
+                        // a different answer: a statement against a database that does
+                        // not exist yet is the CREATE case, and it is allowed to create
+                        // one.
+                        val targetFile = File(target.path)
+
+                        // THE SNAPSHOT IS TAKEN BEFORE THE STATEMENT, and its absence
+                        // refuses the run rather than warning about it. A recovery point
+                        // that might not exist is not a recovery point.
+                        var snapshotPath: String? = null
+                        if (SqlStatementRisk.requiresSnapshot(risk) && targetFile.exists()) {
+                            snapshotPath = try {
+                                takeSnapshot(targetFile)
+                            } catch (e: Exception) {
+                                val r = SqlExecuteResult(
+                                    false, 0,
+                                    "Refused: this statement is destructive and no snapshot could be taken " +
+                                        "(${e.message?.take(160)}). Nothing was run.",
+                                )
+                                return@withContext ToolExecutionResult.success(r, json.encodeToString(SqlExecuteResult.serializer(), r))
+                            }
+                        }
+
+                        try {
+                            val d = SQLiteDatabase.openDatabase(target.path, null, SQLiteDatabase.OPEN_READWRITE)
+                            var changed = 0
+                            // A MULTI-STATEMENT STRING RUNS IN ONE TRANSACTION, so a
+                            // half-applied change cannot happen. A statement that ends
+                            // in its own BEGIN/COMMIT is left to manage itself, because
+                            // wrapping a transaction in a transaction throws.
+                            val alreadyTransactional = stmt.uppercase().let {
+                                it.contains("BEGIN") || it.contains("COMMIT")
+                            }
+                            if (!alreadyTransactional) d.beginTransaction()
+                            try {
+                                val s = d.compileStatement(stmt); s.execute(); s.close()
+                                val c = d.rawQuery("SELECT changes()", null)
+                                if (c.moveToFirst()) changed = c.getInt(0)
+                                c.close()
+                                if (!alreadyTransactional) d.setTransactionSuccessful()
+                            } finally {
+                                if (!alreadyTransactional) runCatching { d.endTransaction() }
+                            }
+                            d.close()
+                            val r = SqlExecuteResult(true, changed, null, risk.name, snapshotPath)
+                            ToolExecutionResult.success(r, json.encodeToString(SqlExecuteResult.serializer(), r))
+                        } catch (e: Exception) {
+                            val r = SqlExecuteResult(
+                                false, 0,
+                                SqlDatabasePath.openFailureMessage(target.path, databaseDir(), e.message),
+                                risk.name,
+                                snapshotPath,
+                            )
+                            ToolExecutionResult.success(r, json.encodeToString(SqlExecuteResult.serializer(), r))
+                        }
                     }
                 }
             }
