@@ -11,7 +11,10 @@ import com.unuslumen.app.data.tor.TorEgress
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.get
+import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
 
 /**
  * Fetches the assembled system prompt from the GURU server at startup.
@@ -24,6 +27,8 @@ object PromptFetcher {
     private const val KEY_PROMPT = "assembled_prompt"
     private const val KEY_VERSION = "prompt_version"
     private const val KEY_LAST_FETCH = "prompt_last_fetch"
+    /** The ETag the server sent with the cached prompt, echoed as If-None-Match. */
+    private const val KEY_ETAG = "prompt_etag"
     private const val BASE_URL = "https://api.unuslumen.com"
 
     /**
@@ -40,19 +45,35 @@ object PromptFetcher {
      */
     suspend fun fetchAndCache(context: Context) {
         withContext(Dispatchers.IO) {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val cachedEtag = prefs.getString(KEY_ETAG, null)
+            val client = HttpClient(TorEgress.newEngine()) {
+                install(HttpTimeout) {
+                    requestTimeoutMillis = 30000
+                    connectTimeoutMillis = 15000
+                    socketTimeoutMillis = 30000
+                }
+            }
             try {
-                val client = HttpClient(TorEgress.newEngine()) {
-                    install(HttpTimeout) {
-                        requestTimeoutMillis = 30000
-                        connectTimeoutMillis = 15000
-                        socketTimeoutMillis = 30000
-                    }
+                val response = client.get("$BASE_URL/prompts/assembled") {
+                    // Revalidate rather than re-download. The server answers 304 when
+                    // nothing served has changed, which is one header round-trip
+                    // instead of 300 KB, and this runs on every send.
+                    if (cachedEtag != null) header(HttpHeaders.IfNoneMatch, cachedEtag)
                 }
-                val body = try {
-                    client.get("$BASE_URL/prompts/assembled").bodyAsText()
-                } finally {
-                    client.close()
+
+                if (response.status == HttpStatusCode.NotModified) {
+                    // Byte-identical to what is cached. Record the check so
+                    // hasRecentCache stays honest; change nothing else.
+                    prefs.edit()
+                        .putLong(KEY_LAST_FETCH, System.currentTimeMillis())
+                        .apply()
+                    Log.d(TAG, "Prompt unchanged (304), cache kept")
+                    return@withContext
                 }
+
+                val body = response.bodyAsText()
+                val etag = response.headers[HttpHeaders.ETag]
 
                 // Parse the JSON to extract the prompt string
                 val promptStart = body.indexOf("\"prompt\":\"")
@@ -76,16 +97,32 @@ object PromptFetcher {
                     1
                 }
 
-                val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                prefs.edit()
+                val previous = prefs.getString(KEY_PROMPT, null)
+                val edit = prefs.edit()
                     .putString(KEY_PROMPT, promptValue)
                     .putInt(KEY_VERSION, version)
                     .putLong(KEY_LAST_FETCH, System.currentTimeMillis())
-                    .apply()
+                if (etag != null) edit.putString(KEY_ETAG, etag)
+                edit.apply()
 
-                Log.i(TAG, "Fetched and cached prompt (${promptValue.length} chars, v$version)")
+                when {
+                    previous == null ->
+                        Log.i(TAG, "Fetched and cached prompt (${promptValue.length} chars, v$version)")
+                    previous != promptValue ->
+                        Log.i(
+                            TAG,
+                            "Prompt CHANGED on the server: ${previous.length} -> ${promptValue.length} chars, v$version"
+                        )
+                    else ->
+                        Log.d(TAG, "Prompt re-fetched, unchanged (${promptValue.length} chars, v$version)")
+                }
             } catch (e: Exception) {
+                // Keeps the previously cached prompt, which is the same behaviour
+                // the server-unreachable path has always had.
                 Log.w(TAG, "Failed to fetch prompt: ${e.message}")
+            } finally {
+                // Closed on every path, including a throw from the request itself.
+                runCatching { client.close() }
             }
         }
     }

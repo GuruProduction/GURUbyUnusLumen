@@ -776,7 +776,19 @@ class AiRepositoryImpl(
         val currentLlmConfig = LlmConfigFetcher.getCachedConfig(context)
             ?: LlmConfig(baseModel = model.id)
 
+        // This path used to build a prompt with a user message and no system
+        // message at all, so whatever the superadmin served was absent from it
+        // entirely. It now revalidates and carries the live prompt like the main
+        // send path does, with the same fallback when the server is unreachable.
+        val liveSystemMessage = try {
+            PromptFetcher.fetchAndCache(context)
+            promptRepository.getSystemPrompt().ifBlank { chatSystemMessage }
+        } catch (e: Exception) {
+            chatSystemMessage
+        }
+
         val llmPrompt = prompt("user_prompt", LLMParams()) {
+            if (liveSystemMessage.isNotBlank()) system(liveSystemMessage)
             user(prompt)
         }
 
@@ -958,12 +970,34 @@ class AiRepositoryImpl(
             android.util.Log.d("guru", "Profile block present (${profileBlock.length} chars)")
         }
 
+        // PULL THE PROMPT FRESH, EVERY SEND.
+        //
+        // `chatSystemMessage` is built once during model initialisation. Before
+        // this block existed it was the ONLY thing the send path used, so a prompt
+        // edited in the superadmin could not reach a running app at all: the
+        // server served the new text, the version moved, and the phone kept
+        // sending the string it captured at boot until the process was killed.
+        //
+        // Now each send revalidates against the server's ETag and re-reads the
+        // cache. An unchanged prompt costs one header round-trip and a
+        // SharedPreferences read; a changed one lands on this very turn.
+        // The fallback to the captured value is deliberate: if the fetch fails
+        // because the API is unreachable, the turn still runs on the last good
+        // prompt rather than sending with no system message at all.
+        val liveSystemMessage = try {
+            PromptFetcher.fetchAndCache(context)
+            promptRepository.getSystemPrompt().ifBlank { chatSystemMessage }
+        } catch (e: Exception) {
+            android.util.Log.w("guru", "Live prompt refresh failed, using the captured prompt: ${e.message}")
+            chatSystemMessage
+        }
+
         // Assemble the system message as ordered parts. ContextBuilder's preamble
         // already opens with "Context from your memory:", so the chat system
         // message must not add that header again; the old two-way branches did
         // exactly that and shipped the phrase twice on every send with memory.
         val systemParts = buildList {
-            add(chatSystemMessage)
+            add(liveSystemMessage)
             if (profileBlock.isNotBlank()) add(profileBlock)
             if (memoryContext != null && memoryContext.preamble.isNotBlank()) {
                 add(memoryContext.preamble)
@@ -976,8 +1010,9 @@ class AiRepositoryImpl(
 
         android.util.Log.d(
             "guru",
-            "System message assembled: base=${chatSystemMessage.length} profile=${profileBlock.length} " +
-                "memory=${memoryContext?.preamble?.length ?: 0} notes=${notesToSelfBlock.length}"
+            "System message assembled: base=${liveSystemMessage.length} (captured was ${chatSystemMessage.length}) " +
+                "profile=${profileBlock.length} memory=${memoryContext?.preamble?.length ?: 0} " +
+                "notes=${notesToSelfBlock.length}"
         )
 
         try {
