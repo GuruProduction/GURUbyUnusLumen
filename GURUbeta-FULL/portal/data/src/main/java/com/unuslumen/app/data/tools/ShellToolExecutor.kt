@@ -406,21 +406,32 @@ class ShellToolExecutor(
     private suspend fun executePython(args: Map<String, Any?>): ToolExecutionResult = withContext(Dispatchers.IO) {
         val script = args["script"] as? String
             ?: return@withContext ToolExecutionResult.error("Missing 'script'")
-        val scriptLower = script.lowercase()
 
-        if (fileAccessGuard.checkSedBlocked(scriptLower)) {
-            val r = PythonExecResult(
-                "", "BLOCKED: sed not allowed in Python.", null, false,
-                status = "LAUNCH_FAILED",
-                reason = "The script was refused before it ran, so no interpreter was started.",
-            )
-            return@withContext ToolExecutionResult.success(r, json.encodeToString(PythonExecResult.serializer(), r))
-        }
-        if (scriptLower.contains("sed") &&
+        // A PYTHON SCRIPT IS REFUSED ONLY WHEN IT ACTUALLY SHELLS OUT TO sed.
+        //
+        // This used to be `scriptLower.contains("sed")` plus one of three
+        // subprocess spellings, which is a substring test and not an invocation
+        // test (issue 467). A script that mentioned "used", "passed", "based",
+        // "closed" or a variable called `sed_index` was refused as though it were
+        // stream-editing a file, and the refusal named editFile for a script that
+        // never touched one.
+        //
+        // Both halves are required now, and both are decided by the one matcher
+        // the shell path uses: the three letters must be a whole token in command
+        // position, AND the script must have a route to a shell at all. A plain
+        // Python script that merely contains the word "used" runs.
+        val scriptLower = script.lowercase()
+        val sedInvocation = fileAccessGuard.findSedInvocation(scriptLower)
+        if (sedInvocation != null &&
             (scriptLower.contains("os.system") || scriptLower.contains("subprocess") || scriptLower.contains("popen"))
         ) {
             val r = PythonExecResult(
-                "", "BLOCKED: sed not allowed via Python subprocess.", null, false,
+                "",
+                "BLOCKED: this script invokes sed via a shell at index $sedInvocation. " +
+                    "Use the readFile and editFile tools to change a file, or write the " +
+                    "transformation in Python instead of shelling out to sed.",
+                null,
+                false,
                 status = "LAUNCH_FAILED",
                 reason = "The script was refused before it ran, so no interpreter was started.",
             )
