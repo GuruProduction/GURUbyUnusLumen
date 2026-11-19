@@ -265,6 +265,25 @@ async fn handle_curate(
     // the pipeline's side effects: failed batches return to client as JSON).
     let mut state = state.lock().await;
 
+    // THE PRE-WRITE SNAPSHOT (issue 483).
+    //
+    // This has to happen HERE, before the executor runs, because the executor
+    // mutates the tree in place. A capture taken inside the update pipeline reads
+    // the row the update has already replaced, so it records the new text as the
+    // superseded text and the history becomes a list of the present repeated.
+    //
+    // Every id an Update op names is read once, here, while the old wording still
+    // exists. An id that does not resolve is simply absent, which the event records
+    // honestly as no superseded text.
+    let mut pre_write_content: HashMap<MemoryId, String> = HashMap::new();
+    for op in &curate_ops {
+        if let CurateOperation::Update { id, .. } = op {
+            if let Some(existing) = state.context_tree.find(*id) {
+                pre_write_content.insert(*id, existing.content.clone());
+            }
+        }
+    }
+
     // Pass 1: execute the tree mutation batch (validated, atomic, rollback).
     let mut executor = CurateExecutor::new(&mut state.context_tree);
     let executed_result = executor.execute(curate_ops.clone());
@@ -321,7 +340,13 @@ async fn handle_curate(
             | CurateOperation::Merge { reason, .. }
             | CurateOperation::Delete { reason, .. } => reason.clone(),
         };
-        apply_post_tree_pipeline(&mut state, &curate_ops[i], &op_reason, &mut summary);
+        // The pre-write text rides into the update pipeline so the event can carry
+        // it. Read from the snapshot, never from the already-mutated tree.
+        let superseded = match &curate_ops[i] {
+            CurateOperation::Update { id, .. } => pre_write_content.get(id).cloned(),
+            _ => None,
+        };
+        apply_post_tree_pipeline(&mut state, &curate_ops[i], &op_reason, superseded.as_deref(), &mut summary);
     }
 
     summarize_final_counts(&mut state, &mut summary);
@@ -460,6 +485,7 @@ fn apply_post_tree_pipeline(
     state: &mut CerebrumState,
     op: &CurateOperation,
     reason: &str,
+    superseded: Option<&str>,
     summary: &mut CurateSideEffectsSummary,
 ) {
     match op {
@@ -467,7 +493,7 @@ fn apply_post_tree_pipeline(
             run_full_add_pipeline(state, entry, reason, summary);
         }
         CurateOperation::Update { id, entry, .. } => {
-            run_full_update_pipeline(state, *id, entry, summary);
+            run_full_update_pipeline(state, *id, entry, superseded, summary);
         }
         CurateOperation::Merge {
             source_ids, target, ..
@@ -648,9 +674,14 @@ fn run_full_update_pipeline(
     state: &mut CerebrumState,
     id: MemoryId,
     entry: &ContextEntry,
+    superseded: Option<&str>,
     summary: &mut CurateSideEffectsSummary,
 ) {
     let new_content = entry.content.clone();
+
+    // `superseded` is captured by the caller BEFORE the executor mutated the tree.
+    // Reading the tree here would read the row the update has already replaced,
+    // which is what makes a history built at this point a list of the present.
 
     // Metadata is applied before the index work so a caller that reads the row
     // back sees the same values the write carried, not the previous ones.
@@ -690,9 +721,26 @@ fn run_full_update_pipeline(
         decay_entry.content = new_content.clone();
     }
 
-    state
-        .event_store
-        .append("memory.updated", id, serde_json::json!({"reason": "update"}));
+    // THE EVENT CARRIES THE TEXT IT REPLACED (issue 483).
+    //
+    // It used to carry `{"reason": "update"}`, which cannot replay anything: the
+    // trail knew a change happened and not what was changed. An event-sourced
+    // store whose update events do not hold the superseded content is a log of
+    // intentions, and the Archivist prompt's section 10 asks exactly the question
+    // such a log cannot answer.
+    //
+    // `text` is what the memory says from this revision onward; `superseded` is
+    // what it said before it. Both are needed: one reconstructs the current state,
+    // the other reconstructs the history.
+    state.event_store.append(
+        "memory.updated",
+        id,
+        serde_json::json!({
+            "reason": "update",
+            "text": new_content,
+            "superseded": superseded,
+        }),
+    );
 
     // Graph label refresh.
     state.graph_store.add_label(

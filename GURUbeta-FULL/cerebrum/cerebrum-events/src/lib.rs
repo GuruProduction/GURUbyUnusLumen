@@ -135,6 +135,91 @@ impl EventStore {
     pub fn get(&self, event_id: Uuid) -> Option<&Event> {
         self.events.iter().find(|e| e.event_id == event_id)
     }
+
+    /// Every recorded revision of one memory, oldest first (issue 483).
+    ///
+    /// WHY THIS IS A READ OVER THE APPEND-ONLY TRAIL rather than a separate
+    /// history table. The store already promises "full auditability and replay
+    /// of system state to any point in the event sequence", and it already keeps
+    /// every event per memory id. What it did not keep was the CONTENT: an update
+    /// was recorded as `{"reason": "update"}`, so the trail knew that something
+    /// changed and not what it used to say. A `memory.updated` event that cannot
+    /// replay anything is a log of intentions.
+    ///
+    /// So the update path now writes the superseded text into the payload, and
+    /// this reads it back. No new storage, no new table, no second source of
+    /// truth: the same events, carrying enough to answer the one question an
+    /// Archivist agent actually asks.
+    ///
+    /// A revision's `content` is what the memory said DURING that revision. For a
+    /// create that is the text written; for an update it is the text written by
+    /// that update, with `superseded` holding what it replaced.
+    pub fn history_for(&self, memory_id: MemoryId) -> Vec<MemoryRevision> {
+        let mut revisions = Vec::new();
+        for event in self.events.iter().filter(|e| e.memory_id == memory_id) {
+            match event.event_type.as_str() {
+                "memory.created" => {
+                    if let Some(text) = event.payload.get("text").and_then(|v| v.as_str()) {
+                        revisions.push(MemoryRevision {
+                            event_id: event.event_id,
+                            recorded_at: event.timestamp,
+                            revision_kind: RevisionKind::Created,
+                            content: text.to_string(),
+                            superseded: None,
+                            reason: event
+                                .payload
+                                .get("reason")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                        });
+                    }
+                }
+                "memory.updated" => {
+                    let content = event
+                        .payload
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let superseded = event
+                        .payload
+                        .get("superseded")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    revisions.push(MemoryRevision {
+                        event_id: event.event_id,
+                        recorded_at: event.timestamp,
+                        revision_kind: RevisionKind::Updated,
+                        content,
+                        superseded,
+                        reason: event
+                            .payload
+                            .get("reason")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    });
+                }
+                _ => {}
+            }
+        }
+        revisions
+    }
+
+    /// What the memory said immediately before the newest update, if it was ever
+    /// updated at all.
+    ///
+    /// The single question the Archivist prompt's section 10 asks: is the original
+    /// version still recoverable. `None` means either the memory was never revised
+    /// or the revision predates this event shape, and both are answered honestly
+    /// rather than by inventing a version.
+    pub fn previous_content(&self, memory_id: MemoryId) -> Option<String> {
+        self.history_for(memory_id)
+            .into_iter()
+            .rev()
+            .find_map(|revision| revision.superseded)
+    }
 }
 
 // ============================================================================
@@ -160,6 +245,32 @@ impl ReplayState {
             _ => {}
         }
     }
+}
+
+// ============================================================================
+// 3b. MEMORY REVISIONS (issue 483)
+// ============================================================================
+
+/// Which write produced a revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RevisionKind {
+    Created,
+    Updated,
+}
+
+/// One recorded revision of a memory, reconstructed from the event trail.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MemoryRevision {
+    pub event_id: Uuid,
+    pub recorded_at: chrono::DateTime<Utc>,
+    pub revision_kind: RevisionKind,
+    /// What the memory said during this revision.
+    pub content: String,
+    /// What the revision replaced. `None` for a create, and `None` for an update
+    /// written before the payload carried the superseded text.
+    pub superseded: Option<String>,
+    /// The caller's stated reason, empty when none was given.
+    pub reason: String,
 }
 
 // ============================================================================
