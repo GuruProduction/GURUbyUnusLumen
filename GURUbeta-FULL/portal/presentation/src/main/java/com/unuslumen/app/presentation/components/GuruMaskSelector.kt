@@ -41,11 +41,26 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+/**
+ * The masks the portal offers.
+ *
+ * THE CATALOGUE LIVES IN THE DOMAIN LAYER NOW (issue 491). This enum carried a display
+ * name and nothing else, inside a Compose component the tool layer cannot see, so a
+ * model had no way to learn that masks existed: of 607 tool names, zero contained
+ * "mask", while the Self Improvement Engine's prompt tells the agent to follow the
+ * existing mask architecture. One source feeds both the selector and the tools, and
+ * the two cannot disagree about what a mask is.
+ */
 enum class GuruMask(val displayName: String) {
     Coder("Coder"),
     Grafter("Grafter"),
     Wingman("Wingman"),
-    Slik("Slik"),
+    Slik("Slik");
+
+    /** The catalogue entry this enum value stands for. */
+    val definition: com.unuslumen.app.domain.masks.GuruMasks.Mask
+        get() = com.unuslumen.app.domain.masks.GuruMasks.byName(displayName)
+            ?: com.unuslumen.app.domain.masks.GuruMasks.Mask(displayName, purpose = "")
 }
 
 @Composable

@@ -400,5 +400,8 @@ val aiDataModule = module {
     factory { com.unuslumen.app.data.tools.NoteToSelfToolExecutor(get()) }
     factory { com.unuslumen.app.data.tools.GitHubToolExecutor(get<Context>(), get()) }
     factory { com.unuslumen.app.data.tools.GitToolExecutor(get<Context>(), get()) }
+    // The mask read lane (issue 491). No dependencies: the catalogue is built into the
+    // build rather than stored, so there is nothing to inject and nothing to write.
+    factory { com.unuslumen.app.data.tools.MaskToolExecutor() }
     single { com.unuslumen.app.data.notestoself.NotesToSelfEngine(get()) }
 }

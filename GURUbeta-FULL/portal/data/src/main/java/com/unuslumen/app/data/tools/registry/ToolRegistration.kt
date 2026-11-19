@@ -69,6 +69,7 @@ import com.unuslumen.app.data.tools.ProductivityToolDefinitions
 import com.unuslumen.app.data.tools.ThemeToolDefinitions
 import com.unuslumen.app.data.tools.ProjectToolDefinitions
 import com.unuslumen.app.data.tools.ObservationToolDefinitions
+import com.unuslumen.app.data.tools.MaskToolDefinitions
 import com.unuslumen.app.data.tools.registry.permission.TeamThreeToolDomains
 import org.koin.core.Koin
 import kotlin.reflect.KClass
@@ -203,7 +204,11 @@ object GeneratedToolRegistrations {
         ProjectToolDefinitions,
         NoteToSelfToolDefinitions,
         ObservationToolDefinitions,
-        MediaToolDefinitionsPlus
+        MediaToolDefinitionsPlus,
+        // The masks the portal works under were a Compose enum the tool layer could not
+        // see, so of 607 tool names none contained "mask" while the Self Improvement
+        // Engine's prompt told the agent to follow the mask architecture (issue 491).
+        MaskToolDefinitions
     ) + TeamThreeToolDomains.registrations()
     // Device-senses domains are appended rather than inlined so a domain can be
     // added or removed without every other tool set's line moving. Each domain
