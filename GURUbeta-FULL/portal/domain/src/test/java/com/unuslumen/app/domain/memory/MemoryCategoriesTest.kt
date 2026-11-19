@@ -41,21 +41,34 @@ class MemoryCategoriesTest {
     }
 
     @Test
-    fun the_ten_further_categories_are_exactly_the_archivist_prompts_ten() {
+    fun the_archivist_prompts_ten_are_all_present_and_nothing_replaced_them() {
+        // THE PROMPT CALLS THIS LIST OPEN: "use additional meaningful categories
+        // where appropriate, such as". So the assertion is that his ten are all
+        // still there, in his order, at the front — not that nothing else exists.
+        // Issue 466 added two more to the list, which the prompt explicitly permits.
+        val hisTen = listOf(
+            "guru_identity", "guru_preference", "guru_experience", "guru_belief",
+            "shared_history", "temporary_state", "correction", "lesson",
+            "capability", "commitment",
+        )
+        assertEquals(hisTen, MemoryCategories.ADDITIONAL.take(hisTen.size))
         assertEquals(
-            listOf(
-                "guru_identity", "guru_preference", "guru_experience", "guru_belief",
-                "shared_history", "temporary_state", "correction", "lesson",
-                "capability", "commitment",
-            ),
-            MemoryCategories.ADDITIONAL,
+            hisTen,
+            MemoryCategories.ADDITIONAL.filter { it in hisTen },
         )
     }
 
     @Test
-    fun the_whole_set_is_seventeen_names_with_no_duplicates() {
-        assertEquals(17, MemoryCategories.ALL.size)
+    fun the_whole_set_has_no_duplicates_and_the_established_seven_lead_it() {
         assertEquals(MemoryCategories.ALL.size, MemoryCategories.ALL.distinct().size)
+        assertEquals(
+            MemoryCategories.ESTABLISHED,
+            MemoryCategories.ALL.take(MemoryCategories.ESTABLISHED.size),
+        )
+        assertTrue(
+            "the set must be at least his seventeen plus whatever a ticket has added",
+            MemoryCategories.ALL.size >= 17,
+        )
     }
 
     // ------------------------------------------------------------------
@@ -113,10 +126,16 @@ class MemoryCategoriesTest {
 
     @Test
     fun an_unknown_category_is_refused_with_the_permitted_set_named() {
-        val refused = MemoryCategories.normalise("tool_defect") as MemoryCategories.Normalisation.Refused
-        assertTrue("must name the offending value: ${refused.reason}", refused.reason.contains("tool_defect"))
+        // `tool_defect` WAS the example here until issue 466 added it as a real
+        // category. The assertion now uses a word that is genuinely outside the set.
+        val refused = MemoryCategories.normalise("astrology_reading") as MemoryCategories.Normalisation.Refused
+        assertTrue("must name the offending value: ${refused.reason}", refused.reason.contains("astrology_reading"))
         assertTrue("must name user_preference: ${refused.reason}", refused.reason.contains("user_preference"))
         assertTrue("must name commitment: ${refused.reason}", refused.reason.contains("commitment"))
+        assertTrue(
+            "must name the categories added after the original set: ${refused.reason}",
+            refused.reason.contains("tool_defect"),
+        )
     }
 
     @Test
