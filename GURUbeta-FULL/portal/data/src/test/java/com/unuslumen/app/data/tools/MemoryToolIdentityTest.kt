@@ -100,6 +100,20 @@ class MemoryToolIdentityTest {
 
         override suspend fun markFactRecalled(factId: String) = Unit
 
+        /**
+         * Graph traversal, unused by the identity tests but part of the interface.
+         *
+         * It walks nothing on purpose. A fake that invented a graph would let a test
+         * here pass on behaviour this class is not modelling, and the identity tests
+         * have no business asserting anything about the graph.
+         */
+        override suspend fun traverseGraph(
+            subject: String,
+            edgeType: String,
+            maxDepth: Int,
+            maxNodes: Int,
+        ): List<MemoryFact> = emptyList()
+
         // Unused by these tests; present so the interface is complete.
         override suspend fun createConversation(conversation: Conversation) = Unit
         override suspend fun updateConversation(conversation: Conversation) = Unit

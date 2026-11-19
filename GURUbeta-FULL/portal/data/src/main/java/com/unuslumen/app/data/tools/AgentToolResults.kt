@@ -23,12 +23,30 @@ data class ListAgentsResult(
     val note: String? = null
 ) : ToolResultData
 
+/**
+ * One turn of an agent conversation.
+ *
+ * [status] decides what happens next, and it exists because there are three outcomes
+ * rather than two. FINISHED carries the report. ASKING carries a [question] and the
+ * [sessionId] that resumeAgent needs to continue. FAILED carries [error]. A caller
+ * that reads only [success] cannot tell a finished job from a waiting one, which is
+ * why the status is a field rather than something to infer.
+ */
 @Serializable
 data class SpawnAgentResult(
     val success: Boolean,
     val agent: String,
+    val status: String = "FINISHED",
     val report: String = "",
     val toolRounds: Int = 0,
+    /** Present while a session is alive, so resumeAgent can find it. */
+    val sessionId: String? = null,
+    /** The question the agent is waiting on, when [status] is ASKING. */
+    val question: String? = null,
+    /** Why it could not proceed without asking, when it said. */
+    val why: String? = null,
+    /** The answers it said it could act on, when it offered any. */
+    val options: List<String> = emptyList(),
     val error: String? = null
 ) : ToolResultData
 
