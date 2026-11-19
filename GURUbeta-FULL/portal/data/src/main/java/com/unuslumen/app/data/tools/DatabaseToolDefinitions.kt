@@ -25,7 +25,23 @@ object DatabaseToolDefinitions : ToolSetRegistration {
         // description says so, because a description is the only documentation an
         // agent has.
         ToolDefinition(name = SQL_QUERY, description = "Execute a SELECT query on a SQLite database. Returns results as JSON array of objects. The 'database' argument takes the app's own database by bare name (for example \"guru_db\", which holds GURU's messages, tool results and memory tables) or an absolute path to any other database file.", category = "database", parameters = listOf(ToolParameter("database", ToolParameterType.String, true, "Bare name of one of the app's own databases, such as \"guru_db\", or an absolute path"), ToolParameter("query", ToolParameterType.String, true, "SQL SELECT query"), ToolParameter("limit", ToolParameterType.Integer, false, "Max rows, default 100")), permissions = emptyList()),
-        ToolDefinition(name = SQL_EXECUTE, description = "Execute an INSERT, UPDATE, DELETE, CREATE TABLE, ALTER TABLE, DROP TABLE, or any non-SELECT SQL statement on a SQLite database. This is permanent. The 'database' argument takes a bare name such as \"guru_db\" or an absolute path.", category = "database", parameters = listOf(ToolParameter("database", ToolParameterType.String, true, "Bare name of one of the app's own databases, such as \"guru_db\", or an absolute path"), ToolParameter("statement", ToolParameterType.String, true, "SQL statement")), permissions = emptyList()),
+        // THE DESCRIPTION NOW DESCRIBES THE GATE, NOT JUST THE PERMANENCE (issue 496).
+        //
+        // It used to end "This is permanent", which is honest and was also the whole
+        // defect: a statement that can drop a table needs a confirmation and a
+        // recovery point, not a warning in a docstring. The schema carries `confirm`
+        // so a model sees the gate exists before it hits it.
+        ToolDefinition(
+            name = SQL_EXECUTE,
+            description = "Execute a SQL statement on a SQLite database: INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, or anything else. WRITES ARE GATED BY CONSEQUENCE. A SELECT is free. A mutation (INSERT, UPDATE with a WHERE, CREATE) needs confirm=true. A destructive statement (DROP, TRUNCATE, ALTER, ATTACH, an unbounded DELETE or UPDATE, or anything unclassifiable) needs confirm=true AND takes a verified snapshot of the target first, whose path is returned. A refused call names its risk class and what to pass. The 'database' argument takes a bare name such as \"guru_db\" or an absolute path.",
+            category = "database",
+            parameters = listOf(
+                ToolParameter("database", ToolParameterType.String, true, "Bare name of one of the app's own databases, such as \"guru_db\", or an absolute path"),
+                ToolParameter("statement", ToolParameterType.String, true, "SQL statement"),
+                ToolParameter("confirm", ToolParameterType.Boolean, false, "Required for any statement that changes data or structure. A SELECT needs nothing; a destructive statement also takes a snapshot first"),
+            ),
+            permissions = emptyList(),
+        ),
         ToolDefinition(name = SQL_SCHEMA, description = "Get the schema of a SQLite database — lists all tables and their columns with types. The 'database' argument takes a bare name such as \"guru_db\" or an absolute path.", category = "database", parameters = listOf(ToolParameter("database", ToolParameterType.String, true, "Bare name of one of the app's own databases, such as \"guru_db\", or an absolute path")), permissions = emptyList()),
         ToolDefinition(name = SQL_LIST_DATABASES, description = "List the SQLite database files in the app's own database directory, with their absolute paths, sizes and modification times. Use this first when you do not know a database's name.", category = "database", parameters = emptyList(), permissions = emptyList()),
         ToolDefinition(name = CONTENT_QUERY, description = "Query an Android content provider. Use for accessing contacts, calendar, media store, SMS, call logs.", category = "database", parameters = listOf(ToolParameter("uri", ToolParameterType.String, true, "Content URI"), ToolParameter("projection", ToolParameterType.String, false, "Columns, comma-separated"), ToolParameter("selection", ToolParameterType.String, false, "WHERE clause"), ToolParameter("selectionArgs", ToolParameterType.String, false, "Selection args"), ToolParameter("sortOrder", ToolParameterType.String, false, "ORDER BY"), ToolParameter("limit", ToolParameterType.Integer, false, "Max rows")), permissions = emptyList())

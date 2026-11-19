@@ -7,7 +7,21 @@ import com.unuslumen.app.data.tools.registry.ToolResultData
 import kotlinx.serialization.Serializable
 
 @Serializable data class SqlQueryResult(val success: Boolean, val columns: List<String>, val rows: List<Map<String, String>>, val totalRows: Int, val returnedRows: Int, val error: String?) : ToolResultData
-@Serializable data class SqlExecuteResult(val success: Boolean, val rowsAffected: Int, val error: String?) : ToolResultData
+/**
+ * The outcome of one statement, including what it cost and where the recovery point is.
+ *
+ * `risk` and `snapshotPath` are reported rather than kept internal (issue 496): a
+ * caller that ran a destructive statement needs to know a snapshot exists and where
+ * it is, because that path is the only thing standing between a mistake and an
+ * unrecoverable one.
+ */
+@Serializable data class SqlExecuteResult(
+    val success: Boolean,
+    val rowsAffected: Int,
+    val error: String?,
+    val risk: String? = null,
+    val snapshotPath: String? = null,
+) : ToolResultData
 @Serializable data class ColumnSchema(val name: String, val type: String, val notNull: Boolean, val primaryKey: Boolean) : ToolResultData
 @Serializable data class TableSchema(val name: String, val columns: List<ColumnSchema>, val rowCount: Long) : ToolResultData
 @Serializable data class SqlSchemaResult(val success: Boolean, val database: String, val tables: List<TableSchema>, val error: String?) : ToolResultData
