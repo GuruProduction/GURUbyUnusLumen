@@ -142,6 +142,32 @@ class AgentRuntime(
          */
         const val MAX_EXCHANGES = 24
 
+        /**
+         * How many recent messages survive compaction unread.
+         *
+         * THE TAIL IS THE CONTEXT THAT MATTERS. The last few turns are what the agent
+         * is actually working on: the job, the last exchange, the most recent tool
+         * results. Compacting those away would make it forget what it was doing. Older
+         * turns are replaced by the notebook instead, which keeps what was learned
+         * without keeping every payload it was learned from.
+         */
+        const val RECENT_MESSAGES_KEPT = 8
+
+        /**
+         * How large the conversation may grow before it is compacted.
+         *
+         * THIS IS NOT A LIMIT ON THE WORK. It is the threshold at which the agent folds
+         * its history down and carries on, the same way a long session does. The window
+         * is a million tokens and the agent is not supposed to reach it, because a
+         * request that big is slow to start and a slow start is what a proxy in front of
+         * the model gives up on. Compacting well below the ceiling keeps the work fast
+         * enough to finish, which is the real constraint.
+         */
+        const val COMPACTION_THRESHOLD_CHARS = 320_000
+
+        /** How much of one tool result is quoted verbatim in the notebook before it is shortened. */
+        private const val NOTEBOOK_EXCERPT_CHARS = 300
+
         private val NO_TIMEOUTS = ai.koog.prompt.executor.clients.ConnectionTimeoutConfig(
             requestTimeoutMillis = Long.MAX_VALUE,
             connectTimeoutMillis = Long.MAX_VALUE,
@@ -175,6 +201,8 @@ class AgentRuntime(
         val why: String? = null,
         /** The answers it said it could act on, when it offered any. */
         val options: List<String> = emptyList(),
+        /** How many times this session folded its history into notes. Diagnostic. */
+        val compactions: Int = 0,
         val error: String? = null
     ) {
         enum class Status { FINISHED, ASKING, FAILED }
@@ -204,7 +232,19 @@ class AgentRuntime(
         var messages: List<AiMessage>,
         var rounds: Int = 0,
         var exchangeCount: Int = 0,
-        var pendingQuestion: String? = null
+        var pendingQuestion: String? = null,
+        /**
+         * THE NOTEBOOK. Everything the agent has learned that no longer fits in the
+         * live conversation, written down in its own words.
+         *
+         * This is what makes the work endless. An agent that can only remember the
+         * last forty messages is an agent that gets tired; an agent carrying a
+         * notebook forward is an agent that has read its own notes and carries on.
+         * It is the same mechanism a long session uses on itself.
+         */
+        var notebook: String = "",
+        /** How many times this session has folded its history down. */
+        var compactions: Int = 0
     ) {
         /** Exchanges this session has already spent asking the assistant something. */
         fun exchangesUsed(): Int = exchangeCount
@@ -389,6 +429,13 @@ class AgentRuntime(
             rounds++
             session.rounds = rounds
 
+            // FOLD BEFORE THE CALL, NOT AFTER. The point is to keep the request small
+            // enough to start quickly, so compacting after building the prompt would
+            // leave the one slow call in place. The agent keeps working afterwards with
+            // its notes in front of it and its recent turns intact.
+            compactIfNeeded(session)
+            messages = session.messages
+
             val prompt = messages.buildChatPrompt(
                 systemMessage = systemPrompt,
                 tools = descriptors
@@ -514,6 +561,7 @@ class AgentRuntime(
                     question = asked,
                     why = why.ifEmpty { null },
                     options = options,
+                    compactions = session.compactions,
                 )
             }
 
@@ -602,6 +650,97 @@ class AgentRuntime(
         return if (ask == null) declared else listOf(ask) + declared.filter { it.name != ask.name }
     }
 
+    /**
+     * Fold the older half of a conversation into the notebook.
+     *
+     * THE SHAPE. Keep the first message, because that is the job and losing it loses
+     * the brief. Keep the last [RECENT_MESSAGES_KEPT] messages whole, because that is
+     * what the agent is working on right now. Everything between them becomes prose in
+     * the notebook: what was asked, what was done, what came back, and what it means.
+     *
+     * WHY IT IS MECHANICAL RATHER THAN A MODEL SUMMARY. A summariser call is another
+     * slow round trip through the same proxy that is already killing long requests,
+     * and it costs money on every fold. The raw material here is already structured:
+     * an agent turn is a tool name, its arguments and its result. Writing those down as
+     * lines is deterministic, cannot hallucinate, and is exactly what a person would
+     * write in a notebook. The agent reads its own notes, which is enough to carry on.
+     *
+     * Nothing is lost that mattered. A tool result is quoted up to
+     * [NOTEBOOK_EXCERPT_CHARS]; the agent can re-run a tool if it needs the whole
+     * payload again, and the note says what it was so it knows to.
+     */
+    private fun compactIfNeeded(session: Session) {
+        val total = session.messages.sumOf { messageWeight(it) }
+        if (total < COMPACTION_THRESHOLD_CHARS) return
+        if (session.messages.size <= RECENT_MESSAGES_KEPT + 2) return
+
+        val first = session.messages.first()
+        val tail = session.messages.takeLast(RECENT_MESSAGES_KEPT)
+        val middle = session.messages.drop(1).dropLast(RECENT_MESSAGES_KEPT)
+
+        val written = StringBuilder(session.notebook)
+        if (written.isNotEmpty()) written.append('\n')
+        written.append("— folded at round ").append(session.rounds).append(" —\n")
+
+        for (message in middle) {
+            when (message) {
+                is AiMessage.UserMessage -> {
+                    written.append("INSTRUCTION: ")
+                        .append(message.content.take(NOTEBOOK_EXCERPT_CHARS).replace('\n', ' '))
+                        .append('\n')
+                }
+                is AiMessage.ToolCall -> {
+                    val failed = if (message.isFailed) " (FAILED)" else ""
+                    written.append("RAN ").append(message.name).append(failed).append(": ")
+                        .append(message.rawContent.take(NOTEBOOK_EXCERPT_CHARS).replace('\n', ' '))
+                        .append('\n')
+                    val result = message.resultRawContent
+                    if (result.isNotBlank()) {
+                        written.append("  RETURNED: ")
+                            .append(result.take(NOTEBOOK_EXCERPT_CHARS).replace('\n', ' '))
+                            .append('\n')
+                    }
+                }
+                is AiMessage.AssistantMessage -> {
+                    if (message.content.isNotBlank()) {
+                        written.append("SAID: ")
+                            .append(message.content.take(NOTEBOOK_EXCERPT_CHARS).replace('\n', ' '))
+                            .append('\n')
+                    }
+                }
+                else -> Unit
+            }
+        }
+
+        session.notebook = written.toString()
+        session.compactions += 1
+
+        // The notebook rides as a system-role note at the head of the conversation, so
+        // it is read on every round without pretending to be something the person said.
+        session.messages = listOf(first) + notebookMessage(session.notebook) + tail
+    }
+
+    /** The notebook as a message the model reads before the recent turns. */
+    private fun notebookMessage(notebook: String): AiMessage.AssistantMessage =
+        AiMessage.AssistantMessage(
+            uuid = Uuid.random().toString(),
+            content = "YOUR NOTES SO FAR, written as you went. Everything here already " +
+                "happened and you did it; do not repeat it. Carry on from the recent " +
+                "messages below.\n\n$notebook",
+            time = System.currentTimeMillis(),
+        )
+
+    /** Rough weight of one message in characters, which is what prefill cost follows. */
+    private fun messageWeight(message: AiMessage): Int = when (message) {
+        is AiMessage.UserMessage -> message.content.length
+        is AiMessage.AssistantMessage -> message.content.length
+        is AiMessage.ToolCall ->
+            message.name.length + message.rawContent.length + message.resultRawContent.length
+        is AiMessage.StreamingAssistant -> message.partialContent.length
+        is AiMessage.StreamingToolCall -> message.partialContent.length
+        is AiMessage.PortalMessage -> message.html.length + message.css.length + message.js.length
+    }
+
     private fun buildSystemPrompt(agent: GuruAgent, allowed: List<ToolDefinition>): String {
         val toolLine = if (allowed.isEmpty()) {
             "You have no tools. Reason about the job and answer with what you know."
@@ -625,6 +764,15 @@ class AgentRuntime(
                         "you do, and never to ask permission for work you were already given."
                 )
             }
+            // It has to know the notebook exists, or a folded conversation reads to it
+            // as a conversation that has lost its beginning.
+            appendLine(
+                "WHEN THE WORK RUNS LONG, YOUR OLDER TURNS ARE FOLDED INTO NOTES. You will " +
+                    "see a message headed YOUR NOTES SO FAR. It is your own record of what " +
+                    "you already did, in order, and it is trustworthy. Read it, do not " +
+                    "repeat what it says you already did, and carry on. Nothing you " +
+                    "discovered is lost; the note says which tool returned what."
+            )
             appendLine(toolLine)
             if (agent.description.isNotBlank()) {
                 appendLine("Your role: ${agent.description}")
