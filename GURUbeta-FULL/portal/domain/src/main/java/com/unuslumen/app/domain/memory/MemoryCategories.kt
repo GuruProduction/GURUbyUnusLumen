@@ -39,7 +39,13 @@ object MemoryCategories {
         "knowledge",
     )
 
-    /** The ten further ones the Archivist prompt permits. */
+    /**
+     * The further ones the Archivist prompt permits.
+     *
+     * The prompt's wording is "use additional meaningful categories where
+     * appropriate, such as", so this list is open by construction and adding to it
+     * is following the document rather than overriding it.
+     */
     val ADDITIONAL: List<String> = listOf(
         "guru_identity",
         "guru_preference",
@@ -51,6 +57,27 @@ object MemoryCategories {
         "lesson",
         "capability",
         "commitment",
+
+        // A BROKEN TOOL AND THE WAY ROUND IT (issue 466).
+        //
+        // Workarounds are the most frequently reused knowledge an agent has: a tool
+        // with a bug is hit repeatedly, across sessions, on the same device, and the
+        // fix is always the same. Before these two names there was no shape for it,
+        // so the three available homes were all wrong. `knowledge` competes with
+        // every other fact and is retrieved by similarity rather than relevance. A
+        // note to self is keyed on what the human will say, so it never fires when
+        // the agent hits the same bug again. The conversation is eaten by compaction.
+        //
+        // This is the storage the self-correction loop needs: "every mistake I make
+        // is a signal, every correction I apply is a permanent upgrade" had no place
+        // to write the upgrade down.
+        "tool_defect",
+
+        // The method that works while the defect stands, kept separate because a
+        // workaround outlives neither the defect nor its own usefulness, and an agent
+        // needs to be able to find the working method without reading the whole bug
+        // report every time.
+        "workaround",
     )
 
     /** Every permitted category, established first, in the prompt's own order. */
@@ -95,6 +122,15 @@ object MemoryCategories {
         put("history", "shared_history")
         put("lesson_learned", "lesson")
         put("lessons", "lesson")
+        // The defect pair, including the plural, because an agent writing one of
+        // these is reaching for the real category and the plural is what people type.
+        put("tool-defect", "tool_defect")
+        put("tooldefect", "tool_defect")
+        put("tool_defects", "tool_defect")
+        put("tool-defects", "tool_defect")
+        put("work-arounds", "workaround")
+        put("work_arounds", "workaround")
+        put("workarounds", "workaround")
     }
 
     /**
