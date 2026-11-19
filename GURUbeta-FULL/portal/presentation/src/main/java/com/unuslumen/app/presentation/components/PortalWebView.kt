@@ -30,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.unuslumen.app.domain.portal.PortalHeight
 import com.unuslumen.app.preferences.domain.model.GuruTheme
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -47,6 +48,9 @@ class PortalBridge {
         onEvent?.invoke(name, payload)
     }
 }
+
+/** The bridge event the injected script sends whenever the document's height changes. */
+internal const val HEIGHT_EVENT = "height"
 
 /**
  * Composable that renders HTML/CSS/JS content in an inline WebView.
@@ -95,9 +99,36 @@ fun PortalWebView(
     // Track the last loaded html to avoid redundant reloads
     var lastLoadedHtml by remember { mutableStateOf("") }
 
-    // Wire up the event bridge
-    LaunchedEffect(onPortalEvent) {
-        bridge.onEvent = onPortalEvent
+    // The height the document reports, in CSS pixels. Kept beside
+    // measuredHeight so the dp conversion happens once, in one place, against
+    // the WebView's own density rather than the screen's.
+    //
+    // WHY THE DENSITY MATTERS AND WAS WRONG (issue 477). The old measurement did
+    // `px / Resources.getSystem().displayMetrics.density`, which converts a CSS
+    // pixel to a dp using the SCREEN's density. A WebView lays out in CSS pixels
+    // at its own device-pixel ratio, and those are already the units Compose's
+    // `.dp` wants once divided by the view's density. Dividing by the screen's
+    // instead made every auto-measured portal about 2.75 times too short on a
+    // 440dpi phone, so the content was clipped even when it had fully loaded.
+    val viewDensity = remember { context.resources.displayMetrics.density }
+
+    // Wire up the event bridge. The height report is consumed here and never
+    // reaches the caller's handler: it is a layout signal, not a user event.
+    LaunchedEffect(onPortalEvent, viewDensity) {
+        bridge.onEvent = { name, payload ->
+            if (name == HEIGHT_EVENT) {
+                payload.toIntOrNull()?.let { cssPx ->
+                    // The shared rule decides grow-versus-shrink and does the unit
+                    // conversion, so the composable holds no policy of its own.
+                    val applied = PortalHeight.next(measuredHeight, cssPx, viewDensity)
+                    // A no-op write still costs a recomposition, and the script
+                    // reports on every animation frame of a chart.
+                    if (applied != measuredHeight) measuredHeight = applied
+                }
+            } else {
+                onPortalEvent?.invoke(name, payload)
+            }
+        }
     }
 
     // Inject theme colors as CSS custom properties
@@ -207,21 +238,34 @@ fun PortalWebView(
         )
     }
 
-    // Measure content height after load
-    LaunchedEffect(isLoaded) {
+    // An initial measure, as a FALLBACK only.
+    //
+    // The document reports its own height through the bridge now (see the
+    // injected script), and that is the path that works: it fires on every
+    // layout change rather than once. This pass still exists because a document
+    // whose script never runs — a strict CSP, a script error before the reporter
+    // is defined — would otherwise sit at the default height forever. It runs
+    // later than it used to, uses the same growth rule, and no longer divides by
+    // the wrong density.
+    LaunchedEffect(isLoaded, viewDensity) {
         if (!isLoaded) return@LaunchedEffect
         webView?.let { wv ->
             if (!isDestroyed.get()) {
                 try {
-                    // Small delay to let rendering settle
-                    kotlinx.coroutines.delay(100)
+                    // Later than the old 100ms, because the reporter is the real
+                    // path and this only needs to catch a document that stayed
+                    // silent. Short enough that a fallback is not a visible pause.
+                    kotlinx.coroutines.delay(400)
                     wv.evaluateJavascript(
-                        "(function() { return document.body ? document.body.scrollHeight : 0; })()"
+                        "(function() {" +
+                            "var d=document.documentElement,b=document.body;" +
+                            "if(!b) return 0;" +
+                            "return Math.max(d?d.scrollHeight:0,b.scrollHeight,Math.ceil(b.getBoundingClientRect().height));" +
+                        "})()"
                     ) { result ->
-                        result?.toIntOrNull()?.let { h ->
-                            // Convert px to dp-equivalent and add some padding
-                            val dpHeight = (h / android.content.res.Resources.getSystem().displayMetrics.density).toInt()
-                            measuredHeight = (dpHeight + 16).coerceIn(50, 2000) // Clamp between 50dp and 2000dp
+                        result?.toIntOrNull()?.let { cssPx ->
+                            val applied = PortalHeight.next(measuredHeight, cssPx, viewDensity)
+                            if (applied != measuredHeight) measuredHeight = applied
                         }
                     }
                 } catch (_: Throwable) {
@@ -366,24 +410,95 @@ private fun buildPortalHtml(
             });
         }
 
-        // Report content height to native
-        function reportHeight() {
+        // ====================================================================
+        // Content height reporting (issue 477)
+        // ====================================================================
+        //
+        // WHY THIS EXISTS AT ALL. The host used to measure the document ONCE,
+        // 100ms after onPageFinished, and never again. Anything that arrived
+        // later — an image over Tor, an iframe finishing layout, a Chart.js
+        // canvas, a Mermaid diagram — was cut off at whatever height the
+        // document happened to have at 100ms. A box sized with
+        // `aspect-ratio: 16/9` needs its parent width resolved before it has a
+        // height, so at 100ms it reported zero and the whole embed was clipped.
+        //
+        // WHAT WAS HERE BEFORE. A `reportHeight` that computed a height and then
+        // discarded it inside an empty `if`, plus a MutationObserver wired to
+        // that function. The observer fired on every DOM change and did nothing,
+        // which is worse than no observer: it made the surface look handled.
+        //
+        // THREE MEASURES ARE COMPARED, and the largest wins. `body.scrollHeight`
+        // reports scrollable content when the body has `overflow-y: auto`, which
+        // this template sets, so on its own it can be short. `scrollHeight` on
+        // the document element and the body's own border-box height cover the
+        // other two cases.
+        var lastReportedHeight = 0;
+        var reportScheduled = false;
+
+        function measuredContentHeight() {
+            var doc = document.documentElement;
             var body = document.body;
-            if (!body) return;
-            var height = body.scrollHeight;
-            if (typeof PortalBridge !== 'undefined') {
-                // Height is measured via evaluateJavascript, but we also try the bridge
+            if (!body) return 0;
+            return Math.max(
+                doc ? doc.scrollHeight : 0,
+                body.scrollHeight,
+                Math.ceil(body.getBoundingClientRect().height)
+            );
+        }
+
+        function reportHeight() {
+            var height = measuredContentHeight();
+            if (height <= 0) return;
+            // An unchanged measurement is noise: every mutation would otherwise
+            // send an IPC round trip that changes nothing.
+            if (height === lastReportedHeight) return;
+            lastReportedHeight = height;
+            if (typeof PortalBridge !== 'undefined' && PortalBridge.sendEvent) {
+                PortalBridge.sendEvent('height', String(height));
             }
+        }
+
+        // Coalesce a burst of mutations into one report on the next frame. A
+        // Mermaid render alone mutates dozens of nodes.
+        function scheduleReport() {
+            if (reportScheduled) return;
+            reportScheduled = true;
+            (window.requestAnimationFrame || function (fn) { setTimeout(fn, 16); })(function () {
+                reportScheduled = false;
+                reportHeight();
+            });
         }
 
         // Run extra JS
         $extraJs
 
-        // Report initial height
-        window.addEventListener('load', reportHeight);
-        // Report height after any dynamic content renders
-        var observer = new MutationObserver(reportHeight);
-        observer.observe(document.body, { childList: true, subtree: true });
+        window.addEventListener('load', function () { reportHeight(); scheduleReport(); });
+
+        // A DOM mutation is not the only layout change that matters. An image
+        // finishing load, a font swapping in, an iframe laying out or a chart
+        // resizing all change the rendered height with NO mutation at all, which
+        // is exactly the class of content this bug was clipping. ResizeObserver
+        // covers those, and characterData covers a text-only update to a node
+        // that already exists, which the old observer also missed.
+        if (typeof ResizeObserver !== 'undefined') {
+            new ResizeObserver(scheduleReport).observe(document.body);
+        }
+        new MutationObserver(scheduleReport).observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            characterData: true
+        });
+
+        // Late arrivals that ResizeObserver does not see: fonts and images that
+        // load after the initial layout settle.
+        document.addEventListener('load', scheduleReport, true);
+        if (document.fonts && document.fonts.ready) {
+            document.fonts.ready.then(scheduleReport);
+        }
+        // One late sweep for anything that lands without any signal at all.
+        setTimeout(reportHeight, 600);
+        setTimeout(reportHeight, 1600);
     </script>
 </body>
 </html>
