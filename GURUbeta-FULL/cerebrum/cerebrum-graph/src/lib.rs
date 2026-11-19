@@ -951,6 +951,52 @@ impl GraphStore {
         self.labels.remove(&id);
     }
 
+    /// Retire a memory from the graph entirely: every edge that touches it, its
+    /// node in all four views, its label and its alias rows.
+    ///
+    /// WHY EDGES ARE REMOVED EXPLICITLY RATHER THAN LEFT TO `retire_node`.
+    ///
+    /// `Graph::retire_node` drops the node's own outgoing and incoming tables
+    /// and the node itself. It cannot drop the copies of those edges that live
+    /// in OTHER nodes' tables, because it never looks at them. A traversal
+    /// walks `outgoing(neighbour)`, so an edge from a neighbour into a retired
+    /// id keeps producing that id as a reachable result long after the node is
+    /// gone: it is a memory the graph no longer holds and still answers with.
+    ///
+    /// THE LABEL IS THE WORST OF THEM. `find_start_node` matches query text
+    /// against labels, so a retired memory that kept its label could still be
+    /// chosen as the START of a walk, which is how a merged-away fact could
+    /// lead a traverse even with its node removed.
+    ///
+    /// One call, all four views, no per-call-site knowledge of which parts to
+    /// remember. A future third retirement path cannot retire a subset by
+    /// accident.
+    pub fn retire_memory_node(&mut self, id: MemoryId) {
+        for query_type in [
+            QueryType::Semantic,
+            QueryType::Temporal,
+            QueryType::Causal,
+            QueryType::Entity,
+        ] {
+            if let Some(graph) = self.graph_for_mut(query_type) {
+                // Collected before any mutation so the borrow of the two edge
+                // tables ends before `remove_edge` needs `&mut self`.
+                let touching: Vec<Edge> = graph
+                    .outgoing(id)
+                    .iter()
+                    .chain(graph.incoming(id).iter())
+                    .cloned()
+                    .collect();
+                for edge in touching {
+                    graph.remove_edge(&edge);
+                }
+                graph.retire_node(id);
+            }
+        }
+        self.labels.remove(&id);
+        self.aliases.remove(&id);
+    }
+
     pub fn total_edges(&self) -> usize {
         self.semantic.edge_count()
             + self.temporal.edge_count()
