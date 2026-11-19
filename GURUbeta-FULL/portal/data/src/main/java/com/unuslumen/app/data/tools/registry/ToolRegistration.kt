@@ -35,6 +35,7 @@ import com.unuslumen.app.data.tools.NoteToSelfToolDefinitions
 import com.unuslumen.app.data.tools.TaskToolDefinitions
 import com.unuslumen.app.data.tools.MemoryToolDefinitions
 import com.unuslumen.app.data.tools.AgentToolDefinitions
+import com.unuslumen.app.data.tools.AgentAuthoringToolDefinitions
 import com.unuslumen.app.data.tools.MetaToolDefinitions
 import com.unuslumen.app.data.tools.EmailToolDefinitions
 import com.unuslumen.app.data.tools.FileSystemToolDefinitions
@@ -153,6 +154,10 @@ object GeneratedToolRegistrations {
         MemoryToolDefinitions,
         MetaToolDefinitions,
         AgentToolDefinitions,
+        // The authoring half: create, edit, delete, enable, publish, search by
+        // capability, and listTools, which is the only way to ask what this phone
+        // actually holds rather than what the model defined for itself.
+        AgentAuthoringToolDefinitions,
         EmailToolDefinitions,
         FileSystemToolDefinitions,
         EncryptionToolDefinitions,

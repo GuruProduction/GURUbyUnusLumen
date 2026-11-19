@@ -111,6 +111,21 @@ class MemoryToolIdentityTest {
         override suspend fun persistMessages(messages: List<ConversationMessage>) = Unit
         override suspend fun getMessagesByConversation(conversationId: String): List<ConversationMessage> = emptyList()
         override suspend fun updateMessageEmbedding(messageId: String, embedding: List<Float>) = Unit
+        /**
+         * The graph walk, which this fake does not exercise.
+         *
+         * traverseGraph was added to MemoryRepository after this fake was written, so
+         * the class stopped implementing the interface and the whole unit suite stopped
+         * compiling. An empty answer is the honest one here: none of these tests is
+         * about the graph, and the graph has its own tests where the edges are built.
+         */
+        override suspend fun traverseGraph(
+            subject: String,
+            edgeType: String,
+            maxDepth: Int,
+            maxNodes: Int,
+        ): List<MemoryFact> = emptyList()
+
         override suspend fun persistThreads(threads: List<ConversationThread>) = Unit
         override suspend fun getAllThreads(): List<ConversationThread> = emptyList()
         override suspend fun buildContextPreamble(
