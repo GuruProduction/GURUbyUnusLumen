@@ -9,6 +9,7 @@ import com.unuslumen.app.data.skills.SkillSyncMarks
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
 import com.unuslumen.app.domain.repository.LuxifyRepository
+import com.unuslumen.app.domain.skills.SkillAuthoring
 import kotlinx.serialization.json.Json
 
 /**
@@ -38,6 +39,11 @@ class SkillLibraryToolExecutor(
             SkillLibraryToolDefinitions.SEARCH_SKILL_LIBRARY -> searchLibrary(args)
             SkillLibraryToolDefinitions.GET_SKILL_FROM_LIBRARY -> getSkill(args)
             SkillLibraryToolDefinitions.INSTALL_SKILL_FROM_LIBRARY -> installSkill(args)
+            SkillLibraryToolDefinitions.LIST_SKILLS -> listSkills()
+            SkillLibraryToolDefinitions.CREATE_SKILL -> createSkill(args)
+            SkillLibraryToolDefinitions.UPDATE_SKILL -> updateSkill(args)
+            SkillLibraryToolDefinitions.ENABLE_SKILL -> setEnabled(args, enable = true)
+            SkillLibraryToolDefinitions.DISABLE_SKILL -> setEnabled(args, enable = false)
             else -> ToolExecutionResult.error("Unknown tool: $toolName")
         }
     }
@@ -163,6 +169,192 @@ class SkillLibraryToolExecutor(
             version = fetched.version
         )
         return ToolExecutionResult.success(r, json.encodeToString(GetSkillLibraryResult.serializer(), r))
+    }
+
+    /**
+     * Every skill the agent holds, with enough detail to write a new one without
+     * duplicating an existing one (issue 492).
+     *
+     * The old six verbs could use a skill and install someone else's. A model asked
+     * to improve GURU could not see the list of methodologies it already had, which is
+     * the first step of every "build me a workflow" request.
+     */
+    private suspend fun listSkills(): ToolExecutionResult {
+        val rows = luxifyRepository.getAllSkills()
+        val r = SkillAuthoringListResult(
+            total = rows.size,
+            skills = rows.map { skill ->
+                SkillAuthoringEntry(
+                    name = skill.name,
+                    description = skill.description,
+                    whenToUse = skill.whenToUse,
+                    source = skill.source,
+                    enabled = skill.enabled,
+                    bodyChars = skill.bodyMarkdown.length,
+                    allowedTools = skill.allowedTools,
+                )
+            },
+        )
+        return ToolExecutionResult.success(r, json.encodeToString(SkillAuthoringListResult.serializer(), r))
+    }
+
+    /**
+     * Write a new skill into the live store the phone reads (issue 492).
+     *
+     * The validation is `SkillAuthoring.validate`, which refuses five things that
+     * would each produce a skill that cannot do its job: no name, an unusable name, no
+     * description, a body too short to be a methodology, an unclosed frontmatter block,
+     * and an allowed-tool that is not in the registry. That last one matters most: a
+     * silently dropped tool grants nothing while reading as though it granted
+     * something.
+     *
+     * The set of known tool names comes from the same registry the dispatcher reads, so
+     * a skill cannot be written against a tool that does not exist.
+     */
+    private suspend fun createSkill(args: Map<String, Any?>): ToolExecutionResult {
+        val name = (args["name"] as? String).orEmpty()
+        val description = (args["description"] as? String).orEmpty()
+        val whenToUse = (args["whenToUse"] as? String).orEmpty()
+        val body = (args["bodyMarkdown"] as? String).orEmpty()
+        val allowedTools = (args["allowedTools"] as? String)
+            ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }
+            .orEmpty()
+
+        val knownTools = com.unuslumen.app.data.tools.registry.ToolRegistration
+            .allDefinitions()
+            .map { it.name }
+            .toSet()
+
+        when (val verdict = SkillAuthoring.validate(name, description, body, allowedTools, knownTools)) {
+            is SkillAuthoring.Verdict.Invalid -> {
+                val r = SkillAuthoringWriteResult(
+                    success = false, name = name.trim(), error = verdict.reason,
+                )
+                return ToolExecutionResult.success(r, json.encodeToString(SkillAuthoringWriteResult.serializer(), r))
+            }
+            SkillAuthoring.Verdict.Valid -> Unit
+        }
+
+        // Refuse a duplicate name rather than silently replacing an existing skill's
+        // body: a write that overwrites a methodology the agent relied on is the same
+        // class of loss as the memory update that destroyed its own history.
+        val existing = luxifyRepository.getSkillByName(name.trim())
+        if (existing != null) {
+            val r = SkillAuthoringWriteResult(
+                success = false,
+                name = name.trim(),
+                error = "A skill called \"${name.trim()}\" already exists. Read it with listSkills " +
+                    "and use updateSkill to change it, rather than creating a second one under the same name.",
+            )
+            return ToolExecutionResult.success(r, json.encodeToString(SkillAuthoringWriteResult.serializer(), r))
+        }
+
+        val created = luxifyRepository.createSkill(
+            com.unuslumen.app.domain.model.CreateLuxifyRequest(
+                name = name.trim(),
+                description = description.trim(),
+                whenToUse = whenToUse.trim().ifEmpty { SkillAuthoring.defaultWhenToUse(name.trim(), description.trim()) },
+                allowedTools = allowedTools,
+                bodyMarkdown = body,
+            ),
+        )
+        val r = SkillAuthoringWriteResult(
+            success = true,
+            name = created.name,
+            createdAt = created.createdAt,
+            error = null,
+        )
+        return ToolExecutionResult.success(r, json.encodeToString(SkillAuthoringWriteResult.serializer(), r))
+    }
+
+    /**
+     * Change a skill in place (issue 492).
+     *
+     * Every field is optional and an absent one keeps what the row already holds, so a
+     * caller changing the description does not have to re-send the whole body. The
+     * merged result is validated as a whole, because a change to one field can make the
+     * set invalid — shortening a body below the minimum, or replacing the allowed tools
+     * with a name that does not exist.
+     */
+    private suspend fun updateSkill(args: Map<String, Any?>): ToolExecutionResult {
+        val name = (args["name"] as? String)?.trim().orEmpty()
+        if (name.isEmpty()) {
+            val r = SkillAuthoringWriteResult(false, "", error = "Missing 'name'")
+            return ToolExecutionResult.success(r, json.encodeToString(SkillAuthoringWriteResult.serializer(), r))
+        }
+        val existing = luxifyRepository.getSkillByName(name)
+        if (existing == null) {
+            val r = SkillAuthoringWriteResult(
+                false, name,
+                error = "No skill called \"$name\". Use listSkills to see the names you hold.",
+            )
+            return ToolExecutionResult.success(r, json.encodeToString(SkillAuthoringWriteResult.serializer(), r))
+        }
+
+        val newDescription = (args["description"] as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: existing.description
+        val newWhenToUse = (args["whenToUse"] as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: existing.whenToUse
+        val newBody = (args["bodyMarkdown"] as? String)?.takeIf { it.isNotBlank() } ?: existing.bodyMarkdown
+        val newTools = (args["allowedTools"] as? String)
+            ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }
+            ?: existing.allowedTools
+
+        val knownTools = com.unuslumen.app.data.tools.registry.ToolRegistration
+            .allDefinitions()
+            .map { it.name }
+            .toSet()
+
+        when (val verdict = SkillAuthoring.validate(name, newDescription, newBody, newTools, knownTools)) {
+            is SkillAuthoring.Verdict.Invalid -> {
+                val r = SkillAuthoringWriteResult(false, name, error = verdict.reason)
+                return ToolExecutionResult.success(r, json.encodeToString(SkillAuthoringWriteResult.serializer(), r))
+            }
+            SkillAuthoring.Verdict.Valid -> Unit
+        }
+
+        val updated = luxifyRepository.updateSkill(
+            existing.id,
+            com.unuslumen.app.domain.model.CreateLuxifyRequest(
+                name = existing.name,
+                description = newDescription,
+                whenToUse = newWhenToUse,
+                allowedTools = newTools,
+                bodyMarkdown = newBody,
+            ),
+        )
+        val r = SkillAuthoringWriteResult(
+            success = true, name = updated.name, createdAt = updated.updatedAt, error = null,
+        )
+        return ToolExecutionResult.success(r, json.encodeToString(SkillAuthoringWriteResult.serializer(), r))
+    }
+
+    /**
+     * Turn a skill on or off without destroying it (issue 492).
+     *
+     * Two verbs rather than a boolean, because a skill that is off is a methodology that
+     * has gone stale, and the house rule is that nothing is deleted when it can be
+     * retired. Disabling keeps the text and the handle; deleting takes both.
+     */
+    private suspend fun setEnabled(args: Map<String, Any?>, enable: Boolean): ToolExecutionResult {
+        val name = (args["name"] as? String)?.trim().orEmpty()
+        if (name.isEmpty()) {
+            val r = SkillAuthoringWriteResult(false, "", error = "Missing 'name'")
+            return ToolExecutionResult.success(r, json.encodeToString(SkillAuthoringWriteResult.serializer(), r))
+        }
+        val existing = luxifyRepository.getSkillByName(name)
+        if (existing == null) {
+            val r = SkillAuthoringWriteResult(
+                false, name,
+                error = "No skill called \"$name\". Use listSkills to see the names you hold.",
+            )
+            return ToolExecutionResult.success(r, json.encodeToString(SkillAuthoringWriteResult.serializer(), r))
+        }
+        val changed = if (enable) {
+            luxifyRepository.enableSkill(existing.id)
+        } else {
+            luxifyRepository.disableSkill(existing.id)
+        }
+        val r = SkillAuthoringWriteResult(success = true, name = changed.name, error = null)
+        return ToolExecutionResult.success(r, json.encodeToString(SkillAuthoringWriteResult.serializer(), r))
     }
 
     private suspend fun installSkill(args: Map<String, Any?>): ToolExecutionResult {

@@ -100,6 +100,17 @@ interface ToolSetRegistration {
  */
 object ToolRegistration {
 
+    /**
+     * Every tool definition the app registers (issue 492).
+     *
+     * A skill's `allowedTools` is validated against this, so a written skill cannot
+     * grant a tool that does not exist. Without it the only options were to accept any
+     * name silently, which grants nothing while reading as though it granted
+     * something, or to refuse every grant.
+     */
+    fun allDefinitions(): List<ToolDefinition> =
+        GeneratedToolRegistrations.allRegistrations.flatMap { it.definitions }
+
     fun registerAll(registry: ToolRegistry, koin: Koin) {
         for (reg in GeneratedToolRegistrations.allRegistrations) {
             val executor: ToolExecutor = koin.get(reg.executorClass())
