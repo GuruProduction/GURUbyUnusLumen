@@ -718,6 +718,43 @@ fn run_full_update_pipeline(
     summary.updated += 1;
 }
 
+fn pipeline_remove_by_id(state: &mut CerebrumState, id: MemoryId) {
+    let _ = state.dwm.remove_memory(id);
+    let _ = state.signature_engine.remove_from_index(id);
+    state.lexical.remove(id);
+    state.cross_ref.remove(id);
+    state.hot_cache_forget(&id);
+}
+
+/// Why a memory is being retired, which decides what happens to the bytes.
+///
+/// THE TWO CASES ARE NOT THE SAME AND USED TO BE TREATED AS IF THEY WERE.
+///
+/// A DELETE retires a memory the caller may later restore by id, so its decay
+/// row is archived in place: the content stays readable and the row stops
+/// being served. A MERGE retires a memory whose content now lives inside the
+/// surviving record, so its decay row is archived for the same reason and by
+/// the same code path, and the surviving record carries the merged body.
+///
+/// Both archive. Neither erases. The No-Delete doctrine does not have an
+/// exception for merges, and the previous code assumed it did: `pipeline_remove_by_id`
+/// cleared five indexes and never touched the decay entry, so a merged-away
+/// source stayed live in the layer scoring actually reads, strengthening on
+/// every access, and came back from disk after a restart because
+/// `decay_records` persists entry content.
+///
+/// The graph needed the same treatment for a different reason. A retired id
+/// whose edges and label survive can still be reached by a traversal and can
+/// still be chosen as a traversal's START node, so the graph answered with a
+/// memory the brain no longer admits to holding.
+fn retire_memory(state: &mut CerebrumState, id: MemoryId) {
+    pipeline_remove_by_id(state, id);
+    state.graph_store.retire_memory_node(id);
+    if let Some(decay_entry) = state.decay_engine.entries.get_mut(&id) {
+        decay_entry.archived = true;
+    }
+}
+
 fn run_full_merge_pipeline(
     state: &mut CerebrumState,
     source_ids: &[MemoryId],
@@ -735,6 +772,18 @@ fn run_full_merge_pipeline(
         .dwm
         .insert_memory(merged_id, signature, TokenSequence::from_tokens(&tokens));
     state.signature_engine.add_to_index(merged_id, signature);
+
+    // THE LEXICAL INDEX IS THE LANE THAT ACTUALLY ANSWERS A SEARCH.
+    //
+    // This write was missing. The merge inserted into the DWM, the signature
+    // index and the decay layer — none of which is what `handle_search` ranks
+    // on. Its primary lane is BM25 over `state.lexical`, and its signature lane
+    // is a recall aid that may only promote a memory the lexical lane also
+    // found. So a merged record existed in the tree and in three indexes while
+    // being invisible to the one surface a caller reads, which made a merge look
+    // like a memory that vanished.
+    state.lexical.upsert(merged_id, &target.content);
+
     state.decay_engine.insert(
         merged_id,
         MemoryLayer::Semantic,
@@ -748,8 +797,15 @@ fn run_full_merge_pipeline(
         }),
     );
 
+    // Every source leaves through the one retirement path, so a merge cannot
+    // leave a live decay entry or a reachable graph node behind the way it
+    // used to. A source that IS the target keeps its row: it is the record the
+    // caller can still hold, and retiring it would delete the merged content.
     for removed in source_ids {
-        pipeline_remove_by_id(state, *removed);
+        if *removed == merged_id {
+            continue;
+        }
+        retire_memory(state, *removed);
     }
 
     // Rebuild graph data for the merged entry.
@@ -777,23 +833,11 @@ fn run_full_delete_pipeline(
     id: MemoryId,
     summary: &mut CurateSideEffectsSummary,
 ) {
-    pipeline_remove_by_id(state, id);
-    // Archive in decay (No-Delete principle).
-    if let Some(decay_entry) = state.decay_engine.entries.get_mut(&id) {
-        decay_entry.archived = true;
-    }
+    retire_memory(state, id);
     state
         .event_store
         .append("memory.deleted", id, serde_json::json!({}));
     summary.deleted += 1;
-}
-
-fn pipeline_remove_by_id(state: &mut CerebrumState, id: MemoryId) {
-    let _ = state.dwm.remove_memory(id);
-    let _ = state.signature_engine.remove_from_index(id);
-    state.lexical.remove(id);
-    state.cross_ref.remove(id);
-    state.hot_cache_forget(&id);
 }
 
 fn current_signature_for_id(
@@ -1685,10 +1729,14 @@ async fn handle_consolidate(
                     if written.contains(consumed_id) {
                         continue;
                     }
-                    // Remove the row as well as the index entries, so the tree
-                    // and the indexes agree on what exists.
+                    // Remove the row as well as every index entry, so the tree
+                    // and the indexes agree on what exists. The retirement path
+                    // is the same one delete and merge use: it archives the
+                    // decay row and takes the node out of all four graph views,
+                    // so a consolidated-away memory stops being scored against
+                    // and stops being reachable by a traversal.
                     state.context_tree.remove(*consumed_id);
-                    pipeline_remove_by_id(&mut state, *consumed_id);
+                    retire_memory(&mut state, *consumed_id);
                 }
                 report.merged_into_dwm += written.len();
                 report.removed_from_dwm += consumed.len();
