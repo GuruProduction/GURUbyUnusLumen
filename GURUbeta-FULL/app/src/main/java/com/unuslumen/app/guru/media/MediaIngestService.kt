@@ -69,9 +69,21 @@ class MediaIngestService(
 
         val kind = classifyKind(mimeType, cachedPath)
 
-        val probed = MediaProbe.probe(source.absolutePath)
-        if (probed == null) {
-            return failResult("", "MediaProbe could not read ${source.name} — kind was $kind (" + mimeType + ")")
+        // The KIND decides which probe runs, and the reason is carried through.
+        //
+        // This used to call a probe that required a duration, so every still image
+        // returned null and failed here before `ingestImage` ran: no OCR text, no
+        // dimensions, no `media_items` row (issue 476). The sentence also flattened
+        // a missing file, a permission refusal, a decode error and a timeout into
+        // one line, so nothing could be diagnosed from it.
+        val probed = when (val probe = MediaProbe.probeWithReason(source.absolutePath, kind)) {
+            is MediaProbeResult.Ok -> probe.info
+            is MediaProbeResult.Failed -> {
+                return failResult(
+                    "",
+                    "Could not read ${source.name} as $kind ($mimeType): ${probe.reason}",
+                )
+            }
         }
 
         val mediaId = UUID.randomUUID().toString()
