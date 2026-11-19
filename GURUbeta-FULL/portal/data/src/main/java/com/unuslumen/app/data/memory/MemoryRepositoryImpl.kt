@@ -13,6 +13,7 @@ import com.unuslumen.app.domain.memory.MemoryFact
 import com.unuslumen.app.domain.memory.MemoryRepository
 import com.unuslumen.app.domain.memory.ConversationThread
 import com.unuslumen.app.domain.memory.RetrievedContext
+import com.unuslumen.app.domain.memory.ToolResultQuery
 import com.unuslumen.app.domain.memory.ToolResultSearchHit
 import com.unuslumen.app.domain.model.AiMessage
 import kotlinx.coroutines.Dispatchers
@@ -105,12 +106,40 @@ class MemoryRepositoryImpl(
             .map { entity -> domainOfEntity(entity) }
     }
 
-    /** full search over real message rows for chat search routes (Room FTS). */
+    /**
+     * Full search over real message rows for chat search routes (Room FTS).
+     *
+     * FTS5 PARSES ITS MATCH ARGUMENT AS A QUERY, NOT AS TEXT (issues 465 and 470).
+     * This passed the caller's words through unescaped, so a message search for a
+     * dotted address or a slash path threw a syntax error and a caller read the
+     * caught empty list as "no message ever said that". The same query builder the
+     * tool-history lane uses is applied here, for the same reason.
+     */
     override suspend fun searchMessages(query: String): List<ConversationMessage> = withContext(Dispatchers.IO) {
-        val hits = try {
-            messageDao.searchMessagesFts(query)
-        } catch (e: Exception) {
-            messageDao.searchMessagesLike(query)
+        val expression = ToolResultQuery.ftsExpression(query)
+        val fromFts = if (expression == null) {
+            emptyList()
+        } else {
+            try {
+                messageDao.searchMessagesFts(expression)
+            } catch (e: Exception) {
+                android.util.Log.w(
+                    logTag,
+                    "message FTS failed on \"$expression\": ${e.message?.take(160)}",
+                )
+                emptyList()
+            }
+        }
+        // The LIKE scan is the honest second attempt. It used to run only when FTS
+        // threw; it now also runs when FTS answers nothing, because an index that
+        // cannot see a row and a conversation that never said the words are
+        // different facts and only the scan can tell them apart.
+        val hits = if (fromFts.isNotEmpty()) {
+            fromFts
+        } else {
+            val fallback = ToolResultQuery.fallbackTerm(query)
+            if (fallback == null) emptyList() else runCatching { messageDao.searchMessagesLike(fallback) }
+                .getOrDefault(emptyList())
         }
         hits.map { entity -> domainOfEntity(entity) }
             .distinctBy { row -> row.id }
@@ -481,10 +510,37 @@ class MemoryRepositoryImpl(
         toolResultDao: com.unuslumen.app.database.dao.ToolResultDao,
         query: String,
     ): List<ToolResultSearchHit> = withContext(Dispatchers.IO) {
-        val rows = try {
-            toolResultDao.searchToolResultsFts(query, 20)
-        } catch (e: Exception) {
-            toolResultDao.searchToolResultsLike(query)
+        // THE SAME ESCAPING RULE AS THE TOOL LANE (issues 465 and 470).
+        //
+        // This is `searchAllMemory`'s tool-result lane and it handed the caller's
+        // text straight to FTS5 exactly as the tool did. That is why two routes into
+        // the same table disagreed about what existed: one threw on punctuation and
+        // the other did not, depending on which characters the caller happened to
+        // type.
+        //
+        // The LIKE fallback used to run only on an exception, so an expression FTS5
+        // accepted but that matched nothing returned nothing and the scan never ran.
+        // It now runs whenever the index cannot answer.
+        val expression = ToolResultQuery.ftsExpression(query)
+        val fromFts = if (expression == null) {
+            emptyList()
+        } else {
+            try {
+                toolResultDao.searchToolResultsFts(expression, 20)
+            } catch (e: Exception) {
+                android.util.Log.w(
+                    logTag,
+                    "searchAllMemory FTS failed on \"$expression\": ${e.message?.take(160)}",
+                )
+                emptyList()
+            }
+        }
+        val rows = if (fromFts.isNotEmpty()) {
+            fromFts
+        } else {
+            val fallback = ToolResultQuery.fallbackTerm(query)
+            if (fallback == null) emptyList() else runCatching { toolResultDao.searchToolResultsLike(fallback) }
+                .getOrDefault(emptyList())
         }
         rows.map { entityRow ->
             ToolResultSearchHit(
