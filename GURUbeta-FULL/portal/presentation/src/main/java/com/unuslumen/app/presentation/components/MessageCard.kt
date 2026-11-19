@@ -90,6 +90,7 @@ import com.unuslumen.app.domain.model.PlanInfo
 import com.unuslumen.app.domain.model.Task
 import com.unuslumen.app.domain.model.ToolCallResultObject
 import com.unuslumen.app.domain.model.WebSearchItem
+import com.unuslumen.app.domain.portal.PortalFrontMatter
 import com.unuslumen.app.domain.model.AiMessage.ToolCall
 import com.unuslumen.app.ui.R
 import com.unuslumen.app.ui.components.common.defaultMarkdownTypography
@@ -1520,16 +1521,17 @@ private fun LazyItemScope.PortalMessageCard(
 }
 
 /**
- * Data class representing extracted portal content from an assistant message.
+ * The one portal parser, shared with the other two renderers.
+ *
+ * This file held a third copy, and it was the copy a person actually saw: it
+ * understood only `css: value` on one line, so a portal written in the block
+ * format the system prompt documents rendered with the pipe as its stylesheet
+ * (issue 479). Its frontmatter parser split on `startsWith("css:")`, which also
+ * matched any key whose name merely began with those letters.
+ *
+ * The parser now lives in the domain layer as `PortalFrontMatter`, with the
+ * block-scalar rules tested directly, and every renderer calls it.
  */
-private data class ExtractedPortal(
-    val html: String,
-    val css: String = "",
-    val js: String = "",
-    val height: Int? = null,
-    val interactive: Boolean = true,
-)
-
 /**
  * Detects and extracts portal content from an assistant message.
  * Supports two marker formats:
@@ -1538,13 +1540,12 @@ private data class ExtractedPortal(
  *
  * Returns null if no portal content is found.
  */
-private fun extractPortalContent(content: String): ExtractedPortal? {
+private fun extractPortalContent(content: String): PortalFrontMatter.Parsed? {
     // Format 1: ```portal code fence
     val portalFenceRegex = Regex("""```portal\s*\n(.*?)```""", RegexOption.DOT_MATCHES_ALL)
     val fenceMatch = portalFenceRegex.find(content)
     if (fenceMatch != null) {
-        val rawBody = fenceMatch.groupValues[1].trim()
-        return parsePortalBody(rawBody)
+        return PortalFrontMatter.parse(fenceMatch.groupValues[1])
     }
 
     // Format 2: <!-- PORTAL:{...} --> HTML comment
@@ -1554,7 +1555,7 @@ private fun extractPortalContent(content: String): ExtractedPortal? {
         val json = commentMatch.groupValues[1].trim()
         return try {
             val jsonObj = org.json.JSONObject(json)
-            ExtractedPortal(
+            PortalFrontMatter.Parsed(
                 html = jsonObj.optString("html", ""),
                 css = jsonObj.optString("css", ""),
                 js = jsonObj.optString("js", ""),
@@ -1570,49 +1571,6 @@ private fun extractPortalContent(content: String): ExtractedPortal? {
 }
 
 /**
- * Parses the body of a ```portal code fence.
- * The body can optionally start with YAML-like front-matter:
- *   ---
- *   css: "body { background: red; }"
- *   js: "console.log('hi')"
- *   height: 300
- *   interactive: true
- *   ---
- *   <div>Hello</div>
- */
-private fun parsePortalBody(body: String): ExtractedPortal {
-    var css = ""
-    var js = ""
-    var height: Int? = null
-    var interactive = true
-    var html = body
-
-    // Check for YAML front-matter delimited by ---
-    val frontMatterRegex = Regex("""^---\s*\n(.*?)\n---\s*\n(.*)""", RegexOption.DOT_MATCHES_ALL)
-    val fmMatch = frontMatterRegex.find(body)
-    if (fmMatch != null) {
-        val frontMatter = fmMatch.groupValues[1]
-        html = fmMatch.groupValues[2].trim()
-
-        // Simple YAML-like parsing (key: value pairs)
-        frontMatter.lines().forEach { line ->
-            val trimmed = line.trim()
-            if (trimmed.startsWith("css:")) {
-                css = trimmed.removePrefix("css:").trim().trimSurrounding('"')
-            } else if (trimmed.startsWith("js:")) {
-                js = trimmed.removePrefix("js:").trim().trimSurrounding('"')
-            } else if (trimmed.startsWith("height:")) {
-                height = trimmed.removePrefix("height:").trim().toIntOrNull()
-            } else if (trimmed.startsWith("interactive:")) {
-                interactive = trimmed.removePrefix("interactive:").trim().lowercase() == "true"
-            }
-        }
-    }
-
-    return ExtractedPortal(html = html, css = css, js = js, height = height, interactive = interactive)
-}
-
-/**
  * Strips portal content from the message, leaving only the regular markdown text.
  */
 private fun stripPortalContent(content: String): String {
@@ -1625,16 +1583,6 @@ private fun stripPortalContent(content: String): String {
     result = commentRegex.replace(result, "")
 
     return result.trim()
-}
-
-/**
- * Helper to trim surrounding quotes from a string.
- */
-private fun String.trimSurrounding(char: Char): String {
-    if (length >= 2 && first() == char && last() == char) {
-        return substring(1, length - 1)
-    }
-    return this
 }
 
 @Preview(uiMode = Configuration.UI_MODE_NIGHT_YES)

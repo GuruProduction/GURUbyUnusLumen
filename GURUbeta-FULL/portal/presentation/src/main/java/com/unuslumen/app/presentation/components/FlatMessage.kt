@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.unuslumen.app.domain.model.AiMessage
 import com.unuslumen.app.domain.model.AiMessageAttachment
+import com.unuslumen.app.domain.portal.PortalFrontMatter
 import com.unuslumen.app.domain.model.CalendarEvent
 import com.unuslumen.app.domain.model.Note
 import com.unuslumen.app.domain.model.Task
@@ -506,20 +507,21 @@ private fun LazyItemScope.FlatPortalMessage(
     }
 }
 
-private data class FlatExtractedPortal(
-    val html: String,
-    val css: String = "",
-    val js: String = "",
-    val height: Int? = null,
-    val interactive: Boolean = true,
-)
-
-private fun extractPortalContent(content: String): FlatExtractedPortal? {
+/**
+ * The one portal parser, shared with the other two renderers.
+ *
+ * This file used to carry its own copy, and the copy never learned YAML block
+ * scalars: `css: |` read the pipe as the value, so every render written in the
+ * format the system prompt documents arrived with a one-character stylesheet and
+ * a one-character script that throws a SyntaxError (issue 479). The renderers
+ * therefore disagreed about the same message. There is now one parser in the
+ * domain layer and all three call it.
+ */
+private fun extractPortalContent(content: String): PortalFrontMatter.Parsed? {
     val portalFenceRegex = Regex("""```portal\s*\n(.*?)```""", RegexOption.DOT_MATCHES_ALL)
     val fenceMatch = portalFenceRegex.find(content)
     if (fenceMatch != null) {
-        val rawBody = fenceMatch.groupValues[1].trim()
-        return parsePortalBody(rawBody)
+        return PortalFrontMatter.parse(fenceMatch.groupValues[1])
     }
     val commentRegex = Regex("""<!--\s*PORTAL:\s*(.*?)\s*-->""", RegexOption.DOT_MATCHES_ALL)
     val commentMatch = commentRegex.find(content)
@@ -527,7 +529,7 @@ private fun extractPortalContent(content: String): FlatExtractedPortal? {
         val json = commentMatch.groupValues[1].trim()
         return try {
             val jsonObj = org.json.JSONObject(json)
-            FlatExtractedPortal(
+            PortalFrontMatter.Parsed(
                 html = jsonObj.optString("html", ""),
                 css = jsonObj.optString("css", ""),
                 js = jsonObj.optString("js", ""),
@@ -539,34 +541,6 @@ private fun extractPortalContent(content: String): FlatExtractedPortal? {
         }
     }
     return null
-}
-
-private fun parsePortalBody(body: String): FlatExtractedPortal {
-    var css = ""
-    var js = ""
-    var height: Int? = null
-    var interactive = true
-    var html = body
-
-    val frontMatterRegex = Regex("""^---\s*\n(.*?)\n---\s*\n(.*)""", RegexOption.DOT_MATCHES_ALL)
-    val fmMatch = frontMatterRegex.find(body)
-    if (fmMatch != null) {
-        val frontMatter = fmMatch.groupValues[1]
-        html = fmMatch.groupValues[2].trim()
-        frontMatter.lines().forEach { line ->
-            val trimmed = line.trim()
-            if (trimmed.startsWith("css:")) {
-                css = trimmed.removePrefix("css:").trim().flatTrimSurrounding('"')
-            } else if (trimmed.startsWith("js:")) {
-                js = trimmed.removePrefix("js:").trim().flatTrimSurrounding('"')
-            } else if (trimmed.startsWith("height:")) {
-                height = trimmed.removePrefix("height:").trim().toIntOrNull()
-            } else if (trimmed.startsWith("interactive:")) {
-                interactive = trimmed.removePrefix("interactive:").trim().lowercase() == "true"
-            }
-        }
-    }
-    return FlatExtractedPortal(html = html, css = css, js = js, height = height, interactive = interactive)
 }
 
 private fun stripPortalContent(content: String): String {
@@ -585,9 +559,3 @@ private fun stripLuxifyMarkers(content: String): String {
     return result.trim()
 }
 
-private fun String.flatTrimSurrounding(char: Char): String {
-    if (length >= 2 && first() == char && last() == char) {
-        return substring(1, length - 1)
-    }
-    return this
-}
