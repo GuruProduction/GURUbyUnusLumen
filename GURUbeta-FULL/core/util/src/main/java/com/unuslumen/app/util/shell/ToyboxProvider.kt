@@ -210,10 +210,17 @@ class ToyboxProvider(private val context: Context) {
             "sha224sum", "sha384sum", "sha512_224sum", "sha512_256sum",
             "host", "dnsdomainname", "chrt", "taskset", "uclampset",
             "iorenice", "iotop", "top", "mix", "makedevs", "login",
-            "link", "unlink", "rename", "sync"
+            "link", "unlink", "rename", "sync",
+            // `wget` and `vi` had NO symlink at all, so they failed with "inaccessible
+            // or not found" rather than a dispatch error, and toybox advertises both
+            // (issue 463). They are listed here and then proved like everything else:
+            // if this build does not carry them, the probe removes them and the log
+            // says so, which is the honest outcome either way.
+            "wget", "vi",
         )
 
         var created = 0
+        var dropped = 0
         for (applet in applets.distinct()) {
             val link = File(symlinkDir, applet)
             try {
@@ -221,9 +228,60 @@ class ToyboxProvider(private val context: Context) {
                 created++
             } catch (e: Exception) {
                 // Symlink might already exist or applet not in build
+                continue
+            }
+
+            // A SYMLINK THAT RESOLVES IS NOT AN APPLET THAT RUNS (issue 463).
+            //
+            // Creating two hundred links and trusting them made `command -v awk`
+            // succeed while `awk` exited 127 with "Unknown command awk", so every
+            // capability check in the codebase believed a broken tool was present.
+            // The measured split is arbitrary: curl, cut, tar, sqlite3, find and nc
+            // run, while awk, tr, grep, sort, wget, hexdump and unzip do not. The
+            // only honest test is to run the thing, so every link is proved once at
+            // creation and removed if it cannot serve its own name.
+            //
+            // This costs one process per applet at first launch. It is paid once,
+            // and it buys a PATH that never lies.
+            val verdict = probeApplet(link)
+            if (verdict is ToyboxAppletVerdict.Verdict.Drop) {
+                runCatching { link.delete() }
+                dropped++
+                Log.w(TAG, "ToyboxProvider: DROPPED $applet — ${verdict.reason}")
             }
         }
-        Log.d(TAG, "ToyboxProvider: created $created applet symlinks in ${symlinkDir.absolutePath}")
+        Log.d(
+            TAG,
+            "ToyboxProvider: created $created applet symlinks, dropped $dropped that could not serve " +
+                "their name, in ${symlinkDir.absolutePath}",
+        )
+    }
+
+    /**
+     * Run one applet with a harmless invocation and report whether it answered.
+     *
+     * `--help` is used rather than a bare invocation because a bare `awk` blocks on
+     * stdin waiting for a program, and a probe that hangs is worse than no probe. An
+     * applet that answers `--help` with any exit code has demonstrated it dispatches.
+     */
+    private fun probeApplet(link: File): ToyboxAppletVerdict.Verdict {
+        return try {
+            val process = ProcessBuilder(link.absolutePath, "--help")
+                .redirectErrorStream(true)
+                .start()
+            // A bounded wait, because a probe must never hold first launch hostage.
+            val finished = process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
+            if (!finished) {
+                process.destroyForcibly()
+                // It started and ran; a slow applet is not a missing one.
+                ToyboxAppletVerdict.Verdict.Keep
+            } else {
+                val output = runCatching { process.inputStream.bufferedReader().readText() }.getOrDefault("")
+                ToyboxAppletVerdict.decide(process.exitValue(), output)
+            }
+        } catch (e: Exception) {
+            ToyboxAppletVerdict.decide(null, e.message)
+        }
     }
 
     /**
