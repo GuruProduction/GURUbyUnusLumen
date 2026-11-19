@@ -403,5 +403,8 @@ val aiDataModule = module {
     // The mask read lane (issue 491). No dependencies: the catalogue is built into the
     // build rather than stored, so there is nothing to inject and nothing to write.
     factory { com.unuslumen.app.data.tools.MaskToolExecutor() }
+    // The heartbeat diary tools ride the repository that already exists; every write goes
+    // through its own contract rather than around it (issue 488).
+    factory { com.unuslumen.app.data.tools.HeartbeatToolExecutor(get()) }
     single { com.unuslumen.app.data.notestoself.NotesToSelfEngine(get()) }
 }
