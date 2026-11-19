@@ -346,6 +346,11 @@ val aiDataModule = module {
     // publisher as well as the local store and the runtime, so GURU can browse and
     // install an agent rather than only call one already on the phone.
     factory { com.unuslumen.app.data.tools.AgentToolExecutor(get(), get(), get()) }
+    // The authoring lane. Three arguments for the same reason the lane above takes
+    // three, plus one: the registry is a dependency because listTools reports what
+    // this phone actually holds, and because a grant is checked against a tool name
+    // that exists rather than stored as one that would never fire.
+    factory { com.unuslumen.app.data.tools.AgentAuthoringToolExecutor(get(), get(), get()) }
     factory {
         com.unuslumen.app.data.agents.AgentRuntime(
             get(),
