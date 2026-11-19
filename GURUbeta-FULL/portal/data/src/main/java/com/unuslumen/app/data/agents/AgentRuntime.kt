@@ -93,7 +93,9 @@ class AgentRuntime(
     private val toolRegistry: ToolRegistry,
     private val toolDispatcher: ToolDispatcher,
     private val getPreferenceUseCase: GetPreferenceUseCase,
-    private val context: android.content.Context
+    private val context: android.content.Context,
+    /** The durable run ledger. A run that is not written down has not happened. */
+    private val ledger: AgentRunLedger,
 ) {
 
     companion object {
@@ -223,6 +225,14 @@ class AgentRuntime(
      * through has nobody left to answer it.
      */
     private data class Session(
+        /**
+         * The run id, and therefore the session id.
+         *
+         * ONE IDENTITY. There is no second handle for this session; `spawnAgent`
+         * returns this value and `resumeAgent` takes it, and a restore after process
+         * death arrives under the same value. Two identifiers for one execution would
+         * be two things that must agree and eventually would not.
+         */
         val id: String,
         val agent: GuruAgent,
         val wiring: Wiring,
@@ -233,6 +243,15 @@ class AgentRuntime(
         var rounds: Int = 0,
         var exchangeCount: Int = 0,
         var pendingQuestion: String? = null,
+        /**
+         * The tool proposals in the round currently being executed.
+         *
+         * Kept so a resume can rebuild the exact message list rather than a
+         * reconstruction of it: a tool call and its result are paired by the model's
+         * own id, and losing that id turns a valid history into one the upstream
+         * rejects.
+         */
+        var lastProposals: List<StreamFrame.ToolCallComplete> = emptyList(),
         /**
          * THE NOTEBOOK. Everything the agent has learned that no longer fits in the
          * live conversation, written down in its own words.
@@ -288,7 +307,10 @@ class AgentRuntime(
     fun spawn(
         slugOrName: String,
         job: String,
-        onEvent: ((String) -> Unit)? = null
+        onEvent: ((String) -> Unit)? = null,
+        /** Where this work came from, so the run can be found from the conversation. */
+        conversationId: String? = null,
+        originMessageId: String? = null,
     ) = flow {
         val agent = agentRepository.resolveAgent(slugOrName)
         if (agent == null) {
@@ -307,22 +329,96 @@ class AgentRuntime(
         }
 
         val allowed = allowedTools(agent)
+        val resolvedPrompt = buildSystemPrompt(agent, allowed)
+        val runId = Uuid.random().toString()
+
+        // THE RUN IS WRITTEN BEFORE THE FIRST MODEL CALL, NOT AFTER THE LAST.
+        // A run recorded only on completion records nothing for the runs that matter
+        // most: the ones that were interrupted, that failed, or that are still waiting
+        // on an answer. Everything below assumes this row exists, so a failure to write
+        // it stops the job rather than running an unrecorded agent.
+        val now = System.currentTimeMillis()
+        try {
+            ledger.createRun(
+                com.unuslumen.app.database.entity.AgentRunEntity(
+                    runId = runId,
+                    conversationId = conversationId ?: runId,
+                    originMessageId = originMessageId,
+                    agentId = agent.id,
+                    agentSlug = agent.slug,
+                    agentName = agent.name,
+                    agentVersion = agent.version,
+                    assignment = job,
+                    status = com.unuslumen.app.database.entity.AgentRunEntity.STATUS_CREATED,
+                    agentDefinitionSnapshotJson = definitionSnapshot(agent),
+                    requestedConfigSnapshotJson = jsonObject {
+                        put("provider", wiring.config.baseModel)
+                        put("reasoningVisibility", "FULL")
+                    },
+                    effectiveConfigSnapshotJson = jsonObject {
+                        put("provider", wiring.model.provider.id)
+                        put("model", wiring.model.id)
+                        put("contextWindow", wiring.config.contextWindow)
+                        put("maxOutputTokens", wiring.config.maxTokens)
+                        put("toolsOffered", allowed.map { it.name }.joinToString(","))
+                        put("maxExchanges", MAX_EXCHANGES)
+                        put("compactionThresholdChars", COMPACTION_THRESHOLD_CHARS)
+                        put("recentMessagesKept", RECENT_MESSAGES_KEPT)
+                        put("reasoningCaptureEnabled", true)
+                    },
+                    resolvedSystemPrompt = resolvedPrompt,
+                    toolManifestSnapshotJson = jsonObject {
+                        put("tools", allowed.map { it.name }.joinToString(","))
+                    },
+                    modelProvider = wiring.model.provider.id,
+                    modelName = wiring.model.id,
+                    reasoningCaptureEnabledAtStart = true,
+                    createdAt = now,
+                    updatedAt = now,
+                )
+            )
+        } catch (e: Exception) {
+            emit(
+                failed(
+                    agent.name,
+                    "${agent.name} was not started because its run could not be recorded: " +
+                        "${e.getRootCause().message ?: e.message}. An agent that runs without a record " +
+                        "is work nobody can recover or explain, so the job was stopped instead."
+                )
+            )
+            return@flow
+        }
+
         val session = Session(
-            id = Uuid.random().toString(),
+            id = runId,
             agent = agent,
             wiring = wiring,
             allowed = allowed,
             descriptors = allowed.map { GuruToolSchemaMapper.definitionToDescriptor(it) },
-            systemPrompt = buildSystemPrompt(agent, allowed),
+            systemPrompt = resolvedPrompt,
             messages = listOf(
                 AiMessage.UserMessage(
                     uuid = Uuid.random().toString(),
                     content = job,
-                    time = System.currentTimeMillis()
+                    time = now
                 )
             )
         )
         sessions[session.id] = session
+
+        // TAKE THE LEASE, THEN SAY IT IS RUNNING. The lease is what makes a dead run
+        // detectable: a process that vanishes leaves a stale heartbeat, and the recovery
+        // scan finds it. Without this, a killed run is indistinguishable from one that is
+        // thinking hard.
+        runCatching {
+            ledger.acquireLease(session.id, session.id)
+            ledger.appendStateChange(
+                session.id,
+                com.unuslumen.app.database.entity.AgentRunEntity.STATUS_CREATED,
+                com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
+                "execution started",
+            )
+        }
 
         emit(bounded(session, onEvent))
     }
@@ -386,10 +482,35 @@ class AgentRuntime(
         return try {
             runTurn(session, onEvent)
         } catch (e: kotlinx.coroutines.CancellationException) {
+            // A deliberate stop. Recorded as cancelled rather than failed, because a
+            // person stopping their own work is not the work going wrong.
+            runCatching {
+                ledger.appendStateChange(
+                    session.id,
+                    com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
+                    com.unuslumen.app.database.entity.AgentRunEntity.STATUS_CANCELLED,
+                    "cancelled by the caller",
+                    finishedAt = System.currentTimeMillis(),
+                )
+                ledger.releaseLease(session.id, session.id, "cancelled")
+            }
             throw e
         } catch (e: Exception) {
             sessions.remove(session.id)
             val reason = e.getRootCause().message ?: e.message ?: e::class.simpleName
+            // THE RUN IS MARKED FAILED, NOT LEFT RUNNING. A run whose loop threw and whose
+            // row still says RUNNING is a run the recovery scan will keep revisiting and a
+            // person will keep seeing as alive.
+            runCatching {
+                ledger.appendStateChange(
+                    session.id,
+                    com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
+                    com.unuslumen.app.database.entity.AgentRunEntity.STATUS_FAILED,
+                    "${session.agent.name} failed: $reason",
+                    finishedAt = System.currentTimeMillis(),
+                )
+                ledger.releaseLease(session.id, session.id, "failed")
+            }
             failed(session.agent.name, "${session.agent.name} failed: $reason")
         }
     }
@@ -443,6 +564,42 @@ class AgentRuntime(
 
             val textBuilder = StringBuilder()
             val toolCalls = mutableListOf<StreamFrame.ToolCallComplete>()
+            /*
+             * REASONING IS CAPTURED, NOT DISCARDED.
+             *
+             * The wire carries it: `UnusLumenStreamingClient` emits `ReasoningDelta` from
+             * the model's `thinking` field, and the main chat already accumulates and
+             * displays it. This loop used to fall into `else -> Unit`, which silently
+             * threw away the one form of reasoning the connected model genuinely
+             * provides. Capture and display are separate: this always records what came
+             * back, and the Agent Room decides separately what it shows.
+             *
+             * The frames are collected in arrival order and flushed as one
+             * `MODEL_OUTPUT_BATCH` per round, because a database write per chunk would
+             * cost more than the conversation is worth. The provider's own stream index
+             * is kept alongside, since it answers a different question from the ledger's
+             * sequence.
+             */
+            val reasoningBuilder = StringBuilder()
+            val outputFrames = mutableListOf<OutputFrame>()
+            val requestId = Uuid.random().toString()
+            val roundIndex = rounds
+
+            ledger.append(
+                session.id,
+                AgentRunLedger.EventDraft(
+                    eventType = com.unuslumen.app.database.entity.AgentRunEventEntity.MODEL_REQUEST_STARTED,
+                    actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_RUNTIME,
+                    correlationId = requestId,
+                    payload = jsonObject {
+                        put("requestId", requestId)
+                        put("provider", wiring.model.provider.id)
+                        put("model", wiring.model.id)
+                        put("roundIndex", roundIndex)
+                        put("exchangeIndex", session.exchangeCount)
+                    },
+                )
+            )
 
             // The same branch the main send path takes: the app's own client
             // when it exists (Lumen gateway, Ollama, OpenAI-compatible), the
@@ -467,7 +624,10 @@ class AgentRuntime(
 
             streamFlow.collect { frame ->
                 when (frame) {
-                    is StreamFrame.TextDelta -> textBuilder.append(frame.text)
+                    is StreamFrame.TextDelta -> {
+                        textBuilder.append(frame.text)
+                        outputFrames.add(OutputFrame("TEXT", frame.text, null))
+                    }
                     is StreamFrame.TextComplete -> {
                         // The complete form supersedes any deltas already
                         // gathered for this block, exactly as the main path
@@ -477,12 +637,79 @@ class AgentRuntime(
                             textBuilder.append(frame.text)
                         }
                     }
+                    is StreamFrame.ReasoningDelta -> {
+                        // THE LINE THAT USED TO BE `else -> Unit`. Capture, always:
+                        // visibility is a display concern and decides nothing here.
+                        //
+                        // The frame's text is nullable because a provider may send a
+                        // reasoning frame carrying nothing but an index. `orEmpty()` keeps
+                        // the frame in the batch as evidence that the channel was live,
+                        // without inventing content for it.
+                        val chunk = frame.text.orEmpty()
+                        if (chunk.isNotEmpty()) reasoningBuilder.append(chunk)
+                        outputFrames.add(OutputFrame("REASONING", chunk, null))
+                    }
                     is StreamFrame.ToolCallComplete -> toolCalls.add(frame)
-                    else -> Unit
+                    is StreamFrame.ToolCallDelta -> Unit
+                    is StreamFrame.ReasoningComplete -> Unit
+                    is StreamFrame.End -> Unit
                 }
             }
 
             lastText = textBuilder.toString()
+
+            // Flush what the model produced, then say how the request ended. Both are
+            // written before anything is dispatched, so a tool call always has a
+            // recorded request behind it.
+            if (outputFrames.isNotEmpty()) {
+                ledger.append(
+                    session.id,
+                    AgentRunLedger.EventDraft(
+                        eventType = com.unuslumen.app.database.entity.AgentRunEventEntity.MODEL_OUTPUT_BATCH,
+                        actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_MODEL,
+                        correlationId = requestId,
+                        payload = jsonObject {
+                            put("requestId", requestId)
+                            put(
+                                "frames",
+                                outputFrames.joinToString(prefix = "[", postfix = "]") { f ->
+                                    jsonObject {
+                                        put("type", f.kind)
+                                        put("text", f.text)
+                                        f.sourceIndex?.let { put("sourceIndex", it) }
+                                    }
+                                }
+                            )
+                        },
+                    )
+                )
+            }
+            if (textBuilder.isNotEmpty()) {
+                ledger.append(
+                    session.id,
+                    AgentRunLedger.EventDraft(
+                        eventType = com.unuslumen.app.database.entity.AgentRunEventEntity.MODEL_TEXT_COMPLETED,
+                        actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_MODEL,
+                        correlationId = requestId,
+                        payload = jsonObject { put("requestId", requestId); put("text", textBuilder.toString()) },
+                    )
+                )
+            }
+            if (reasoningBuilder.isNotEmpty()) {
+                ledger.append(
+                    session.id,
+                    AgentRunLedger.EventDraft(
+                        eventType = com.unuslumen.app.database.entity.AgentRunEventEntity.MODEL_REASONING_COMPLETED,
+                        actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_MODEL,
+                        correlationId = requestId,
+                        payload = jsonObject {
+                            put("requestId", requestId)
+                            put("reasoning", reasoningBuilder.toString())
+                        },
+                    )
+                )
+            }
+            session.lastProposals = toolCalls.toList()
 
             // A QUESTION IS A PAUSE, NOT A TOOL CALL.
             //
@@ -551,6 +778,39 @@ class AgentRuntime(
                     isFailed = false,
                 )
 
+                // ASKING IS A RECORDED STATE, NOT A RETURN VALUE. The run row has to say
+                // WAITING_FOR_GURU or a restart has no idea the work is paused on a
+                // question, and the lease has to be released because nothing is driving
+                // it: waiting is not dying.
+                runCatching {
+                    ledger.append(
+                        session.id,
+                        AgentRunLedger.EventDraft(
+                            eventType = com.unuslumen.app.database.entity.AgentRunEventEntity.QUESTION_OPENED,
+                            actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_AGENT,
+                            actorId = agent.id,
+                            payload = jsonObject {
+                                put("question", asked)
+                                put("why", why)
+                                put("options", options.joinToString("|"))
+                                put("expectedResponder", "GURU")
+                            },
+                        )
+                    )
+                    ledger.appendStateChange(
+                        session.id,
+                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
+                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_WAITING_FOR_GURU,
+                        "the agent asked a question",
+                    )
+                    ledger.commitCheckpoint(
+                        runId = session.id,
+                        reason = com.unuslumen.app.database.entity.AgentRunCheckpointEntity.REASON_ENTERING_WAITING,
+                        stateJson = checkpointState(session),
+                    )
+                    ledger.releaseLease(session.id, session.id, "waiting for an answer")
+                }
+
                 return SpawnResult(
                     success = true,
                     agentName = agent.name,
@@ -567,6 +827,32 @@ class AgentRuntime(
 
             if (toolCalls.isEmpty()) {
                 sessions.remove(session.id)
+                // FINISHED IS A RECORDED STATE TOO. The report goes on the run so a
+                // reopened Agent Room shows what the work produced without having to
+                // replay the whole ledger, and the row stops being non-terminal so the
+                // recovery scan leaves it alone.
+                runCatching {
+                    ledger.append(
+                        session.id,
+                        AgentRunLedger.EventDraft(
+                            eventType = com.unuslumen.app.database.entity.AgentRunEventEntity.MODEL_REQUEST_COMPLETED,
+                            actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_MODEL,
+                            actorId = agent.id,
+                            payload = jsonObject {
+                                put("rounds", rounds)
+                                put("report", lastText.take(MAX_REPORT_CHARS))
+                            },
+                        )
+                    )
+                    ledger.appendStateChange(
+                        session.id,
+                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
+                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_COMPLETED,
+                        "the agent finished its assignment",
+                        finishedAt = System.currentTimeMillis(),
+                    )
+                    ledger.releaseLease(session.id, session.id, "completed")
+                }
                 return SpawnResult(
                     success = true,
                     agentName = agent.name,
@@ -579,31 +865,178 @@ class AgentRuntime(
 
             onEvent?.invoke("${agent.name} is using ${toolCalls.size} tool(s), round $rounds")
 
+            // ONE ROUND CHECKPOINT, BEFORE THE FIRST DISPATCH.
+            //
+            // Not one per call. The model state every call in this round shares is what
+            // a resume needs, and it is identical for all of them; the per-call proof
+            // that an attempt was made is the TOOL_CALL_STARTED row written below, which
+            // is what stops recovery repeating a side effect it cannot prove did not
+            // happen.
+            if (toolCalls.isNotEmpty()) {
+                ledger.commitCheckpoint(
+                    runId = session.id,
+                    reason = com.unuslumen.app.database.entity.AgentRunCheckpointEntity.REASON_ROUND_BOUNDARY,
+                    stateJson = checkpointState(session),
+                )
+            }
+
             val executed = toolCalls.map { call ->
                 val toolName = call.name
                 val declared = allowed.firstOrNull { it.name == toolName }
+                val invocationId = Uuid.random().toString()
 
-                val resultContent = if (declared == null) {
-                    // A name outside the declaration. Refuse it here rather
-                    // than trusting the model to stay inside its brief.
-                    """{"error":"Refused: '${agent.name}' is not allowed to use '$toolName'."}"""
+                val result = if (declared == null) {
+                    // A name outside the declaration. Refuse it here rather than trusting
+                    // the model to stay inside its brief, and record the refusal as a
+                    // refusal rather than as a tool that ran and failed.
+                    ledger.append(
+                        session.id,
+                        AgentRunLedger.EventDraft(
+                            eventType = com.unuslumen.app.database.entity.AgentRunEventEntity.TOOL_CALL_REFUSED,
+                            actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_RUNTIME,
+                            actorId = agent.id,
+                            payload = jsonObject {
+                                put("invocationId", invocationId)
+                                put("tool", toolName)
+                                put("reason", "'${agent.name}' is not allowed to use '$toolName'")
+                            },
+                        )
+                    )
+                    RefusedResult(
+                        """{"error":"Refused: '${agent.name}' is not allowed to use '$toolName'."}"""
+                    )
                 } else {
                     try {
                         val argsJson = runCatching {
                             json.parseToJsonElement(call.content) as? JsonObject
                         }.getOrNull() ?: buildJsonObject { }
 
-                        // The dispatcher is the only door: it checks the device
-                        // permissions, runs the security policy and repairs the
-                        // arguments before anything executes.
-                        val dispatch = toolDispatcher.dispatch(toolName, argsJson)
-                        if (dispatch.success) {
-                            dispatch.rawJson
-                        } else {
-                            """{"error":${jsonString(dispatch.error ?: "tool failed")}}"""
+                        // THE PROPOSAL IS RECORDED AS THE MODEL WROTE IT, and then the
+                        // prepared boundary decides what will actually run.
+                        ledger.append(
+                            session.id,
+                            AgentRunLedger.EventDraft(
+                                eventType = com.unuslumen.app.database.entity.AgentRunEventEntity.MODEL_TOOL_CALL_PROPOSED,
+                                actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_MODEL,
+                                actorId = agent.id,
+                                payload = jsonObject {
+                                    put("tool", toolName)
+                                    put("callId", call.id ?: "")
+                                    put("arguments", call.content)
+                                },
+                            )
+                        )
+
+                        when (val prepared = toolDispatcher.prepare(toolName, argsJson)) {
+                            is com.unuslumen.app.data.tools.registry.ToolDispatcher.Preparation.Refused -> {
+                                ledger.append(
+                                    session.id,
+                                    AgentRunLedger.EventDraft(
+                                        eventType = if (prepared.kind == com.unuslumen.app.data.tools.registry.ToolDispatcher.RefusalKind.PERMISSION_DENIED) {
+                                            com.unuslumen.app.database.entity.AgentRunEventEntity.TOOL_PERMISSION_DENIED
+                                        } else {
+                                            com.unuslumen.app.database.entity.AgentRunEventEntity.TOOL_CALL_REFUSED
+                                        },
+                                        actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_RUNTIME,
+                                        actorId = agent.id,
+                                        payload = jsonObject {
+                                            put("invocationId", invocationId)
+                                            put("tool", prepared.resolvedName ?: toolName)
+                                            put("reason", prepared.reason)
+                                            put("kind", prepared.kind.name)
+                                        },
+                                    )
+                                )
+                                RefusedResult("""{"error":${jsonString(prepared.reason)}}""")
+                            }
+
+                            is com.unuslumen.app.data.tools.registry.ToolDispatcher.Preparation.Ready -> {
+                                // STARTED BEFORE THE TOOL RUNS. This row is the only proof
+                                // an attempt was made, and it is why a resumed run refuses
+                                // to repeat a call whose result never landed.
+                                ledger.append(
+                                    session.id,
+                                    AgentRunLedger.EventDraft(
+                                        eventType = com.unuslumen.app.database.entity.AgentRunEventEntity.TOOL_CALL_STARTED,
+                                        actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_RUNTIME,
+                                        actorId = agent.id,
+                                        payload = jsonObject {
+                                            put("invocationId", invocationId)
+                                            put("tool", prepared.invocation.resolvedName)
+                                            // THE REPAIRED ARGUMENTS, not the model's. These
+                                            // are what the tool receives, and a record of
+                                            // anything else describes a call that did not run.
+                                            put("arguments", prepared.invocation.repairedArgs.toString())
+                                            put("proposedArguments", call.content)
+                                        },
+                                    )
+                                )
+
+                                val dispatch = toolDispatcher.executePrepared(
+                                    invocation = prepared.invocation,
+                                    conversationId = session.id,
+                                    agentRunId = session.id,
+                                    agentInvocationId = invocationId,
+                                )
+
+                                if (dispatch.success) {
+                                    ledger.append(
+                                        session.id,
+                                        AgentRunLedger.EventDraft(
+                                            eventType = com.unuslumen.app.database.entity.AgentRunEventEntity.TOOL_CALL_COMPLETED,
+                                            actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_TOOL,
+                                            actorId = prepared.invocation.resolvedName,
+                                            payload = jsonObject {
+                                                put("invocationId", invocationId)
+                                                put("tool", prepared.invocation.resolvedName)
+                                                // The complete content handed back to the
+                                                // session. The tool_results table truncates
+                                                // at 100k, so it cannot be the recovery source.
+                                                put("result", dispatch.rawJson)
+                                            },
+                                        )
+                                    )
+                                    ExecutedResult(dispatch.rawJson)
+                                } else {
+                                    // A CONFIRMED FAILURE, because the executor returned
+                                    // one. A throw or a timeout is a different fact and is
+                                    // handled in the catch below as unknown, never as
+                                    // failed.
+                                    ledger.append(
+                                        session.id,
+                                        AgentRunLedger.EventDraft(
+                                            eventType = com.unuslumen.app.database.entity.AgentRunEventEntity.TOOL_CALL_FAILED,
+                                            actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_TOOL,
+                                            actorId = prepared.invocation.resolvedName,
+                                            payload = jsonObject {
+                                                put("invocationId", invocationId)
+                                                put("tool", prepared.invocation.resolvedName)
+                                                put("error", dispatch.error ?: "tool failed")
+                                            },
+                                        )
+                                    )
+                                    ExecutedResult("""{"error":${jsonString(dispatch.error ?: "tool failed")}}""")
+                                }
+                            }
                         }
                     } catch (e: Exception) {
-                        """{"error":${jsonString(e.getRootCause().message ?: "tool failed")}}"""
+                        // An exception out of the dispatcher does NOT prove the call did
+                        // not run: it may have reached the device and lost its reply. That
+                        // is an unknown outcome, and it must never be retried automatically.
+                        ledger.append(
+                            session.id,
+                            AgentRunLedger.EventDraft(
+                                eventType = com.unuslumen.app.database.entity.AgentRunEventEntity.TOOL_CALL_OUTCOME_UNKNOWN,
+                                actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_RUNTIME,
+                                actorId = agent.id,
+                                payload = jsonObject {
+                                    put("invocationId", invocationId)
+                                    put("tool", toolName)
+                                    put("reason", e.getRootCause().message ?: "the call threw before a result arrived")
+                                },
+                            )
+                        )
+                        ExecutedResult("""{"error":${jsonString(e.getRootCause().message ?: "tool failed")}}""")
                     }
                 }
 
@@ -612,9 +1045,9 @@ class AgentRuntime(
                     id = call.id ?: Uuid.random().toString(),
                     name = toolName,
                     rawContent = call.content,
-                    resultRawContent = resultContent,
+                    resultRawContent = result.content,
                     time = System.currentTimeMillis(),
-                    isFailed = resultContent.contains("\"error\"")
+                    isFailed = result.content.contains("\"error\"")
                 )
             }
 
@@ -929,6 +1362,100 @@ class AgentRuntime(
             android.util.Log.w("guru", "Agent BYO wiring failed for $provider: ${e.message}")
             null
         }
+    }
+
+    /**
+     * One captured frame of model output.
+     *
+     * [kind] is `TEXT` or `REASONING`, kept as a string so the ledger records what
+     * arrived without depending on a Kotlin ordinal that a reorder could silently change.
+     * [sourceIndex] is the provider's own stream index, which answers a different
+     * question from the ledger's sequence and is worth keeping for exactly that reason.
+     */
+    private data class OutputFrame(val kind: String, val text: String, val sourceIndex: Int?)
+
+    /** A result the loop produced, before it is turned into a message. */
+    private sealed interface ToolOutcome { val content: String }
+    private data class ExecutedResult(override val content: String) : ToolOutcome
+    private data class RefusedResult(override val content: String) : ToolOutcome
+
+    /** A JSON object built from key/value pairs, with the string escaping this file already uses. */
+    private fun jsonObject(build: JsonObjectBuilderScope.() -> Unit): String {
+        val map = linkedMapOf<String, Any?>()
+        JsonObjectBuilderScope(map).build()
+        return buildString {
+            append('{')
+            var first = true
+            for ((key, value) in map) {
+                if (!first) append(',')
+                first = false
+                append(jsonString(key)).append(':')
+                when (value) {
+                    null -> append("null")
+                    is Number, is Boolean -> append(value.toString())
+                    else -> append(jsonString(value.toString()))
+                }
+            }
+            append('}')
+        }
+    }
+
+    private class JsonObjectBuilderScope(private val map: MutableMap<String, Any?>) {
+        fun put(key: String, value: String?) { map[key] = value }
+        fun put(key: String, value: Int) { map[key] = value }
+        fun put(key: String, value: Long) { map[key] = value }
+        fun put(key: String, value: Boolean) { map[key] = value }
+    }
+
+    /** The definition as values, not a reference, so a later edit cannot rewrite history. */
+    private fun definitionSnapshot(agent: GuruAgent): String = jsonObject {
+        put("schemaVersion", 1)
+        put("id", agent.id)
+        put("slug", agent.slug)
+        put("name", agent.name)
+        put("description", agent.description)
+        put("version", agent.version)
+        put("systemPrompt", agent.systemPrompt)
+        put("toolPermissions", agent.toolPermissions.joinToString(","))
+        put("source", agent.source)
+        put("enabled", agent.enabled)
+    }
+
+    /**
+     * The working state, as the checkpoint stores it.
+     *
+     * It carries what the in-memory session carries and nothing it does not: the exact
+     * messages, the notebook, the counters, the question it is waiting on, the tools it
+     * was given. Live objects are deliberately absent, because an executor cannot be
+     * serialised and pretending otherwise would produce a checkpoint that looks complete
+     * and restores nothing.
+     */
+    private fun checkpointState(session: Session): String = jsonObject {
+        put("schemaVersion", 1)
+        put("runId", session.id)
+        put("rounds", session.rounds)
+        put("exchangeCount", session.exchangeCount)
+        put("pendingQuestion", session.pendingQuestion)
+        put("notebook", session.notebook)
+        put("compactionCount", session.compactions)
+        put("systemPrompt", session.systemPrompt)
+        put("messageCount", session.messages.size)
+        put("messages", session.messages.joinToString("\n\u001E\n") { m ->
+            when (m) {
+                is AiMessage.UserMessage -> "user:${m.content}"
+                is AiMessage.AssistantMessage -> "assistant:${m.content}"
+                is AiMessage.ToolCall ->
+                    "tool:${m.name}:${m.id ?: ""}:${m.rawContent}:${m.resultRawContent}"
+                else -> "other:"
+            }
+        })
+        put(
+            "runtime",
+            jsonObject {
+                put("kind", "AGENT_RUNTIME")
+                put("stateSchemaVersion", 1)
+            }
+        )
     }
 
     private fun jsonString(value: String): String = buildString {

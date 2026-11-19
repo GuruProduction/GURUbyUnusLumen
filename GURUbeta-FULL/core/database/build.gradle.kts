@@ -58,6 +58,10 @@ dependencies {
     implementation(libs.material)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
+    // MigrationTestHelper lives here. It is the only thing that can actually run a
+    // registered Migration against a real SQLite file and compare the result to the
+    // exported schema, which is the whole evidence base for a schema change.
+    androidTestImplementation(libs.androidx.room.testing)
 
     // Robolectric, because the snapshot engine's central claim is about SQLite's own
     // write-ahead log: that a copy taken while pages are still in it contains those pages.
@@ -88,4 +92,14 @@ dependencies {
 
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
+    // MigrationTestHelper reads the exported JSON straight off the device, so the
+    // schemas have to travel in the test APK as assets. Without this the helper looks
+    // for a schema it cannot see and every migration test fails for the wrong reason.
+    arg("room.generateKotlin", "true")
+}
+
+android {
+    sourceSets {
+        getByName("androidTest").assets.srcDirs("$projectDir/schemas")
+    }
 }

@@ -232,6 +232,20 @@ class GuruApplication : Application() {
         com.unuslumen.app.thoughts.data.thoughts.ThoughtCycleScheduler.schedule(this)
         brainService.initialise()
 
+        /*
+         * THE AGENT RECOVERY SCAN, AT EVERY START AND EVERY FIFTEEN MINUTES.
+         *
+         * An abruptly killed process cannot run a handler, so a dead agent run keeps
+         * saying RUNNING until something looks. This is that something. It marks a run
+         * INTERRUPTED only when its owner is gone from the live registry AND its
+         * heartbeat has gone stale, so a busy run and a waiting run are both left alone.
+         *
+         * The scan never resumes anything. Resuming is a decision with consequences and
+         * belongs where a person can see it, not in a background pass.
+         */
+        com.unuslumen.app.data.agents.AgentRecoveryWorker.schedule(this)
+        com.unuslumen.app.data.agents.AgentRecoveryWorker.runNow(this)
+
         // Cerebrum brain (Phase F): boot the real encrypted brain in-process
         // inside the appScope; one-shot first-boot migration from Room's
         // memory tables runs once the brain is up (deterministic ids

@@ -43,89 +43,170 @@ class ToolDispatcher(
     private val context: Context,
     private val observationRecorder: ToolObservationRecorder? = null
 ) {
-    suspend fun dispatch(
-        toolName: String,
-        rawArgs: JsonObject,
-        conversationId: String? = null
-    ): ToolDispatchResult = dispatchStreaming(toolName, rawArgs, conversationId, ToolProgressSink.NONE)
 
     /**
-     * Dispatch a tool and forward whatever it reports while it runs.
+     * A tool call that has passed every check and has not yet run.
      *
-     * [progress] is handed straight to the executor's [ToolExecutor.executeWithProgress],
-     * which every tool inherits as a plain call. A tool with something to say calls
-     * the sink as it finds things; one with nothing to say never touches it. Nothing
-     * about the returned result changes.
+     * WHY THIS EXISTS AT ALL. An agent run has to record the arguments a tool is about
+     * to receive BEFORE the tool receives them, because a call whose outcome is unknown
+     * must never be repeated on recovery and the record is the only proof an attempt was
+     * made. But the arguments that actually reach the executor are not the model's: they
+     * are the repaired ones, and the repair happens inside this dispatcher.
+     *
+     * So the seam is named. [prepare] does resolve, permission, security and repair, and
+     * returns the exact arguments that would be dispatched. The caller writes its start
+     * event with those. Then it calls [executePrepared], which runs the tool and records
+     * the observation, exactly as before.
+     *
+     * NOTHING ABOUT THE CHECKS MOVED. `prepare` calls the same `securityPolicy.check` and
+     * the same `argumentRepair.repair`. `dispatch` and `dispatchStreaming` are now
+     * `prepare` followed by `executePrepared`, so every existing caller keeps precisely
+     * the behaviour it had.
      */
-    suspend fun dispatchStreaming(
-        toolName: String,
-        rawArgs: JsonObject,
-        conversationId: String? = null,
-        progress: ToolProgressSink = ToolProgressSink.NONE,
-    ): ToolDispatchResult {
+    data class PreparedInvocation(
+        val resolvedName: String,
+        val definition: ToolDefinition,
+        /**
+         * What the executor will actually be handed, after repair.
+         *
+         * `ToolArgumentRepair.repair` returns a decoded `Map<String, Any?>` rather than
+         * a `JsonObject`, and the executor takes that map directly. This field therefore
+         * carries exactly the value the tool will receive, which is the whole point of
+         * the boundary: anything else would be recording a call that did not happen.
+         */
+        val repairedArgs: Map<String, Any?>,
+        /** What the model wrote, kept so a caller can show the difference. */
+        val rawArgs: JsonObject,
+    )
+
+    sealed interface Preparation {
+        data class Ready(val invocation: PreparedInvocation) : Preparation
+
+        /**
+         * The call was stopped before execution.
+         *
+         * [kind] distinguishes an unknown tool, a missing Android permission and a
+         * security refusal, because a caller recording what happened must be able to say
+         * which one it was without re-deriving it.
+         */
+        data class Refused(
+            val reason: String,
+            val kind: RefusalKind,
+            val resolvedName: String? = null,
+            /**
+             * The catalogue's own refusal, when the refusal was a permission.
+             *
+             * Carried rather than rebuilt from [reason], because `permissionDenied`
+             * needs the whole check to produce the structured body the interface and
+             * the model both read. Rebuilding it from a sentence would lose that.
+             */
+            val grantCheck: com.unuslumen.app.data.tools.registry.permission.GrantCheck? = null,
+        ) : Preparation
+    }
+
+    enum class RefusalKind { UNKNOWN_TOOL, PERMISSION_DENIED, SECURITY_BLOCKED, NO_EXECUTOR }
+
+    /**
+     * Resolve, check, repair, and stop.
+     *
+     * The returned [PreparedInvocation.repairedArgs] are the arguments the tool will
+     * receive. A caller that records anything else is recording a call that did not
+     * happen.
+     */
+    suspend fun prepare(toolName: String, rawArgs: JsonObject): Preparation {
         val resolvedName = nameResolver.resolve(toolName, registry, rawArgs)
-            ?: return ToolDispatchResult.unknownTool(toolName)
+            ?: return Preparation.Refused("No tool called '$toolName'.", RefusalKind.UNKNOWN_TOOL)
 
         val definition = registry.getDefinition(resolvedName)
-            ?: return ToolDispatchResult.unknownTool(resolvedName)
+            ?: return Preparation.Refused("No tool called '$resolvedName'.", RefusalKind.UNKNOWN_TOOL)
 
-        // Check Android runtime permissions.
-        //
-        // The refusal is built from the same catalogue every tool's own guard uses,
-        // because this check runs BEFORE the executor and therefore decides what
-        // the model actually reads. A bare "Permission denied: android.permission.X"
-        // names no route and does not say whether a dialog could fix it at all, so
-        // a person is left holding a platform string instead of an instruction.
         for (perm in definition.permissions) {
             if (ContextCompat.checkSelfPermission(context, perm) != PackageManager.PERMISSION_GRANTED) {
-                return ToolDispatchResult.permissionDenied(
-                    PermissionGrants.refusalForPermission(context, perm)
+                // The refusal is built from the catalogue, as it always was: a bare
+                // platform permission string names no route and does not say whether a
+                // dialog could fix it.
+                val check = PermissionGrants.refusalForPermission(context, perm)
+                return Preparation.Refused(
+                    check.sentence(),
+                    RefusalKind.PERMISSION_DENIED,
+                    resolvedName,
+                    grantCheck = check,
                 )
             }
         }
 
         val securityCheck = securityPolicy.check(definition, rawArgs)
-        if (securityCheck.blocked) return ToolDispatchResult.blocked(securityCheck.reason)
+        if (securityCheck.blocked) {
+            return Preparation.Refused(
+                securityCheck.reason,
+                RefusalKind.SECURITY_BLOCKED,
+                resolvedName,
+            )
+        }
 
-        val repairedArgs = argumentRepair.repair(definition, rawArgs)
+        if (registry.getExecutor(resolvedName) == null) {
+            return Preparation.Refused("No executor exists for '$resolvedName'.", RefusalKind.NO_EXECUTOR, resolvedName)
+        }
 
+        val repaired = argumentRepair.repair(definition, rawArgs)
+        return Preparation.Ready(
+            PreparedInvocation(
+                resolvedName = resolvedName,
+                definition = definition,
+                repairedArgs = repaired,
+                rawArgs = rawArgs,
+            )
+        )
+    }
+
+    /**
+     * Run a prepared call and write its observation.
+     *
+     * THE EXECUTOR IS LOOKED UP AGAIN, not carried in the prepared object, so a
+     * prepared invocation is a plain value that can be logged, compared and held in a
+     * checkpoint without pinning a live object.
+     */
+    suspend fun executePrepared(
+        invocation: PreparedInvocation,
+        conversationId: String? = null,
+        progress: ToolProgressSink = ToolProgressSink.NONE,
+        agentRunId: String? = null,
+        agentInvocationId: String? = null,
+    ): ToolDispatchResult {
+        val repairedArgs = invocation.repairedArgs
+        val resolvedName = invocation.resolvedName
         val executor = registry.getExecutor(resolvedName)
             ?: return ToolDispatchResult.unknownTool(resolvedName)
 
         val startedAt = System.currentTimeMillis()
-        // The progress-aware entry point, which every executor inherits as a
-        // plain execute(). A tool that reports as it goes has its events forwarded
-        // by the caller's sink; one that does not behaves exactly as before.
         val execResult = executor.executeWithProgress(resolvedName, repairedArgs, progress)
         val durationMs = System.currentTimeMillis() - startedAt
 
         val didFail = failed(execResult)
         if (didFail) {
-            // The executor's own error when there is one, else the head of
-            // whatever it did return. Never invented: a failure with no message
-            // stores the empty string and stays honest.
             observationRecorder?.recordFailure(
                 packageName = null,
                 activityClass = null,
                 toolName = resolvedName,
-                argumentsJson = rawArgs.toString(),
+                argumentsJson = invocation.rawArgs.toString(),
                 resultSummary = execResult.error ?: execResult.rawJson.take(500),
                 conversationId = conversationId,
                 durationMs = durationMs,
-                targetValues = observationRecorder.targetValuesFrom(repairedArgs)
+                targetValues = observationRecorder.targetValuesFrom(repairedArgs),
+                agentRunId = agentRunId,
+                agentInvocationId = agentInvocationId,
             )
         } else {
-            // THE ROW THAT WAS NEVER WRITTEN. Without this arm the observation
-            // table could only ever hold failures, so `success` was a constant
-            // and the log could not answer whether a tool had ever worked here.
             observationRecorder?.recordSuccess(
                 packageName = null,
                 activityClass = null,
                 toolName = resolvedName,
-                argumentsJson = rawArgs.toString(),
+                argumentsJson = invocation.rawArgs.toString(),
                 resultSummary = execResult.rawJson.take(500),
                 conversationId = conversationId,
                 durationMs = durationMs,
+                agentRunId = agentRunId,
+                agentInvocationId = agentInvocationId,
             )
         }
 
@@ -141,6 +222,58 @@ class ToolDispatcher(
             error = execResult.error,
             status = if (execResult.success) DispatchStatus.SUCCESS else DispatchStatus.EXECUTION_ERROR
         )
+    }
+
+    suspend fun dispatch(
+        toolName: String,
+        rawArgs: JsonObject,
+        conversationId: String? = null
+    ): ToolDispatchResult = dispatchStreaming(toolName, rawArgs, conversationId, ToolProgressSink.NONE)
+
+    /**
+     * Dispatch a tool and forward whatever it reports while it runs.
+     *
+     * [progress] is handed straight to the executor's [ToolExecutor.executeWithProgress],
+     * which every tool inherits as a plain call. A tool with something to say calls
+     * the sink as it finds things; one with nothing to say never touches it. Nothing
+     * about the returned result changes.
+     */
+    /**
+     * Dispatch a tool and forward whatever it reports while it runs.
+     *
+     * PREPARE, THEN EXECUTE, WHICH IS THE SAME TWO STEPS AN AGENT USES. This used to
+     * inline all four checks and the execution. It now delegates, so there is one
+     * implementation of the permission, security and repair rules rather than two that
+     * can drift. Every behaviour is identical to what it was; the only change is that the
+     * boundary between checking and running is now a nameable point rather than a line in
+     * the middle of a method.
+     */
+    suspend fun dispatchStreaming(
+        toolName: String,
+        rawArgs: JsonObject,
+        conversationId: String? = null,
+        progress: ToolProgressSink = ToolProgressSink.NONE,
+    ): ToolDispatchResult {
+        val prepared = prepare(toolName, rawArgs)
+        return when (prepared) {
+            is Preparation.Refused -> when (prepared.kind) {
+                RefusalKind.UNKNOWN_TOOL -> ToolDispatchResult.unknownTool(toolName)
+                RefusalKind.PERMISSION_DENIED ->
+                    prepared.grantCheck
+                        ?.let { ToolDispatchResult.permissionDenied(it) }
+                        // No check carried means no structured body to build, so the
+                        // sentence stands alone rather than inventing a body shape.
+                        ?: ToolDispatchResult.blocked(prepared.reason)
+                RefusalKind.SECURITY_BLOCKED -> ToolDispatchResult.blocked(prepared.reason)
+                RefusalKind.NO_EXECUTOR ->
+                    ToolDispatchResult.unknownTool(prepared.resolvedName ?: toolName)
+            }
+            is Preparation.Ready -> executePrepared(
+                invocation = prepared.invocation,
+                conversationId = conversationId,
+                progress = progress,
+            )
+        }
     }
 
     /**

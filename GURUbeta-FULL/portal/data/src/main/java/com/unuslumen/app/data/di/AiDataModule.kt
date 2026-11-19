@@ -351,13 +351,30 @@ val aiDataModule = module {
     // this phone actually holds, and because a grant is checked against a tool name
     // that exists rather than stored as one that would never fire.
     factory { com.unuslumen.app.data.tools.AgentAuthoringToolExecutor(get(), get(), get()) }
+    /*
+     * THE RUN LEDGER, AND WHY IT IS A SINGLETON.
+     *
+     * Every agent path writes through this one object. The sequence allocation is a
+     * read-modify-write against one row, so two instances would be two writers racing
+     * the same counter. One ledger, one database handle, one truth.
+     */
+    single {
+        com.unuslumen.app.data.agents.AgentRunLedger(
+            get(),
+            get(),
+            get(),
+            get(),
+        )
+    }
+    single { com.unuslumen.app.data.agents.AgentRecoveryCoordinator(get(), get()) }
     factory {
         com.unuslumen.app.data.agents.AgentRuntime(
             get(),
             get(),
             get(),
             get(),
-            get<Context>()
+            get<Context>(),
+            get(),
         )
     }
     factory { EmailToolExecutor(get<Context>()) }

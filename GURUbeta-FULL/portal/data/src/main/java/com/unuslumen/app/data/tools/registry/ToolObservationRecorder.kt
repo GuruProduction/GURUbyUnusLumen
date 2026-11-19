@@ -138,7 +138,11 @@ class ToolObservationRecorder(
         resultSummary: String,
         conversationId: String?,
         durationMs: Long,
-        targetValues: Collection<String> = emptyList()
+        targetValues: Collection<String> = emptyList(),
+        /** The agent run that made the call, or null for an ordinary chat call. */
+        agentRunId: String? = null,
+        /** The individual invocation, so this row can be matched to its start event. */
+        agentInvocationId: String? = null,
     ) {
         recordOutcome(
             success = false,
@@ -151,6 +155,8 @@ class ToolObservationRecorder(
             durationMs = durationMs,
             targetValues = targetValues,
             captureScreen = true,
+            agentRunId = agentRunId,
+            agentInvocationId = agentInvocationId,
         )
     }
 
@@ -181,6 +187,8 @@ class ToolObservationRecorder(
         resultSummary: String,
         conversationId: String?,
         durationMs: Long,
+        agentRunId: String? = null,
+        agentInvocationId: String? = null,
     ) {
         recordOutcome(
             success = true,
@@ -193,6 +201,8 @@ class ToolObservationRecorder(
             durationMs = durationMs,
             targetValues = emptyList(),
             captureScreen = false,
+            agentRunId = agentRunId,
+            agentInvocationId = agentInvocationId,
         )
     }
 
@@ -216,6 +226,8 @@ class ToolObservationRecorder(
         durationMs: Long,
         targetValues: Collection<String>,
         captureScreen: Boolean,
+        agentRunId: String? = null,
+        agentInvocationId: String? = null,
     ) {
         val arguments = ToolObservationEntity.truncateArguments(argumentsJson)
         val summary = ToolObservationEntity.truncateSummary(resultSummary)
@@ -237,7 +249,9 @@ class ToolObservationRecorder(
                         accessibilityTreeJson = snapshot?.treeJson,
                         conversationId = conversationId,
                         timestamp = observedAt,
-                        durationMs = durationMs
+                        durationMs = durationMs,
+                        agentRunId = agentRunId,
+                        agentInvocationId = agentInvocationId,
                     )
                 )
             } catch (e: Exception) {
