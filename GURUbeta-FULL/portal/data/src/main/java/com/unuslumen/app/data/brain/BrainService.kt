@@ -122,6 +122,63 @@ class BrainService(
     }
 
     /**
+     * Store one record with the FULL typed hierarchy (issue 486).
+     *
+     * The difference from [storeFact] is what survives. `storeFact` takes a
+     * category and fills domain/topic/subtopic from whatever the caller's
+     * `MemoryFact` happened to carry, which for every automatic writer is nothing.
+     * This takes the hierarchy as the caller decided it, plus the rationale and the
+     * relation ids, and sends all of it.
+     *
+     * Returns the stored row with the brain's real deterministic id, so the caller
+     * can cite the record it just wrote rather than a uuid nothing resolves.
+     */
+    suspend fun storeRecord(
+        content: String,
+        domain: String,
+        topic: String,
+        subtopic: String,
+        provenance: String,
+        rationale: String,
+        relatedTo: List<String>,
+        confidence: Float,
+    ): MemoryFact = withContext(Dispatchers.Default) {
+        val now = System.currentTimeMillis()
+        val ack = brainApi.storeRecord(
+            contentText = content,
+            domainLabel = domain.ifBlank { "memory" },
+            topicLabel = topic.ifBlank { "general" },
+            subtopicLabel = subtopic.ifBlank { "general" },
+            provenanceLabel = brainApi.provenanceLabelFor(provenance, confidence),
+            rationaleText = rationale,
+            relationIdsHex = relatedTo.map { it.lowercase() },
+            createdAtMillis = now,
+        )
+        if (!ack.success) {
+            Log.e(TAG, "brain storeRecord rejected: ${ack.raw.take(300)}")
+            error("brain record store rejected: ${ack.raw.take(200)}")
+        }
+        Log.d(
+            TAG,
+            "brain storeRecord accepted (domain=$domain topic=$topic relations=${relatedTo.size} " +
+                "dwm=${ack.rawCounts.dwm_count} graph-nodes=${ack.rawCounts.graph_nodes})",
+        )
+        MemoryFact(
+            id = brainApi.realIdFor(content),
+            category = domain.ifBlank { "memory" },
+            fact = content,
+            embedding = emptyList(),
+            confidence = confidence.coerceIn(0f, 1f),
+            sourceConversationIds = emptyList(),
+            extractedDate = now,
+            lastRecalledDate = now,
+            domain = domain.ifBlank { "memory" },
+            topic = topic.ifBlank { "general" },
+            subtopic = subtopic.ifBlank { "general" },
+        )
+    }
+
+    /**
      * The category a write files under.
      *
      * The brain's own hierarchy is domain/topic/subtopic, so the caller's

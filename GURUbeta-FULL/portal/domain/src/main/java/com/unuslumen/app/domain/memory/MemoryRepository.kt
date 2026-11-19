@@ -30,6 +30,26 @@ interface MemoryRepository {
      */
     suspend fun persistFacts(facts: List<MemoryFact>): List<MemoryFact>
 
+    /**
+     * Write one record with its full place in the knowledge graph (issue 486).
+     *
+     * Separate from [persistFacts] because the two answer different questions.
+     * `persistFacts` stores prose under a category, which is what every automatic
+     * writer has. This stores a node: a domain, a topic, a subtopic, a rationale and
+     * a set of typed relations to other memories. The brain accepts both; only the
+     * tool layer was flattening the second into the first.
+     */
+    suspend fun storeRecord(
+        content: String,
+        domain: String,
+        topic: String,
+        subtopic: String,
+        provenance: String,
+        rationale: String,
+        relatedTo: List<String>,
+        confidence: Float,
+    ): MemoryFact
+
     /** Every live fact the brain holds, newest first. */
     suspend fun getAllFacts(): List<MemoryFact>
 
