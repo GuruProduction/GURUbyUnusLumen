@@ -6,6 +6,7 @@ package com.unuslumen.app.presentation.components
 import com.unuslumen.app.domain.model.AiMessage
 import com.unuslumen.app.domain.model.AiMessageAttachment
 import com.unuslumen.app.domain.model.ToolCallResultObject
+import com.unuslumen.app.domain.portal.PortalFrontMatter
 
 /**
  * Converts AiMessage objects to HTML strings for rendering inside the PortalCanvas.
@@ -951,19 +952,21 @@ object ChatToHtml {
      * Extract portal content from assistant message content.
      * Supports ```portal code fences and <!-- PORTAL: --> comments.
      */
-    private data class ExtractedPortal(
-        val html: String,
-        val css: String = "",
-        val js: String = "",
-        val height: Int? = null,
-        val interactive: Boolean = true
-    )
-
-    private fun extractPortalContent(content: String): ExtractedPortal? {
+    /**
+     * The one portal parser, shared with the two Compose renderers.
+     *
+     * This file carried its own copy, and the copies drifted: this one learned
+     * two-space block scalars and the Compose ones did not, so the same message
+     * rendered in one place and arrived dead in another (issue 479). The parser
+     * now lives in the domain layer, understands `|`, `>` and their chomping
+     * hints, takes its indentation baseline from the first content line, and is
+     * tested directly.
+     */
+    private fun extractPortalContent(content: String): PortalFrontMatter.Parsed? {
         val portalFenceRegex = Regex("""```portal\s*\n(.*?)```""", RegexOption.DOT_MATCHES_ALL)
         val fenceMatch = portalFenceRegex.find(content)
         if (fenceMatch != null) {
-            return parsePortalBody(fenceMatch.groupValues[1].trim())
+            return PortalFrontMatter.parse(fenceMatch.groupValues[1])
         }
 
         val commentRegex = Regex("""<!--\s*PORTAL:\s*(.*?)\s*-->""", RegexOption.DOT_MATCHES_ALL)
@@ -971,7 +974,7 @@ object ChatToHtml {
         if (commentMatch != null) {
             return try {
                 val jsonObj = org.json.JSONObject(commentMatch.groupValues[1].trim())
-                ExtractedPortal(
+                PortalFrontMatter.Parsed(
                     html = jsonObj.optString("html", ""),
                     css = jsonObj.optString("css", ""),
                     js = jsonObj.optString("js", ""),
@@ -981,73 +984,6 @@ object ChatToHtml {
             } catch (_: Exception) { null }
         }
         return null
-    }
-
-    private fun parsePortalBody(body: String): ExtractedPortal {
-        var css = ""
-        var js = ""
-        var height: Int? = null
-        var interactive = true
-        var html = body
-
-        val frontMatterRegex = Regex("""^---\s*\n(.*?)\n---\s*\n(.*)""", RegexOption.DOT_MATCHES_ALL)
-        val fmMatch = frontMatterRegex.find(body)
-        if (fmMatch != null) {
-            val frontMatter = fmMatch.groupValues[1]
-            html = fmMatch.groupValues[2].trim()
-
-            // Parse YAML frontmatter supporting both simple key: value and
-            // YAML block scalars (key: | followed by indented multiline content)
-            val lines = frontMatter.lines()
-            var i = 0
-            while (i < lines.size) {
-                val line = lines[i]
-                val trimmed = line.trim()
-                if (trimmed.isEmpty()) { i++; continue }
-
-                when {
-                    trimmed.startsWith("css:") -> {
-                        val inlineVal = trimmed.removePrefix("css:").trim()
-                        if (inlineVal == "|" || inlineVal == ">") {
-                            // YAML block scalar - collect indented lines below
-                            val sb = StringBuilder()
-                            i++
-                            while (i < lines.size && (lines[i].startsWith("  ") || lines[i].trim().isEmpty())) {
-                                sb.append(lines[i].replaceFirst("  ", "")).append("\n")
-                                i++
-                            }
-                            css = sb.toString().trim()
-                            continue
-                        } else {
-                            css = inlineVal.trimSurrounding('"')
-                        }
-                    }
-                    trimmed.startsWith("js:") -> {
-                        val inlineVal = trimmed.removePrefix("js:").trim()
-                        if (inlineVal == "|" || inlineVal == ">") {
-                            val sb = StringBuilder()
-                            i++
-                            while (i < lines.size && (lines[i].startsWith("  ") || lines[i].trim().isEmpty())) {
-                                sb.append(lines[i].replaceFirst("  ", "")).append("\n")
-                                i++
-                            }
-                            js = sb.toString().trim()
-                            continue
-                        } else {
-                            js = inlineVal.trimSurrounding('"')
-                        }
-                    }
-                    trimmed.startsWith("height:") -> {
-                        height = trimmed.removePrefix("height:").trim().toIntOrNull()
-                    }
-                    trimmed.startsWith("interactive:") -> {
-                        interactive = trimmed.removePrefix("interactive:").trim().lowercase() == "true"
-                    }
-                }
-                i++
-            }
-        }
-        return ExtractedPortal(html = html, css = css, js = js, height = height, interactive = interactive)
     }
 
     private fun stripPortalContent(content: String): String {
@@ -1138,10 +1074,4 @@ object ChatToHtml {
         return "%.1f GB".format(mb / 1024.0)
     }
 
-    private fun String.trimSurrounding(char: Char): String {
-        if (length >= 2 && first() == char && last() == char) {
-            return substring(1, length - 1)
-        }
-        return this
-    }
 }
