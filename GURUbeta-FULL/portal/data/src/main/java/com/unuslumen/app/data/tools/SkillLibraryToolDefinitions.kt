@@ -27,6 +27,18 @@ object SkillLibraryToolDefinitions : ToolSetRegistration {
     const val GET_SKILL_FROM_LIBRARY = "getSkillFromLibrary"
     const val INSTALL_SKILL_FROM_LIBRARY = "installSkillFromLibrary"
 
+    // THE AUTHORING VERBS (issue 492).
+    //
+    // The six names above could use a skill and install someone else's, and none of
+    // them could write one. The Self Improvement Engine's remit names skills as part
+    // of development, and the repository underneath already had create, update,
+    // enable, disable and delete; only the tools were missing.
+    const val CREATE_SKILL = "createSkill"
+    const val UPDATE_SKILL = "updateSkill"
+    const val LIST_SKILLS = "listSkills"
+    const val ENABLE_SKILL = "enableSkill"
+    const val DISABLE_SKILL = "disableSkill"
+
     override val definitions = listOf(
         ToolDefinition(
             name = BROWSE_SKILL_LIBRARY,
@@ -61,7 +73,58 @@ object SkillLibraryToolDefinitions : ToolSetRegistration {
                 ToolParameter("slug", ToolParameterType.String, required = true, description = "The skill's slug from the catalog listing")
             ),
             permissions = emptyList()
-        )
+        ),
+        ToolDefinition(
+            name = LIST_SKILLS,
+            description = "List the skills you hold, bundled, installed and ones you have written yourself, with their names, descriptions, when-to-use lines and enabled state. Read this BEFORE writing a new skill, so you extend what exists rather than duplicating it.",
+            category = "skills",
+            parameters = emptyList(),
+            permissions = emptyList(),
+        ),
+        ToolDefinition(
+            name = CREATE_SKILL,
+            description = "Write a new skill and store it permanently. A skill is a methodology you can invoke later: the body is the instruction set that expands into your context when the skill runs, so write the steps a future run would need rather than a description of them. Refused if the name is unusable, the description or body is missing, the body is too short to be a methodology, or an allowed tool does not exist.",
+            category = "skills",
+            parameters = listOf(
+                ToolParameter("name", ToolParameterType.String, required = true, description = "The skill's name: letters, digits, dashes and spaces"),
+                ToolParameter("description", ToolParameterType.String, required = true, description = "One line saying what the skill does, for the listing"),
+                ToolParameter("whenToUse", ToolParameterType.String, required = false, description = "When this skill should fire on its own, phrased as the words a person would type"),
+                ToolParameter("allowedTools", ToolParameterType.String, required = false, description = "Comma-separated tool names the skill may call. Omit for none"),
+                ToolParameter("bodyMarkdown", ToolParameterType.String, required = true, description = "The full instruction set, in markdown"),
+            ),
+            permissions = emptyList(),
+        ),
+        ToolDefinition(
+            name = UPDATE_SKILL,
+            description = "Change a skill you have written: its description, when-to-use line, allowed tools or body. The previous version is replaced in place, so read it first with listSkills if you need to preserve wording.",
+            category = "skills",
+            parameters = listOf(
+                ToolParameter("name", ToolParameterType.String, required = true, description = "The skill's name, as it appears in your listing"),
+                ToolParameter("description", ToolParameterType.String, required = false, description = "New one-line description"),
+                ToolParameter("whenToUse", ToolParameterType.String, required = false, description = "New when-to-use line"),
+                ToolParameter("allowedTools", ToolParameterType.String, required = false, description = "New comma-separated tool names, replacing the old set"),
+                ToolParameter("bodyMarkdown", ToolParameterType.String, required = false, description = "New instruction body"),
+            ),
+            permissions = emptyList(),
+        ),
+        ToolDefinition(
+            name = ENABLE_SKILL,
+            description = "Turn a disabled skill back on, without destroying it.",
+            category = "skills",
+            parameters = listOf(
+                ToolParameter("name", ToolParameterType.String, required = true, description = "The skill's name"),
+            ),
+            permissions = emptyList(),
+        ),
+        ToolDefinition(
+            name = DISABLE_SKILL,
+            description = "Turn a skill off WITHOUT deleting it, so its text survives and it can be turned back on. Use this rather than deleting when a methodology has gone stale or is doing harm.",
+            category = "skills",
+            parameters = listOf(
+                ToolParameter("name", ToolParameterType.String, required = true, description = "The skill's name"),
+            ),
+            permissions = emptyList(),
+        ),
     )
 
     override fun executorClass(): KClass<out ToolExecutor> = SkillLibraryToolExecutor::class
