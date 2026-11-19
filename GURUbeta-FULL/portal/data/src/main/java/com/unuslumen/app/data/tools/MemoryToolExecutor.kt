@@ -6,6 +6,7 @@ package com.unuslumen.app.data.tools
 import com.unuslumen.app.data.memory.persistedFactRoundTrip
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
+import com.unuslumen.app.domain.memory.MemoryCategories
 import com.unuslumen.app.domain.memory.MemoryFact
 import com.unuslumen.app.domain.memory.MemoryRepository
 import com.unuslumen.app.domain.memory.ConversationMessage
@@ -80,7 +81,20 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) : ToolE
 
         MemoryToolDefinitions.ADD_MEMORY_FACT -> {
             val fact = args["fact"] as? String ?: return ToolExecutionResult.error("Missing 'fact'")
-            val category = args["category"] as? String ?: return ToolExecutionResult.error("Missing 'category'")
+            // THE CATEGORY IS CHECKED AGAINST THE ONE VOCABULARY (issue 485).
+            //
+            // It used to be taken as free text, so `user_preference`,
+            // `user-preferences`, `preference` and `Preferences` became separate
+            // categories holding one kind of fact, and the category filter found one
+            // of them at a time. A known spelling is repaired onto the canonical
+            // name; anything outside the set is refused with the set named, because
+            // a filter over an open vocabulary is not a filter.
+            val category = when (val normalised = MemoryCategories.normalise(args["category"] as? String)) {
+                is MemoryCategories.Normalisation.Canonical -> normalised.category
+                is MemoryCategories.Normalisation.Repaired -> normalised.category
+                is MemoryCategories.Normalisation.Refused ->
+                    return ToolExecutionResult.error(normalised.reason)
+            }
             val confidence = (args["confidence"] as? Number)?.toFloat() ?: 0.9f
             // The draft carries NO id of its own choosing. Whatever it holds is
             // replaced by the brain's deterministic id on the way out, and the
@@ -165,7 +179,18 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) : ToolE
             val existing = known!!
             val now = System.currentTimeMillis()
             val updatedContent = (args["fact"] as? String) ?: existing.fact
-            val updatedCategory = (args["category"] as? String) ?: existing.category
+            // The same check on the way in, for the same reason: an update is how a
+            // fact drifts into a new category, and a filter that cannot find the new
+            // spelling is how a fact becomes unfindable (issue 485).
+            val updatedCategory = when (val raw = args["category"] as? String) {
+                null -> existing.category
+                else -> when (val normalised = MemoryCategories.normalise(raw)) {
+                    is MemoryCategories.Normalisation.Canonical -> normalised.category
+                    is MemoryCategories.Normalisation.Repaired -> normalised.category
+                    is MemoryCategories.Normalisation.Refused ->
+                        return ToolExecutionResult.error(normalised.reason)
+                }
+            }
             val updatedConfidence = (args["confidence"] as? Number)?.toFloat() ?: existing.confidence
             val replacement = existing.copy(
                 fact = updatedContent,

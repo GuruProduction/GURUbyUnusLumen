@@ -8,6 +8,7 @@ import com.unuslumen.app.data.brain.cerebrum.CerebrumHost
 import com.unuslumen.app.domain.memory.Conversation
 import com.unuslumen.app.domain.memory.ConversationMessage
 import com.unuslumen.app.domain.memory.FactListing
+import com.unuslumen.app.domain.memory.MemoryCategories
 import com.unuslumen.app.domain.memory.MemoryFact
 import com.unuslumen.app.domain.memory.MemoryRepository
 import com.unuslumen.app.domain.memory.ConversationThread
@@ -157,7 +158,7 @@ class MemoryRepositoryImpl(
         // is a partition of it rather than a second brain call. Comparing on the
         // category the row reports keeps the filter honest about what a fact IS,
         // not about which words its body happens to contain.
-        val matching = page.facts.filter { fact -> fact.category.equals(category, ignoreCase = true) }
+        val matching = page.facts.filter { fact -> MemoryCategories.matches(category, fact.category) }
         return FactListing(
             facts = matching,
             totalLive = page.totalLive,
@@ -172,7 +173,7 @@ class MemoryRepositoryImpl(
     override suspend fun searchFacts(query: String, category: String?): List<MemoryFact> =
         brainService.search(query)
             .map { hit -> hit.fact }
-            .filter { category == null || it.category.equals(category, ignoreCase = true) }
+            .filter { MemoryCategories.matches(category, it.category) }
 
     override suspend fun markFactRecalled(factId: String) {
         withContext(Dispatchers.IO) {
