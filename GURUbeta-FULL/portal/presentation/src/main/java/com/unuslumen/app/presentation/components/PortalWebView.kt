@@ -212,13 +212,7 @@ fun PortalWebView(
                         lastLoadedHtml = fullHtml
                         isLoaded = false
                         try {
-                            wv.loadDataWithBaseURL(
-                                "file:///android_asset/portal/",
-                                fullHtml,
-                                "text/html",
-                                "UTF-8",
-                                null
-                            )
+                            loadPortalDocument(wv, fullHtml)
                         } catch (_: Throwable) {
                             // WebView was destroyed between the AtomicBoolean check and this call.
                             // Chromium throws a plain Throwable (not RuntimeException) from AwContents
@@ -296,6 +290,66 @@ fun PortalWebView(
         }
     }
 }
+
+/**
+ * Load a portal document from the loopback HTTP origin, falling back to a file
+ * origin only when the server could not be started (issue 475).
+ *
+ * WHY THE ORIGIN IS THE WHOLE FIX. A WebView loaded with a `file://` base URL
+ * gives its document an OPAQUE origin: `window.location.origin` is the string
+ * `"null"`, and every iframe it creates sends no Referer or one naming a
+ * `file://` path. YouTube's embed API refuses both with error 153, and so does
+ * every provider that validates origin, before the player is even constructed.
+ * A loopback HTTP origin is a real origin, so the Referer is a real URL.
+ *
+ * THE FALLBACK IS HONEST, NOT EQUIVALENT. If the socket could not bind, the
+ * document still renders — its inline HTML, CSS and JS all work, images and
+ * media all work — and only third-party embeds fail, exactly as they do today.
+ * That is better than refusing to render a portal because an embed might not
+ * work.
+ */
+private fun loadPortalDocument(webView: WebView, fullHtml: String) {
+    // The asset reader is installed before the origin is handed back, so an
+    // asset request can never arrive at a server that does not yet know how to
+    // answer it.
+    val assetManager = webView.context.applicationContext.assets
+    val base = PortalOriginServer.ensureStarted { name ->
+        runCatching { assetManager.open("portal/$name").use { it.readBytes() } }.getOrNull()
+    }
+
+    val documentUrl = if (base != null) {
+        PortalOriginServer.register(absolutiseAssetUrls(fullHtml, base))
+    } else {
+        null
+    }
+
+    if (documentUrl != null) {
+        webView.loadUrl(documentUrl)
+    } else {
+        webView.loadDataWithBaseURL(
+            "file:///android_asset/portal/",
+            fullHtml,
+            "text/html",
+            "UTF-8",
+            null,
+        )
+    }
+}
+
+/**
+ * Rewrite the bundled asset references to absolute URLs on the portal origin.
+ *
+ * The template loads KaTeX, Mermaid, Chart.js, highlight.js and marked from
+ * `file:///android_asset/portal/`. That works when the document itself is a file
+ * document and stops working the moment it is served over HTTP, because a page on
+ * `http://127.0.0.1:<port>` may not load subresources from `file://` on Android.
+ *
+ * THE ASSETS THEMSELVES ARE STILL SERVED FROM THE APK. Only the base the document
+ * uses to refer to them changes; the WebView reads android_asset paths the same
+ * way it always has.
+ */
+private fun absolutiseAssetUrls(html: String, originBase: String): String =
+    html.replace("file:///android_asset/portal/", "$originBase${PortalOriginServer.PATH_PREFIX}assets/")
 
 /**
  * Build the complete HTML document for the portal.
