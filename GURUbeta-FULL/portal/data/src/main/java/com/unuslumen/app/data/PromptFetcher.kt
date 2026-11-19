@@ -154,6 +154,17 @@ object PromptFetcher {
     }
 
     /**
+     * Test seam for [extractJsonString].
+     *
+     * The unescaper is the one piece of this class that can silently change a
+     * prompt's meaning rather than failing, so it is worth a test, and a test
+     * cannot reach a private function. Internal rather than public so it stays
+     * inside the module.
+     */
+    internal fun accessExtractJsonString(json: String, startIndex: Int): String? =
+        extractJsonString(json, startIndex)
+
+    /**
      * Extract a JSON string value, handling escape sequences.
      * Starts reading after the opening quote.
      */
