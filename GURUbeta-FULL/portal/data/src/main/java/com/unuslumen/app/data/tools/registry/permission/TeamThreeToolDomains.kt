@@ -12,6 +12,7 @@ import com.unuslumen.app.data.fabric.smart.SmartHomeDomainModule
 import com.unuslumen.app.data.fabric.tv.TvDomainModule
 import com.unuslumen.app.data.tools.backup.BrainBackupDomainModule
 import com.unuslumen.app.data.tools.diagnostics.DiagnosticsDomainModule
+import com.unuslumen.app.data.tools.prompt.PromptRowDomainModule
 import com.unuslumen.app.data.tools.permission.AccountsCalendarDomainModule
 import com.unuslumen.app.data.tools.permission.AlarmsMiscDomainModule
 import com.unuslumen.app.data.tools.permission.AppUsageNotifyDomainModule
@@ -79,6 +80,11 @@ object TeamThreeToolDomains {
         // every conversation and memory permanently. A restore always answers that a restart
         // is required, because the running process still holds the old database open.
         BrainBackupDomainModule,
+        // The prompt stack as rows. The device used to hold a five-column prompt_sections table
+        // that nothing wrote to and nothing read, while the app received one assembled string,
+        // so every question about the stack was answered with silence that looked like an empty
+        // stack. These verbs address a row by its stable slug and keep a version history.
+        PromptRowDomainModule,
         // App usage and notifications. Its dndControl deliberately declares no permission,
         // because reading the Do Not Disturb filter needs none and refusing a true reading to
         // keep a uniform declaration would be the wrong trade.

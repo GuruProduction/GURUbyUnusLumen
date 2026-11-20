@@ -97,6 +97,7 @@ class AgentFoundationMigrationTest {
             com.unuslumen.app.database.migrations.MIGRATION_38_39,
             com.unuslumen.app.database.migrations.MIGRATION_39_40,
             com.unuslumen.app.database.migrations.MIGRATION_40_41,
+            com.unuslumen.app.database.migrations.MIGRATION_41_42,
         )
 
         migrated.use { db ->
@@ -352,6 +353,7 @@ class AgentFoundationMigrationTest {
             com.unuslumen.app.database.migrations.MIGRATION_38_39,
             com.unuslumen.app.database.migrations.MIGRATION_39_40,
             com.unuslumen.app.database.migrations.MIGRATION_40_41,
+            com.unuslumen.app.database.migrations.MIGRATION_41_42,
         )
 
         migrated.use { db ->
@@ -530,6 +532,7 @@ class AgentFoundationMigrationTest {
             com.unuslumen.app.database.migrations.MIGRATION_38_39,
             com.unuslumen.app.database.migrations.MIGRATION_39_40,
             com.unuslumen.app.database.migrations.MIGRATION_40_41,
+            com.unuslumen.app.database.migrations.MIGRATION_41_42,
         )
 
         migrated.use { db ->
@@ -733,6 +736,7 @@ class AgentFoundationMigrationTest {
             com.unuslumen.app.database.migrations.MIGRATION_38_39,
             com.unuslumen.app.database.migrations.MIGRATION_39_40,
             com.unuslumen.app.database.migrations.MIGRATION_40_41,
+            com.unuslumen.app.database.migrations.MIGRATION_41_42,
         )
 
         migrated.use { db ->
@@ -822,6 +826,7 @@ class AgentFoundationMigrationTest {
             true,
             com.unuslumen.app.database.migrations.MIGRATION_39_40,
             com.unuslumen.app.database.migrations.MIGRATION_40_41,
+            com.unuslumen.app.database.migrations.MIGRATION_41_42,
         )
 
         migrated.use { db ->
@@ -883,6 +888,77 @@ class AgentFoundationMigrationTest {
             ).use { c ->
                 assertTrue(c.moveToFirst())
                 assertEquals("a disarmed schedule is never due", 0, c.getInt(0))
+            }
+        }
+        helper.closeWhenFinished(migrated)
+    }
+
+    /**
+     * The prompt store replaces two tables that nothing ever used.
+     *
+     * THE DROP IS THE RISKY PART OF MIGRATION 41 TO 42, so it is proven rather than assumed: a
+     * version 41 database holding rows in `prompt_sections` and `prompt_amendments` migrates,
+     * those tables are gone, the two new ones exist, and every unrelated row is untouched. The
+     * claim behind the drop is that no writer exists for either table; this proves the migration
+     * is safe even if one did.
+     */
+    @Test
+    fun migrationFrom41To42ReplacesTheDeadPromptTables() {
+        helper.createDatabase(databaseName, 41).use { db ->
+            db.execSQL(
+                """
+                INSERT INTO conversations (id, title, created_date, updated_date, message_count)
+                VALUES ('conv-p', 'kept', 1, 1, 0)
+                """.trimIndent()
+            )
+            // A row in the dead table, so the drop is proven against real data rather
+            // than against an empty table that would pass either way.
+            db.execSQL(
+                """
+                INSERT INTO prompt_sections (id, displayName, masterContent, isEditable, section_order)
+                VALUES ('identity', 'Identity', 'You are GURU.', 1, 0)
+                """.trimIndent()
+            )
+        }
+
+        val migrated = helper.runMigrationsAndValidate(
+            databaseName,
+            guruDatabase.SCHEMA_VERSION,
+            true,
+            com.unuslumen.app.database.migrations.MIGRATION_41_42,
+        )
+
+        migrated.use { db ->
+            db.query("SELECT title FROM conversations WHERE id = 'conv-p'").use { c ->
+                assertTrue("the unrelated conversation survives", c.moveToFirst())
+                assertEquals("kept", c.getString(0))
+            }
+
+            // The dead tables are gone, asked for by name rather than inferred.
+            for (gone in listOf("prompt_sections", "prompt_amendments")) {
+                db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='$gone'").use { c ->
+                    assertEquals("$gone must be dropped", 0, c.count)
+                }
+            }
+
+            // The two real ones exist and accept a row.
+            db.execSQL(
+                """
+                INSERT INTO prompt_rows (id, slug, category, name, content, created_at, updated_at)
+                VALUES ('r1', 'guru-identity', 'identity', 'Identity', 'You are GURU.', 1, 1)
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                INSERT INTO prompt_row_versions (id, row_id, version, name, content, created_at)
+                VALUES ('v1', 'r1', 1, 'Identity', 'You are GURU.', 1)
+                """.trimIndent()
+            )
+            db.query("SELECT COUNT(*) FROM prompt_rows").use { c ->
+                assertTrue(c.moveToFirst()); assertEquals(1, c.getInt(0))
+            }
+            db.query("SELECT COUNT(*) FROM prompt_row_versions").use { c ->
+                assertTrue(c.moveToFirst()); assertEquals(1, c.getInt(0))
             }
         }
         helper.closeWhenFinished(migrated)
@@ -1042,6 +1118,7 @@ class AgentFoundationMigrationTest {
             com.unuslumen.app.database.migrations.MIGRATION_38_39,
             com.unuslumen.app.database.migrations.MIGRATION_39_40,
             com.unuslumen.app.database.migrations.MIGRATION_40_41,
+            com.unuslumen.app.database.migrations.MIGRATION_41_42,
         )
     }
 }

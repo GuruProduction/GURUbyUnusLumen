@@ -19,8 +19,7 @@ import com.unuslumen.app.database.dao.MemoryEventDao
 import com.unuslumen.app.database.dao.MemoryCrossReferenceDao
 import com.unuslumen.app.database.dao.MessageDao
 import com.unuslumen.app.database.dao.NoteDao
-import com.unuslumen.app.database.dao.PromptAmendmentDao
-import com.unuslumen.app.database.dao.PromptSectionDao
+import com.unuslumen.app.database.dao.PromptRowDao
 import com.unuslumen.app.database.dao.GuruAgentDao
 import com.unuslumen.app.database.dao.GuruDefinedToolDao
 import com.unuslumen.app.database.dao.GuruAutomationDao
@@ -60,8 +59,8 @@ import com.unuslumen.app.database.entity.MemoryCrossReferenceEntity
 import com.unuslumen.app.database.entity.MessageEntity
 import com.unuslumen.app.database.entity.NoteEntity
 import com.unuslumen.app.database.entity.NoteFolderEntity
-import com.unuslumen.app.database.entity.PromptAmendmentEntity
-import com.unuslumen.app.database.entity.PromptSectionEntity
+import com.unuslumen.app.database.entity.PromptRowEntity
+import com.unuslumen.app.database.entity.PromptRowVersionEntity
 import com.unuslumen.app.database.entity.GuruDefinedToolEntity
 import com.unuslumen.app.database.entity.GuruAgentEntity
 import com.unuslumen.app.database.entity.GuruAutomationEntity
@@ -135,8 +134,12 @@ import com.unuslumen.app.database.entity.AgentScheduleEntity
         MemoryCrossReferenceEntity::class,
         ConversationThreadEntity::class,
         HiveMindStateEntity::class,
-        PromptSectionEntity::class,
-        PromptAmendmentEntity::class,
+        // The prompt stack, as rows rather than one assembled string. The device held a
+        // five-column `prompt_sections` table that nothing ever wrote to and nothing read,
+        // so every question about the stack was answered with silence that looked like an
+        // empty stack. These two mirror the server's own tables and carry a version history.
+        PromptRowEntity::class,
+        PromptRowVersionEntity::class,
         GuruDefinedToolEntity::class,
         GuruAgentEntity::class,
         GuruAutomationEntity::class,
@@ -199,7 +202,7 @@ import com.unuslumen.app.database.entity.AgentScheduleEntity
         // starts an agent, and one alarm cannot mean both.
         AgentScheduleEntity::class,
     ],
-    version = 41
+    version = 42
 )
 @TypeConverters(DBConverters::class)
 abstract class guruDatabase: RoomDatabase() {
@@ -219,8 +222,7 @@ abstract class guruDatabase: RoomDatabase() {
     abstract fun memoryCrossReferenceDao(): MemoryCrossReferenceDao
     abstract fun conversationThreadDao(): ConversationThreadDao
     abstract fun hiveMindStateDao(): HiveMindStateDao
-    abstract fun promptSectionDao(): PromptSectionDao
-    abstract fun promptAmendmentDao(): PromptAmendmentDao
+    abstract fun promptRowDao(): PromptRowDao
     abstract fun guruDefinedToolDao(): GuruDefinedToolDao
     abstract fun guruAgentDao(): GuruAgentDao
     abstract fun guruAutomationDao(): GuruAutomationDao
@@ -284,6 +286,6 @@ abstract class guruDatabase: RoomDatabase() {
          * fails the build if it drifts from the @Database annotation beside it. A test is the
          * guard that reflection was pretending to be.
          */
-        const val SCHEMA_VERSION: Int = 41
+        const val SCHEMA_VERSION: Int = 42
     }
 }
