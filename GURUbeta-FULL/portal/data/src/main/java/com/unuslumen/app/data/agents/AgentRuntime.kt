@@ -170,6 +170,17 @@ class AgentRuntime(
         /** How much of one tool result is quoted verbatim in the notebook before it is shortened. */
         private const val NOTEBOOK_EXCERPT_CHARS = 300
 
+        /**
+         * When buffered model output is written, rather than held.
+         *
+         * THE BOUND IS THE POINT. Holding everything until the stream ends means an abrupt
+         * death loses the whole reply instead of the last fragment, and a long reply is
+         * exactly when that matters. 250 ms or 8 KiB, whichever comes first, keeps both
+         * the write count and the worst-case loss small.
+         */
+        const val OUTPUT_FLUSH_MILLIS = 250L
+        const val OUTPUT_FLUSH_CHARS = 8 * 1024
+
         private val NO_TIMEOUTS = ai.koog.prompt.executor.clients.ConnectionTimeoutConfig(
             requestTimeoutMillis = Long.MAX_VALUE,
             connectTimeoutMillis = Long.MAX_VALUE,
@@ -285,6 +296,29 @@ class AgentRuntime(
     )
 
     /**
+     * The conversation the current dispatch belongs to.
+     *
+     * WHY THE RUNTIME HOLDS THIS RATHER THAN THE TOOL ARGUMENTS. A run belongs to the
+     * conversation that owns it, and `agent_runs.conversation_id` says so with a foreign
+     * key. But `spawnAgent` reaches this class through the dispatcher, which carries tool
+     * arguments and nothing else — there is no conversation in the call. The send path
+     * knows it, so it binds it here before dispatching, and the spawn reads it back.
+     *
+     * Scoped per dispatch rather than per session, and cleared when the send finishes, so
+     * a later spawn cannot quietly inherit a conversation the person has left.
+     */
+    @Volatile
+    private var boundConversationId: String? = null
+
+    /** Bind the conversation this dispatch is happening in. Called by the send path. */
+    fun bindConversation(conversationId: String?) {
+        boundConversationId = conversationId?.takeIf { it.isNotBlank() }
+    }
+
+    /** The conversation this dispatch belongs to, or null when nothing bound one. */
+    fun currentConversationId(): String? = boundConversationId
+
+    /**
      * The wiring an agent runs on, resolved fresh at spawn time so switching
      * provider mid-session takes effect on the next job.
      */
@@ -322,6 +356,29 @@ class AgentRuntime(
             return@flow
         }
 
+        /*
+         * NO CONVERSATION MEANS NO RUN, AND NO RUN MEANS NO EXECUTION.
+         *
+         * The foreign key on `agent_runs.conversation_id` is not decoration: a run belongs
+         * to the conversation that owns it, and deleting that conversation must take the
+         * run and its whole history with it. Substituting the run id here — which the first
+         * version did — points at a conversation that does not exist, so the insert fails
+         * and the agent cannot start at all. A sentence naming the actual cause is far
+         * better than a foreign-key violation nobody can read.
+         */
+        val owningConversation = conversationId ?: boundConversationId
+        if (owningConversation.isNullOrBlank()) {
+            emit(
+                failed(
+                    agent.name,
+                    "${agent.name} was not started because no conversation is bound. An agent run " +
+                        "belongs to the conversation that asked for it, so one must be known before " +
+                        "the job begins."
+                )
+            )
+            return@flow
+        }
+
         val wiring = wiring()
         if (wiring == null) {
             emit(failed(agent.name, "No model is connected right now, so '${agent.name}' could not run."))
@@ -342,7 +399,7 @@ class AgentRuntime(
             ledger.createRun(
                 com.unuslumen.app.database.entity.AgentRunEntity(
                     runId = runId,
-                    conversationId = conversationId ?: runId,
+                    conversationId = owningConversation,
                     originMessageId = originMessageId,
                     agentId = agent.id,
                     agentSlug = agent.slug,
@@ -418,6 +475,26 @@ class AgentRuntime(
                 com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
                 "execution started",
             )
+            /*
+             * THE FIRST CHECKPOINT, BEFORE ANY MODEL CALL.
+             *
+             * Without it a run that dies during its very first request has a record of
+             * having started and nothing to restore from, which is the one case where the
+             * ledger exists and still cannot help. This captures the job, the resolved
+             * prompt and the tool set, which is the whole of the state at this point.
+             */
+            ledger.commitCheckpoint(
+                runId = session.id,
+                reason = com.unuslumen.app.database.entity.AgentRunCheckpointEntity.REASON_RUN_CREATED,
+                stateJson = checkpointState(session),
+            )
+        }
+
+        // The foreground service owns this run so it survives the Portal being backgrounded.
+        runCatching {
+            AgentRunService.start(context, session.id, agent.name)
+        }.onFailure {
+            android.util.Log.w("guru_agents", "AgentRunService did not start: ${it.message}")
         }
 
         emit(bounded(session, onEvent))
@@ -436,30 +513,211 @@ class AgentRuntime(
         answer: String,
         onEvent: ((String) -> Unit)? = null
     ) = flow {
-        val session = sessions[sessionId.trim()]
-        if (session == null) {
-            emit(
-                failed(
-                    "",
-                    "No live session called '$sessionId'. A session lasts while the app is running; " +
-                        "if this one has gone, start the job again with spawnAgent."
+        val id = sessionId.trim()
+        val live = sessions[id]
+        if (live == null) {
+            /*
+             * THE SESSION IS GONE, SO THE LEDGER ANSWERS.
+             *
+             * This used to be a dead end: "a session lasts while the app is running". That
+             * sentence was true and it was the whole defect, because it meant a question
+             * asked before a restart could never be answered and the work behind it was
+             * lost. The checkpoint holds what the session held — messages, notebook,
+             * counters, the pending question — so it can be rebuilt and carried on.
+             *
+             * A REFUSAL HERE IS A REAL ANSWER, NOT A FAILURE TO TRY. If there is no
+             * checkpoint, or its hash does not match, or the recorded model no longer
+             * resolves, the run stays interrupted with the reason named. Resuming under a
+             * different model or against altered state would be worse than stopping.
+             */
+            val restored = restoreFromLedger(id)
+            if (restored == null) {
+                emit(
+                    failed(
+                        "",
+                        "No live session and no recoverable checkpoint for '$id'. The run either " +
+                            "never reached a checkpoint or its state could not be verified, so it " +
+                            "was not resumed. Start the job again with spawnAgent if the work is " +
+                            "still wanted."
+                    )
                 )
+                return@flow
+            }
+            if (answer.isBlank()) {
+                sessions[restored.id] = restored
+                emit(bounded(restored, onEvent, errorOverride = "The answer was empty, so the agent is still waiting."))
+                return@flow
+            }
+            sessions[restored.id] = restored
+            restored.pendingQuestion = null
+            restored.messages = restored.messages + AiMessage.UserMessage(
+                uuid = Uuid.random().toString(),
+                content = answer.trim(),
+                time = System.currentTimeMillis()
             )
-            return@flow
-        }
-        if (answer.isBlank()) {
-            emit(bounded(session, onEvent, errorOverride = "The answer was empty, so the agent is still waiting."))
+            recordResume(restored.id, answer.trim())
+            emit(bounded(restored, onEvent))
             return@flow
         }
 
-        session.pendingQuestion = null
-        session.messages = session.messages + AiMessage.UserMessage(
+        if (answer.isBlank()) {
+            emit(bounded(live, onEvent, errorOverride = "The answer was empty, so the agent is still waiting."))
+            return@flow
+        }
+
+        live.pendingQuestion = null
+        live.messages = live.messages + AiMessage.UserMessage(
             uuid = Uuid.random().toString(),
             content = answer.trim(),
             time = System.currentTimeMillis()
         )
-        emit(bounded(session, onEvent))
+        recordResume(live.id, answer.trim())
+        emit(bounded(live, onEvent))
     }
+
+    /**
+     * Rebuild a session from its newest checkpoint.
+     *
+     * Returns null when the run cannot be resumed honestly, and the reasons are all
+     * refusals rather than fallbacks: no checkpoint, an unreadable one, a hash that does
+     * not match, or a provider that is no longer connected. Each of those means the work
+     * cannot continue as it was, and continuing as something else is worse.
+     */
+    private suspend fun restoreFromLedger(runId: String): Session? {
+        val run = runCatching { ledger.run(runId) }.getOrNull() ?: return null
+        if (run.status in com.unuslumen.app.database.entity.AgentRunEntity.TERMINAL_STATUSES) return null
+        val checkpoint = runCatching { ledger.latestCheckpoint(runId) }.getOrNull() ?: return null
+        when (val verdict = ledger.verifyCheckpoint(checkpoint)) {
+            is AgentRunLedger.CheckpointVerdict.Unreadable -> {
+                android.util.Log.w("guru_agents", "Run '$runId' not resumed: ${verdict.reason}")
+                return null
+            }
+            AgentRunLedger.CheckpointVerdict.Verified -> Unit
+        }
+
+        // THE SAME MODEL OR NONE. A resume under whatever happens to be connected would
+        // execute an old assignment with a new model, which nobody decided.
+        val wiring = wiring() ?: return null
+        if (wiring.model.id != run.modelName) {
+            android.util.Log.w(
+                "guru_agents",
+                "Run '$runId' not resumed: it ran on '${run.modelName}' and this build has '${wiring.model.id}'"
+            )
+            return null
+        }
+
+        val agent = runCatching { agentRepository.resolveAgent(run.agentSlug.ifBlank { run.agentName }) }
+            .getOrNull() ?: return null
+        val allowed = allowedTools(agent)
+
+        /*
+         * THE STATE IS SEALED AT REST, SO IT IS OPENED HERE, AND A REFUSAL IS A REFUSAL.
+         *
+         * A locked vault means the key is not available yet, so the run waits rather than
+         * resuming against a hole. A tampered state means somebody altered the record, so
+         * it must never be resumed at all. Both are returns of null with the reason logged,
+         * which leaves the run INTERRUPTED where a person can see it.
+         */
+        val state = when (val opened = ledger.openCheckpointState(checkpoint)) {
+            is com.unuslumen.app.domain.security.ProtectedRead.Value -> opened.plaintext
+            else -> {
+                android.util.Log.w(
+                    "guru_agents",
+                    "Checkpoint for '$runId' could not be opened: ${opened::class.simpleName}"
+                )
+                return null
+            }
+        }
+
+        val restoredMessages = decodeCheckpointMessages(state)
+        if (restoredMessages.isEmpty()) return null
+
+        val pending = readCheckpointField(state, "pendingQuestion")
+        val rounds = readCheckpointField(state, "rounds")?.toIntOrNull() ?: 0
+        val exchanges = readCheckpointField(state, "exchangeCount")?.toIntOrNull() ?: 0
+        val notebook = readCheckpointField(state, "notebook").orEmpty()
+
+        return Session(
+            id = runId,
+            agent = agent,
+            wiring = wiring,
+            allowed = allowed,
+            descriptors = allowed.map { GuruToolSchemaMapper.definitionToDescriptor(it) },
+            systemPrompt = run.resolvedSystemPrompt,
+            messages = restoredMessages,
+            rounds = rounds,
+            exchangeCount = exchanges,
+            pendingQuestion = pending,
+            notebook = notebook,
+        )
+    }
+
+    /** Record a resume and reopen the run, so the ledger says the work carried on. */
+    private suspend fun recordResume(runId: String, answer: String) {
+        runCatching {
+            ledger.append(
+                runId,
+                AgentRunLedger.EventDraft(
+                    eventType = com.unuslumen.app.domain.agents.AgentEventTypes.QUESTION_ANSWERED,
+                    actorType = "GURU",
+                    payload = jsonObject { put("answer", answer) },
+                )
+            )
+            ledger.appendStateChange(
+                runId,
+                com.unuslumen.app.database.entity.AgentRunEntity.STATUS_WAITING_FOR_GURU,
+                com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
+                "the answer arrived and the work carried on",
+            )
+            ledger.acquireLease(runId, runId)
+        }
+    }
+
+    /**
+     * Rebuild the message list from a checkpoint's serialised form.
+     *
+     * The form is the one [checkpointState] writes: a record separator between entries,
+     * each entry prefixed with its role. A message that does not parse is dropped rather
+     * than aborting the whole restore, because a partial session that can still answer is
+     * better than a refusal over one malformed line — but a session that ends up empty is
+     * refused, because continuing with no history is not a restore.
+     */
+    private fun decodeCheckpointMessages(stateJson: String): List<AiMessage> {
+        val raw = readCheckpointField(stateJson, "messages") ?: return emptyList()
+        return raw.split("\n\u001E\n").mapNotNull { entry ->
+            when {
+                entry.startsWith("user:") -> AiMessage.UserMessage(
+                    uuid = Uuid.random().toString(),
+                    content = entry.removePrefix("user:"),
+                    time = System.currentTimeMillis(),
+                )
+                entry.startsWith("assistant:") -> AiMessage.AssistantMessage(
+                    uuid = Uuid.random().toString(),
+                    content = entry.removePrefix("assistant:"),
+                    time = System.currentTimeMillis(),
+                )
+                entry.startsWith("tool:") -> {
+                    // name:id:arguments:result
+                    val parts = entry.removePrefix("tool:").split(":", limit = 4)
+                    if (parts.size < 4) null else AiMessage.ToolCall(
+                        uuid = Uuid.random().toString(),
+                        id = parts[1].ifBlank { null },
+                        name = parts[0],
+                        rawContent = parts[2],
+                        resultRawContent = parts[3],
+                        time = System.currentTimeMillis(),
+                    )
+                }
+                else -> null
+            }
+        }
+    }
+
+    /** Read one flat string field out of a checkpoint state document. */
+    private fun readCheckpointField(json: String, name: String): String? = runCatching {
+        val obj = Json.parseToJsonElement(json) as JsonObject
+        (obj[name] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() && it != "null" }
+    }.getOrNull()
 
     /** Run one turn of a session, turning any throw into an honest failure. */
     private suspend fun bounded(
@@ -581,7 +839,7 @@ class AgentRuntime(
              * sequence.
              */
             val reasoningBuilder = StringBuilder()
-            val outputFrames = mutableListOf<OutputFrame>()
+            val outputFrames = mutableListOf<com.unuslumen.app.domain.agents.AgentRunReplay.OutputFrame>()
             val requestId = Uuid.random().toString()
             val roundIndex = rounds
 
@@ -622,11 +880,54 @@ class AgentRuntime(
                 )
             }
 
+            /*
+             * FLUSH ON A BOUNDARY, NOT AT THE END.
+             *
+             * Waiting until the stream finishes means a long reply has one uncommitted
+             * buffer for its whole duration, so a process death loses all of it rather
+             * than the agreed final fragment. The boundary is 250 ms or 8 KiB, whichever
+             * comes first, and a flush is forced before anything that follows: a tool
+             * proposal, a completion, a checkpoint, a state change.
+             *
+             * The provider's own stream index is carried through. It answers a different
+             * question from the ledger's sequence — which chunk of the wire this was — and
+             * dropping it loses the ability to line a batch up against a provider log.
+             */
+            var pendingChars = 0
+            var lastFlushAt = System.currentTimeMillis()
+
+            suspend fun flushOutput(force: Boolean) {
+                if (outputFrames.isEmpty()) return
+                val elapsed = System.currentTimeMillis() - lastFlushAt
+                val overSize = pendingChars >= OUTPUT_FLUSH_CHARS
+                val overTime = elapsed >= OUTPUT_FLUSH_MILLIS
+                if (!force && !overSize && !overTime) return
+
+                val toWrite = outputFrames.toList()
+                outputFrames.clear()
+                pendingChars = 0
+                lastFlushAt = System.currentTimeMillis()
+                ledger.append(
+                    session.id,
+                    AgentRunLedger.EventDraft(
+                        eventType = com.unuslumen.app.database.entity.AgentRunEventEntity.MODEL_OUTPUT_BATCH,
+                        actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_MODEL,
+                        correlationId = requestId,
+                        payload = jsonObject {
+                            put("requestId", requestId)
+                            put("frames", com.unuslumen.app.domain.agents.OutputFrames.encode(toWrite))
+                        },
+                    )
+                )
+            }
+
             streamFlow.collect { frame ->
                 when (frame) {
                     is StreamFrame.TextDelta -> {
                         textBuilder.append(frame.text)
-                        outputFrames.add(OutputFrame("TEXT", frame.text, null))
+                        pendingChars += frame.text.length
+                        outputFrames.add(outputFrame(com.unuslumen.app.domain.agents.AgentRunReplay.OutputFrame.Kind.TEXT, frame.text, frame.index))
+                        flushOutput(force = false)
                     }
                     is StreamFrame.TextComplete -> {
                         // The complete form supersedes any deltas already
@@ -647,43 +948,28 @@ class AgentRuntime(
                         // without inventing content for it.
                         val chunk = frame.text.orEmpty()
                         if (chunk.isNotEmpty()) reasoningBuilder.append(chunk)
-                        outputFrames.add(OutputFrame("REASONING", chunk, null))
+                        pendingChars += chunk.length
+                        outputFrames.add(outputFrame(com.unuslumen.app.domain.agents.AgentRunReplay.OutputFrame.Kind.REASONING, chunk, frame.index))
+                        flushOutput(force = false)
                     }
-                    is StreamFrame.ToolCallComplete -> toolCalls.add(frame)
+                    is StreamFrame.ToolCallComplete -> {
+                        // A tool proposal is a boundary: nothing may be dispatched while
+                        // output is still only in memory.
+                        flushOutput(force = true)
+                        toolCalls.add(frame)
+                    }
                     is StreamFrame.ToolCallDelta -> Unit
-                    is StreamFrame.ReasoningComplete -> Unit
-                    is StreamFrame.End -> Unit
+                    is StreamFrame.ReasoningComplete -> flushOutput(force = true)
+                    is StreamFrame.End -> flushOutput(force = true)
                 }
             }
 
-            lastText = textBuilder.toString()
+            // Whatever is left when the stream ends, then the canonical completions. Both
+            // land before anything is dispatched, so a tool call always has a recorded
+            // request behind it.
+            flushOutput(force = true)
 
-            // Flush what the model produced, then say how the request ended. Both are
-            // written before anything is dispatched, so a tool call always has a
-            // recorded request behind it.
-            if (outputFrames.isNotEmpty()) {
-                ledger.append(
-                    session.id,
-                    AgentRunLedger.EventDraft(
-                        eventType = com.unuslumen.app.database.entity.AgentRunEventEntity.MODEL_OUTPUT_BATCH,
-                        actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_MODEL,
-                        correlationId = requestId,
-                        payload = jsonObject {
-                            put("requestId", requestId)
-                            put(
-                                "frames",
-                                outputFrames.joinToString(prefix = "[", postfix = "]") { f ->
-                                    jsonObject {
-                                        put("type", f.kind)
-                                        put("text", f.text)
-                                        f.sourceIndex?.let { put("sourceIndex", it) }
-                                    }
-                                }
-                            )
-                        },
-                    )
-                )
-            }
+            lastText = textBuilder.toString()
             if (textBuilder.isNotEmpty()) {
                 ledger.append(
                     session.id,
@@ -1365,14 +1651,18 @@ class AgentRuntime(
     }
 
     /**
-     * One captured frame of model output.
+     * One captured frame of model output, taken straight from the domain type.
      *
-     * [kind] is `TEXT` or `REASONING`, kept as a string so the ledger records what
-     * arrived without depending on a Kotlin ordinal that a reorder could silently change.
-     * [sourceIndex] is the provider's own stream index, which answers a different
-     * question from the ledger's sequence and is worth keeping for exactly that reason.
+     * NO LOCAL COPY AND NO TYPEALIAS. A second class with the same shape would drift the
+     * moment either side gained a field, and a `typealias` to a nested class crashes KSP
+     * on this toolchain — a trap already paid for once in this codebase. The full name is
+     * written at each site so the writer and the reducer are provably the same type.
      */
-    private data class OutputFrame(val kind: String, val text: String, val sourceIndex: Int?)
+    private fun outputFrame(
+        kind: com.unuslumen.app.domain.agents.AgentRunReplay.OutputFrame.Kind,
+        text: String,
+        sourceIndex: Int?,
+    ) = com.unuslumen.app.domain.agents.AgentRunReplay.OutputFrame(kind, text, sourceIndex)
 
     /** A result the loop produced, before it is turned into a message. */
     private sealed interface ToolOutcome { val content: String }

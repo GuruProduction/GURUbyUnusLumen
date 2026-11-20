@@ -264,11 +264,25 @@ class ProjectAgentRepositoryImpl(
         } else {
             emptyList()
         }
+        /*
+         * A FAILED RECORD STOPS THE TURN, THE SAME AS THE SPAWN PATH.
+         *
+         * The first version logged this and carried on, on the reasoning that a project
+         * chat should not fail over bookkeeping. That was wrong: it means work can execute
+         * with no evidence that it happened, which is exactly the state this whole phase
+         * exists to remove. If the run cannot be opened the person is told, in one
+         * sentence, and nothing runs.
+         *
+         * `conversationId` must be a real conversation, because the foreign key says a run
+         * belongs to one. A project id is only a fallback when no conversation was given,
+         * and it has to exist for the same reason.
+         */
+        val owningConversation = conversationId?.takeIf { it.isNotBlank() } ?: projectId
         runCatching {
             runLedger.createRun(
                 com.unuslumen.app.database.entity.AgentRunEntity(
                     runId = runId,
-                    conversationId = conversationId ?: projectId,
+                    conversationId = owningConversation,
                     agentId = com.unuslumen.app.database.entity.AgentRunEntity.PROJECT_AGENT_ID,
                     agentSlug = com.unuslumen.app.database.entity.AgentRunEntity.PROJECT_AGENT_ID,
                     agentName = "Project agent",
@@ -323,13 +337,14 @@ class ProjectAgentRepositoryImpl(
                 )
             )
             runLedger.acquireLease(runId, runId)
-        }.onFailure {
-            // NOT FATAL HERE, AND THE DIFFERENCE IS DELIBERATE. The spawn path refuses to
-            // run without a record because it is handed a job and nothing else. A project
-            // agent is the chat the person is already in, and refusing to answer because a
-            // bookkeeping write failed would be the tail wagging the dog. The failure is
-            // logged and the conversation continues without a run.
-            android.util.Log.w(TAG, "Project-agent run could not be opened: ${it.message}")
+        }.onFailure { failure ->
+            android.util.Log.e(TAG, "Project-agent run could not be opened: ${failure.message}")
+            throw IllegalStateException(
+                "This turn was not run, because its execution record could not be opened: " +
+                    "${failure.message}. Work that leaves no record is work nobody can explain " +
+                    "or recover, so it was stopped rather than run blind.",
+                failure
+            )
         }
 
         // Get project context for enrichment
@@ -538,11 +553,69 @@ class ProjectAgentRepositoryImpl(
                 break
             }
 
-            // TOOL CALLS GO IN THE LEDGER BEFORE THEY RUN, for the same reason they do on
-            // the spawn path: a started call with no completion must never be repeated.
+            /*
+             * TOOL CALLS GO IN THE LEDGER BEFORE THEY RUN, AND THE PROPOSAL IS KEPT.
+             *
+             * The proposal event carries what the model actually wrote, and the start event
+             * carries the same arguments plus the invocation id. The id is what pairs a
+             * completion to its own start; without it the ledger has two facts that cannot
+             * be matched to each other, which is the same defect as a tool call with no
+             * result.
+             *
+             * A ROUND CHECKPOINT IS TAKEN BEFORE THE FIRST DISPATCH, matching the spawn
+             * path. Without one there is nothing to resume from if the process dies during
+             * a tool call.
+             */
+            runCatching {
+                runLedger.commitCheckpoint(
+                    runId = runId,
+                    reason = com.unuslumen.app.database.entity.AgentRunCheckpointEntity.REASON_ROUND_BOUNDARY,
+                    stateJson = buildJsonObject {
+                        put("schemaVersion", kotlinx.serialization.json.JsonPrimitive(1))
+                        put("runId", kotlinx.serialization.json.JsonPrimitive(runId))
+                        put("rounds", kotlinx.serialization.json.JsonPrimitive(consecutiveToolCalls))
+                        put("projectId", kotlinx.serialization.json.JsonPrimitive(projectId))
+                        put("notebook", kotlinx.serialization.json.JsonPrimitive(""))
+                        put("systemPrompt", kotlinx.serialization.json.JsonPrimitive(systemPrompt))
+                        put("pendingQuestion", kotlinx.serialization.json.JsonPrimitive(""))
+                        put("messageCount", kotlinx.serialization.json.JsonPrimitive(currentMessages.size))
+                        put(
+                            "messages",
+                            kotlinx.serialization.json.JsonPrimitive(
+                                currentMessages.joinToString("\n\u001E\n") { m ->
+
+                                    when (m) {
+                                        is AiMessage.UserMessage -> "user:${m.content}"
+                                        is AiMessage.AssistantMessage -> "assistant:${m.content}"
+                                        is AiMessage.ToolCall ->
+                                            "tool:${m.name}:${m.id ?: ""}:${m.rawContent}:${m.resultRawContent}"
+                                        else -> "other:"
+                                    }
+                                }
+                            )
+                        )
+                        put("runtimeKind", kotlinx.serialization.json.JsonPrimitive("PROJECT_AGENT"))
+                    }.toString(),
+                )
+            }
+
+            val invocationIds = mutableListOf<String>()
             collectedToolCalls.forEach { frame ->
                 val invocationId = Uuid.random().toString()
+                invocationIds += invocationId
                 runCatching {
+                    runLedger.append(
+                        runId,
+                        com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
+                            eventType = com.unuslumen.app.domain.agents.AgentEventTypes.MODEL_TOOL_CALL_PROPOSED,
+                            actorType = "MODEL",
+                            payload = buildJsonObject {
+                                put("tool", kotlinx.serialization.json.JsonPrimitive(frame.name))
+                                put("callId", kotlinx.serialization.json.JsonPrimitive(frame.id ?: ""))
+                                put("arguments", kotlinx.serialization.json.JsonPrimitive(frame.content))
+                            }.toString(),
+                        )
+                    )
                     runLedger.append(
                         runId,
                         com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
@@ -576,10 +649,16 @@ class ProjectAgentRepositoryImpl(
                 emit(msg)
             }
 
-            // Execute tool calls from streaming frames
-            val toolCallMessages = collectedToolCalls.map { frame ->
+            // Execute tool calls from streaming frames.
+            //
+            // THE INVOCATION ID IS CARRIED THROUGH EVERY EVENT FOR THIS CALL. The starts
+            // were written in the same order a moment ago, so the index pairs a completion
+            // to its own start. Without that id the ledger holds two facts that cannot be
+            // matched, which is the same defect as a result with no call.
+            val toolCallMessages = collectedToolCalls.mapIndexed { callIndex, frame ->
                 val toolName = frame.name
                 val argsContent = frame.content
+                val invocationId = invocationIds.getOrNull(callIndex)
                 val resultContent = try {
                     val tool = toolRegistry.tools.find { it.descriptor.name == toolName }
                     if (tool != null) {
@@ -598,7 +677,9 @@ class ProjectAgentRepositoryImpl(
                                 com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
                                     eventType = com.unuslumen.app.domain.agents.AgentEventTypes.TOOL_CALL_COMPLETED,
                                     actorType = "TOOL",
+                                    idempotencyKey = invocationId?.let { "tool-done-$it" },
                                     payload = buildJsonObject {
+                                        invocationId?.let { put("invocationId", kotlinx.serialization.json.JsonPrimitive(it)) }
                                         put("tool", kotlinx.serialization.json.JsonPrimitive(toolName))
                                         put("result", kotlinx.serialization.json.JsonPrimitive(content))
                                         put("runtimeKind", kotlinx.serialization.json.JsonPrimitive("PROJECT_AGENT"))
@@ -615,6 +696,7 @@ class ProjectAgentRepositoryImpl(
                                     eventType = com.unuslumen.app.domain.agents.AgentEventTypes.TOOL_CALL_REFUSED,
                                     actorType = "RUNTIME",
                                     payload = buildJsonObject {
+                                        invocationId?.let { put("invocationId", kotlinx.serialization.json.JsonPrimitive(it)) }
                                         put("tool", kotlinx.serialization.json.JsonPrimitive(toolName))
                                         put("reason", kotlinx.serialization.json.JsonPrimitive("no such tool in this build"))
                                     }.toString(),
@@ -634,6 +716,7 @@ class ProjectAgentRepositoryImpl(
                                 eventType = com.unuslumen.app.domain.agents.AgentEventTypes.TOOL_CALL_OUTCOME_UNKNOWN,
                                 actorType = "RUNTIME",
                                 payload = buildJsonObject {
+                                    invocationId?.let { put("invocationId", kotlinx.serialization.json.JsonPrimitive(it)) }
                                     put("tool", kotlinx.serialization.json.JsonPrimitive(toolName))
                                     put("reason", kotlinx.serialization.json.JsonPrimitive(e.message ?: "the call threw"))
                                 }.toString(),

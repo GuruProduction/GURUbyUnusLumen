@@ -107,6 +107,26 @@ class ToolDispatcher(
     enum class RefusalKind { UNKNOWN_TOOL, PERMISSION_DENIED, SECURITY_BLOCKED, NO_EXECUTOR }
 
     /**
+     * The repaired arguments as JSON, so the security policy can inspect them.
+     *
+     * `ToolArgumentRepair.repair` decodes values into `Any?` for the executor, which the
+     * policy cannot read. This converts back, preserving type rather than stringifying
+     * everything: a boolean that became the string "true" would be inspected as something
+     * it is not.
+     */
+    private fun repairedArgsToJson(repaired: Map<String, Any?>): JsonObject = JsonObject(
+        repaired.mapValues { (_, value) ->
+            when (value) {
+                null -> kotlinx.serialization.json.JsonNull
+                is Boolean -> JsonPrimitive(value)
+                is Number -> JsonPrimitive(value)
+                is String -> JsonPrimitive(value)
+                else -> JsonPrimitive(value.toString())
+            }
+        }
+    )
+
+    /**
      * Resolve, check, repair, and stop.
      *
      * The returned [PreparedInvocation.repairedArgs] are the arguments the tool will
@@ -135,7 +155,28 @@ class ToolDispatcher(
             }
         }
 
-        val securityCheck = securityPolicy.check(definition, rawArgs)
+        if (registry.getExecutor(resolvedName) == null) {
+            return Preparation.Refused("No executor exists for '$resolvedName'.", RefusalKind.NO_EXECUTOR, resolvedName)
+        }
+
+        /*
+         * REPAIR FIRST, THEN CHECK, BECAUSE THE CHECK MUST SEE WHAT WILL ACTUALLY RUN.
+         *
+         * The previous order ran the security policy against the model's raw arguments and
+         * then repaired them. That left a hole: a value the repair rewrites — a string
+         * coerced, a key renamed, an orphan positional-matched into a parameter — reached
+         * the executor never having been inspected in the form it would execute in. The
+         * policy's own comment says it inspects by parameter type, so a parameter that
+         * only becomes a ShellCommand after repair was never examined at all.
+         *
+         * The repaired map is converted back to JSON so the policy inspects the same values
+         * the executor receives. Both checks still run; only their order changed, and the
+         * order is now the safe one.
+         */
+        val repaired = argumentRepair.repair(definition, rawArgs)
+        val repairedJson = repairedArgsToJson(repaired)
+
+        val securityCheck = securityPolicy.check(definition, repairedJson)
         if (securityCheck.blocked) {
             return Preparation.Refused(
                 securityCheck.reason,
@@ -144,11 +185,6 @@ class ToolDispatcher(
             )
         }
 
-        if (registry.getExecutor(resolvedName) == null) {
-            return Preparation.Refused("No executor exists for '$resolvedName'.", RefusalKind.NO_EXECUTOR, resolvedName)
-        }
-
-        val repaired = argumentRepair.repair(definition, rawArgs)
         return Preparation.Ready(
             PreparedInvocation(
                 resolvedName = resolvedName,

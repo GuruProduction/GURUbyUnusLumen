@@ -261,7 +261,14 @@ class AgentRunLedgerTest {
         )
     }
 
-    /** A tampered checkpoint is caught by its hash rather than being restored. */
+    /**
+     * A tampered checkpoint is caught by its hash rather than being restored.
+     *
+     * THE STATE ON THE ROW IS SEALED, SO TAMPERING MEANS CHANGING THE SEALED TEXT. On this
+     * JVM there is no Android Keystore, so sealing reports `Failed` and the stored form is
+     * a marked plaintext envelope — which is still a stored form with a hash over it, so
+     * the hash check is exercised either way. Changing one character of it must fail.
+     */
     @Test
     fun aCheckpointWhoseStateWasAlteredIsRefused() = runTest {
         ledger.createRun(run("run-1"))
@@ -272,7 +279,11 @@ class AgentRunLedgerTest {
             ledger.verifyCheckpoint(checkpoint) is AgentRunLedger.CheckpointVerdict.Verified
         )
 
-        val altered = checkpoint.copy(stateJson = "{\"schemaVersion\":1,\"rounds\":99}")
+        // Flip the rounds value inside whatever was stored, sealed or marked, so this is
+        // genuinely an altered record rather than an unaltered one with a changed hash.
+        val alteredText = checkpoint.stateJson.replace("3", "9")
+        assertFalse("the fixture must actually alter the stored state", alteredText == checkpoint.stateJson)
+        val altered = checkpoint.copy(stateJson = alteredText)
         assertTrue(
             "an altered state must be refused, not restored",
             ledger.verifyCheckpoint(altered) is AgentRunLedger.CheckpointVerdict.Unreadable
@@ -288,6 +299,39 @@ class AgentRunLedgerTest {
         val verdict = ledger.verifyCheckpoint(future)
         assertTrue(verdict is AgentRunLedger.CheckpointVerdict.Unreadable)
         assertTrue((verdict as AgentRunLedger.CheckpointVerdict.Unreadable).reason.contains("newer build"))
+    }
+
+    /**
+     * The ledger hands back payloads a caller can use.
+     *
+     * THE ROW IS SEALED AT REST AND OPENED ON READ, and on this JVM the Keystore is absent,
+     * so sealing reports `Failed` and the stored form is a marker saying the value is
+     * unprotected. `events()` must still hand back something parseable, because the
+     * alternative — an empty string — would look exactly like an event that recorded
+     * nothing. That distinction is the whole point of the marker.
+     *
+     * The full replay equivalence is proved in [com.unuslumen.app.domain.agents.AgentRunReplayTest]
+     * against plain events, because replay's correctness is a question about the reducer
+     * rather than about storage. What this test adds is that the storage layer does not
+     * corrupt a payload on its way through.
+     */
+    @Test
+    fun payloadsComeBackParseableEvenWhenTheKeystoreCannotSealThem() = runTest {
+        ledger.createRun(run("run-1"))
+        ledger.append(
+            "run-1",
+            AgentRunLedger.EventDraft(
+                eventType = com.unuslumen.app.domain.agents.AgentEventTypes.MODEL_REQUEST_STARTED,
+                actorType = AgentRunEventEntity.ACTOR_RUNTIME,
+                payload = "{\"requestId\":\"r1\",\"roundIndex\":1}",
+            )
+        )
+
+        val stored = ledger.events("run-1").first { it.eventType.contains("MODEL_REQUEST_STARTED") }
+        assertTrue("a payload must never come back empty", stored.payloadJson.isNotBlank())
+        // Whatever form it took, it must be parseable JSON so a reader can work with it.
+        val parsed = kotlinx.serialization.json.Json.parseToJsonElement(stored.payloadJson)
+        assertTrue(parsed is kotlinx.serialization.json.JsonObject)
     }
 
     /** Replay of what was committed produces the session those events describe. */

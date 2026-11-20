@@ -77,6 +77,20 @@ class AgentToolExecutor(
         )
     }
 
+    /**
+     * Start an agent, with the conversation it was asked from.
+     *
+     * THE CONVERSATION ID IS NOT OPTIONAL ANY MORE, AND THE TOOL LAYER DOES NOT HAVE IT.
+     *
+     * `agent_runs.conversation_id` has a foreign key to `conversations.id`, because a run
+     * belongs to the conversation that owns it and deleting that conversation must take
+     * the run with it. This call site has no conversation in hand: the dispatcher passes
+     * tool arguments and nothing else. The runtime therefore resolves it through
+     * [AgentRuntime]'s conversation binding, which the send path sets before it dispatches
+     * anything. If nothing has been bound the run is refused with a sentence that names
+     * the reason, rather than being written under the run id and failing the foreign key
+     * with an error nobody can read.
+     */
     private suspend fun spawnAgent(args: Map<String, Any?>): ToolExecutionResult {
         val agentName = (args["agent"] as? String)?.trim()
             ?: return ToolExecutionResult.error("Missing 'agent' parameter")
@@ -90,7 +104,20 @@ class AgentToolExecutor(
             )
         }
 
-        val outcome = agentRuntime.spawn(agentName, job).last()
+        val conversationId = agentRuntime.currentConversationId()
+        if (conversationId.isNullOrBlank()) {
+            return ToolExecutionResult.error(
+                "An agent can only be started from inside a conversation, because its run " +
+                    "belongs to one. No conversation is bound to this dispatch, so nothing " +
+                    "was started rather than starting work with no record of where it came from."
+            )
+        }
+
+        val outcome = agentRuntime.spawn(
+            slugOrName = agentName,
+            job = job,
+            conversationId = conversationId,
+        ).last()
         return asSpawnResult(outcome)
     }
 

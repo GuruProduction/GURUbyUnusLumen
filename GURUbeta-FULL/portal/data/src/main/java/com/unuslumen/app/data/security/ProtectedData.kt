@@ -64,6 +64,13 @@ object ProtectedData {
 
     private fun aliasFor(keyVersion: Int): String = "$ALIAS_PREFIX$keyVersion"
 
+    /** The key for a version if it is present, or null. NEVER creates one. */
+    private fun existingKey(keyVersion: Int): SecretKey? = runCatching {
+        val keyStore = KeyStore.getInstance(KEYSTORE)
+        keyStore.load(null)
+        keyStore.getKey(aliasFor(keyVersion), null) as? SecretKey
+    }.getOrNull()
+
     private fun getOrCreateKey(keyVersion: Int): SecretKey {
         val alias = aliasFor(keyVersion)
         val keyStore = KeyStore.getInstance(KEYSTORE)
@@ -95,6 +102,8 @@ object ProtectedData {
      */
     fun seal(context: ProtectionContext, plaintext: String): ProtectedWrite {
         return try {
+            // Sealing is the one place a key may be created: writing a new value under the
+            // current version is exactly when a device without one needs one.
             val key = getOrCreateKey(CURRENT_KEY_VERSION)
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(Cipher.ENCRYPT_MODE, key)
@@ -146,13 +155,29 @@ object ProtectedData {
         }.getOrNull() ?: return ProtectedRead.Tampered("envelope body is not valid base64")
         if (payload.size <= IV_LENGTH) return ProtectedRead.Tampered("envelope body is too short")
 
+        /*
+         * DECRYPT WITH THE KEY THAT EXISTS, NEVER ONE GENERATED ON THE SPOT.
+         *
+         * `getOrCreateKey` here would be a quiet disaster: if the key for this version had
+         * been lost — a device restore, a Keystore reset — it would mint a NEW key, fail to
+         * authenticate the old ciphertext, and report the record as TAMPERED. That tells a
+         * person their data was corrupted when in fact the key is merely gone, and it also
+         * destroys the distinction the whole class exists to keep between locked and
+         * altered. So the lookup is read-only, and a missing key is its own answer.
+         */
+        val key = existingKey(keyVersion)
+            ?: return ProtectedRead.Locked(
+                "the key for envelope version $keyVersion is not present on this device, so " +
+                    "this value cannot be opened here. It is not corrupt; the key is missing."
+            )
+
         return try {
             val iv = payload.copyOfRange(0, IV_LENGTH)
             val ciphertext = payload.copyOfRange(IV_LENGTH, payload.size)
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(
                 Cipher.DECRYPT_MODE,
-                getOrCreateKey(keyVersion),
+                key,
                 GCMParameterSpec(GCM_TAG_BITS, iv)
             )
             cipher.updateAAD(context.associatedData())

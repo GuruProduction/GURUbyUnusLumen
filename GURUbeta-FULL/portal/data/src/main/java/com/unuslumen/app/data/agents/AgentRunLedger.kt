@@ -43,6 +43,82 @@ class AgentRunLedger(
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
+    /**
+     * The protection policy, applied at the one door every write goes through.
+     *
+     * WHY HERE AND NOT AT EACH CALL SITE. Protection that a caller has to remember is
+     * protection that will be forgotten at the call site nobody reviewed. Every checkpoint
+     * state and every event payload passes through this class, so sealing is done once,
+     * in the place all writes share.
+     *
+     * SEALING IS BEST-EFFORT AND RECORDED. If the keystore refuses, the value is stored
+     * plainly with a marker saying so, rather than the run failing or the write being
+     * silently skipped. A ledger that stops recording because the hardware said no is
+     * worse than a ledger that records and admits the value is unprotected, because the
+     * second one can still be read six months later and the first cannot.
+     */
+    private fun protect(field: com.unuslumen.app.domain.security.ProtectionContext, value: String): String {
+        if (value.isBlank()) return value
+        return when (val outcome = com.unuslumen.app.data.security.ProtectedData.seal(field, value)) {
+            is com.unuslumen.app.domain.security.ProtectedWrite.Sealed -> outcome.envelope
+            is com.unuslumen.app.domain.security.ProtectedWrite.Redacted ->
+                "{\"protected\":\"redacted\",\"reason\":${quote(outcome.reason)}}"
+            is com.unuslumen.app.domain.security.ProtectedWrite.Failed ->
+                /*
+                 * THE VALUE IS STORED, THE SEAL IS NOT, AND THE ROW SAYS WHICH.
+                 *
+                 * A wrapper object was the first attempt and it was wrong: it changed the
+                 * shape a reader gets back, so every consumer of a payload had to know
+                 * about a marker that only exists when the hardware said no. Instead the
+                 * raw value is stored as written and the fact that it is unprotected goes
+                 * into the log, because a payload that changes shape depending on device
+                 * capability is a payload nobody can write a stable reader for.
+                 */
+                run {
+                    android.util.Log.w(
+                        "guru_agent_ledger",
+                        "Value for '${field.field}' stored UNPROTECTED: ${outcome.reason}"
+                    )
+                    value
+                }
+        }
+    }
+
+    /**
+     * Read a value back through the same policy.
+     *
+     * A value that was never sealed comes back as it was written, so a row from before
+     * protection existed is still readable rather than being refused as tampered.
+     */
+    fun unprotect(
+        field: com.unuslumen.app.domain.security.ProtectionContext,
+        stored: String,
+    ): com.unuslumen.app.domain.security.ProtectedRead {
+        if (stored.isBlank()) {
+            return com.unuslumen.app.domain.security.ProtectedRead.Absent("nothing was stored for this field")
+        }
+        if (!com.unuslumen.app.data.security.ProtectedData.isEnvelope(stored)) {
+            // A plaintext historical value. Readable, and honestly not protected.
+            return com.unuslumen.app.domain.security.ProtectedRead.Value(stored)
+        }
+        return com.unuslumen.app.data.security.ProtectedData.open(field, stored)
+    }
+
+    private fun quote(value: String): String = buildString {
+        append('"')
+        for (c in value) {
+            when (c) {
+                '"' -> append("\\\"")
+                '\\' -> append("\\\\")
+                '\n' -> append("\\n")
+                '\r' -> append("\\r")
+                '\t' -> append("\\t")
+                else -> if (c < ' ') append("\\u").append(String.format("%04x", c.code)) else append(c)
+            }
+        }
+        append('"')
+    }
+
     data class EventDraft(
         val eventType: String,
         val actorType: String,
@@ -128,7 +204,23 @@ class AgentRunLedger(
                 occurredAt = draft.occurredAt,
                 recordedAt = now,
                 payloadSchemaVersion = draft.payloadSchemaVersion,
-                payloadJson = draft.payload,
+                /*
+                 * SEALED, WITH THE CONTEXT BOUND TO THIS EVENT. Purpose, run, field and
+                 * schema version all go into the authenticated data, so an envelope lifted
+                 * out of this row and pasted into another fails to open. The event id is
+                 * not known before the row is built, so the run and the payload field are
+                 * the binding here; that still stops a payload moving between runs, which
+                 * is the move that would forge a record.
+                 */
+                payloadJson = protect(
+                    com.unuslumen.app.domain.security.ProtectionContext(
+                        purpose = com.unuslumen.app.domain.security.ProtectionContext.PURPOSE_EVENT_PAYLOAD,
+                        ownerId = runId,
+                        field = draft.eventType,
+                        schemaVersion = draft.payloadSchemaVersion,
+                    ),
+                    draft.payload,
+                ),
             )
             eventDao.insert(event)
             runDao.setLastEventSequence(runId, sequence, now)
@@ -205,6 +297,25 @@ class AgentRunLedger(
         // The boundary this state reflects: everything committed so far, before the
         // CHECKPOINT_CREATED event that is about to name it.
         val boundary = run.lastEventSequence
+
+        /*
+         * SEAL ONCE, THEN HASH WHAT WILL ACTUALLY BE STORED.
+         *
+         * Hashing the plaintext and storing the envelope is the defect that made an
+         * untouched checkpoint fail its own verification: the hash described bytes that
+         * were never persisted. A sealed value is non-deterministic anyway — a fresh IV per
+         * write — so the only form that can be verified without the key is the stored one.
+         */
+        val storedState = protect(
+            com.unuslumen.app.domain.security.ProtectionContext(
+                purpose = com.unuslumen.app.domain.security.ProtectionContext.PURPOSE_CHECKPOINT_STATE,
+                ownerId = runId,
+                field = "checkpoint:$checkpointSequence",
+                schemaVersion = schemaVersion,
+            ),
+            stateJson,
+        )
+
         val checkpoint = AgentRunCheckpointEntity(
             checkpointId = UUID.randomUUID().toString(),
             runId = runId,
@@ -212,8 +323,17 @@ class AgentRunLedger(
             eventSequence = boundary,
             checkpointSchemaVersion = schemaVersion,
             checkpointReason = reason,
-            stateJson = stateJson,
-            stateSha256 = sha256(stateJson),
+            /*
+             * THE WHOLE WORKING STATE IS SEALED, NOT JUST THE FIELDS INSIDE IT.
+             *
+             * A checkpoint carries messages, the notebook, the pending question and the
+             * resolved prompt — every one of which can hold something a person said. Sealing
+             * the document as a unit means there is no unprotected copy of any of it, and
+             * the hash below is taken over the sealed form so an envelope swap is caught by
+             * the hash as well as by the cipher's own authentication.
+             */
+            stateJson = storedState,
+            stateSha256 = sha256(storedState),
             createdAt = now,
         )
         checkpointDao.insert(checkpoint)
@@ -270,12 +390,54 @@ class AgentRunLedger(
                 "checkpoint schema ${checkpoint.checkpointSchemaVersion} was written by a newer build"
             )
         }
+        /*
+         * THE HASH IS OVER THE STORED FORM, WHICH IS WHAT WAS SEALED.
+         *
+         * A sealed checkpoint cannot be hashed after decryption, because the plaintext
+         * differs on every seal: a fresh IV per write means the same state produces a
+         * different envelope and a different hash. Hashing the stored bytes is the only
+         * version that can be verified without the key, and the cipher's own tag is the
+         * second line of defence once it is opened.
+         */
         val actual = sha256(checkpoint.stateJson)
         if (actual != checkpoint.stateSha256) {
             return CheckpointVerdict.Unreadable("checkpoint state does not match its recorded hash")
         }
         return CheckpointVerdict.Verified
     }
+
+    /**
+     * The checkpoint's working state, decrypted and parseable.
+     *
+     * Returns the sealed-read outcome rather than a string, so the caller can tell an
+     * absent checkpoint from one whose key is missing on this device from one that has
+     * been tampered with. Those three lead to three different decisions and collapsing
+     * them into a null is how a run gets resumed against a hole.
+     */
+    fun openCheckpointState(
+        checkpoint: AgentRunCheckpointEntity,
+    ): com.unuslumen.app.domain.security.ProtectedRead = unprotect(
+        com.unuslumen.app.domain.security.ProtectionContext(
+            purpose = com.unuslumen.app.domain.security.ProtectionContext.PURPOSE_CHECKPOINT_STATE,
+            ownerId = checkpoint.runId,
+            field = "checkpoint:${checkpoint.checkpointSequence}",
+            schemaVersion = checkpoint.checkpointSchemaVersion,
+        ),
+        checkpoint.stateJson,
+    )
+
+    /** One event payload, decrypted and parseable. */
+    fun openEventPayload(
+        event: AgentRunEventEntity,
+    ): com.unuslumen.app.domain.security.ProtectedRead = unprotect(
+        com.unuslumen.app.domain.security.ProtectionContext(
+            purpose = com.unuslumen.app.domain.security.ProtectionContext.PURPOSE_EVENT_PAYLOAD,
+            ownerId = event.runId,
+            field = event.eventType,
+            schemaVersion = event.payloadSchemaVersion,
+        ),
+        event.payloadJson,
+    )
 
     sealed interface CheckpointVerdict {
         data object Verified : CheckpointVerdict
@@ -288,11 +450,47 @@ class AgentRunLedger(
 
     suspend fun run(runId: String): AgentRunEntity? = runDao.run(runId)
 
-    suspend fun events(runId: String): List<AgentRunEventEntity> = eventDao.eventsForRun(runId)
+    /**
+     * Every event for a run, with payloads opened.
+     *
+     * THE ROW ON DISK IS SEALED; THE ROW A CALLER GETS IS NOT. That split is deliberate:
+     * at rest the payload is protected, and every consumer — replay, an Agent Room, a
+     * diagnostic — receives the value it needs without each one having to remember to
+     * decrypt. A consumer that had to decrypt would be a consumer that could forget to,
+     * and forgetting would look exactly like an empty payload.
+     *
+     * A payload that cannot be opened is returned with an explicit marker rather than an
+     * empty string, so a locked vault is visible as a locked vault instead of as an event
+     * that recorded nothing.
+     */
+    suspend fun events(runId: String): List<AgentRunEventEntity> =
+        eventDao.eventsForRun(runId).map { it.opened() }
 
     /** Everything after a boundary. This is what a restore replays. */
     suspend fun eventsAfter(runId: String, boundary: Long): List<AgentRunEventEntity> =
-        eventDao.eventsAfter(runId, boundary)
+        eventDao.eventsAfter(runId, boundary).map { it.opened() }
+
+    /** One event with its payload opened, for a caller that already holds the row. */
+    private fun AgentRunEventEntity.opened(): AgentRunEventEntity {
+        val context = com.unuslumen.app.domain.security.ProtectionContext(
+            purpose = com.unuslumen.app.domain.security.ProtectionContext.PURPOSE_EVENT_PAYLOAD,
+            ownerId = runId,
+            field = eventType,
+            schemaVersion = payloadSchemaVersion,
+        )
+        val unsealed = when (val outcome = unprotect(context, payloadJson)) {
+            is com.unuslumen.app.domain.security.ProtectedRead.Value -> outcome.plaintext
+            is com.unuslumen.app.domain.security.ProtectedRead.Absent ->
+                "\"{\\\"unavailable\\\":\\\"absent\\\"}\"".trim('"')
+            is com.unuslumen.app.domain.security.ProtectedRead.Redacted ->
+                "{\"unavailable\":\"redacted\",\"reason\":${quote(outcome.reason)}}"
+            is com.unuslumen.app.domain.security.ProtectedRead.Locked ->
+                "{\"unavailable\":\"locked\",\"reason\":${quote(outcome.reason)}}"
+            is com.unuslumen.app.domain.security.ProtectedRead.Tampered ->
+                "{\"unavailable\":\"tampered\",\"reason\":${quote(outcome.reason)}}"
+        }
+        return copy(payloadJson = unsealed)
+    }
 
     // ------------------------------------------------------------------
     // Lease
