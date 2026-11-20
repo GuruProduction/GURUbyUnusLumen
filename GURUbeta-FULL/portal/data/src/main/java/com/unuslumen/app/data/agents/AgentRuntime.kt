@@ -211,6 +211,17 @@ class AgentRuntime(
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
+     * Where fire-and-forget telemetry writes run.
+     *
+     * ONE SCOPE FOR THE RUNTIME'S LIFETIME. A permission decision is evidence recorded for
+     * later reading; it must never delay a tool call or fail it, and it must never leak a
+     * scope per invocation. IO because every write is a database transaction.
+     */
+    private val telemetryScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO
+    )
+
+    /**
      * What a turn of an agent produced.
      *
      * THREE OUTCOMES, NOT TWO. The old result could only say finished or failed,
@@ -610,6 +621,22 @@ class AgentRuntime(
      * process protection, not the execution. Logged rather than thrown so a device that
      * refuses a foreground start does not also lose the turn.
      */
+    /**
+     * The telemetry sink for one run.
+     *
+     * BUILT PER CALL RATHER THAN HELD, and cheap because it is: the object carries a run id
+     * and two references that already exist. Held state would be wrong here for the same
+     * reason a `@Volatile` conversation was wrong: two runs dispatching at once would share
+     * one sink and the last writer would decide whose history the other's permission
+     * decision landed in.
+     *
+     * THE SCOPE IS SHARED AND APPLICATION-LIFETIME, not per sink. A scope created per call
+     * would never be cancelled and would accumulate one leak per tool invocation. One scope
+     * for all telemetry writes costs nothing and cannot leak.
+     */
+    private fun runTelemetry(runId: String): AgentRunToolTelemetry =
+        AgentRunToolTelemetry(runId = runId, ledger = ledger, scope = telemetryScope)
+
     private fun foreground(runId: String, agentName: String) {
         runCatching { AgentRunService.start(context, runId, agentName) }
             .onFailure {
@@ -1391,7 +1418,32 @@ class AgentRuntime(
                             )
                         )
 
-                        when (val prepared = toolDispatcher.prepare(toolName, argsJson)) {
+                        /*
+                         * THE RUN AND THE INVOCATION TRAVEL WITH THE CALL, SO THE
+                         * PERMISSION DECISION LANDS ON THE RIGHT EXECUTION.
+                         *
+                         * Without them the dispatcher's telemetry would have no run to
+                         * attach to and would either write nothing or guess. They are also
+                         * what pairs the decision to the invocation whose start and
+                         * completion already exist, so a reader can line up all three.
+                         */
+                        /*
+                         * ONE SINK FOR THIS CALL, SO THE DECISION AND THE PROGRESS IT
+                         * REPORTS LAND ON THE SAME RUN.
+                         *
+                         * Built once here rather than twice below, because two sinks would
+                         * be two objects that must agree about which execution they belong
+                         * to, and the second one would eventually be the one that forgot.
+                         */
+                        val telemetryForThisCall = runTelemetry(session.id) as AgentRunToolTelemetry
+
+                        when (val prepared = toolDispatcher.prepare(
+                            toolName,
+                            argsJson,
+                            runId = session.id,
+                            invocationId = invocationId,
+                            telemetry = telemetryForThisCall,
+                        )) {
                             is com.unuslumen.app.data.tools.registry.ToolDispatcher.Preparation.Refused -> {
                                 ledger.append(
                                     session.id,
@@ -1436,11 +1488,31 @@ class AgentRuntime(
                                     )
                                 )
 
+                                /*
+                                 * A REAL PROGRESS SINK, SO `TOOL_PROGRESS` HAS A PRODUCER.
+                                 *
+                                 * A tool that takes minutes has things worth saying while it
+                                 * runs, and the executor's own channel already exists. Handing
+                                 * it a sink that writes to the ledger means a network walk
+                                 * reports what it has found so far instead of a spinner and
+                                 * then one result.
+                                 *
+                                 * A TOOL THAT SAYS NOTHING PRODUCES NOTHING. The sink is
+                                 * passive: it only writes what an executor chose to report,
+                                 * so a silent tool leaves no fabricated ticks in the history.
+                                 */
+                                val progressSink = com.unuslumen.app.data.tools.registry.ToolProgressSink { event ->
+                                    runCatching {
+                                        telemetryForThisCall.progressFor(prepared.invocation.resolvedName, invocationId, event)
+                                    }
+                                }
+
                                 val dispatch = toolDispatcher.executePrepared(
                                     invocation = prepared.invocation,
                                     conversationId = session.id,
                                     agentRunId = session.id,
                                     agentInvocationId = invocationId,
+                                    progress = progressSink,
                                 )
 
                                 if (dispatch.success) {
