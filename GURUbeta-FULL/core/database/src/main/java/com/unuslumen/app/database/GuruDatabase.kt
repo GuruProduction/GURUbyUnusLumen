@@ -262,22 +262,28 @@ abstract class guruDatabase: RoomDatabase() {
         const val DATABASE_NAME = "guru_db"
 
         /**
-         * The schema version this build writes, read back from the @Database annotation
-         * itself rather than restated.
+         * The schema version this build writes, as a literal.
          *
-         * WHY IT IS DERIVED. Room's version argument must be a literal, so a second
-         * hand-written copy is one bump away from being wrong, and a wrong value here
-         * decides whether a restore is allowed. Reading the annotation makes drift
-         * impossible: bump the version and this answers the new number with no edit.
+         * IT USED TO BE READ OFF THE @Database ANNOTATION BY REFLECTION, AND THAT ALWAYS
+         * RETURNED ZERO. The annotation is CLASS-retained, which means it is present in the
+         * compiled bytecode and invisible at runtime, so `getAnnotation(...)` answered null
+         * on every build and the `?: 0` produced 0. Two things then failed silently:
          *
-         * A restore compares a snapshot's version against this, and refuses one that is
-         * newer, because installing a newer schema into an older build drops every
-         * column added since. That is silent loss rather than a failed restore.
+         *  - `AgentConfigurationValidator` compares an agent's declared `minimumRuntimeSchemaVersion`
+         *    against this value, so every agent whose manifest asked for schema 1 was refused with
+         *    "this agent needs runtime schema 1 and this build is 0, so it was made for a newer
+         *    app". Nothing could run at all, and the refusal blamed the agent rather than the
+         *    reading.
+         *  - the snapshot restore gate compares a snapshot's version against this one to refuse a
+         *    newer schema, so with 0 every snapshot looked newer than the build and restore was
+         *    blocked in the opposite direction from the one the comment describes.
+         *
+         * WHY A LITERAL RATHER THAN A DIFFERENT REFLECTION TRICK. Kotlin cannot read its own
+         * annotation at compile time either, and any second mechanism would be another thing to
+         * get wrong. So this is the number, and `guruDatabaseSchemaVersionMatchesTheDatabase`
+         * fails the build if it drifts from the @Database annotation beside it. A test is the
+         * guard that reflection was pretending to be.
          */
-        val SCHEMA_VERSION: Int
-            get() = guruDatabase::class.java
-                .getAnnotation(androidx.room.Database::class.java)
-                ?.version
-                ?: 0
+        const val SCHEMA_VERSION: Int = 41
     }
 }
