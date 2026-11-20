@@ -2579,7 +2579,22 @@ class AgentRuntime(
         // added here rather than listed in every agent's permissions so no agent
         // arrives without it and nobody has to remember to grant it.
         val ask = toolRegistry.getDefinition(AgentToolDefinitions.ASK_ASSISTANT)
-        val declared = agent.toolPermissions
+        /*
+         * THE LOCAL RESTRICTION IS APPLIED HERE, WHICH IS THE ONLY PLACE THAT MATTERS.
+         *
+         * A person may hold an imported agent to fewer tools than its publisher granted, and a
+         * restriction that only filtered a list somewhere else would be a preference rather than a
+         * control. This is the list the model is offered and the list the dispatcher is asked about,
+         * so a narrowed tool is not offered and would be refused if the model wrote the name by hand.
+         *
+         * EMPTY MEANS NO RESTRICTION. Every agent has an empty set by default, and reading that as
+         * "may use nothing" would break every catalogue agent on the phone.
+         */
+        val narrowed = com.unuslumen.app.domain.agents.AgentToolNarrowing.effectiveTools(
+            publishedTools = agent.toolPermissions,
+            narrowedTo = agent.toolNarrowing,
+        )
+        val declared = narrowed
             .filter { it.isNotBlank() }
             .filter { it !in NEVER_SPAWNABLE }
             .mapNotNull { name -> toolRegistry.getDefinition(name) }

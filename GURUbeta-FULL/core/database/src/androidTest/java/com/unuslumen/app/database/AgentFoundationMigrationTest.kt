@@ -96,6 +96,7 @@ class AgentFoundationMigrationTest {
             com.unuslumen.app.database.migrations.MIGRATION_37_38,
             com.unuslumen.app.database.migrations.MIGRATION_38_39,
             com.unuslumen.app.database.migrations.MIGRATION_39_40,
+            com.unuslumen.app.database.migrations.MIGRATION_40_41,
         )
 
         migrated.use { db ->
@@ -350,6 +351,7 @@ class AgentFoundationMigrationTest {
             com.unuslumen.app.database.migrations.MIGRATION_37_38,
             com.unuslumen.app.database.migrations.MIGRATION_38_39,
             com.unuslumen.app.database.migrations.MIGRATION_39_40,
+            com.unuslumen.app.database.migrations.MIGRATION_40_41,
         )
 
         migrated.use { db ->
@@ -527,6 +529,7 @@ class AgentFoundationMigrationTest {
             com.unuslumen.app.database.migrations.MIGRATION_37_38,
             com.unuslumen.app.database.migrations.MIGRATION_38_39,
             com.unuslumen.app.database.migrations.MIGRATION_39_40,
+            com.unuslumen.app.database.migrations.MIGRATION_40_41,
         )
 
         migrated.use { db ->
@@ -729,6 +732,7 @@ class AgentFoundationMigrationTest {
             true,
             com.unuslumen.app.database.migrations.MIGRATION_38_39,
             com.unuslumen.app.database.migrations.MIGRATION_39_40,
+            com.unuslumen.app.database.migrations.MIGRATION_40_41,
         )
 
         migrated.use { db ->
@@ -817,6 +821,7 @@ class AgentFoundationMigrationTest {
             guruDatabase.SCHEMA_VERSION,
             true,
             com.unuslumen.app.database.migrations.MIGRATION_39_40,
+            com.unuslumen.app.database.migrations.MIGRATION_40_41,
         )
 
         migrated.use { db ->
@@ -1036,6 +1041,7 @@ class AgentFoundationMigrationTest {
             com.unuslumen.app.database.migrations.MIGRATION_37_38,
             com.unuslumen.app.database.migrations.MIGRATION_38_39,
             com.unuslumen.app.database.migrations.MIGRATION_39_40,
+            com.unuslumen.app.database.migrations.MIGRATION_40_41,
         )
     }
 }

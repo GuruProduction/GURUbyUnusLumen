@@ -118,6 +118,18 @@ data class GuruAgentEntity(
     val skillIds: String = "",
 
     /**
+     * A local restriction on an imported agent's tools, comma-joined, empty meaning none.
+     *
+     * SEPARATE FROM [toolPermissions] BECAUSE THE PUBLISHED GRANT MUST STAY INTACT. A later catalogue
+     * version is diffed against what the publisher shipped, so rewriting the stored grant to hold an
+     * agent to fewer tools would destroy the comparison that stops an update smuggling in a
+     * permission. This column holds what the person chose to allow, and the effective set is the
+     * published list filtered by it.
+     */
+    @ColumnInfo(name = "tool_narrowing", defaultValue = "")
+    val toolNarrowing: String = "",
+
+    /**
      * Counts local definition edits, and is what a history row is keyed on.
      *
      * NOT THE SAME AS [version]. [version] is the published catalogue version the sync worker

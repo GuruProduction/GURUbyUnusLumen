@@ -199,7 +199,7 @@ import com.unuslumen.app.database.entity.AgentScheduleEntity
         // starts an agent, and one alarm cannot mean both.
         AgentScheduleEntity::class,
     ],
-    version = 40
+    version = 41
 )
 @TypeConverters(DBConverters::class)
 abstract class guruDatabase: RoomDatabase() {

@@ -95,6 +95,19 @@ interface GuruAgentRepository {
      * category off now hides it here and cannot retroactively empty a record that already exists.
      */
     suspend fun updateVisibility(id: String, visibility: com.unuslumen.app.domain.model.AgentVisibility): GuruAgent
+
+    /**
+     * Hold an agent to fewer tools than it was published with, and nothing else.
+     *
+     * A LOCAL RESTRICTION, NEVER AN EXTENSION. The published grant is the ceiling, so a name outside
+     * it is refused rather than stored. This is the only way section 13's isolation of imported
+     * agents can be true for a person who wants one for a single job.
+     *
+     * IT DOES NOT REWRITE THE PUBLISHED GRANT. That list is what a later catalogue version is diffed
+     * against, and the diff is what stops an update smuggling in a new permission; editing it would
+     * erase the comparison. An empty set removes the restriction and restores everything published.
+     */
+    suspend fun setToolNarrowing(id: String, tools: Set<String>): GuruAgent
 }
 
 /** One entry in the creator's tool picker. */

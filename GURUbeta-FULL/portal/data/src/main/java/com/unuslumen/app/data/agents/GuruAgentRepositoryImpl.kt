@@ -141,6 +141,12 @@ class GuruAgentRepositoryImpl(
             contextScopeJson = AgentConfigurationCodec.encodeContextScope(request.contextScope),
             manifestJson = AgentConfigurationCodec.encodeManifest(request.manifest),
             skillIds = request.skillIds.joinToString(", "),
+            /*
+             * A NEW AGENT HAS NO LOCAL RESTRICTION. `SaveAgentRequest` does not carry one because a
+             * restriction is a decision about an imported agent's published grant, made in the room
+             * rather than in the creator, and a create has nothing to restrict.
+             */
+            toolNarrowing = "",
             // The first saved version. `definitionVersion` counts edits, so a create writes 1.
             definitionVersion = 1,
         )
@@ -191,6 +197,13 @@ class GuruAgentRepositoryImpl(
                 contextScopeJson = AgentConfigurationCodec.encodeContextScope(request.contextScope),
                 manifestJson = AgentConfigurationCodec.encodeManifest(request.manifest),
                 skillIds = request.skillIds.joinToString(", "),
+                /*
+                 * THE LOCAL RESTRICTION SURVIVES AN EDIT. It is not part of `SaveAgentRequest`, so a
+                 * save that carried no opinion about it must leave it exactly as the person set it;
+                 * clearing it here would silently hand an imported agent its full published grant
+                 * back the next time anybody edited its prompt.
+                 */
+                toolNarrowing = existing.toolNarrowing,
                 definitionVersion = nextVersion,
                 updatedAt = now,
             )
@@ -250,6 +263,54 @@ class GuruAgentRepositoryImpl(
         }
         updated.toDomain()
     }
+
+    /**
+     * Hold an agent to fewer tools than it was published with.
+     *
+     * THE ONLY REFUSAL IS AN EXTENSION. A name outside the published grant is asking for something
+     * the catalogue review never saw, so it cannot be allowed here; every other shape is accepted,
+     * including an identical set, because a no-op restriction is not an error.
+     *
+     * A RESTRICTION THAT REMOVES NOTHING IS STORED AS EMPTY. Keeping a set identical to the published
+     * grant would make the column claim a restriction exists when the effect is none, so the two
+     * states are collapsed into the one that is true.
+     */
+    override suspend fun setToolNarrowing(id: String, tools: Set<String>): GuruAgent =
+        withContext(Dispatchers.IO) {
+            val existing = guruAgentDao.getAgentById(id)
+                ?: throw IllegalArgumentException("Agent not found: $id")
+            val published = existing.toolPermissions.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+
+            val verdict = com.unuslumen.app.domain.agents.AgentToolNarrowing.evaluate(
+                publishedTools = published,
+                requested = tools,
+            )
+            if (!verdict.permitted) {
+                throw IllegalArgumentException(verdict.explanation ?: "That restriction cannot be applied.")
+            }
+
+            val stored = if (verdict.tools == published.toSet()) emptySet() else verdict.tools
+            val now = System.currentTimeMillis()
+            val nextVersion = existing.definitionVersion + 1
+            val updated = existing.copy(
+                toolNarrowing = stored.joinToString(", "),
+                definitionVersion = nextVersion,
+                updatedAt = now,
+            )
+            transactor.inTransaction {
+                guruAgentDao.updateAgent(updated)
+                definitionVersionDao.insert(
+                    versionRow(
+                        entity = updated,
+                        definitionVersion = nextVersion,
+                        reason = AgentDefinitionVersionEntity.REASON_EDITED,
+                        author = AgentDefinitionVersionEntity.AUTHOR_USER,
+                        savedAt = now,
+                    )
+                )
+            }
+            updated.toDomain()
+        }
 
     override suspend fun enableAgent(id: String): GuruAgent = withContext(Dispatchers.IO) {
         guruAgentDao.setEnabled(id, true)
@@ -427,6 +488,16 @@ class GuruAgentRepositoryImpl(
         } else {
             skillIds.split(",").map { it.trim() }.filter { it.isNotEmpty() }
         }
+        /*
+         * AN EMPTY NARROWING MEANS NO RESTRICTION, NOT NO TOOLS. Every existing row has an empty
+         * column, and reading it as "this agent may use nothing" would break every catalogue agent on
+         * the phone on upgrade.
+         */
+        val narrowing = if (toolNarrowing.isBlank()) {
+            emptySet()
+        } else {
+            toolNarrowing.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        }
         return GuruAgent(
             id = id,
             slug = slug,
@@ -446,6 +517,7 @@ class GuruAgentRepositoryImpl(
             modelPreference = AgentConfigurationCodec.decodeModelPreference(modelPreferenceJson),
             notifications = AgentConfigurationCodec.decodeNotifications(notificationsJson),
             skillIds = skills,
+            toolNarrowing = narrowing,
             memoryScope = AgentConfigurationCodec.decodeMemoryScope(memoryScopeJson),
             contextScope = AgentConfigurationCodec.decodeContextScope(contextScopeJson),
             manifest = AgentConfigurationCodec.decodeManifest(manifestJson),

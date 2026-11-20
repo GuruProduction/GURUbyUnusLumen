@@ -67,6 +67,16 @@ data class GuruAgent(
     /** Skill ids granted, alongside the tools. Skills describe procedure; tools do the work. */
     val skillIds: List<String> = emptyList(),
 
+    /**
+     * A local restriction on what an imported agent may use, empty meaning none.
+     *
+     * STORED APART FROM [toolPermissions] ON PURPOSE. What the publisher shipped stays exactly as it
+     * arrived, so a later version can still be diffed against it; this is what the person chose to
+     * allow on top of that. An emptier set means no restriction rather than no tools, because the
+     * default state is empty and reading it as "may use nothing" would break every catalogue agent.
+     */
+    val toolNarrowing: Set<String> = emptySet(),
+
     /** Which memory scopes this agent may read or write. NONE means none. */
     val memoryScope: AgentMemoryScope = AgentMemoryScope.NONE,
 
@@ -98,6 +108,7 @@ data class GuruAgent(
         systemPrompt = systemPrompt,
         toolPermissions = toolPermissions,
         skillIds = skillIds,
+        toolNarrowing = toolNarrowing,
         source = source,
         version = version,
         definitionVersion = definitionVersion,
@@ -137,6 +148,14 @@ data class AgentDefinitionSnapshot(
     val systemPrompt: String,
     val toolPermissions: List<String>,
     val skillIds: List<String>,
+    /**
+     * The local restriction in force when this run started, empty meaning none.
+     *
+     * IN THE SNAPSHOT BECAUSE IT IS PART OF WHAT THE RUN WAS ALLOWED. A run of an imported agent that
+     * a person held to three tools must record that, or a reader of its history would see the
+     * publisher's full grant and wonder why it never touched the rest.
+     */
+    val toolNarrowing: Set<String> = emptySet(),
     val source: String,
     val version: Int,
     val definitionVersion: Int,

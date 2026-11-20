@@ -401,6 +401,134 @@ class AgentConfigurationPersistenceTest {
     }
 
     @Test
+    fun aToolRestrictionRoundTripsAndLeavesThePublishedGrantIntact() = runTest {
+        /*
+         * SECTION 13'S ISOLATION, PROVED AT THE STORE. An imported agent arrives with exactly what
+         * the publisher shipped, and this is how a person holds it to less. The published grant must
+         * survive untouched, because it is what a later catalogue version is diffed against to stop
+         * an update smuggling in a permission.
+         */
+        val installed = repository.installSyncedAgent(
+            slug = "wide",
+            name = "Wide",
+            description = "",
+            systemPrompt = "you can do a lot",
+            toolPermissions = listOf("captureScreen", "sendSms", "webSearch"),
+            version = 3,
+        )
+        assertEquals("nothing is restricted until somebody restricts it", emptySet<String>(), installed.toolNarrowing)
+
+        val narrowed = repository.setToolNarrowing(installed.id, setOf("captureScreen"))
+
+        assertEquals("the restriction is stored", setOf("captureScreen"), narrowed.toolNarrowing)
+        assertEquals(
+            "and the published grant is not rewritten by it",
+            listOf("captureScreen", "sendSms", "webSearch"),
+            narrowed.toolPermissions,
+        )
+        assertEquals(
+            "the stored row agrees on the next read",
+            setOf("captureScreen"),
+            repository.getAgent(installed.id)!!.toolNarrowing,
+        )
+        assertEquals("the restriction is an edit and appends a version", 2, narrowed.definitionVersion)
+    }
+
+    @Test
+    fun aRestrictionCannotAddAToolTheCatalogueNeverGranted() = runTest {
+        /*
+         * THE GUARANTEE, NOT A VALIDATION. If a local restriction could add, every imported agent
+         * would be a route around the catalogue review. The refusal has to name the tool, because a
+         * message that only says "not permitted" leaves a person unable to tell which name was wrong.
+         */
+        val installed = repository.installSyncedAgent(
+            slug = "narrow-only",
+            name = "Narrow Only",
+            description = "",
+            systemPrompt = "you are held to less",
+            toolPermissions = listOf("captureScreen"),
+            version = 1,
+        )
+
+        var refused: String? = null
+        try {
+            repository.setToolNarrowing(installed.id, setOf("captureScreen", "rootShell"))
+        } catch (e: IllegalArgumentException) {
+            refused = e.message
+        }
+
+        assertTrue("an extension is refused", refused != null)
+        assertTrue("and the refusal names the offending tool: $refused", refused!!.contains("rootShell"))
+        assertEquals(
+            "nothing was written by the refused call",
+            emptySet<String>(),
+            repository.getAgent(installed.id)!!.toolNarrowing,
+        )
+        assertEquals(
+            "and no version was appended either",
+            1,
+            repository.versionsFor(installed.id).size,
+        )
+    }
+
+    @Test
+    fun namingTheWholePublishedSetStoresNoRestrictionRatherThanOneThatRemovesNothing() = runTest {
+        /*
+         * TWO STATES, ONE MEANING. A column claiming a restriction exists while the effect is none
+         * would make the room draw a control that does nothing, so the redundant state is collapsed
+         * into the true one on write rather than left for the reader to interpret.
+         */
+        val installed = repository.installSyncedAgent(
+            slug = "whole",
+            name = "Whole",
+            description = "",
+            systemPrompt = "you keep everything",
+            toolPermissions = listOf("captureScreen", "sendSms"),
+            version = 1,
+        )
+
+        val same = repository.setToolNarrowing(installed.id, setOf("sendSms", "captureScreen"))
+
+        assertEquals("the no-op is stored as no restriction", emptySet<String>(), same.toolNarrowing)
+        assertEquals(
+            "and an empty request restores everything, so the two are the same state",
+            emptySet<String>(),
+            repository.setToolNarrowing(installed.id, emptySet()).toolNarrowing,
+        )
+    }
+
+    @Test
+    fun editingAnAgentCannotSilentlyClearItsRestriction() = runTest {
+        /*
+         * THE DEFECT THIS PREVENTS. `SaveAgentRequest` carries no restriction, so a save written from
+         * whatever the creator screen happens to hold would clear the column as a side effect of an
+         * unrelated prompt edit. The imported agent would then get its full published grant back
+         * without anybody deciding that.
+         */
+        val installed = repository.installSyncedAgent(
+            slug = "held-narrow",
+            name = "Held Narrow",
+            description = "",
+            systemPrompt = "the first prompt",
+            toolPermissions = listOf("captureScreen", "sendSms", "webSearch"),
+            version = 1,
+        )
+        repository.setToolNarrowing(installed.id, setOf("captureScreen"))
+
+        val edited = repository.updateAgent(
+            installed.id,
+            SaveAgentRequest(name = "Held Narrow", systemPrompt = "the second prompt"),
+        )
+
+        assertEquals("the prompt edit landed", "the second prompt", edited.systemPrompt)
+        assertEquals(
+            "and the restriction is exactly as it was",
+            setOf("captureScreen"),
+            edited.toolNarrowing,
+        )
+    }
+
+    @Test
     fun aCapabilityManifestRoundTripsWithItsRequirements() = runTest {
         val manifest = AgentCapabilityManifest(
             requiredTools = listOf("captureScreen"),
