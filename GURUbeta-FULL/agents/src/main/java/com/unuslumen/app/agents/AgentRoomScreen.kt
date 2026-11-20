@@ -582,6 +582,28 @@ private fun androidx.compose.foundation.lazy.LazyListScope.reasoning(room: Agent
         }
     }
 
+    /*
+     * WHAT IT ACTUALLY CHECKED, BESIDE WHAT IT SAID IT DECIDED.
+     *
+     * The report says the work is done whether or not anything was checked, so the checks are the
+     * only way a reader can tell those apart. A confirmed one is drawn differently from an accepted
+     * one, because accepted means a mechanism acknowledged it and nobody observed the effect.
+     */
+    if (run != null && run.verifications.isNotEmpty()) {
+        item("verifications-head") {
+            Text("WHAT IT CHECKED", style = captionStyle(9.5f, Memphis.Ink.copy(alpha = 0.7f)))
+        }
+        items(run.verifications, key = { "v-${it.sequence}" }) { check -> VerificationCard(check) }
+        item("verifications-note") {
+            Text(
+                "Only a confirmed check supports saying the work is finished. Accepted means " +
+                    "something acknowledged it; attempted means it was not checked at all.",
+                style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.55f)),
+                modifier = Modifier.padding(top = 6.dp, bottom = 14.dp),
+            )
+        }
+    }
+
     item("reasoning") {
         val reasoning = run?.reasoning
         Panel(
@@ -649,6 +671,61 @@ private fun DecisionCard(decision: com.unuslumen.app.domain.agents.DecisionView)
                 Text(
                     "It gave a decision and a reason, and nothing further.",
                     style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.5f)),
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * One check the agent made, and how far it got.
+ *
+ * THE LEVEL IS THE HEADLINE BECAUSE IT CHANGES WHAT THE CLAIM IS WORTH. A confirmed check and an
+ * attempted one are the same sentence otherwise, and the colour carries the difference so it is
+ * visible before any of the words are read.
+ */
+@Composable
+private fun VerificationCard(check: com.unuslumen.app.domain.agents.VerificationView) {
+    MemphisSurface(
+        modifier = Modifier.fillMaxWidth().padding(top = 9.dp),
+        color = Memphis.Paper,
+        borderWidth = 2.5.dp,
+        shadowOffset = 4.dp,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(11.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "#${check.sequence}",
+                    style = posterStyle(12f),
+                    modifier = Modifier.weight(1f),
+                )
+                Badge(
+                    check.level,
+                    when (check.level) {
+                        com.unuslumen.app.domain.agents.VerificationLevels.CONFIRMED -> Memphis.Teal
+                        com.unuslumen.app.domain.agents.VerificationLevels.ACCEPTED -> Memphis.Yellow
+                        else -> Memphis.Coral
+                    },
+                )
+            }
+            Text(
+                check.claim,
+                style = captionStyle(11f, Memphis.Ink),
+                modifier = Modifier.padding(top = 5.dp),
+            )
+            Text(
+                check.levelLabel,
+                style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.6f)),
+                modifier = Modifier.padding(top = 3.dp),
+            )
+            if (check.evidence.isNotBlank()) Fact("Evidence", check.evidence)
+            if (check.check.isNotBlank()) Fact("How", check.check)
+            if (check.uncertainty.isNotBlank()) Fact("Still open", check.uncertainty)
+            if (!check.supportsCompletion) {
+                Text(
+                    "This is not a confirmed check, so it does not support reporting the work as done.",
+                    style = captionStyle(8.5f, Memphis.Coral),
                     modifier = Modifier.padding(top = 6.dp),
                 )
             }

@@ -240,6 +240,14 @@ class AgentRuntime(
          */
         const val REPORT_TO_PERSON = "reportToPerson"
 
+        /**
+         * The verb an agent uses to record what it checked.
+         *
+         * DUPLICATED FOR THE SAME REASON as the others, and pinned by a test against
+         * `VerificationToolDefinitions.RECORD_VERIFICATION`.
+         */
+        const val RECORD_VERIFICATION = "recordVerification"
+
         /** Shared so every component in this process reports the same lease owner. */
         @Volatile
         private var processLeaseOwner: String? = null
@@ -384,6 +392,14 @@ class AgentRuntime(
          * carried in the checkpoint.
          */
         var decisionCount: Int = 0,
+        /**
+         * How many checks this run has recorded, so each one is numbered.
+         *
+         * NUMBERED PER RUN FOR THE SAME REASON DECISIONS ARE. A reader asking "the second thing it
+         * checked" gets an answer without joining anything, and the numbering survives a resume
+         * because it is carried in the checkpoint.
+         */
+        var verificationCount: Int = 0,
         /**
          * Set when a person has asked this run to stop for now.
          *
@@ -1200,6 +1216,7 @@ class AgentRuntime(
              */
             planRevision = readCheckpointField(state, "planRevision")?.toIntOrNull() ?: 0,
             decisionCount = readCheckpointField(state, "decisionCount")?.toIntOrNull() ?: 0,
+            verificationCount = readCheckpointField(state, "verificationCount")?.toIntOrNull() ?: 0,
             /*
              * THE LIMITS TRAVEL WITH THE RESTORE, and the clock starts now rather than at the
              * original spawn. A run that sat paused or interrupted for an hour was not working for
@@ -2121,6 +2138,17 @@ class AgentRuntime(
              */
             recordReports(session, agent, toolCalls)
 
+            /*
+             * AND A CHECK IT MADE BECOMES A RECORDED FACT.
+             *
+             * Section 4.4 asks for a completion claim to be supported by execution evidence, and for
+             * an attempt, an acceptance and a real-world confirmation to be distinguishable. The
+             * record is what makes that answerable afterwards: "it said it was done" and "it said it
+             * was done and here is the check at CONFIRMED with the output it read" are different
+             * claims, and only the second one is worth acting on.
+             */
+            recordVerifications(session, agent, toolCalls)
+
             onEvent?.invoke("${agent.name} is using ${toolCalls.size} tool(s), round $rounds")
 
             // ONE ROUND CHECKPOINT, BEFORE THE FIRST DISPATCH.
@@ -2617,6 +2645,15 @@ class AgentRuntime(
          */
         val report = toolRegistry.getDefinition(REPORT_TO_PERSON)
         /*
+         * AND THE CHECK, FOR A SHARPER REASON THAN THE OTHER TWO.
+         *
+         * A run that cannot record what it checked can still claim the work is done, and the whole
+         * point of section 4.4 is that those two are different claims. Making it universal costs a
+         * tool description and means every agent's completion can be read against its evidence,
+         * whether or not its author thought to grant the verb.
+         */
+        val verify = toolRegistry.getDefinition(RECORD_VERIFICATION)
+        /*
          * THE LOCAL RESTRICTION IS APPLIED HERE, WHICH IS THE ONLY PLACE THAT MATTERS.
          *
          * A person may hold an imported agent to fewer tools than its publisher granted, and a
@@ -2640,7 +2677,7 @@ class AgentRuntime(
          * happens to name one of them must not get it twice, because two identical tool definitions
          * in one request is an ambiguity the model resolves by guessing.
          */
-        val universal = listOfNotNull(ask, report)
+        val universal = listOfNotNull(ask, report, verify)
         return universal + declared.filter { candidate -> universal.none { it.name == candidate.name } }
     }
 
@@ -2655,14 +2692,17 @@ class AgentRuntime(
     fun allowedToolsFrom(agent: GuruAgent, granted: Set<String>): List<ToolDefinition> {
         val ask = toolRegistry.getDefinition(AgentToolDefinitions.ASK_ASSISTANT)
         val report = toolRegistry.getDefinition(REPORT_TO_PERSON)
+        val verify = toolRegistry.getDefinition(RECORD_VERIFICATION)
         val resolved = granted
             .filter { it.isNotBlank() }
             .filter { it !in NEVER_SPAWNABLE }
             .mapNotNull { name -> toolRegistry.getDefinition(name) }
         // A DELEGATED RUN GETS THE UNIVERSAL VERBS TOO. A child that could not ask a question or
         // report a blocker would have to fail its way out of anything it could not finish, and the
-        // parent would see a dead run rather than a reason.
-        val universal = listOfNotNull(ask, report)
+        // parent would see a dead run rather than a reason. A child that could not record a check
+        // would hand its parent a completion claim with no evidence behind it, which is the thing
+        // section 4.4 exists to stop.
+        val universal = listOfNotNull(ask, report, verify)
         return universal + resolved.filter { candidate -> universal.none { it.name == candidate.name } }
     }
 
@@ -2843,6 +2883,18 @@ class AgentRuntime(
                         com.unuslumen.app.domain.agents.AgentInitiatedMessages.describeForModel() +
                         ". If you genuinely cannot continue without an answer, use askAssistant " +
                         "instead, because reportToPerson will not wait for anybody."
+                )
+            }
+            if (allowed.any { it.name == RECORD_VERIFICATION }) {
+                appendLine(
+                    "CHECK BEFORE YOU SAY IT IS DONE. recordVerification takes the claim, how far " +
+                        "you got, and the evidence. ATTEMPTED means you did the thing and have not " +
+                        "checked the effect; ACCEPTED means whatever received it acknowledged it, " +
+                        "such as a command exiting zero or an API answering; CONFIRMED means you " +
+                        "observed the effect yourself, such as reading the file back or querying the " +
+                        "row. Only a confirmed check supports reporting the work as finished, and " +
+                        "naming what you did not check is worth more to the person than a claim they " +
+                        "later find was wrong."
                 )
             }
             if (allowed.any { it.name == DECISION_RECORD }) {
@@ -3099,6 +3151,7 @@ class AgentRuntime(
          */
         put("planRevision", session.planRevision)
         put("decisionCount", session.decisionCount)
+        put("verificationCount", session.verificationCount)
         put("systemPrompt", session.systemPrompt)
         put("messageCount", session.messages.size)
         /*
@@ -3335,6 +3388,60 @@ class AgentRuntime(
              * run's history for one thing the agent said. What the broker's event does not carry is
              * the urgency, which belongs to the message row it also writes.
              */
+        }
+    }
+
+    /**
+     * Turn any check the agent recorded this round into a ledger fact.
+     *
+     * A RECORD MISSING ITS CLAIM, LEVEL OR EVIDENCE IS SKIPPED, because the executor already refused
+     * that shape with a sentence the model was told about; writing a partial record here would put a
+     * check in the history that nobody made.
+     *
+     * THE LEVEL IS STORED AS THE VOCABULARY WORD, not as the word the model used, so a reader gets
+     * the same three values whatever case or spelling arrived. The derived "supports completion" is
+     * not stored: it is a function of the level, and storing it would let a row disagree with itself.
+     */
+    private suspend fun recordVerifications(
+        session: Session,
+        agent: GuruAgent,
+        toolCalls: List<StreamFrame.ToolCallComplete>,
+    ) {
+        for (call in toolCalls) {
+            if (call.name != RECORD_VERIFICATION) continue
+
+            val args = runCatching {
+                json.parseToJsonElement(call.content) as? JsonObject
+            }.getOrNull() ?: continue
+
+            val claim = (args["claim"] as? JsonPrimitive)?.content?.trim().orEmpty()
+            val evidence = (args["evidence"] as? JsonPrimitive)?.content?.trim().orEmpty()
+            val level = com.unuslumen.app.domain.agents.VerificationLevels.of(
+                (args["level"] as? JsonPrimitive)?.content.orEmpty()
+            ) ?: continue
+            if (claim.isEmpty() || evidence.isEmpty()) continue
+
+            session.verificationCount += 1
+
+            runCatching {
+                ledger.append(
+                    session.id,
+                    AgentRunLedger.EventDraft(
+                        eventType = com.unuslumen.app.domain.agents.AgentEventTypes.VERIFICATION_RECORDED,
+                        actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_AGENT,
+                        actorId = agent.id,
+                        payload = jsonObject {
+                            put("claim", claim)
+                            put("level", level)
+                            put("evidence", evidence)
+                            put("check", (args["check"] as? JsonPrimitive)?.content.orEmpty())
+                            put("uncertainty", (args["uncertainty"] as? JsonPrimitive)?.content.orEmpty())
+                            put("roundIndex", session.rounds)
+                            put("sequence", session.verificationCount)
+                        },
+                    )
+                )
+            }
         }
     }
 

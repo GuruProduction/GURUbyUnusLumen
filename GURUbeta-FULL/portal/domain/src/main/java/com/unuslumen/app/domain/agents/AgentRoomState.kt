@@ -124,6 +124,16 @@ data class RunView(
      */
     val decisions: List<DecisionView>,
 
+    /**
+     * What the run recorded checking, and how far each check got.
+     *
+     * SECTION 4.4 ASKS FOR A COMPLETION CLAIM TO BE SUPPORTED BY EVIDENCE. A report is prose and a
+     * claim in it reads the same whether or not anything was checked, so the checks are drawn as
+     * their own facts beside the decisions. [VerificationView.supportsCompletion] is what tells a
+     * reader whether "done" in the report is backed by the one level that means it.
+     */
+    val verifications: List<VerificationView>,
+
     /** What the run was given, and what it was only offered. */
     val contextSupplied: Int,
     val contextOffered: Int,
@@ -323,6 +333,34 @@ data class DecisionView(
     val hasDetail: Boolean
         get() = problem.isNotBlank() || approach.isNotBlank() || alternatives.isNotEmpty() ||
             evidence.isNotBlank() || uncertainty.isNotBlank() || next.isNotBlank()
+}
+
+/**
+ * One check the agent recorded, with how far it got.
+ *
+ * [level] IS THE VOCABULARY WORD AND [supportsCompletion] IS DERIVED FROM IT, so a record cannot
+ * claim a level it did not earn. The room shows both the words a person reads and whether the claim
+ * it backs may be reported as finished, which is the difference between "it says it is done" and "it
+ * checked and here is what it saw".
+ */
+data class VerificationView(
+    /** One-based within the run, so "the second thing it checked" is answerable. */
+    val sequence: Int,
+    val claim: String,
+    val level: String,
+    val evidence: String,
+    val check: String,
+    val uncertainty: String,
+    val at: Long,
+) {
+    /** Whether a completion claim may rest on this check. */
+    val supportsCompletion: Boolean get() = VerificationLevels.supportsCompletion(level)
+
+    /** The level in words a person reads, never the raw constant on its own. */
+    val levelLabel: String get() = VerificationLevels.label(level)
+
+    /** Whether the agent said anything beyond what was required. */
+    val hasDetail: Boolean get() = check.isNotBlank() || uncertainty.isNotBlank()
 }
 
 /**

@@ -132,6 +132,7 @@ class AgentRoomAssembler(
             messages = messages.map { it.toView(run.agentName) },
             reasoning = reasoningFrom(events, effective, run.reasoningCaptureEnabledAtStart),
             decisions = decisionsFrom(events),
+            verifications = verificationsFrom(events),
             contextSupplied = contextSources.count { it.suppliedToModel },
             contextOffered = contextSources.size,
             contextSources = contextSources,
@@ -362,6 +363,36 @@ class AgentRoomAssembler(
                     evidence = stringOf(payload, "evidence").orEmpty(),
                     uncertainty = stringOf(payload, "uncertainty").orEmpty(),
                     next = stringOf(payload, "next").orEmpty(),
+                    at = event.occurredAt,
+                )
+            }
+            .sortedBy { it.sequence }
+
+    /**
+     * What the agent recorded checking, in the order it recorded it.
+     *
+     * READ FROM THE LEDGER, THE SAME WAY DECISIONS ARE. A check is a fact the agent deliberately
+     * wrote, so reconstructing one from its report would be inventing evidence out of prose. Ordered
+     * by the run's own sequence so "the second thing it checked" means something.
+     *
+     * A RECORD WITH NO CLAIM IS SKIPPED rather than drawn with a blank heading, because the runtime
+     * already refuses to write one.
+     */
+    private fun verificationsFrom(events: List<AgentRunEventEntity>): List<com.unuslumen.app.domain.agents.VerificationView> =
+        events
+            .filter {
+                it.eventType == com.unuslumen.app.domain.agents.AgentEventTypes.VERIFICATION_RECORDED
+            }
+            .mapNotNull { event ->
+                val payload = readObject(event.payloadJson) ?: return@mapNotNull null
+                val claim = stringOf(payload, "claim") ?: return@mapNotNull null
+                com.unuslumen.app.domain.agents.VerificationView(
+                    sequence = stringOf(payload, "sequence")?.toIntOrNull() ?: 0,
+                    claim = claim,
+                    level = stringOf(payload, "level").orEmpty(),
+                    evidence = stringOf(payload, "evidence").orEmpty(),
+                    check = stringOf(payload, "check").orEmpty(),
+                    uncertainty = stringOf(payload, "uncertainty").orEmpty(),
                     at = event.occurredAt,
                 )
             }

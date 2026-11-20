@@ -165,6 +165,9 @@ object GeneratedToolRegistrations {
         // findings, blockage, milestones, risks and review requests as well as clarification; before
         // this, every one of them had to arrive as a question and halt the work.
         com.unuslumen.app.data.tools.AgentReportToolDefinitions,
+        // The check behind a completion claim. Section 4.4 asks an attempt, an acceptance and a
+        // real-world confirmation to be three distinguishable facts rather than one word, "done".
+        com.unuslumen.app.data.tools.VerificationToolDefinitions,
         ApprovalToolDefinitions,
         KeyboardToolDefinitions,
         CameraToolDefinitions,

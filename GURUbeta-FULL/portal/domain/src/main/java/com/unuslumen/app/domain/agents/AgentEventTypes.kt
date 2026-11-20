@@ -110,6 +110,17 @@ object AgentEventTypes {
      */
     const val DECISION_RECORDED = "DECISION_RECORDED"
 
+    // ---- verification ----
+    /**
+     * The agent recorded a check it made, and how far that check got.
+     *
+     * WHY IT IS NOT A DECISION. A decision records a fork in the work; this records whether something
+     * the work produced is true. Section 4.4 asks for a completion claim to be supported by execution
+     * evidence, and that needs a place to put the evidence, the level of confirmation and what
+     * remains open. A report is prose; this is a record a reader can check against the run.
+     */
+    const val VERIFICATION_RECORDED = "VERIFICATION_RECORDED"
+
     // ---- checkpoints ----
     const val CHECKPOINT_CREATED = "CHECKPOINT_CREATED"
 
@@ -124,7 +135,8 @@ object AgentEventTypes {
         TOOL_PERMISSION_GRANTED, TOOL_PERMISSION_DENIED, TOOL_CALL_STARTED, TOOL_PROGRESS,
         TOOL_CALL_COMPLETED, TOOL_CALL_FAILED, TOOL_CALL_REFUSED, TOOL_CALL_OUTCOME_UNKNOWN,
         MESSAGE_CREATED, MESSAGE_DELIVERED, MESSAGE_DELIVERY_FAILED, QUESTION_OPENED,
-        QUESTION_ANSWERED, PLAN_REVISED, ARTEFACT_CREATED, DECISION_RECORDED, CHECKPOINT_CREATED,
+        QUESTION_ANSWERED, PLAN_REVISED, ARTEFACT_CREATED, DECISION_RECORDED,
+        VERIFICATION_RECORDED, CHECKPOINT_CREATED,
     )
 
     /**
@@ -304,6 +316,13 @@ object AgentEventTypes {
             "A decision is a record the agent wrote about its own reasoning, kept for the room to " +
                 "show. The agent's working context is the checkpoint, and replaying decisions into " +
                 "it would tell the model it had already deliberated again."
+        ),
+
+        // ---- verification ----
+        VERIFICATION_RECORDED to RestorePolicy.NoSessionEffect(
+            "A check the agent made about its own output, kept for a reader to weigh rather than " +
+                "rebuilt into the working context. Replaying it would tell the model it had already " +
+                "checked something on the current attempt, which may not be true after a resume."
         ),
 
         // ---- checkpoints ----

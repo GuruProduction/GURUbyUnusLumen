@@ -35,6 +35,7 @@ class AgentRunControlTest {
         messages = emptyList(),
         reasoning = ReasoningView("", true, true),
         decisions = emptyList(),
+        verifications = emptyList(),
         contextSupplied = 0,
         contextOffered = 0,
         contextSources = emptyList(),
