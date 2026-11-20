@@ -60,6 +60,14 @@ class AgentRoomViewModel(
         val error: String? = null,
         /** What the person is typing into Chat with Agent. */
         val draft: String = "",
+        /**
+         * How the agent should treat what is typed.
+         *
+         * A CORRECTION IS NOT A QUESTION AND NEITHER IS AN INSTRUCTION. The runtime stores the type
+         * with the message and the agent reads the framing from it, so sending everything as one
+         * kind is how "why did you do that" arrives as "do it differently".
+         */
+        val draftType: String = com.unuslumen.app.domain.agents.AgentSpeakableTo.INSTRUCTION,
         /** A control that failed, shown as a sentence rather than swallowed. */
         val controlError: String? = null,
         /** True while the poll is waiting for a run to appear after a start. */
@@ -111,6 +119,7 @@ class AgentRoomViewModel(
         when (event) {
             is Event.SelectTab -> _state.update { it.copy(tab = event.tab) }
             is Event.UpdateDraft -> _state.update { it.copy(draft = event.text) }
+            is Event.SelectDraftType -> _state.update { it.copy(draftType = event.type) }
             Event.SendToAgent -> sendToAgent()
             Event.StopRun -> stopRun()
             Event.PauseRun -> pauseRun()
@@ -127,6 +136,14 @@ class AgentRoomViewModel(
     sealed interface Event {
         data class SelectTab(val tab: RoomTab) : Event
         data class UpdateDraft(val text: String) : Event
+
+        /**
+         * Choose how the next message should be read.
+         *
+         * ONLY THE KINDS `AgentSpeakableTo` OFFERS, so the stored type is always one the runtime
+         * knows how to frame. The screen draws its buttons from that list rather than from its own.
+         */
+        data class SelectDraftType(val type: String) : Event
 
         /** Send the draft to the agent through the broker. */
         data object SendToAgent : Event
@@ -242,12 +259,29 @@ class AgentRoomViewModel(
             return
         }
 
+        /*
+         * THE CHOSEN KIND IS WHAT TRAVELS. Sending everything as INSTRUCTION was the defect section
+         * 9.9 names: a question stored as an instruction tells the agent it is being ordered to do
+         * something, and a correction stored as one leaves the original brief apparently intact.
+         *
+         * THE TYPE IS CHECKED AGAINST THE OFFERED SET rather than trusted from the UI, because the
+         * runtime frames a message by its type and an unrecognised one would arrive unframed.
+         */
+        val kind = _state.value.draftType
+        val messageType = if (
+            com.unuslumen.app.domain.agents.AgentSpeakableTo.allows(kind)
+        ) {
+            kind
+        } else {
+            com.unuslumen.app.domain.agents.AgentSpeakableTo.INSTRUCTION
+        }
+
         viewModelScope.launch {
             try {
                 val sent = runtime.steer(
                     runId = runId,
                     text = text,
-                    messageType = com.unuslumen.app.domain.agents.AgentMessageTypes.INSTRUCTION,
+                    messageType = messageType,
                 )
                 if (!sent) {
                     _state.update {

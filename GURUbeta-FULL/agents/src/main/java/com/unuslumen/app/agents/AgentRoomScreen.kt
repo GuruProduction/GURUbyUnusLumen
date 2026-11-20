@@ -354,8 +354,9 @@ private fun androidx.compose.foundation.lazy.LazyListScope.chat(
 
     item("explain") {
         Text(
-            "Your message is queued and picked up at the agent's next safe boundary, so it never " +
-                "arrives in the middle of a tool call.",
+            "Every kind below is a message, and a message is picked up at the agent's next safe " +
+                "boundary, so nothing arrives in the middle of a tool call. To end the work or hold " +
+                "it, use Stop or Pause on the overview, because those are actions rather than words.",
             style = captionStyle(9f, Memphis.Ink.copy(alpha = 0.6f)),
         )
         Spacer(Modifier.height(10.dp))
@@ -389,25 +390,51 @@ private fun androidx.compose.foundation.lazy.LazyListScope.chat(
                     },
                 )
             }
+            /*
+             * HOW THE AGENT SHOULD READ WHAT YOU TYPED.
+             *
+             * SECTION 9.9 NAMES SEVEN KINDS OF THING A PERSON SAYS TO A RUNNING AGENT, and this room
+             * offered two buttons. Sending everything as an instruction is how "why did you do that"
+             * arrives as an order, so the kind travels with the message and the agent reads its
+             * framing from it. The list comes from the domain rather than being written here, so the
+             * screen cannot offer a kind the runtime does not know how to frame.
+             */
+            Spacer(Modifier.height(9.dp))
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(com.unuslumen.app.domain.agents.AgentSpeakableTo.OPTIONS) { option ->
+                    val chosen = option.type == state.draftType
+                    Box(
+                        Modifier
+                            .background(if (chosen) Memphis.Ink else Memphis.Paper)
+                            .border(2.dp, Memphis.Ink)
+                            .clickable {
+                                viewModel.onEvent(AgentRoomViewModel.Event.SelectDraftType(option.type))
+                            }
+                            .padding(horizontal = 9.dp, vertical = 5.dp),
+                    ) {
+                        Text(
+                            option.label,
+                            style = captionStyle(
+                                8f,
+                                if (chosen) Memphis.Paper else Memphis.Ink,
+                            ),
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                com.unuslumen.app.domain.agents.AgentSpeakableTo.OPTIONS
+                    .firstOrNull { it.type == state.draftType }?.hint
+                    ?: "Choose how the agent should read your message.",
+                style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.55f)),
+            )
             Spacer(Modifier.height(9.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                 PaperButton("Send", Modifier.weight(1f), filled = true) {
                     viewModel.onEvent(AgentRoomViewModel.Event.SendToAgent)
                 }
-                PaperButton("Change the job", Modifier.weight(1f)) {
-                    viewModel.onEvent(
-                        AgentRoomViewModel.Event.Steer(
-                            state.draft,
-                            com.unuslumen.app.domain.agents.AgentMessageTypes.ASSIGNMENT_AMENDMENT,
-                        )
-                    )
-                }
             }
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "Changing the job records an amendment; the original brief stays as it was.",
-                style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.55f)),
-            )
         }
     }
 }

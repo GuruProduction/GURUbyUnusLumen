@@ -121,3 +121,68 @@ object AgentInitiatedMessages {
     /** The description list a tool definition prints, so the model sees the same rules. */
     fun describeForModel(): String = OFFERED.joinToString("; ") { "${it.value} — ${it.description}" }
 }
+
+/**
+ * What a person may say to a running agent, and what each kind means.
+ *
+ * SECTION 9.9 NAMES SEVEN: questions, information, corrections, instructions, priority changes,
+ * evidence requests and control requests. The room offered two, so a person wanting to ask why could
+ * only send what read as an instruction, and the agent treated it as one.
+ *
+ * THE KINDS MAP ONTO THE BROKER'S OWN TYPES RATHER THAN INVENTING NEW ONES. A question is a
+ * QUESTION, an evidence request is an EVIDENCE message, a control request is a PROGRESS_REQUEST,
+ * and a correction is an amendment because that is what changing the job is. The stored type is what
+ * the runtime and the room read, so this is a vocabulary for the person rather than a second one for
+ * the machine.
+ *
+ * EVERY KIND HERE IS A MESSAGE THE RUNTIME TAKES AT A ROUND BOUNDARY. None of them interrupts a tool
+ * call in flight, and none of them is a control that acts on the run directly: pausing and stopping
+ * are their own buttons because they do something a message does not.
+ */
+object AgentSpeakableTo {
+
+    /** Ask why, or what it means. The agent answers in its next turn. */
+    const val QUESTION = AgentMessageTypes.QUESTION
+
+    /** Tell it something it did not know. */
+    const val INFORMATION = AgentMessageTypes.EVIDENCE
+
+    /** Change what it is doing, or the order it is doing it in. */
+    const val CORRECTION = AgentMessageTypes.ASSIGNMENT_AMENDMENT
+
+    /** A plain instruction for the work. */
+    const val INSTRUCTION = AgentMessageTypes.INSTRUCTION
+
+    /** Ask to see the evidence behind a claim. */
+    const val EVIDENCE_REQUEST = AgentMessageTypes.EVIDENCE
+
+    /** Ask where it has got to. */
+    const val CONTROL_REQUEST = AgentMessageTypes.PROGRESS_REQUEST
+
+    data class Option(val type: String, val label: String, val hint: String)
+
+    /**
+     * The choices the composer offers.
+     *
+     * ONLY TYPES THAT CHANGE HOW THE AGENT TREATS THE WORDS. A correction delivered as an instruction
+     * would leave the original brief apparently intact and the agent unsure whether it was being
+     * redirected; a question delivered as an instruction would read as an order to answer rather than
+     * as somebody asking.
+     */
+    val OPTIONS: List<Option> = listOf(
+        Option(INSTRUCTION, "INSTRUCTION", "Tell it what to do next"),
+        Option(CORRECTION, "CHANGE THE JOB", "Amend the brief; the original stays as it was"),
+        Option(QUESTION, "ASK", "Ask why, or what it means"),
+        Option(INFORMATION, "TELL IT", "Give it something it did not know"),
+        Option(EVIDENCE_REQUEST, "ASK FOR PROOF", "Ask for the evidence behind a claim"),
+        Option(CONTROL_REQUEST, "WHERE IS IT", "Ask where it has got to"),
+    )
+
+    private val known: Map<String, Option> = OPTIONS.associateBy { it.type }
+
+    /** Is this a type a person may send from the room? */
+    fun allows(type: String): Boolean = known.containsKey(type)
+
+    /** The words the button shows for a stored type, or the type itself when unrecognised. */
+    fun labelFor(type: String): String = known[type]?.label ?: type
+}

@@ -127,6 +127,62 @@ class AgentInitiatedMessagesTest {
     }
 
     @Test
+    fun whatAPersonMaySayCoversTheSevenTheSpecificationNames() {
+        /*
+         * SECTION 9.9 NAMES QUESTIONS, INFORMATION, CORRECTIONS, INSTRUCTIONS, PRIORITY CHANGES,
+         * EVIDENCE REQUESTS AND CONTROL REQUESTS. The room offered two buttons, which is how "why did
+         * you do that" arrived as an order. Priority change is an amendment like a correction,
+         * because both change what the agent is doing rather than asking about it.
+         */
+        val offered = AgentSpeakableTo.OPTIONS.map { it.type }.toSet()
+        assertEquals(
+            "each named kind has a door",
+            setOf(
+                AgentMessageTypes.QUESTION,
+                AgentMessageTypes.EVIDENCE,
+                AgentMessageTypes.ASSIGNMENT_AMENDMENT,
+                AgentMessageTypes.INSTRUCTION,
+                AgentMessageTypes.PROGRESS_REQUEST,
+            ),
+            offered,
+        )
+        assertTrue(
+            "and every one is a type the broker already knows",
+            AgentMessageTypes.ALL.containsAll(offered),
+        )
+    }
+
+    @Test
+    fun aCorrectionIsAnAmendmentRatherThanAnInstruction() {
+        /*
+         * THE DEFECT THIS PREVENTS. An instruction reads as the current brief with more on the end; an
+         * amendment says the brief has changed and the original stays as it was. Storing a correction
+         * as an instruction would leave the agent believing both apply.
+         */
+        assertEquals(AgentMessageTypes.ASSIGNMENT_AMENDMENT, AgentSpeakableTo.CORRECTION)
+        assertTrue(
+            "a correction and an instruction are different types",
+            AgentSpeakableTo.CORRECTION != AgentSpeakableTo.INSTRUCTION,
+        )
+    }
+
+    @Test
+    fun onlyTheOfferedKindsAreAcceptedFromTheRoom() {
+        assertTrue(AgentSpeakableTo.allows(AgentMessageTypes.QUESTION))
+        assertFalse(
+            "a room cannot send a completion as though the agent had finished",
+            AgentSpeakableTo.allows(AgentMessageTypes.COMPLETION),
+        )
+        assertFalse("nor invent a kind", AgentSpeakableTo.allows("SHOUT"))
+        assertEquals("an unknown type shows as itself", "SHOUT", AgentSpeakableTo.labelFor("SHOUT"))
+        assertEquals(
+            "and a known one shows its own words",
+            "ASK",
+            AgentSpeakableTo.labelFor(AgentMessageTypes.QUESTION),
+        )
+    }
+
+    @Test
     fun theDescriptionListNamesEveryOption() {
         val described = AgentInitiatedMessages.describeForModel()
         AgentInitiatedMessages.OFFERED.forEach { option ->
