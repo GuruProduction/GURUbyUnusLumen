@@ -69,16 +69,26 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) :
     ): ToolExecutionResult = executeForActor(toolName, args, actor)
 
     /**
-     * Write facts through the attributed path when the store supports it.
+     * Write facts through the attributed path, and FAIL CLOSED when identity is claimed
+     * but cannot be recorded.
      *
-     * Falls back to the plain round trip for a store that does not implement
-     * [AttributedMemoryWriter], which is every test fake and every read-only
-     * surface. The fallback is not a silent degradation of a working feature: those
-     * stores have no provenance field to write, so there is nothing to attribute.
+     * THE FALLBACK WAS A LIE IN ONE CASE. Falling back to the plain round trip is right
+     * for a call nobody attributed: those stores have no provenance field, and an
+     * unattributed write is exactly what they have always done. It is wrong for an
+     * attributed call, because the agent that asked would receive success while its
+     * identity went nowhere, and the whole point of this change is that a stored memory
+     * says which intelligence wrote it.
+     *
+     * So: an agent with an identity and a store that cannot carry it is a REFUSAL with a
+     * sentence, not a silent anonymous write. A model that reads the refusal can decide
+     * to report it rather than believe the memory landed.
      */
     private suspend fun persistAttributed(draft: MemoryFact, actor: ToolActor): MemoryFact {
         val writer = memoryRepository as? AttributedMemoryWriter
-            ?: return persistedFactRoundTrip(memoryRepository, draft)
+        if (writer == null) {
+            requireCanRecord(actor, draft.fact)
+            return persistedFactRoundTrip(memoryRepository, draft)
+        }
         val rows = writer.persistFactsAs(listOf(draft), actor)
         val stored = rows.firstOrNull()
             ?: error("brain persist returned no row for: ${draft.fact.take(80)}")
@@ -86,6 +96,29 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) :
             error("brain persist returned a blank id for: ${draft.fact.take(80)}")
         }
         return stored
+    }
+
+    /**
+     * Refuse a write whose identity could not be stored.
+     *
+     * Throws rather than returning an error result so the two write tools' existing
+     * catch blocks turn it into their own failure shape, which is what keeps the message
+     * consistent with every other refusal on this path.
+     */
+    private fun requireCanRecord(actor: ToolActor, content: String) {
+        if (!actor.isAttributed) return
+        if (!actor.hasIdentityToRecord) {
+            error(
+                "refused: the caller is attributed as '${actor.kind}' but supplied no id, so this " +
+                    "memory could not record who wrote it. Nothing was stored.",
+            )
+        }
+        error(
+            "refused: '${actor.roleLabel()}' asked for this memory to be attributed, but the memory " +
+                "store on this build cannot record attribution. Nothing was stored, so the memory " +
+                "cannot exist anonymously and pretend to be attributed. Content was: " +
+                content.take(60),
+        )
     }
 
     private fun MemoryFact.toInfo() = MemoryFactInfo(id, category, fact, confidence, extractedDate)
@@ -215,6 +248,10 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) :
                 // Both belong in the label, so the attributed writer joins them.
                 val writer = memoryRepository as? AttributedMemoryWriter
                 val stored = if (writer == null) {
+                    // Same fail-closed rule as addMemoryFact, for the same reason: a
+                    // typed record that claims an author and cannot carry one must not
+                    // be written as though it succeeded.
+                    requireCanRecord(actor, content)
                     memoryRepository.storeRecord(
                         content = content,
                         domain = (args["domain"] as? String).orEmpty(),

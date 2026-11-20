@@ -244,8 +244,8 @@ class MemoryAttributionTest {
         assertEquals("conv-abc", write.actor.conversationId)
         assertEquals("msg-123", write.actor.messageId)
         assertEquals(
-            "the provenance role must name the agent, not a bare kind",
-            "agent:Code Engineer",
+            "the role must lead with the STABLE ID, so two agents sharing a name are two agents",
+            "agent:00000000-0000-0000-0000-000000000006:Code%20Engineer",
             write.actor.roleLabel(),
         )
     }
@@ -357,31 +357,29 @@ class MemoryAttributionTest {
         assertEquals(ToolActor.KIND_AGENT, write.actor.kind)
         assertEquals("agent-7", write.actor.agentId)
         assertEquals(
-            "the suffix must name the agent id, which is what resolves to a row",
-            "actor=agent:agent-7",
+            "the suffix must name the agent id first, which is what resolves to a row",
+            "actor=agent:agent-7:Grafter",
             write.actor.provenanceSuffix(),
         )
     }
 
     /**
-     * A store that does not implement [AttributedMemoryWriter] must still work.
+     * AN UNATTRIBUTED CALL still works on a store with no provenance field.
      *
-     * That is every test fake and every read-only surface in the app. The write goes
-     * through the plain path and records nobody, which is honest: those stores have
-     * no provenance field for an actor to land in.
+     * That is the honest half of the fallback: nobody claimed an identity, so there is
+     * nothing to lose by writing anonymously. Every read-only surface and every test
+     * fake in the app is this case.
      */
     @Test
-    fun `a store without attribution support still stores the fact`() = runBlocking {
+    fun `an unattributed call still stores on a store without attribution support`() = runBlocking {
         val plainBrain = object : MemoryRepository by RecordingBrain() {
             // Deliberately does NOT implement AttributedMemoryWriter.
         }
         val executor = MemoryToolExecutor(plainBrain)
 
-        val result = executor.executeAsActor(
+        val result = executor.execute(
             MemoryToolDefinitions.ADD_MEMORY_FACT,
             mapOf("fact" to "a fact on a store with no provenance field", "category" to "knowledge"),
-            ToolActor.agent(agentId = "a", agentName = "A", conversationId = "c", messageId = "m"),
-            ToolProgressSink.NONE,
         )
 
         assertTrue("the fact must still be stored: ${payloadOf(result)}", result.success)
@@ -389,6 +387,86 @@ class MemoryAttributionTest {
             "the plain persistFacts path must have carried it",
             1,
             plainBrain.getTotalFacts(),
+        )
+    }
+
+    /**
+     * AN ATTRIBUTED WRITE FAILS CLOSED when identity cannot be recorded.
+     *
+     * The first shape of this fell back to an anonymous write. An agent would then
+     * receive success while its identity went nowhere, and the entire point of the
+     * change is that a stored memory says which intelligence wrote it. A silent
+     * anonymous write is the failure mode dressed as a success.
+     */
+    @Test
+    fun `an attributed fact is REFUSED when the store cannot record attribution`() = runBlocking {
+        val plainBrain = object : MemoryRepository by RecordingBrain() {
+            // Deliberately does NOT implement AttributedMemoryWriter.
+        }
+        val executor = MemoryToolExecutor(plainBrain)
+
+        val result = executor.executeAsActor(
+            MemoryToolDefinitions.ADD_MEMORY_FACT,
+            mapOf("fact" to "a fact an agent wanted attributed", "category" to "knowledge"),
+            ToolActor.agent(agentId = "a", agentName = "A", conversationId = "c", messageId = "m"),
+            ToolProgressSink.NONE,
+        )
+
+        assertFalse("an unattributable write must not report success: ${payloadOf(result)}", result.success)
+        assertTrue(
+            "the refusal must say why: ${payloadOf(result)}",
+            payloadOf(result).contains("cannot record attribution", ignoreCase = true),
+        )
+        assertEquals(
+            "NOTHING may be stored, or the memory exists without its author",
+            0,
+            plainBrain.getTotalFacts(),
+        )
+    }
+
+    /** The same rule for a typed record. */
+    @Test
+    fun `an attributed cortex record is REFUSED when the store cannot record attribution`() = runBlocking {
+        val plainBrain = object : MemoryRepository by RecordingBrain() {
+            // Deliberately does NOT implement AttributedMemoryWriter.
+        }
+        val executor = MemoryToolExecutor(plainBrain)
+
+        val result = executor.executeAsActor(
+            MemoryToolDefinitions.CORTEX_RECORD,
+            mapOf("content" to "a typed record an agent wanted attributed", "domain" to "work"),
+            ToolActor.agent(agentId = "a", agentName = "A", conversationId = "c", messageId = "m"),
+            ToolProgressSink.NONE,
+        )
+
+        assertFalse("it must not report success: ${payloadOf(result)}", result.success)
+        assertEquals("nothing may be stored", 0, plainBrain.getTotalFacts())
+    }
+
+    /**
+     * An agent with NO ID is also refused, because `agent` in the role slot names nobody.
+     *
+     * This is the second half of failing closed: it is not enough for the store to
+     * support attribution if the actor carries no identity for it to write.
+     */
+    @Test
+    fun `an attributed call with no id is refused rather than written as a bare agent`() = runBlocking {
+        val plainBrain = object : MemoryRepository by RecordingBrain() {
+            // Deliberately does NOT implement AttributedMemoryWriter.
+        }
+        val executor = MemoryToolExecutor(plainBrain)
+
+        val result = executor.executeAsActor(
+            MemoryToolDefinitions.ADD_MEMORY_FACT,
+            mapOf("fact" to "a fact claimed by nobody in particular", "category" to "knowledge"),
+            ToolActor(kind = ToolActor.KIND_AGENT),
+            ToolProgressSink.NONE,
+        )
+
+        assertFalse("it must not report success: ${payloadOf(result)}", result.success)
+        assertTrue(
+            "the refusal must name the missing id: ${payloadOf(result)}",
+            payloadOf(result).contains("no id", ignoreCase = true),
         )
     }
 
@@ -446,7 +524,7 @@ class MemoryAttributionTest {
         )
 
         assertEquals("guru", guru.roleLabel())
-        assertEquals("agent:Code Engineer", agent.roleLabel())
+        assertEquals("agent:ed267bed-940d-4add-a781-876b9d62548c:Code%20Engineer", agent.roleLabel())
         assertEquals("", ToolActor.UNATTRIBUTED.roleLabel())
 
         // Composed the way BrainService.storeFact composes it.
@@ -456,7 +534,8 @@ class MemoryAttributionTest {
                 "message=${guru.messageId}|confidence=0.9000",
         )
         assertEquals(
-            "guru.role=agent:Code Engineer conversation=conv-abc message=msg-123|confidence=0.9000",
+            "guru.role=agent:ed267bed-940d-4add-a781-876b9d62548c:Code%20Engineer " +
+                "conversation=conv-abc message=msg-123|confidence=0.9000",
             "guru.role=${agent.roleLabel()} conversation=${agent.conversationId} " +
                 "message=${agent.messageId}|confidence=0.9000",
         )
@@ -473,42 +552,73 @@ class MemoryAttributionTest {
         // "actor=guru" rather than nothing, because a fact the main assistant wrote is
         // attributed too: the point is that no write is anonymous.
         assertEquals("actor=guru", guru.provenanceSuffix())
-        assertEquals("actor=agent:ed267bed-940d-4add-a781-876b9d62548c", agent.provenanceSuffix())
+        assertEquals(
+            "actor=agent:ed267bed-940d-4add-a781-876b9d62548c:Code%20Engineer",
+            agent.provenanceSuffix(),
+        )
         // Only a call nobody claimed appends nothing, which is what preserves the
         // byte-identical label for every caller that was never taught about actors.
         assertEquals("", ToolActor.UNATTRIBUTED.provenanceSuffix())
     }
 
     /**
-     * A HAZARD, ASSERTED SO IT CANNOT BE FORGOTTEN.
+     * THE HAZARD THAT WAS THERE AND IS NOW FIXED.
      *
-     * The agent's role label carries its DISPLAY NAME, which can contain spaces, and
-     * the label is a space-separated key=value string. So `guru.role=agent:Code
-     * Engineer conversation=...` cannot be parsed back by splitting on spaces: the
-     * name would read as a second field.
+     * The first shape of this label was `agent:<display name>`. The name can contain
+     * spaces, and the label is a space-delimited key=value string, so
+     * `guru.role=agent:Code Engineer conversation=...` split on whitespace into a
+     * different field count than it claimed. Worse, two agents sharing a display name
+     * were one agent in storage.
      *
-     * That is deliberate and it is not a bug in the writer, because the label is for a
-     * human reading a memory rather than for a machine splitting it. But a caller that
-     * decides to query attribution by parsing this string will get it wrong for every
-     * agent with a two-word name, which is most of the catalogue. Querying attribution
-     * needs a real field in the brain, and that is a Rust and frame change, not this.
+     * Both are fixed by putting the stable id first and escaping the name, so this test
+     * now asserts the LABEL IS PARSEABLE rather than warning that it is not.
      */
     @Test
-    fun `the agent role label is not machine-parseable and that is known`() {
+    fun `the agent role label is parseable and carries the stable id first`() {
         val agent = ToolActor.agent(
             agentId = "ed267bed-940d-4add-a781-876b9d62548c",
             agentName = "Code Engineer",
             conversationId = "c",
             messageId = "m",
         )
-        val role = agent.roleLabel()
-        assertEquals("agent:Code Engineer", role)
-        assertTrue(
-            "the label contains a space, so a whitespace split misreads it: $role",
-            role.contains(' '),
+
+        val label = agent.roleLabel()
+        assertEquals("agent:ed267bed-940d-4add-a781-876b9d62548c:Code%20Engineer", label)
+
+        // No raw whitespace anywhere, so a key=value reader cannot gain a field.
+        assertFalse("the label must contain no raw space: $label", label.contains(' '))
+
+        // The id is the identity and comes before the name.
+        val parts = label.split(':')
+        assertEquals("agent", parts[0])
+        assertEquals("ed267bed-940d-4add-a781-876b9d62548c", parts[1])
+
+        // The escaping is reversible, and reading it back gives the name a person knows.
+        assertEquals("Code Engineer", ToolActor.unescapeSegment(parts[2]))
+    }
+
+    /** A name containing a slash or a colon must not break the field structure either. */
+    @Test
+    fun `an agent name with punctuation is escaped and round-trips`() {
+        val agent = ToolActor.agent(agentId = "id", agentName = "Ops/Triage: v2")
+        val label = agent.roleLabel()
+
+        assertFalse("no raw space: $label", label.contains(' '))
+        assertEquals(
+            "the slash and colon must both be encoded, or a reader splits on them",
+            "agent:id:Ops%2FTriage%3A%20v2",
+            label,
         )
-        // The id is unambiguous and is the field to use instead.
-        assertEquals("actor=agent:ed267bed-940d-4add-a781-876b9d62548c", agent.provenanceSuffix())
+        val name = label.split(':').drop(2).joinToString(":")
+        assertEquals("Ops/Triage: v2", ToolActor.unescapeSegment(name))
+    }
+
+    /** A name that is already safe must not be re-encoded, so labels stay readable. */
+    @Test
+    fun `a simple name passes through unescaped`() {
+        val agent = ToolActor.agent(agentId = "id", agentName = "sentinel-2.1")
+        assertEquals("agent:id:sentinel-2.1", agent.roleLabel())
+        assertEquals("sentinel-2.1", ToolActor.unescapeSegment("sentinel-2.1"))
     }
 
     /**
