@@ -155,14 +155,15 @@ not hold is refused rather than silently dropped.
 
 An imported update cannot silently add a permission: the tool set diff gates it.
 
-**Approval requirements are recorded and not yet consulted.** They are declared in `AgentAutonomy`,
-the approval table exists, the broker writes one and the decision path changes its state. No tool call
-consults them, so an agent is not yet stopped by a pending approval. That is the gap between "the
-approval system exists" and "the approval system is in the way".
+**Approval requirements are enforced at the point of action.** `AgentApprovalGate` sits in the
+tool-dispatch loop, before the dispatcher, and decides whether a call proceeds, asks or is blocked.
+Irreversible actions ask whatever the agent's settings say, a specific trigger beats the blanket
+permission, a granted approval is consumed by the call it authorised, and a pending request blocks
+rather than asking twice. The fingerprint is over the tool and its repaired arguments, so a yes for
+one send cannot authorise a different one.
 
-Memory scope is a different case and worth separating: it IS enforced, in `AgentMemoryService`,
-because the filter runs in code over what the brain returns. The remaining work there is calling that
-service from the runtime, not making the check real.
+Memory scope is enforced in the same way and for the same reason: the filter runs in code over what
+the brain returns, not in a prompt.
 
 ---
 
@@ -179,10 +180,15 @@ reads its own memory and shared memory as permitted, and nothing in the loop cho
 That is the next increment, and unlike the earlier state it is a policy question (when should an agent
 decide something is worth remembering) rather than a wiring one.
 
-**No plan events are emitted.** The Agent Room has a plan area and `PlanStepView` with five states,
-and nothing ever writes a step: the runtime has no plan producer and the assembler returns an empty
-list. Building a plan subsystem to fill the panel would have been inventing a capability the spec
-describes rather than recording one the runtime has, so the panel stays empty and says why.
+**A plan is recorded, and only where the agent writes one.** `PLAN_REVISED` is emitted when the agent
+calls `createPlan` or `updatePlanStep`, numbered per run, and the room shows the newest revision. The
+history of every revision stays in the ledger, which is the only place it can live because the tools
+themselves overwrite their note.
+
+What is still absent there is a plan the agent forms without calling a tool. An agent that plans in
+prose produces no revision, and the room correctly shows none. A structured plan record for an agent
+that never invokes the planning tools would have to be parsed out of its reasoning, which would be
+inventing intent rather than recording it.
 
 **No scheduled execution.** `AgentAutonomy.operateOnSchedules` is declared and nothing schedules an
 agent. The existing heartbeat fires prompts and cannot start an agent run.
@@ -214,7 +220,9 @@ recorded with their permission decisions, a person can talk to a working agent, 
 shown to have done what it claims. The Agent Room is a dashboard over that, not a chat screen with
 cards.
 
-Three capabilities remain: plan events, approval enforcement at the point of action, and scheduled
-execution. All are named here rather than represented by a placeholder that looks finished, because a
-stub that renders is the one artefact this programme was built to prevent. The memory lane exists, its
-scope is enforced and it is tested; it is simply not yet called from a run.
+Two capabilities remain: scheduled execution, and a structured plan for an agent that never calls the
+planning tools. Both are named here rather than represented by a placeholder that looks finished,
+because a stub that renders is the one artefact this programme was built to prevent.
+
+Pause and resume remain absent because the runtime has no path for them, so the room does not draw
+the controls rather than drawing dead ones.

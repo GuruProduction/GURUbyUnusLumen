@@ -62,9 +62,9 @@ a passing test.
 | ID | Requirement | Spec § | Status | Location | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | 4.1 | Execution can understand, identify constraints, retrieve context, plan, evaluate capabilities, execute, examine, identify gaps, revise, request help, verify, deliver, report | 4 | Extend | The loop supports execute, examine and request. Context retrieval is Phase 6; plan revision is Phase 2 and 5 | Phases 2, 5, 6 |
-| 4.1.1 | Plans are structured data supporting objectives, steps, dependencies, status, expected outputs, verification, assigned capabilities and reasons for change | 4.1 | Build | The only structured plan is a note row titled `[PLAN] ` with no step identity | Phase 2 |
-| 4.1.2 | Plans are revisioned and the previous plan remains available | 4.1 | Build | `updatePlanStep` destroys the previous state | Phase 2 |
-| 4.1.3 | The interface distinguishes a proposed plan from a completed action | 4.1 | Build | No plan surface exists | Phase 7 |
+| 4.1.1 | Plans are structured data supporting objectives, steps, dependencies, status, expected outputs, verification, assigned capabilities and reasons for change | 4.1 | **Extend** | `PLAN_REVISED` records each revision with its steps and kind; dependencies, expected outputs and verification are not captured | `AgentPlanRecordTest` (10 tests) |
+| 4.1.2 | Plans are revisioned and the previous plan remains available | 4.1 | **Reuse** | Every revision is an appended event, numbered per run; the assembler shows the newest and the ledger keeps all | `AgentPlanRecordTest.everyRevisionStaysInTheLedgerSoTheHistoryIsIntact` |
+| 4.1.3 | The interface distinguishes a proposed plan from a completed action | 4.1 | **Reuse** | A created revision draws PROPOSED; only a step update moves a step | `AgentPlanRecordTest.proposedStepsAreNotDrawnAsDone` |
 | 4.2.1 | The architecture captures reasoning-channel output where the runtime exposes it, according to visibility configuration | 4.2 | Reuse | `StreamFrame.ReasoningDelta` captured on both paths, emitted as `MODEL_REASONING_COMPLETED` | `AgentRuntime`, `ProjectAgentRepositoryImpl`, commit `f12ef61` |
 | 4.2.2 | The system distinguishes genuine model reasoning from a generated explanation, structured decision record or retrospective summary, and labels each | 4.2 | Extend | Reasoning is captured as reasoning. No decision record type exists, so nothing can be mislabelled yet | Phase 2 adds declared decision records |
 | 4.2.3 | GURU must not claim to expose information the model or provider does not provide | 4.2, 6.4 | Reuse | Capture is conditional on an actual `ReasoningDelta` frame | `AgentEventTypes` contract; `PHASE4_VERIFICATION.md` |
@@ -118,7 +118,7 @@ a passing test.
 | 7.4 | Permissions are explicit and enforceable by the runtime, distinguishing tool availability, execution authority, data access, memory access, external effects, delegation authority and approval requirements | 7.1 | Extend | Tool availability and execution authority are enforced by the dispatcher. Memory, data and delegation are not modelled | Phase 2, 6, 8 |
 | 7.5 | The effective permission set is determined by system policy, user permissions, agent configuration and runtime restrictions | 7.1 | Extend | The dispatcher enforces Android permissions and the security policy; the agent configuration half is missing | Phase 2 |
 | 7.6 | An agent cannot grant itself authority by editing its own prompt or configuration | 7.1, 12.3 | Reuse | `NEVER_SPAWNABLE` blocks every agent from `saveAgent`, `deleteAgent`, `spawnAgent` and `resumeAgent`. `createAgent` and `editAgent` remain grantable and are a Phase 8 policy question | `AgentRuntime.NEVER_SPAWNABLE` |
-| 7.7 | Where approval is required, a persistent approval request is created showing what, why, what is affected, reversibility, consequences and the exact permission | 7.2 | **Reuse** | `AgentApprovalEntity` carries all six facts as their own columns, plus an `action_fingerprint` | `AgentInteractionBrokerTest.anApprovalRequestCarriesEveryFactAPersonNeedsToDecide`, `anApprovalCoversOnlyTheActionItWasGrantedFor` |
+| 7.7 | Where approval is required, a persistent approval request is created showing what, why, what is affected, reversibility, consequences and the exact permission | 7.2 | **Reuse** | `AgentApprovalEntity` carries all six facts, plus a fingerprint over the tool AND its repaired arguments | `AgentApprovalEnforcementTest` (11 tests) |
 | 7.8 | Approval, rejection and cancellation become recorded events | 7.2 | **Reuse** | `QUESTION_OPENED` on request, `QUESTION_ANSWERED` on decision, append-only and conditionally updated so a second decision changes nothing | `AgentInteractionBrokerTest.aSecondDecisionChangesNothing` |
 
 ## Section 8 — Memory and context
@@ -220,7 +220,7 @@ a passing test.
 | 13.1 | Centralised tool permission enforcement | 13 | Reuse | `ToolDispatcher` on both paths | `DispatcherRefusalTest` |
 | 13.2 | Scoped data access | 13 | Build | None for agents | Phase 6 |
 | 13.3 | Explicit memory permissions | 13 | Build | None | Phase 6 |
-| 13.4 | Approval for restricted actions | 13 | Build | None | Phase 5 |
+| 13.4 | Approval for restricted actions | 13 | **Reuse** | The gate refuses to dispatch until a matching granted approval exists, and consumes it | `AgentApprovalGateTest`, `AgentApprovalEnforcementTest` |
 | 13.5 | Isolation of untrusted or externally sourced agents | 13 | Build | Synced agents hold publisher-granted tools with no local restriction by design | Phase 8 policy |
 | 13.6 | Secure storage of sensitive event payloads | 13 | Reuse | `ProtectedData`, `DataProtector`, `ProtectedField` exist | `core/security` |
 | 13.7 | Redaction of secrets from ordinary activity views | 13 | Build | No redaction on the agent ledger | Phase 9 |
@@ -286,7 +286,7 @@ the phase sections below.
 | 16.24 | Recovery does not silently duplicate external actions | Reuse | `TOOL_CALL_OUTCOME_UNKNOWN` |
 | 16.25 | Agents cannot bypass central tool permissions | Reuse | `DispatcherRefusalTest` |
 | 16.26 | Data and memory access remain scoped | Build | Phase 6 |
-| 16.27 | Approval requirements are enforced by the runtime | **Reuse** | `requestApproval` blocks the run in `WAITING_FOR_USER`; `approvalCovers` refuses a mismatched fingerprint | `AgentInteractionBrokerTest.anApprovalCoversOnlyTheActionItWasGrantedFor` |
+| 16.27 | Approval requirements are enforced by the runtime | **Reuse** | `AgentApprovalGate` sits in the dispatch loop before the dispatcher; a held call is never dispatched | `AgentApprovalGateTest` (16 tests), `AgentApprovalEnforcementTest` (11 tests) |
 | 16.28 | Imported agents cannot silently expand their authority | **Reuse** | An added tool forces an approval decision before the update lands | `AgentUpdateReviewTest.aNewToolStopsTheUpdateForApproval`, `aVersionNumberCannotSmuggleAGrantPastTheCheck` |
 | 16.29 | The Portal remains the main conversation with GURU | Reuse | Unchanged |
 | 16.30 | Agent nodes open the dedicated Agent Room | **Reuse** | `AgentPresenceStrip` takes an open callback per node | `AgentPresence.kt` |
