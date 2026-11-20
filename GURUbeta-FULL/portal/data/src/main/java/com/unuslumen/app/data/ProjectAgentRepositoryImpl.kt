@@ -77,6 +77,19 @@ class ProjectAgentRepositoryImpl(
      * one would be the one nobody thinks to check.
      */
     private val runLedger: com.unuslumen.app.data.agents.AgentRunLedger,
+    /**
+     * THE SAME DISPATCHER THE MAIN CHAT AND THE SPAWN PATH USE.
+     *
+     * This path used to find a koog tool and call it, which meant the three checks that
+     * exist for every other tool call — Android permission, security policy, argument
+     * repair — never ran on a project agent. Section 4.3 of the specification is explicit
+     * that all agent tool calls pass through the central dispatch and permission
+     * architecture, and section 13 that an agent's prompt is not a security control.
+     *
+     * Taking the dispatcher as a dependency rather than reaching for it makes the guarantee
+     * structural: this class cannot execute a tool without one.
+     */
+    private val toolDispatcher: com.unuslumen.app.data.tools.registry.ToolDispatcher,
 ) : ProjectAgentRepository {
 
     companion object {
@@ -115,6 +128,37 @@ class ProjectAgentRepositoryImpl(
     }
 
     private val toolRegistry get() = toolRegistryHolder.toolRegistry
+
+    /**
+     * One proposed call, after preparation: either ready to run or refused with a reason.
+     *
+     * A PAIR OF NULLABLES RATHER THAN A SEALED HIERARCHY, because the loop that builds these
+     * writes its events as it goes and the two outcomes are distinguished by which field is
+     * set. `refusal` non-null means nothing ran and nothing will; `prepared` non-null means
+     * every check passed and the call is authorised.
+     */
+    private data class DispatchableCall(
+        val frame: StreamFrame.ToolCallComplete,
+        val invocationId: String,
+        val prepared: com.unuslumen.app.data.tools.registry.ToolDispatcher.PreparedInvocation? = null,
+        val refusal: String? = null,
+    )
+
+    /** Quote a string for a JSON body, so a refusal sentence cannot break the payload. */
+    private fun jsonString(value: String): String = buildString {
+        append('"')
+        for (c in value) {
+            when (c) {
+                '"' -> append("\\\"")
+                '\\' -> append("\\\\")
+                '\n' -> append("\\n")
+                '\r' -> append("\\r")
+                '\t' -> append("\\t")
+                else -> if (c < ' ') append("\\u").append(String.format("%04x", c.code)) else append(c)
+            }
+        }
+        append('"')
+    }
     
     // Cache of project-specific configurations
     private val configCache = mutableMapOf<String, ProjectAgentConfig>()
@@ -599,16 +643,36 @@ class ProjectAgentRepositoryImpl(
                 )
             }
 
+            /*
+             * EVERY PROPOSAL IS RECORDED, AND EVERY CALL IS PREPARED BEFORE IT RUNS.
+             *
+             * THE PROPOSAL is what the model wrote, kept so the ledger can show the distance
+             * between what it asked for and what was actually dispatched.
+             *
+             * THE PREPARATION is the change this path needed. It used to find a koog tool and
+             * call it, which meant no Android permission check, no security policy and no
+             * argument repair ever ran on a project agent's tool call. It now goes through
+             * the same [ToolDispatcher.prepare] the main chat and the spawn path use, so the
+             * three checks that exist are the three checks that run.
+             *
+             * A REFUSAL IS RECORDED AS A REFUSAL, WITH ITS KIND. The event names which of the
+             * four refusals it was — unknown tool, denied permission, blocked by policy, no
+             * executor — because "it did not run" and "it was not allowed to run" are
+             * different facts and a caller has to be able to tell them apart.
+             */
+            val preparedCalls = mutableListOf<Pair<StreamFrame.ToolCallComplete, String>>()
             val invocationIds = mutableListOf<String>()
+
             collectedToolCalls.forEach { frame ->
                 val invocationId = Uuid.random().toString()
                 invocationIds += invocationId
+
                 runCatching {
                     runLedger.append(
                         runId,
                         com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
                             eventType = com.unuslumen.app.domain.agents.AgentEventTypes.MODEL_TOOL_CALL_PROPOSED,
-                            actorType = "MODEL",
+                            actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_MODEL,
                             payload = buildJsonObject {
                                 put("tool", kotlinx.serialization.json.JsonPrimitive(frame.name))
                                 put("callId", kotlinx.serialization.json.JsonPrimitive(frame.id ?: ""))
@@ -616,25 +680,85 @@ class ProjectAgentRepositoryImpl(
                             }.toString(),
                         )
                     )
-                    runLedger.append(
-                        runId,
-                        com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
-                            eventType = com.unuslumen.app.domain.agents.AgentEventTypes.TOOL_CALL_STARTED,
-                            actorType = "RUNTIME",
-                            idempotencyKey = "tool-start-$invocationId",
-                            payload = buildJsonObject {
-                                put("invocationId", kotlinx.serialization.json.JsonPrimitive(invocationId))
-                                put("tool", kotlinx.serialization.json.JsonPrimitive(frame.name))
-                                put("arguments", kotlinx.serialization.json.JsonPrimitive(frame.content))
-                                put("runtimeKind", kotlinx.serialization.json.JsonPrimitive("PROJECT_AGENT"))
-                                // RECORDED HONESTLY: this path dispatches through the koog
-                                // tool list rather than ToolDispatcher, so no permission or
-                                // security check precedes it. The ledger says so rather than
-                                // implying checks that did not run.
-                                put("permissionChecked", kotlinx.serialization.json.JsonPrimitive(false))
-                            }.toString(),
+                }
+                preparedCalls += frame to invocationId
+            }
+
+            /*
+             * STARTED IS WRITTEN ONLY FOR A CALL THAT PASSED EVERY CHECK.
+             *
+             * The row is the proof an attempt was made, and it is committed before the tool
+             * runs so a call whose outcome is unknown can never be repeated on recovery. A
+             * call that was refused never ran, so it gets a refusal event instead and no
+             * start. `permissionChecked` is true here because `prepare` genuinely evaluated
+             * the permissions: it is not written because the dispatcher was called, which
+             * would be a different and false claim.
+             */
+            val dispatchable = mutableListOf<DispatchableCall>()
+            for ((frame, invocationId) in preparedCalls) {
+                val argsJson = runCatching {
+                    json.parseToJsonElement(frame.content) as? JsonObject
+                }.getOrNull() ?: buildJsonObject { }
+
+                when (val prepared = toolDispatcher.prepare(frame.name, argsJson)) {
+                    is com.unuslumen.app.data.tools.registry.ToolDispatcher.Preparation.Refused -> {
+                        runCatching {
+                            runLedger.append(
+                                runId,
+                                com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
+                                    eventType = if (prepared.kind ==
+                                        com.unuslumen.app.data.tools.registry.ToolDispatcher.RefusalKind.PERMISSION_DENIED
+                                    ) {
+                                        com.unuslumen.app.domain.agents.AgentEventTypes.TOOL_PERMISSION_DENIED
+                                    } else {
+                                        com.unuslumen.app.domain.agents.AgentEventTypes.TOOL_CALL_REFUSED
+                                    },
+                                    actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_RUNTIME,
+                                    payload = buildJsonObject {
+                                        put("invocationId", kotlinx.serialization.json.JsonPrimitive(invocationId))
+                                        put("tool", kotlinx.serialization.json.JsonPrimitive(prepared.resolvedName ?: frame.name))
+                                        put("reason", kotlinx.serialization.json.JsonPrimitive(prepared.reason))
+                                        put("kind", kotlinx.serialization.json.JsonPrimitive(prepared.kind.name))
+                                        put("runtimeKind", kotlinx.serialization.json.JsonPrimitive("PROJECT_AGENT"))
+                                    }.toString(),
+                                )
+                            )
+                        }
+                        dispatchable += DispatchableCall(
+                            frame = frame,
+                            invocationId = invocationId,
+                            refusal = prepared.reason,
                         )
-                    )
+                    }
+
+                    is com.unuslumen.app.data.tools.registry.ToolDispatcher.Preparation.Ready -> {
+                        runCatching {
+                            runLedger.append(
+                                runId,
+                                com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
+                                    eventType = com.unuslumen.app.domain.agents.AgentEventTypes.TOOL_CALL_STARTED,
+                                    actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_RUNTIME,
+                                    idempotencyKey = "tool-start-$invocationId",
+                                    payload = buildJsonObject {
+                                        put("invocationId", kotlinx.serialization.json.JsonPrimitive(invocationId))
+                                        put("tool", kotlinx.serialization.json.JsonPrimitive(prepared.invocation.resolvedName))
+                                        // THE REPAIRED ARGUMENTS, because those are what the
+                                        // tool will receive. A record of anything else
+                                        // describes a call that did not happen.
+                                        put("arguments", kotlinx.serialization.json.JsonPrimitive(prepared.invocation.repairedArgs.toString()))
+                                        put("proposedArguments", kotlinx.serialization.json.JsonPrimitive(frame.content))
+                                        put("runtimeKind", kotlinx.serialization.json.JsonPrimitive("PROJECT_AGENT"))
+                                        put("permissionChecked", kotlinx.serialization.json.JsonPrimitive(true))
+                                    }.toString(),
+                                )
+                            )
+                        }
+                        dispatchable += DispatchableCall(
+                            frame = frame,
+                            invocationId = invocationId,
+                            prepared = prepared.invocation,
+                        )
+                    }
                 }
             }
 
@@ -655,82 +779,99 @@ class ProjectAgentRepositoryImpl(
             // were written in the same order a moment ago, so the index pairs a completion
             // to its own start. Without that id the ledger holds two facts that cannot be
             // matched, which is the same defect as a result with no call.
-            val toolCallMessages = collectedToolCalls.mapIndexed { callIndex, frame ->
-                val toolName = frame.name
-                val argsContent = frame.content
-                val invocationId = invocationIds.getOrNull(callIndex)
-                val resultContent = try {
-                    val tool = toolRegistry.tools.find { it.descriptor.name == toolName }
-                    if (tool != null) {
-                        val argsJson = try {
-                            json.parseToJsonElement(argsContent).let {
-                                if (it is JsonObject) it else buildJsonObject {}
+            /*
+             * EXECUTE WHAT WAS PREPARED, AND RECORD WHAT ACTUALLY HAPPENED.
+             *
+             * NO FALLBACK TO DIRECT EXECUTION EXISTS HERE, DELIBERATELY. If the dispatcher
+             * refused the call, the refusal is the answer and the tool does not run by another
+             * route. A fallback would defeat the whole correction: a permission the device has
+             * not granted would be bypassed by taking the second path, and the ledger would
+             * still say a check ran.
+             */
+            val toolCallMessages = dispatchable.map { call ->
+                val toolName = call.frame.name
+                val invocationId = call.invocationId
+                val resultContent = when {
+                    call.refusal != null -> {
+                        // Never ran. The refusal event is already written, and the model is
+                        // told what blocked it so it can adapt rather than retry blindly.
+                        """{"error":${jsonString(call.refusal)}}"""
+                    }
+
+                    call.prepared != null -> try {
+                        val dispatch = toolDispatcher.executePrepared(
+                            invocation = call.prepared,
+                            conversationId = owningConversation,
+                            agentRunId = runId,
+                            agentInvocationId = invocationId,
+                        )
+                        if (dispatch.success) {
+                            runCatching {
+                                runLedger.append(
+                                    runId,
+                                    com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
+                                        eventType = com.unuslumen.app.domain.agents.AgentEventTypes.TOOL_CALL_COMPLETED,
+                                        actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_TOOL,
+                                        idempotencyKey = "tool-done-$invocationId",
+                                        payload = buildJsonObject {
+                                            put("invocationId", kotlinx.serialization.json.JsonPrimitive(invocationId))
+                                            put("tool", kotlinx.serialization.json.JsonPrimitive(call.prepared.resolvedName))
+                                            put("result", kotlinx.serialization.json.JsonPrimitive(dispatch.rawJson))
+                                            put("runtimeKind", kotlinx.serialization.json.JsonPrimitive("PROJECT_AGENT"))
+                                        }.toString(),
+                                    )
+                                )
                             }
-                        } catch (e: Exception) {
-                            buildJsonObject {}
+                            dispatch.rawJson
+                        } else {
+                            runCatching {
+                                runLedger.append(
+                                    runId,
+                                    com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
+                                        eventType = com.unuslumen.app.domain.agents.AgentEventTypes.TOOL_CALL_FAILED,
+                                        actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_TOOL,
+                                        idempotencyKey = "tool-failed-$invocationId",
+                                        payload = buildJsonObject {
+                                            put("invocationId", kotlinx.serialization.json.JsonPrimitive(invocationId))
+                                            put("tool", kotlinx.serialization.json.JsonPrimitive(call.prepared.resolvedName))
+                                            put("error", kotlinx.serialization.json.JsonPrimitive(dispatch.error ?: "tool failed"))
+                                            put("runtimeKind", kotlinx.serialization.json.JsonPrimitive("PROJECT_AGENT"))
+                                        }.toString(),
+                                    )
+                                )
+                            }
+                            """{"error":${jsonString(dispatch.error ?: "tool failed")}}"""
                         }
-                        val args = tool.decodeArgs(argsJson)
-                        val content = tool.encodeResult(tool.execute(args)).toString()
+                    } catch (e: Exception) {
+                        // AN EXCEPTION DOES NOT PROVE THE CALL DID NOT RUN. It becomes an
+                        // unknown outcome, never a failure, for the same reason as the spawn
+                        // path: a side effect may already have happened.
                         runCatching {
                             runLedger.append(
                                 runId,
                                 com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
-                                    eventType = com.unuslumen.app.domain.agents.AgentEventTypes.TOOL_CALL_COMPLETED,
-                                    actorType = "TOOL",
-                                    idempotencyKey = invocationId?.let { "tool-done-$it" },
+                                    eventType = com.unuslumen.app.domain.agents.AgentEventTypes.TOOL_CALL_OUTCOME_UNKNOWN,
+                                    actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_RUNTIME,
                                     payload = buildJsonObject {
-                                        invocationId?.let { put("invocationId", kotlinx.serialization.json.JsonPrimitive(it)) }
+                                        put("invocationId", kotlinx.serialization.json.JsonPrimitive(invocationId))
                                         put("tool", kotlinx.serialization.json.JsonPrimitive(toolName))
-                                        put("result", kotlinx.serialization.json.JsonPrimitive(content))
+                                        put("reason", kotlinx.serialization.json.JsonPrimitive(e.message ?: "the call threw"))
                                         put("runtimeKind", kotlinx.serialization.json.JsonPrimitive("PROJECT_AGENT"))
                                     }.toString(),
                                 )
                             )
                         }
-                        content
-                    } else {
-                        runCatching {
-                            runLedger.append(
-                                runId,
-                                com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
-                                    eventType = com.unuslumen.app.domain.agents.AgentEventTypes.TOOL_CALL_REFUSED,
-                                    actorType = "RUNTIME",
-                                    payload = buildJsonObject {
-                                        invocationId?.let { put("invocationId", kotlinx.serialization.json.JsonPrimitive(it)) }
-                                        put("tool", kotlinx.serialization.json.JsonPrimitive(toolName))
-                                        put("reason", kotlinx.serialization.json.JsonPrimitive("no such tool in this build"))
-                                    }.toString(),
-                                )
-                            )
-                        }
-                        "Tool not found: $toolName"
+                        """{"error":${jsonString(e.message ?: "the call threw")}}"""
                     }
-                } catch (e: Exception) {
-                    // AN EXCEPTION DOES NOT PROVE THE CALL DID NOT RUN. It becomes an
-                    // unknown outcome, never a failure, for the same reason as the spawn
-                    // path: a side effect may already have happened.
-                    runCatching {
-                        runLedger.append(
-                            runId,
-                            com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
-                                eventType = com.unuslumen.app.domain.agents.AgentEventTypes.TOOL_CALL_OUTCOME_UNKNOWN,
-                                actorType = "RUNTIME",
-                                payload = buildJsonObject {
-                                    invocationId?.let { put("invocationId", kotlinx.serialization.json.JsonPrimitive(it)) }
-                                    put("tool", kotlinx.serialization.json.JsonPrimitive(toolName))
-                                    put("reason", kotlinx.serialization.json.JsonPrimitive(e.message ?: "the call threw"))
-                                }.toString(),
-                            )
-                        )
-                    }
-                    "Error: ${e.message}"
+
+                    else -> """{"error":"the call was neither prepared nor refused, which should be impossible"}"""
                 }
 
                 AiMessage.ToolCall(
                     uuid = Uuid.random().toString(),
-                    id = frame.id ?: "",
+                    id = call.frame.id ?: "",
                     name = toolName,
-                    rawContent = argsContent,
+                    rawContent = call.frame.content,
                     resultRawContent = resultContent,
                     time = System.currentTimeMillis()
                 ).also { emit(it) }
