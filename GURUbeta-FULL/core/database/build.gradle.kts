@@ -58,6 +58,14 @@ dependencies {
     implementation(libs.material)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
+    // THE RUNNER ITSELF IS A DEPENDENCY, NOT JUST A NAME IN defaultConfig.
+    //
+    // `testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"` only tells
+    // Gradle which class to ask for. Without this dependency the class is not in the test
+    // APK, and the device fails at start with ClassNotFoundException before a single test
+    // runs — which reads like an infrastructure mystery rather than the one missing line
+    // it actually is.
+    androidTestImplementation("androidx.test:runner:1.6.2")
     // MigrationTestHelper lives here. It is the only thing that can actually run a
     // registered Migration against a real SQLite file and compare the result to the
     // exported schema, which is the whole evidence base for a schema change.

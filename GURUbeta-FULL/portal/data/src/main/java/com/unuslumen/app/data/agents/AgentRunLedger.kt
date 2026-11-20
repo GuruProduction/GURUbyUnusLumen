@@ -240,7 +240,14 @@ class AgentRunLedger(
             )
         )
         runDao.setLastCheckpointSequence(runId, checkpointSequence, now)
-        // BOTH counters. This is the line the previous draft of the design was missing.
+        /*
+         * BOTH COUNTERS. THIS IS THE LINE THE DESIGN REVIEW FOUND MISSING.
+         *
+         * `CHECKPOINT_CREATED` is an event like any other and consumes a sequence, so
+         * omitting this lets the next writer allocate a number already in use and the
+         * unique index then refuses a perfectly legitimate write with an error nobody can
+         * explain from the code that caused it.
+         */
         runDao.setLastEventSequence(runId, eventSequence, now)
         checkpoint
     }
