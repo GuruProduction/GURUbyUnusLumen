@@ -120,21 +120,34 @@ data class ToolActor(
          * the space character in place, so `Code\ Engineer` still splits on whitespace
          * and the escape achieves nothing. The character itself has to go.
          *
-         * Anything outside letters, digits, dot, dash and underscore becomes `%XX` of
-         * its UTF-8 bytes. `Code Engineer` becomes `Code%20Engineer`. Reversible,
-         * unambiguous, no whitespace left anywhere, and it is the same rule a URL uses
-         * so nobody has to learn a second one.
+         * AN EXPLICIT ASCII WHITELIST, NOT `isLetterOrDigit`. The first version of this
+         * walked the UTF-8 BYTES, turned each byte into a Char, and asked whether it was
+         * a letter. That test is performed on the byte VALUE, not on the original
+         * character: byte 0xE9 (the first byte of a three-byte sequence for a character
+         * like 'é') is the Char U+00E9, which `isLetterOrDigit` reports as a letter. The
+         * byte was then appended raw, and a multi-byte character came out half-escaped
+         * and unreconstructable. The application is meant for people worldwide, so a
+         * name with an accent is not an edge case.
+         *
+         * The whitelist is now the only thing that may pass unescaped: A-Z, a-z, 0-9,
+         * dot, dash and underscore. Every other byte, including every byte of every
+         * multi-byte character, becomes `%XX`. That is one byte in, one `%XX` out, which
+         * is what makes [unescapeSegment] exact rather than approximate.
          */
         fun escapeSegment(raw: String): String {
             val out = StringBuilder(raw.length + 8)
             for (byte in raw.toByteArray(Charsets.UTF_8)) {
-                val ch = byte.toInt().toChar()
-                val safe = ch.isLetterOrDigit() || ch == '.' || ch == '-' || ch == '_'
+                val code = byte.toInt() and 0xFF
+                val safe = (code in 0x41..0x5A) || // A-Z
+                    (code in 0x61..0x7A) ||        // a-z
+                    (code in 0x30..0x39) ||        // 0-9
+                    code == 0x2E ||                // .
+                    code == 0x2D ||                // -
+                    code == 0x5F                   // _
                 if (safe) {
-                    out.append(ch)
+                    out.append(code.toChar())
                 } else {
                     out.append('%')
-                    val code = byte.toInt() and 0xFF
                     out.append("0123456789ABCDEF"[code shr 4])
                     out.append("0123456789ABCDEF"[code and 0x0F])
                 }
@@ -157,13 +170,16 @@ data class ToolActor(
                 if (ch == '%' && i + 2 < escaped.length) {
                     val hex = escaped.substring(i + 1, i + 3)
                     val value = hex.toIntOrNull(16)
-                    if (value != null) {
+                    if (value != null && value in 0..255) {
                         bytes.write(value)
                         i += 3
                         continue
                     }
                 }
-                bytes.write(ch.toString().toByteArray(Charsets.UTF_8))
+                // A literal character that was never escaped. Escaping only ever emits
+                // ASCII for an unescaped character, so its UTF-8 form is one byte and
+                // this cannot corrupt a multi-byte sequence.
+                bytes.write(ch.code and 0xFF)
                 i++
             }
             return String(bytes.toByteArray(), Charsets.UTF_8)

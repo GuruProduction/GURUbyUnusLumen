@@ -444,17 +444,21 @@ class MemoryAttributionTest {
     }
 
     /**
-     * An agent with NO ID is also refused, because `agent` in the role slot names nobody.
+     * An agent with NO ID is refused ON THE PRODUCTION PATH TOO.
      *
-     * This is the second half of failing closed: it is not enough for the store to
-     * support attribution if the actor carries no identity for it to write.
+     * THE FIRST VERSION OF THIS TEST USED A STORE WITHOUT ATTRIBUTION SUPPORT, which is
+     * the one repository in the app that is not the real one. The production store DOES
+     * implement the attributed writer, so the same actor sailed through it, and
+     * `roleLabel()` wrote a bare "agent" that names nobody. The check was on the wrong
+     * side of the branch.
+     *
+     * This version uses RecordingBrain, which is the capable store, so it exercises the
+     * path production actually takes.
      */
     @Test
-    fun `an attributed call with no id is refused rather than written as a bare agent`() = runBlocking {
-        val plainBrain = object : MemoryRepository by RecordingBrain() {
-            // Deliberately does NOT implement AttributedMemoryWriter.
-        }
-        val executor = MemoryToolExecutor(plainBrain)
+    fun `an attributed call with no id is refused on the production store`() = runBlocking {
+        val brain = RecordingBrain()
+        val executor = MemoryToolExecutor(brain)
 
         val result = executor.executeAsActor(
             MemoryToolDefinitions.ADD_MEMORY_FACT,
@@ -468,6 +472,80 @@ class MemoryAttributionTest {
             "the refusal must name the missing id: ${payloadOf(result)}",
             payloadOf(result).contains("no id", ignoreCase = true),
         )
+        assertEquals("and NOTHING may reach the brain", 0, brain.writes.size)
+    }
+
+    /** The same refusal on a store that cannot record attribution. */
+    @Test
+    fun `an attributed call with no id is refused on an incapable store too`() = runBlocking {
+        val plainBrain = object : MemoryRepository by RecordingBrain() {
+            // Deliberately does NOT implement AttributedMemoryWriter.
+        }
+        val executor = MemoryToolExecutor(plainBrain)
+
+        val result = executor.executeAsActor(
+            MemoryToolDefinitions.ADD_MEMORY_FACT,
+            mapOf("fact" to "a fact claimed by nobody in particular", "category" to "knowledge"),
+            ToolActor(kind = ToolActor.KIND_AGENT),
+            ToolProgressSink.NONE,
+        )
+
+        assertFalse("it must not report success: ${payloadOf(result)}", result.success)
+    }
+
+    /** cortexRecord obeys the same rule on the production store. */
+    @Test
+    fun `an attributed cortex record with no id is refused on the production store`() = runBlocking {
+        val brain = RecordingBrain()
+        val executor = MemoryToolExecutor(brain)
+
+        val result = executor.executeAsActor(
+            MemoryToolDefinitions.CORTEX_RECORD,
+            mapOf("content" to "a typed record from an unnamed agent", "domain" to "work"),
+            ToolActor(kind = ToolActor.KIND_AGENT),
+            ToolProgressSink.NONE,
+        )
+
+        assertFalse("it must not report success: ${payloadOf(result)}", result.success)
+        assertEquals("nothing may reach the brain", 0, brain.writes.size)
+    }
+
+    /** An unknown actor kind is refused rather than written as an empty label. */
+    @Test
+    fun `an unknown actor kind is refused`() = runBlocking {
+        val brain = RecordingBrain()
+        val executor = MemoryToolExecutor(brain)
+
+        val result = executor.executeAsActor(
+            MemoryToolDefinitions.ADD_MEMORY_FACT,
+            mapOf("fact" to "a fact from an identity nobody defined", "category" to "knowledge"),
+            ToolActor(kind = "somethingelse", agentId = "an-id"),
+            ToolProgressSink.NONE,
+        )
+
+        assertFalse("it must not report success: ${payloadOf(result)}", result.success)
+        assertTrue(
+            "the refusal must name the unknown kind: ${payloadOf(result)}",
+            payloadOf(result).contains("unknown identity", ignoreCase = true),
+        )
+        assertEquals("nothing may reach the brain", 0, brain.writes.size)
+    }
+
+    /** GURU is always a usable identity, so a GURU write is never refused for lack of an id. */
+    @Test
+    fun `a guru write is never refused for missing an agent id`() = runBlocking {
+        val brain = RecordingBrain()
+        val executor = MemoryToolExecutor(brain)
+
+        val result = executor.executeAsActor(
+            MemoryToolDefinitions.ADD_MEMORY_FACT,
+            mapOf("fact" to "guru is allowed to write memory", "category" to "knowledge"),
+            ToolActor.guru(conversationId = "c", messageId = "m"),
+            ToolProgressSink.NONE,
+        )
+
+        assertTrue("a guru write must succeed: ${payloadOf(result)}", result.success)
+        assertEquals(1, brain.writes.size)
     }
 
     /**
@@ -619,6 +697,54 @@ class MemoryAttributionTest {
         val agent = ToolActor.agent(agentId = "id", agentName = "sentinel-2.1")
         assertEquals("agent:id:sentinel-2.1", agent.roleLabel())
         assertEquals("sentinel-2.1", ToolActor.unescapeSegment("sentinel-2.1"))
+    }
+
+    /**
+     * ACCENTED NAMES ROUND-TRIP EXACTLY.
+     *
+     * The first encoder walked UTF-8 BYTES and asked `isLetterOrDigit` on each byte's
+     * numeric value. Byte 0xE9, the lead byte of a three-byte character like 'é', is the
+     * Char U+00E9, which that predicate calls a letter, so the byte was appended raw and
+     * a multi-byte character came out half-escaped and unreconstructable. For an
+     * application meant for people worldwide, an accented name is ordinary, not an edge
+     * case.
+     */
+    @Test
+    fun `an accented agent name round-trips exactly`() {
+        val name = "Rédacteur Élite"
+        val agent = ToolActor.agent(agentId = "id", agentName = name)
+        val label = agent.roleLabel()
+
+        assertFalse("no raw space may survive: $label", label.contains(' '))
+        assertTrue(
+            "every non-ASCII byte must be percent-encoded, so the label is pure ASCII: $label",
+            label.all { it.code < 128 },
+        )
+        val encoded = label.split(':').drop(2).joinToString(":")
+        assertEquals(name, ToolActor.unescapeSegment(encoded))
+    }
+
+    @Test
+    fun `an emoji in an agent name round-trips exactly`() {
+        val name = "Ops 🛠️ Team"
+        val agent = ToolActor.agent(agentId = "id", agentName = name)
+        val label = agent.roleLabel()
+
+        assertFalse("no raw space: $label", label.contains(' '))
+        assertTrue("pure ASCII label: $label", label.all { it.code < 128 })
+        val encoded = label.split(':').drop(2).joinToString(":")
+        assertEquals(name, ToolActor.unescapeSegment(encoded))
+    }
+
+    @Test
+    fun `a CJK agent name round-trips exactly`() {
+        val name = "運用チーム"
+        val agent = ToolActor.agent(agentId = "id", agentName = name)
+        val label = agent.roleLabel()
+
+        assertTrue("pure ASCII label: $label", label.all { it.code < 128 })
+        val encoded = label.split(':').drop(2).joinToString(":")
+        assertEquals(name, ToolActor.unescapeSegment(encoded))
     }
 
     /**

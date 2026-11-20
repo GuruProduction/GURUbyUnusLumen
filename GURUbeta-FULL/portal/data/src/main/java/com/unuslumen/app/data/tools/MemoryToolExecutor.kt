@@ -84,9 +84,12 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) :
      * to report it rather than believe the memory landed.
      */
     private suspend fun persistAttributed(draft: MemoryFact, actor: ToolActor): MemoryFact {
+        // BEFORE the branch, because the question is whether the ACTOR is usable, not
+        // whether the store is capable. Checking only on the incapable path let a
+        // nameless agent write straight through production.
+        requireCanRecord(actor, draft.fact)
         val writer = memoryRepository as? AttributedMemoryWriter
         if (writer == null) {
-            requireCanRecord(actor, draft.fact)
             return persistedFactRoundTrip(memoryRepository, draft)
         }
         val rows = writer.persistFactsAs(listOf(draft), actor)
@@ -99,26 +102,47 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) :
     }
 
     /**
-     * Refuse a write whose identity could not be stored.
+     * Refuse a write whose identity could not be recorded, whichever store this is.
      *
-     * Throws rather than returning an error result so the two write tools' existing
-     * catch blocks turn it into their own failure shape, which is what keeps the message
-     * consistent with every other refusal on this path.
+     * CALLED BEFORE THE BRANCH, NOT INSIDE IT. The first version only checked the actor
+     * on the path where the store could NOT record attribution, which is backwards: the
+     * production repository DOES implement the attributed writer, so an agent carrying
+     * kind="agent" and an empty id sailed straight through the real write path, and
+     * `roleLabel()` wrote a bare "agent" that names nobody. The check has to happen
+     * whatever the store is, because the question is whether the ACTOR is usable, not
+     * whether the store is capable.
+     *
+     * Three refusals, all of which mean the same thing: this write cannot say who wrote
+     * it, so it must not happen.
+     *  - an unknown kind, which no factory produces and which nothing should accept;
+     *  - an agent with no id, because the id is the identity;
+     *  - an attributed actor on a store that cannot carry a label at all.
      */
     private fun requireCanRecord(actor: ToolActor, content: String) {
         if (!actor.isAttributed) return
+
+        val known = actor.kind == ToolActor.KIND_GURU || actor.kind == ToolActor.KIND_AGENT
+        if (!known) {
+            error(
+                "refused: the caller claims an unknown identity '${actor.kind}', and this memory " +
+                    "cannot record who wrote it. Nothing was stored. Content was: ${content.take(60)}",
+            )
+        }
         if (!actor.hasIdentityToRecord) {
             error(
                 "refused: the caller is attributed as '${actor.kind}' but supplied no id, so this " +
-                    "memory could not record who wrote it. Nothing was stored.",
+                    "memory could not record which one wrote it. Nothing was stored.",
             )
         }
-        error(
-            "refused: '${actor.roleLabel()}' asked for this memory to be attributed, but the memory " +
-                "store on this build cannot record attribution. Nothing was stored, so the memory " +
-                "cannot exist anonymously and pretend to be attributed. Content was: " +
-                content.take(60),
-        )
+        val writer = memoryRepository as? AttributedMemoryWriter
+        if (writer == null) {
+            error(
+                "refused: '${actor.roleLabel()}' asked for this memory to be attributed, but the " +
+                    "memory store on this build cannot record attribution. Nothing was stored, so " +
+                    "the memory cannot exist anonymously and pretend to be attributed. Content " +
+                    "was: ${content.take(60)}",
+            )
+        }
     }
 
     private fun MemoryFact.toInfo() = MemoryFactInfo(id, category, fact, confidence, extractedDate)
@@ -246,12 +270,12 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) :
                 // ("conversation", "tool_result", "inference") is a real fact about
                 // where the memory came from; the actor says who did the writing.
                 // Both belong in the label, so the attributed writer joins them.
+                // THE SAME VALIDATION BEFORE THE BRANCH as addMemoryFact. An actor is
+                // usable or it is not, and that answer does not depend on which store is
+                // behind this call.
+                requireCanRecord(actor, content)
                 val writer = memoryRepository as? AttributedMemoryWriter
                 val stored = if (writer == null) {
-                    // Same fail-closed rule as addMemoryFact, for the same reason: a
-                    // typed record that claims an author and cannot carry one must not
-                    // be written as though it succeeded.
-                    requireCanRecord(actor, content)
                     memoryRepository.storeRecord(
                         content = content,
                         domain = (args["domain"] as? String).orEmpty(),
