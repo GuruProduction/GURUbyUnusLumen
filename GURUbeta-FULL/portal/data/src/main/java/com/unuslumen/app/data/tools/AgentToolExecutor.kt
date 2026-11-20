@@ -131,16 +131,27 @@ class AgentToolExecutor(
          * an agent the person had been told was running. The host runs it on an
          * application-lifetime scope and this awaits the result, which means cancelling
          * this call cancels the wait and nothing else.
+         *
+         * A FRESH RUN ID, SO ADMISSION CANNOT BE REFUSED HERE. Every spawn is a new
+         * execution and therefore a new id, so the id is always free. Admission is still
+         * checked rather than assumed, because a refusal that was swallowed would await a
+         * deferred nothing completes.
          */
         val runId = java.util.UUID.randomUUID().toString()
         val deferred = kotlinx.coroutines.CompletableDeferred<AgentRuntime.SpawnResult>()
-        host.start(runId, deferred) {
+        val admission = host.start(runId, deferred) {
             agentRuntime.spawn(
                 slugOrName = agentName,
                 job = job,
                 conversationId = conversationId,
                 runId = runId,
             ).last()
+        }
+        if (admission is com.unuslumen.app.data.agents.AgentRunHost.Admission.AlreadyRunning) {
+            return ToolExecutionResult.error(
+                "A run with the id '$runId' was already executing, so nothing was started. " +
+                    "That should be impossible for a new spawn and means the id was reused."
+            )
         }
         val outcome = deferred.await()
         return asSpawnResult(outcome)
@@ -173,9 +184,36 @@ class AgentToolExecutor(
             )
         }
 
+        /*
+         * A DUPLICATE RESUME IS A REFUSAL, NOT A SECOND EXECUTION.
+         *
+         * This is the case the atomic admission exists for. Two answers to one question, or
+         * a tool call retried by the model, both arrive under the same session id. Running
+         * both would carry two answers into one job and repeat every side effect behind it,
+         * so the second is refused with a sentence the assistant can read and act on.
+         *
+         * The refusal is returned as a successful tool call carrying success=false, the same
+         * shape every other agent refusal uses, so the model can tell "it is already working"
+         * from "the tool broke" and wait rather than retry.
+         */
         val deferred = kotlinx.coroutines.CompletableDeferred<AgentRuntime.SpawnResult>()
-        host.start(sessionId, deferred) {
+        val admission = host.start(sessionId, deferred) {
             agentRuntime.resume(sessionId, answer).last()
+        }
+        if (admission is com.unuslumen.app.data.agents.AgentRunHost.Admission.AlreadyRunning) {
+            return success(
+                SpawnAgentResult(
+                    success = false,
+                    agent = "",
+                    status = AgentRuntime.SpawnResult.Status.ASKING.name,
+                    report = "",
+                    toolRounds = 0,
+                    sessionId = sessionId,
+                    error = "That agent is already working on this run, so the answer was not " +
+                        "delivered a second time. Wait for it to finish or ask it something else.",
+                ),
+                SpawnAgentResult.serializer(),
+            )
         }
         val outcome = deferred.await()
         return asSpawnResult(outcome)

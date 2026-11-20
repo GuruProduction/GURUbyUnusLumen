@@ -185,4 +185,143 @@ class AgentExecutionOwnershipTest {
         assertTrue("a null id must still install a scope so it is not confused with absent", seen != null)
         assertNull(seen?.conversationId())
     }
+
+    // ------------------------------------------------------------------
+    // One run id is one execution
+    // ------------------------------------------------------------------
+
+    /**
+     * A second start for a live run id does not execute the block.
+     *
+     * THE DEFECT THIS FILE EXISTS FOR NOW. The host used to log a warning and launch anyway,
+     * so two jobs under one id each ran the same assignment and repeated every side effect
+     * behind it. Either one's cleanup could also clear the shared entry, making the host
+     * report a run inactive while it was still working.
+     */
+    @Test(timeout = 10_000)
+    fun aSecondStartForALiveRunIdIsRefusedAndRunsNothing() = runBlocking {
+        val host = AgentRunHost()
+        val firstRan = AtomicInteger(0)
+        val secondRan = AtomicInteger(0)
+        val first = CompletableDeferred<String>()
+        val second = CompletableDeferred<String>()
+
+        val firstAdmission = host.start("run-dup", first) {
+            firstRan.incrementAndGet()
+            delay(400)
+            "first"
+        }
+        val secondAdmission = host.start("run-dup", second) {
+            secondRan.incrementAndGet()
+            "second"
+        }
+
+        assertTrue("the first start wins the id", firstAdmission is AgentRunHost.Admission.Started)
+        assertTrue(
+            "the second start must be refused rather than launched",
+            secondAdmission is AgentRunHost.Admission.AlreadyRunning,
+        )
+
+        assertEquals("the first block ran exactly once", 1, firstRan.get())
+        assertEquals("the refused block must never run", 0, secondRan.get())
+        assertEquals("the winner still completes", "first", first.await())
+    }
+
+    /** A refused start completes its deferred exceptionally rather than leaving a caller hanging. */
+    @Test(timeout = 10_000)
+    fun aRefusedStartDoesNotLeaveItsCallerWaitingForever() = runBlocking {
+        val host = AgentRunHost()
+        val first = CompletableDeferred<String>()
+        val refused = CompletableDeferred<String>()
+
+        host.start("run-wait", first) {
+            delay(300)
+            "held"
+        }
+        host.start("run-wait", refused) { "never" }
+
+        assertTrue("a refusal must not leave a deferred pending", refused.isCancelled)
+        // The winner still completes, so a refusal does not strand the run that does own it.
+        assertEquals("held", first.await())
+    }
+
+    /**
+     * Duplicate resume attempts do not both carry an answer into one run.
+     *
+     * THE CASE FROM THE REVIEW. Two answers to one question, or a retried tool call, arrive
+     * under one session id. Only the first may reach the runtime, because a resume executes
+     * real work and running it twice repeats every side effect behind it.
+     */
+    @Test(timeout = 10_000)
+    fun twoResumesForOneRunAdmitOnlyTheFirst() = runBlocking {
+        val host = AgentRunHost()
+        val executed = mutableListOf<String>()
+        val first = CompletableDeferred<String>()
+        val second = CompletableDeferred<String>()
+
+        host.start("session-1", first) {
+            executed += "answer-one"
+            delay(400)
+            "done"
+        }
+        host.start("session-1", second) {
+            executed += "answer-two"
+            "done"
+        }
+
+        first.await()
+        assertEquals(
+            "only the first answer may reach the run: $executed",
+            listOf("answer-one"),
+            executed,
+        )
+    }
+
+    /**
+     * One job finishing does not deregister another that is still working.
+     *
+     * THE CLEANUP RACE. Two-argument `remove` compares the value as well as the key, so a
+     * job can only clear its own entry. With a one-argument remove, the older job's finally
+     * block would clear a newer execution's entry and the heartbeat would stop renewing a
+     * lease for work that was still going.
+     */
+    @Test(timeout = 10_000)
+    fun aFinishingJobDoesNotClearAnotherRunsEntry() = runBlocking {
+        val host = AgentRunHost()
+        val short = CompletableDeferred<String>()
+        val long = CompletableDeferred<String>()
+
+        host.start("run-short", short) { "quick" }
+        host.start("run-long", long) {
+            delay(500)
+            "slow"
+        }
+
+        short.await()
+        delay(100)
+
+        assertFalse("the finished run is gone", host.isActive("run-short"))
+        assertTrue("the other run must still be registered", host.isActive("run-long"))
+        assertTrue("run-long" in host.activeRuns())
+        assertEquals("slow", long.await())
+    }
+
+    /** A run id becomes available again once its execution has genuinely finished. */
+    @Test(timeout = 10_000)
+    fun aRunIdCanBeReusedAfterItsExecutionFinishes() = runBlocking {
+        val host = AgentRunHost()
+        val first = CompletableDeferred<String>()
+        host.start("run-reuse", first) { "one" }
+        first.await()
+        delay(100)
+
+        val second = CompletableDeferred<String>()
+        val admission = host.start("run-reuse", second) { "two" }
+
+        assertTrue(
+            "a finished run must release its id for the next execution",
+            admission is AgentRunHost.Admission.Started,
+        )
+        assertEquals("two", second.await())
+    }
 }
