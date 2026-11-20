@@ -57,6 +57,20 @@ object AgentEventTypes {
     const val QUESTION_OPENED = "QUESTION_OPENED"
     const val QUESTION_ANSWERED = "QUESTION_ANSWERED"
 
+    // ---- plans ----
+    /**
+     * A run's plan was created or revised.
+     *
+     * WHY THIS IS AN EVENT AND NOT ONLY A NOTE. The planning tools write notes whose steps are lines
+     * with checkboxes: there is no step identity, and updating one destroys what it said before. A
+     * revision history cannot be reconstructed from a document that overwrites itself, so the ledger
+     * becomes the history and each revision is an appended fact.
+     *
+     * THE REVISION NUMBER IS PER RUN, not per plan. A run's plan evolves in one line, and numbering
+     * from one makes "the third plan this run produced" answerable without a join.
+     */
+    const val PLAN_REVISED = "PLAN_REVISED"
+
     // ---- artefacts ----
     /**
      * A run produced a persistent output.
@@ -82,7 +96,7 @@ object AgentEventTypes {
         TOOL_PERMISSION_GRANTED, TOOL_PERMISSION_DENIED, TOOL_CALL_STARTED, TOOL_PROGRESS,
         TOOL_CALL_COMPLETED, TOOL_CALL_FAILED, TOOL_CALL_REFUSED, TOOL_CALL_OUTCOME_UNKNOWN,
         MESSAGE_CREATED, MESSAGE_DELIVERED, MESSAGE_DELIVERY_FAILED, QUESTION_OPENED,
-        QUESTION_ANSWERED, ARTEFACT_CREATED, CHECKPOINT_CREATED,
+        QUESTION_ANSWERED, PLAN_REVISED, ARTEFACT_CREATED, CHECKPOINT_CREATED,
     )
 
     /**
@@ -236,6 +250,13 @@ object AgentEventTypes {
         ),
         QUESTION_OPENED to RestorePolicy.Rebuilds,
         QUESTION_ANSWERED to RestorePolicy.Rebuilds,
+
+        // ---- plans ----
+        PLAN_REVISED to RestorePolicy.NoSessionEffect(
+            "A plan revision is a record of what the agent intended, kept for the room to show and " +
+                "for a reader to see how the approach changed. It is not rebuilt into the session, " +
+                "because the session's context is the checkpoint and a plan is not conversation."
+        ),
 
         // ---- artefacts ----
         ARTEFACT_CREATED to RestorePolicy.NoSessionEffect(

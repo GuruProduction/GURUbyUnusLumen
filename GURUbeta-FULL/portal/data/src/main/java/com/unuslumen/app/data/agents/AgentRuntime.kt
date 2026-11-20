@@ -197,6 +197,18 @@ class AgentRuntime(
         const val OUTPUT_FLUSH_MILLIS = 250L
         const val OUTPUT_FLUSH_CHARS = 8 * 1024
 
+        /**
+         * The planning tool names, so the runtime recognises a plan without depending on the tool
+         * module's definitions.
+         *
+         * DUPLICATED DELIBERATELY. Importing the tool module here would tie the runtime to a module
+         * it does not otherwise need, for two strings it uses in one place. A test in the tool module
+         * asserts these match the real names, so a rename on either side fails a build rather than
+         * silently stopping the record.
+         */
+        const val PLANNING_CREATE = "createPlan"
+        const val PLANNING_UPDATE = "updatePlanStep"
+
         /** Shared so every component in this process reports the same lease owner. */
         @Volatile
         private var processLeaseOwner: String? = null
@@ -322,6 +334,8 @@ class AgentRuntime(
         var notebook: String = "",
         /** How many times this session has folded its history down. */
         var compactions: Int = 0,
+        /** How many plan revisions this run has recorded, so each one is numbered. */
+        var planRevision: Int = 0,
         /**
          * This run's limits, resolved once at spawn from the agent's own budgets.
          *
@@ -1732,6 +1746,21 @@ class AgentRuntime(
                 )
             }
 
+            /*
+             * A PLAN THE AGENT WROTE BECOMES A RECORDED REVISION.
+             *
+             * THE PLANNING TOOLS EXIST AND THEIR OUTPUT IS NOT HISTORY. `createPlan` writes a note
+             * whose steps are lines with checkboxes and `updatePlanStep` overwrites a line, so the
+             * previous state is gone and no revision can be reconstructed from the document. The
+             * ledger is where the history goes, which is why this reads the proposals rather than
+             * the note.
+             *
+             * IT IS EMITTED FROM THE PROPOSAL, NOT THE RESULT. The plan is what the agent intended,
+             * and reading it out of the tool's reply would make the record depend on a tool's
+             * formatting. The arguments are the agent's own words about its intent.
+             */
+            recordPlanRevisions(session, agent, toolCalls)
+
             onEvent?.invoke("${agent.name} is using ${toolCalls.size} tool(s), round $rounds")
 
             // ONE ROUND CHECKPOINT, BEFORE THE FIRST DISPATCH.
@@ -2641,6 +2670,76 @@ class AgentRuntime(
             }
         )
     }
+
+
+    /**
+     * Turn any planning tool call in this round into a recorded plan revision.
+     *
+     * A REVISION IS AN APPENDED FACT, which is the only shape that survives an agent changing its
+     * mind three times. The revision counter is per run, so a reader can say "the third plan it made"
+     * without joining anything.
+     *
+     * THE STEPS ARE PARSED FROM WHAT THE AGENT WROTE and kept as their own list, so the room shows
+     * proposed steps as proposed. A step marked complete by `updatePlanStep` is a different event
+     * and this does not fabricate one.
+     */
+    private suspend fun recordPlanRevisions(
+        session: Session,
+        agent: GuruAgent,
+        toolCalls: List<StreamFrame.ToolCallComplete>,
+    ) {
+        for (call in toolCalls) {
+            if (call.name != PLANNING_CREATE && call.name != PLANNING_UPDATE) continue
+
+            val args = runCatching {
+                json.parseToJsonElement(call.content) as? JsonObject
+            }.getOrNull() ?: continue
+
+            val title = (args["title"] as? JsonPrimitive)?.content.orEmpty()
+            val rawSteps = (args["steps"] as? JsonPrimitive)?.content.orEmpty()
+            val planId = (args["planId"] as? JsonPrimitive)?.content.orEmpty()
+
+            /*
+             * A STEP UPDATE IS ITS OWN KIND OF REVISION. It carries a step index and a status rather
+             * than a fresh plan, so the record says what changed instead of pretending a new plan
+             * was written. Without that distinction the history would show ten plans where the agent
+             * ticked ten boxes.
+             */
+            val steps = if (rawSteps.isBlank()) {
+                emptyList()
+            } else {
+                rawSteps.split(',', '\n')
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+            }
+
+            session.planRevision += 1
+            val revision = session.planRevision
+
+            runCatching {
+                ledger.append(
+                    session.id,
+                    AgentRunLedger.EventDraft(
+                        eventType = com.unuslumen.app.domain.agents.AgentEventTypes.PLAN_REVISED,
+                        actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_AGENT,
+                        actorId = agent.id,
+                        payload = jsonObject {
+                            put("revision", revision)
+                            put("kind", if (call.name == PLANNING_CREATE) "CREATED" else "STEP_UPDATED")
+                            put("title", title)
+                            put("planId", planId)
+                            put("roundIndex", session.rounds)
+                            // The steps as the agent wrote them, joined by a separator that cannot
+                            // appear inside a step, so a reader can split them back out.
+                            put("steps", steps.joinToString("\u001F"))
+                            put("stepCount", steps.size)
+                        },
+                    )
+                )
+            }
+        }
+    }
+
 
     private fun jsonString(value: String): String = buildString {
         append('"')

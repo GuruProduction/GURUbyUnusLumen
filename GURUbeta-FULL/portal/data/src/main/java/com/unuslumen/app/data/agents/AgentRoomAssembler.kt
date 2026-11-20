@@ -13,6 +13,7 @@ import com.unuslumen.app.database.entity.AgentRunEventEntity
 import com.unuslumen.app.domain.agents.AgentRoomState
 import com.unuslumen.app.domain.agents.ApprovalView
 import com.unuslumen.app.domain.agents.ArtefactView
+import com.unuslumen.app.domain.agents.PlanStepView
 import com.unuslumen.app.domain.agents.MessageView
 import com.unuslumen.app.domain.agents.ReasoningView
 import com.unuslumen.app.domain.agents.RunSummaryView
@@ -114,7 +115,7 @@ class AgentRoomAssembler(
             finishedAt = run.finishedAt,
             failureMessage = run.failureMessage,
             resultSummary = run.resultSummary,
-            planSteps = emptyList(),
+            planSteps = planStepsFrom(events),
             toolActivity = toolActivityFrom(events),
             messages = messages.map { it.toView(run.agentName) },
             reasoning = reasoningFrom(events, effective, run.reasoningCaptureEnabledAtStart),
@@ -238,6 +239,50 @@ class AgentRoomAssembler(
             }
         }
         return byInvocation.values.toList()
+    }
+
+
+    /**
+     * The newest plan revision's steps, as the room shows them.
+     *
+     * A PLAN IS A LINE OF REVISIONS, AND THE ROOM SHOWS THE LATEST. Each revision is an appended
+     * event, so the history is intact and a person can see the current intent without reading every
+     * version. Revisions are numbered per run and this takes the highest.
+     *
+     * STEP STATE COMES FROM THE REVISION KIND. A create produces proposed steps; a step update
+     * records that one moved. Until a step has been marked done by an update, it is proposed, and the
+     * room draws the two differently because a proposal is not an action.
+     */
+    private fun planStepsFrom(events: List<AgentRunEventEntity>): List<PlanStepView> {
+        val revisions = events
+            .filter { it.eventType == com.unuslumen.app.domain.agents.AgentEventTypes.PLAN_REVISED }
+            .mapNotNull { event ->
+                val payload = readObject(event.payloadJson) ?: return@mapNotNull null
+                val revision = stringOf(payload, "revision")?.toIntOrNull() ?: return@mapNotNull null
+                revision to payload
+            }
+            .sortedBy { it.first }
+
+        val latest = revisions.lastOrNull()?.second ?: return emptyList()
+        val raw = stringOf(latest, "steps").orEmpty()
+        if (raw.isBlank()) return emptyList()
+
+        val kind = stringOf(latest, "kind").orEmpty()
+        return raw.split(" | ")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .mapIndexed { index, step ->
+                PlanStepView(
+                    stepId = "step-${index + 1}",
+                    description = step,
+                    state = if (kind == "STEP_UPDATED") {
+                        PlanStepView.STATE_ACTIVE
+                    } else {
+                        PlanStepView.STATE_PROPOSED
+                    },
+                    updatedAt = 0,
+                )
+            }
     }
 
     private fun base(invocationId: String, tool: String, event: AgentRunEventEntity) =
