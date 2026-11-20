@@ -2430,6 +2430,14 @@ class AgentRuntime(
                                     conversationId = session.id,
                                     agentRunId = session.id,
                                     agentInvocationId = invocationId,
+                                    /*
+                                     * THE AGENT'S IDENTITY TRAVELS WITH THE CALL. A tool that writes
+                                     * memory reads it from the coroutine rather than from an
+                                     * argument, because an argument naming an agent would be a way
+                                     * to write into another agent's memory with that agent's
+                                     * provenance on the fact.
+                                     */
+                                    agentName = agent.name,
                                     progress = progressSink,
                                 )
 
@@ -2677,7 +2685,19 @@ class AgentRuntime(
          * happens to name one of them must not get it twice, because two identical tool definitions
          * in one request is an ambiguity the model resolves by guessing.
          */
-        val universal = listOfNotNull(ask, report, verify)
+        /*
+         * THE MEMORY WRITE IS OFFERED ONLY WHERE IT WOULD LAND.
+         *
+         * A verb that always answers "you were not given permission" is worse than not having the
+         * verb: the model calls it, is told no, and has spent a round learning a fact a prompt could
+         * have stated. So it is added when the agent's own scope already permits the write.
+         */
+        val remember = if (agent.memoryScope.writeOwn) {
+            toolRegistry.getDefinition(com.unuslumen.app.data.tools.MemoryWriteToolDefinitions.REMEMBER_THIS)
+        } else {
+            null
+        }
+        val universal = listOfNotNull(ask, report, verify, remember)
         return universal + declared.filter { candidate -> universal.none { it.name == candidate.name } }
     }
 
@@ -2702,7 +2722,12 @@ class AgentRuntime(
         // parent would see a dead run rather than a reason. A child that could not record a check
         // would hand its parent a completion claim with no evidence behind it, which is the thing
         // section 4.4 exists to stop.
-        val universal = listOfNotNull(ask, report, verify)
+        val remember = if (agent.memoryScope.writeOwn) {
+            toolRegistry.getDefinition(com.unuslumen.app.data.tools.MemoryWriteToolDefinitions.REMEMBER_THIS)
+        } else {
+            null
+        }
+        val universal = listOfNotNull(ask, report, verify, remember)
         return universal + resolved.filter { candidate -> universal.none { it.name == candidate.name } }
     }
 
@@ -2883,6 +2908,16 @@ class AgentRuntime(
                         com.unuslumen.app.domain.agents.AgentInitiatedMessages.describeForModel() +
                         ". If you genuinely cannot continue without an answer, use askAssistant " +
                         "instead, because reportToPerson will not wait for anybody."
+                )
+            }
+            if (allowed.any { it.name == com.unuslumen.app.data.tools.MemoryWriteToolDefinitions.REMEMBER_THIS }) {
+                appendLine(
+                    "YOU CAN KEEP WHAT YOU LEARN. rememberThis writes a fact into your own memory, " +
+                        "and your next job is given it before it starts. Use it for something durable " +
+                        "about this person's setup, a decision that was settled, or something that " +
+                        "turned out to be wrong and should not be repeated. Write one sentence that " +
+                        "would still make sense next week, standing alone. Do not record the job you " +
+                        "were given, and nothing that will be stale tomorrow."
                 )
             }
             if (allowed.any { it.name == RECORD_VERIFICATION }) {

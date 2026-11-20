@@ -9,20 +9,21 @@ pretends otherwise.
 
 ## 1. Outcome
 
-**Partially complete.** Every phase is real and tested, and every capability the specification names
-by class is now built. One qualification remains and one gap remains, both named in section 7 rather
-than softened: nothing in the programme has been device-proven, and an agent still does not write
-memory from inside its own run.
+**Complete against the specification, and not device-proven.** Every capability the specification
+names by class is built and exercised by a test. The one qualification is stated in section 7 rather
+than softened: nothing in the programme has been executed on a handset or an emulator this session, so
+every claim is a JVM or Robolectric test plus a compile.
 
 What is complete: the durable run and event foundation, agent definitions with configuration and
 versioned history, the three-way conversation, artefacts and context provenance, agent memory on the
-real brain with enforced scope, delegation with enforced authority, the Agent Room dashboard, the
-update trust check, plan revisions carrying the specification's own fields, structured decision
-records kept apart from raw reasoning, pause and resume as real runtime states, and scheduled
-execution gated on the agent's autonomy flag.
+real brain with enforced scope and a write the agent itself decides on, delegation with enforced
+authority, the Agent Room dashboard, the update trust check, plan revisions carrying the
+specification's own fields, structured decision records kept apart from raw reasoning, a local tool
+restriction for imported agents, six kinds of message an agent may initiate without stopping, three
+levels of confirmation behind a completion claim, pause and resume as real runtime states, and
+scheduled execution gated on the agent's autonomy flag.
 
-What is not: an agent does not yet write memory mid-run, and no instrumented migration or device run
-has executed on an emulator this session.
+What is not: no instrumented migration or device run has executed on an emulator this session.
 
 ---
 
@@ -110,7 +111,7 @@ missed by more than fifteen minutes is counted with its reason rather than run l
 
 ## 4. Database
 
-Five migrations, all additive, each validated against the exported schema for its version.
+Six migrations, all additive, each validated against the exported schema for its version.
 
 | Migration | Tables added | Columns added | Data touched |
 | --- | --- | --- | --- |
@@ -119,10 +120,12 @@ Five migrations, all additive, each validated against the exported schema for it
 | 37→38 | `agent_messages`, `agent_approvals` | none | none |
 | 38→39 | `agent_artefacts`, `agent_context_references` | none | none |
 | 39→40 | `agent_schedules` | none | none |
+| 40→41 | none | `tool_narrowing` on `guru_agents` | none |
 
-Schema goes from 35 to 40, 58 tables. No row is read, rewritten or dropped by any of them. Every new
+Schema goes from 35 to 41, 59 tables. No row is read, rewritten or dropped by any of them. Every new
 table hangs off `agent_runs` with ON DELETE CASCADE, so deleting a conversation still takes the whole
-record.
+record. The one column added is `NOT NULL DEFAULT ''`, which reads as "no local restriction", so every
+existing agent keeps exactly the tools it had.
 
 Column names, types, defaults and order are taken from the entities and were checked against the
 exported JSON for each version. Room validates schema identity on open, so a mismatch would crash the
@@ -151,10 +154,14 @@ Counted from the JUnit XML, not the console summary:
 
 | Module | Classes | Tests | Failures | Errors | Skipped |
 | --- | --- | --- | --- | --- | --- |
-| `:portal:domain` | 27 | 315 | 0 | 0 | 0 |
-| `:portal:data` | 129 | 1,395 | 0 | 0 | 0 |
+| `:portal:domain` | 33 | 373 | 0 | 0 | 0 |
+| `:portal:data` | 133 | 1,432 | 0 | 0 | 0 |
 | `:core:database` | 3 | 29 | 0 | 0 | 0 |
-| **Total** | **159** | **1,739** | **0** | **0** | **0** |
+| **Total** | **169** | **1,834** | **0** | **0** | **0** |
+
+The instrumented migration suite is a fourth set that has not executed: `:core:database` shows the
+three JVM classes, and `AgentFoundationMigrationTest` is androidTest covering migrations 35→36 through
+40→41.
 
 Two notes on how those numbers are obtained, because both have bitten. A `--tests` filter set on one
 invocation persists into the next, so a later run can report a handful of tests instead of the full
@@ -197,18 +204,24 @@ the brain returns, not in a prompt.
 
 ## 7. What is not built, and why
 
-**An agent still does not write memory mid-run.** `AgentMemoryService` reads and writes the real
-Cerebrum brain through `BrainService` and enforces the agent's memory scope in code, and
-`AgentRuntime.spawn` puts what the agent already knows into the prompt before the first model call.
-What nothing does is decide, during a run, that a fact is worth recording. That is a policy question
-rather than a wiring one: a loop that wrote every observation would fill the brain with noise, and the
-decision about what deserves keeping is not one to make on the agent's behalf.
+**An agent now decides what to keep, and the decision is its own.** `rememberThis` writes into the
+agent's own memory domain, gated on `writeOwn` in its scope and offered only where the write would
+land, so a verb that could only answer "not permitted" is not put in front of a model at all. The
+agent, rather than the loop, chooses what deserves keeping; a loop that recorded every observation
+would fill the brain with noise. `AgentRuntime.spawn` still puts what the agent already knows into the
+prompt before the first model call, so a job now starts from what previous jobs left.
+
+**An agent's identity travels on the coroutine, not in its arguments.** `DispatchScope` carries the
+agent as well as the conversation, because a tool argument naming an agent would let one agent write
+into another's memory with that other's provenance on the fact. `executePrepared` installs the scope,
+since the agent path calls it directly rather than through `dispatchStreaming`, and the removal test
+proves an argument-read agent fails.
 
 **Two capabilities the specification names that no tool produces a record for.** An agent that plans
 in prose rather than calling `createPlan` produces no plan revision, and the room correctly shows
 none, because parsing a plan out of reasoning would be inventing intent. The same applies to a
-decision an agent only thinks rather than records: the record exists when it is written, and the room
-does not manufacture one.
+decision an agent only thinks rather than records, and to a check it makes without calling
+`recordVerification`: the record exists when it is written, and the room does not manufacture one.
 
 ---
 
@@ -234,11 +247,10 @@ shown to have done what it claims. The Agent Room is a dashboard over that, not 
 cards.
 
 Every capability the specification names by class now exists and is exercised by a test. What remains
-is narrow and is stated: an agent does not yet decide to remember something mid-run, a plan or a
-decision it forms in prose without calling the tool leaves no record, and no migration or runtime
-path in this programme has been executed on a device this session. Those are named rather than
-represented by placeholders, because a stub that renders is the one artefact this programme was built
-to prevent.
+is narrow and is stated: a plan, a decision or a check the agent forms in prose without calling the
+tool leaves no record, and no migration or runtime path in this programme has been executed on a
+device this session. Those are named rather than represented by placeholders, because a stub that
+renders is the one artefact this programme was built to prevent.
 
 The controls the room draws are the ones the runtime honours. Pause is offered only for a run that is
 executing, resume only for one that stopped with its state kept, and neither appears where it would do

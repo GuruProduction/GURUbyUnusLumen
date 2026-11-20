@@ -168,6 +168,9 @@ object GeneratedToolRegistrations {
         // The check behind a completion claim. Section 4.4 asks an attempt, an acceptance and a
         // real-world confirmation to be three distinguishable facts rather than one word, "done".
         com.unuslumen.app.data.tools.VerificationToolDefinitions,
+        // Keeping what it learned, so its next job starts from it. The scope decides whether the
+        // write lands, and the executor reports that honestly rather than claiming a save.
+        com.unuslumen.app.data.tools.MemoryWriteToolDefinitions,
         ApprovalToolDefinitions,
         KeyboardToolDefinitions,
         CameraToolDefinitions,

@@ -257,7 +257,40 @@ class ToolDispatcher(
         conversationId: String? = null,
         progress: ToolProgressSink = ToolProgressSink.NONE,
         agentRunId: String? = null,
+        /**
+         * The agent whose run is dispatching, when an agent is the caller.
+         *
+         * INSTALLED ON THE COROUTINE HERE, BECAUSE THIS IS WHERE THE AGENT PATH ACTUALLY RUNS. The
+         * agent loop calls this directly rather than going through [dispatchStreaming], so a scope
+         * set only there would never reach an agent's tool call. A tool that writes memory reads the
+         * agent from that scope, which is what stops a model naming an agent in its arguments and
+         * writing into somebody else's memory.
+         *
+         * NULL IS THE MAIN ASSISTANT, which is a real value rather than an unknown one: a memory write
+         * from the portal belongs to GURU's own memory, not to any agent's.
+         */
+        agentName: String? = null,
         agentInvocationId: String? = null,
+    ): ToolDispatchResult = com.unuslumen.app.data.agents.withDispatchScope(
+        conversationId = conversationId,
+        agentName = agentName,
+    ) {
+        executePreparedInScope(
+            invocation = invocation,
+            conversationId = conversationId,
+            progress = progress,
+            agentRunId = agentRunId,
+            agentInvocationId = agentInvocationId,
+        )
+    }
+
+    /** The execution itself, run inside the scope the entry point installed. */
+    private suspend fun executePreparedInScope(
+        invocation: PreparedInvocation,
+        conversationId: String?,
+        progress: ToolProgressSink,
+        agentRunId: String?,
+        agentInvocationId: String?,
     ): ToolDispatchResult {
         val repairedArgs = invocation.repairedArgs
         val resolvedName = invocation.resolvedName
