@@ -305,10 +305,66 @@ class AgentRuntime(
          */
         var notebook: String = "",
         /** How many times this session has folded its history down. */
-        var compactions: Int = 0
+        var compactions: Int = 0,
+        /**
+         * This run's limits, resolved once at spawn from the agent's own budgets.
+         *
+         * RESOLVED AT SPAWN AND FROZEN IN THE SESSION, because a limit is part of what the run
+         * agreed to. Reading the agent's current budget on every round would let an edit made
+         * while the work is in flight change how much work it is allowed to do, which is the
+         * opposite of "a definition change does not rewrite a previous run".
+         */
+        val limits: RunLimits = RunLimits.SYSTEM_DEFAULT,
+        /** When this run started, for the wall-clock ceiling. */
+        val startedAt: Long = System.currentTimeMillis(),
     ) {
         /** Exchanges this session has already spent asking the assistant something. */
         fun exchangesUsed(): Int = exchangeCount
+    }
+
+    /**
+     * What one run is allowed to spend.
+     *
+     * NULL MEANS THE SYSTEM DEFAULT, NOT UNLIMITED. An agent that declares no budget gets
+     * [SYSTEM_DEFAULT], which is the same behaviour every agent had before budgets existed:
+     * the exchange cap, the tool-round ceiling and no wall-clock limit. That distinction is the
+     * one that stops a missing field from silently meaning "spend anything".
+     */
+    data class RunLimits(
+        val maxExchanges: Int,
+        val maxToolRounds: Int,
+        val maxToolCalls: Int?,
+        val maxDurationMillis: Long?,
+    ) {
+        companion object {
+            val SYSTEM_DEFAULT = RunLimits(
+                maxExchanges = AgentRuntime.MAX_EXCHANGES,
+                maxToolRounds = AgentRuntime.TOOL_ROUNDS_UNLIMITED,
+                maxToolCalls = null,
+                maxDurationMillis = null,
+            )
+
+            /**
+             * Resolve an agent's declared budgets against the system defaults.
+             *
+             * THE AGENT MAY TIGHTEN, NEVER WIDEN. A budget larger than the system default is
+             * clamped to the default rather than honoured, because the system values are the
+             * safety policy and an agent's own configuration is the narrower preference. An
+             * agent that asks for more exchange than the system allows does not get it by
+             * declaring it.
+             */
+            fun from(agent: GuruAgent): RunLimits {
+                val budgets = agent.budgets
+                return RunLimits(
+                    maxExchanges = budgets.maxExchanges
+                        ?.coerceIn(1, AgentRuntime.MAX_EXCHANGES)
+                        ?: AgentRuntime.MAX_EXCHANGES,
+                    maxToolRounds = AgentRuntime.TOOL_ROUNDS_UNLIMITED,
+                    maxToolCalls = budgets.maxToolCalls?.coerceAtLeast(1),
+                    maxDurationMillis = budgets.maxDurationMillis?.coerceAtLeast(1_000L),
+                )
+            }
+        }
     }
 
     /**
@@ -402,6 +458,36 @@ class AgentRuntime(
             return@flow
         }
 
+        /*
+         * THE CONFIGURATION IS CHECKED BEFORE THE RUN IS RECORDED.
+         *
+         * WHY THIS GATE EXISTS. An agent whose manifest requires a tool it was not granted, or a
+         * capability this build does not have, would previously start, fail inside a tool call, and
+         * report that failure as though the tool were broken. The owner would then be looking at
+         * the wrong component. Validating first means the refusal names the actual cause and no run
+         * row is created for work that could never have succeeded.
+         *
+         * A WARNING DOES NOT STOP THE RUN. The validator distinguishes an error from a warning
+         * precisely so an unavailable reasoning channel, which leaves the agent working and only its
+         * reasoning area empty, does not block the job. What a warning does do is get recorded, so
+         * the run says plainly which requested capability it is running without.
+         */
+        val verdict = com.unuslumen.app.domain.model.AgentConfigurationValidator.validate(
+            agent,
+            runtimeCapabilities(),
+        )
+        if (!verdict.canRun) {
+            emit(
+                failed(
+                    agent.name,
+                    "${agent.name} cannot run as configured: " +
+                        verdict.errors.joinToString(" ") { it.message } +
+                        " Correct the agent's configuration or what it asks for in its manifest.",
+                )
+            )
+            return@flow
+        }
+
         val allowed = allowedTools(agent)
         val resolvedPrompt = buildSystemPrompt(agent, allowed)
 
@@ -475,7 +561,11 @@ class AgentRuntime(
                     content = job,
                     time = now
                 )
-            )
+            ),
+            // THE LIMITS ARE PART OF WHAT THE RUN AGREED TO, so they are resolved here and carried
+            // for the life of the session rather than re-read from a mutable agent row each round.
+            limits = RunLimits.from(agent),
+            startedAt = now,
         )
         sessions[session.id] = session
 
@@ -899,10 +989,92 @@ class AgentRuntime(
         var messages = session.messages
         var rounds = session.rounds
         var lastText = ""
+        var toolCallsUsed = 0
 
-        while (rounds < TOOL_ROUNDS_UNLIMITED) {
+        while (rounds < session.limits.maxToolRounds) {
             rounds++
             session.rounds = rounds
+
+            /*
+             * THE WALL-CLOCK CEILING, CHECKED BEFORE A ROUND RATHER THAN DURING ONE.
+             *
+             * A limit that interrupts a model call would leave a request in flight with no result
+             * and the ledger unable to say whether it completed, which is precisely the unknown
+             * outcome the recovery rules exist to avoid. Checking at the boundary means the run
+             * stops between rounds, with the previous round complete and the checkpoint current.
+             *
+             * IT PRESERVES THE WORK. The report carries whatever the agent had produced, the state
+             * says LIMIT_REACHED rather than COMPLETED, and the partial findings survive in the
+             * ledger. A limit is an honest stop, never a success.
+             */
+            val elapsed = System.currentTimeMillis() - session.startedAt
+            val ceiling = session.limits.maxDurationMillis
+            if (ceiling != null && elapsed >= ceiling) {
+                sessions.remove(session.id)
+                runCatching {
+                    ledger.append(
+                        session.id,
+                        AgentRunLedger.EventDraft(
+                            eventType = com.unuslumen.app.database.entity.AgentRunEventEntity.RUN_STATE_CHANGED,
+                            actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_RUNTIME,
+                            payload = jsonObject {
+                                put("reason", "the run reached its time limit of ${ceiling}ms")
+                                put("elapsedMillis", elapsed)
+                            },
+                        )
+                    )
+                    ledger.appendStateChange(
+                        session.id,
+                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
+                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_LIMIT_REACHED,
+                        "the run reached its time limit of ${ceiling}ms after $elapsed",
+                        finishedAt = System.currentTimeMillis(),
+                    )
+                    ledger.releaseLease(session.id, leaseOwner(), "limit reached")
+                }
+                return SpawnResult(
+                    success = false,
+                    agentName = agent.name,
+                    report = lastText.take(MAX_REPORT_CHARS),
+                    toolRounds = rounds,
+                    sessionId = session.id,
+                    status = SpawnResult.Status.FAILED,
+                    error = "Reached its time limit of ${ceiling}ms. The work it had produced is " +
+                        "above; anything not yet done is not done.",
+                )
+            }
+
+            /*
+             * THE TOOL-CALL CEILING, CHECKED BEFORE THE ROUND PROCEEDS.
+             *
+             * A per-run cap on invocations rather than on rounds, because one round can propose
+             * many calls and the cost that matters is the calls. Checked here so a run stops with
+             * the previous round's results recorded and nothing half-dispatched.
+             */
+            val callCeiling = session.limits.maxToolCalls
+            if (callCeiling != null && toolCallsUsed >= callCeiling) {
+                sessions.remove(session.id)
+                runCatching {
+                    ledger.appendStateChange(
+                        session.id,
+                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
+                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_LIMIT_REACHED,
+                        "the run reached its limit of $callCeiling tool calls",
+                        finishedAt = System.currentTimeMillis(),
+                    )
+                    ledger.releaseLease(session.id, leaseOwner(), "limit reached")
+                }
+                return SpawnResult(
+                    success = false,
+                    agentName = agent.name,
+                    report = lastText.take(MAX_REPORT_CHARS),
+                    toolRounds = rounds,
+                    sessionId = session.id,
+                    status = SpawnResult.Status.FAILED,
+                    error = "Reached its limit of $callCeiling tool calls. The work it had produced " +
+                        "is above; anything not yet done is not done.",
+                )
+            }
 
             // FOLD BEFORE THE CALL, NOT AFTER. The point is to keep the request small
             // enough to start quickly, so compacting after building the prompt would
@@ -1237,7 +1409,7 @@ class AgentRuntime(
                     continue
                 }
 
-                if (session.exchangesUsed() >= MAX_EXCHANGES) {
+                if (session.exchangesUsed() >= session.limits.maxExchanges) {
                     // Out of exchanges. Do not strand the work: tell it to finish.
                     val stopped = AiMessage.ToolCall(
                         uuid = Uuid.random().toString(),
@@ -1375,6 +1547,9 @@ class AgentRuntime(
                 val toolName = call.name
                 val declared = allowed.firstOrNull { it.name == toolName }
                 val invocationId = Uuid.random().toString()
+                // Counted as it is dispatched, so the ceiling above is measured against calls that
+                // were actually attempted rather than proposals the model made.
+                toolCallsUsed++
 
                 val result = if (declared == null) {
                     // A name outside the declaration. Refuse it here rather than trusting
@@ -1595,6 +1770,54 @@ class AgentRuntime(
             agent.name,
             "${agent.name} stopped without answering or asking, which should not be possible. " +
                 "The job did not complete.",
+        )
+    }
+
+    /**
+     * What this device and this build can actually provide, for the validator.
+     *
+     * MEASURED FROM THE REGISTRY AND THE CONNECTED MODEL, NEVER ASSUMED. The tool set comes from
+     * the registry that will dispatch the calls, so a manifest requiring something absent is
+     * caught against the same list the dispatcher would refuse from. The reasoning-channel flag
+     * comes from whether the connected provider actually emits reasoning frames: the app's own
+     * streaming client reads the wire's `thinking` field and emits `ReasoningDelta`, and the koog
+     * brand clients do not, so this reports the truth per wiring rather than promising it always.
+     *
+     * SKILLS AND INTEGRATIONS ARE EMPTY TODAY AND THAT IS HONEST. No skill registry lookup and no
+     * integration registry exist for an agent to consult, so a manifest requiring one is told it
+     * is absent rather than being told it is present and then failing later. When those registries
+     * exist, this is the one method that changes.
+     */
+    private suspend fun runtimeCapabilities(): com.unuslumen.app.domain.model.AgentConfigurationValidator.RuntimeCapabilities {
+        val provider = getPreferenceUseCase(
+            intPreferencesKey(PrefsConstants.AI_PROVIDER_KEY),
+            AiProvider.None.id
+        ).first().toAiProvider()
+
+        /*
+         * WHICH WIRE IS CONNECTED DECIDES THE REASONING ANSWER.
+         *
+         * The app's own client is used for the Lumen gateway and for Ollama or OpenAI-compatible
+         * endpoints, and it is the one that reads `thinking` off the wire. The cloud brand clients
+         * go through their own koog executors, which do not surface a reasoning channel here. So a
+         * BYO Anthropic, Google or OpenAI agent is told honestly that raw reasoning will be
+         * unavailable rather than being drawn an empty panel with no explanation.
+         */
+        val usesAppClient = provider == AiProvider.UnusLumen ||
+            provider == AiProvider.Ollama ||
+            provider == AiProvider.OpenAICompat
+
+        return com.unuslumen.app.domain.model.AgentConfigurationValidator.RuntimeCapabilities(
+            availableTools = toolRegistry.getAllDefinitions().map { it.name }.toSet(),
+            // No skill registry is reachable from here yet. An agent declaring one is told it is
+            // missing rather than being told it is present.
+            availableSkills = emptySet(),
+            availableIntegrations = emptySet(),
+            supportsReasoningChannel = usesAppClient,
+            supportsToolCalling = true,
+            supportsStreaming = true,
+            runtimeSchemaVersion = com.unuslumen.app.database.guruDatabase.SCHEMA_VERSION,
+            modelUnavailableReason = null,
         )
     }
 

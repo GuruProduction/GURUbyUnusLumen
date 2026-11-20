@@ -80,8 +80,22 @@ class AgentCreateSlugTest {
      * every tool domain just to create an agent, and a mock that answers nothing is a
      * clearer statement of "this test does not touch the picker".
      */
+    /**
+     * The repository over a stand-in store.
+     *
+     * THE TRANSACTOR IS THE DIRECT ONE AND THAT IS NAMED RATHER THAN IMPLIED. This DAO holds rows
+     * in a list, so it has no transaction boundary to offer and cannot half-fail. The real
+     * atomicity guarantee — live row and history rolling back together — is proved separately in
+     * AgentConfigurationPersistenceTest against an actual Room database, which is the only place
+     * a rollback means anything.
+     */
     private fun repository(dao: GuruAgentDao): GuruAgentRepository =
-        GuruAgentRepositoryImpl(dao, io.mockk.mockk(relaxed = true))
+        GuruAgentRepositoryImpl(
+            dao,
+            io.mockk.mockk(relaxed = true),
+            com.unuslumen.app.domain.repository.AgentStoreTransactor.direct,
+            io.mockk.mockk(relaxed = true),
+        )
 
     private fun request(name: String) = SaveAgentRequest(
         name = name,

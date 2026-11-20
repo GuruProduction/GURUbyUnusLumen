@@ -89,9 +89,10 @@ class AgentFoundationMigrationTest {
 
         val migrated = helper.runMigrationsAndValidate(
             databaseName,
-            36,
+            guruDatabase.SCHEMA_VERSION,
             true,
             com.unuslumen.app.database.migrations.MIGRATION_35_36,
+            com.unuslumen.app.database.migrations.MIGRATION_36_37,
         )
 
         migrated.use { db ->
@@ -152,7 +153,7 @@ class AgentFoundationMigrationTest {
      */
     @Test
     fun deletingAConversationCascadesToRunsEventsAndCheckpoints() {
-        val db = helper.createDatabase(databaseName, 36)
+        val db = helper.createDatabase(databaseName, guruDatabase.SCHEMA_VERSION)
         db.execSQL("PRAGMA foreign_keys = ON")
         db.execSQL(
             """
@@ -203,7 +204,7 @@ class AgentFoundationMigrationTest {
     /** The unique pair is the last line of defence on event ordering. Prove the database refuses a duplicate. */
     @Test
     fun aDuplicateEventSequenceIsRefusedByTheDatabase() {
-        val db = helper.createDatabase(databaseName, 36)
+        val db = helper.createDatabase(databaseName, guruDatabase.SCHEMA_VERSION)
         db.execSQL(
             """
             INSERT INTO conversations (id, title, created_date, updated_date, message_count)
@@ -245,7 +246,7 @@ class AgentFoundationMigrationTest {
     /** A different run starts its own sequence at 1: the uniqueness is per run, not global. */
     @Test
     fun sequencesAreScopedToTheirRun() {
-        val db = helper.createDatabase(databaseName, 36)
+        val db = helper.createDatabase(databaseName, guruDatabase.SCHEMA_VERSION)
         db.execSQL(
             """
             INSERT INTO conversations (id, title, created_date, updated_date, message_count)
@@ -279,7 +280,7 @@ class AgentFoundationMigrationTest {
     /** Deleting a message must NULL the run's origin and leave the run, its assignment and its history alive. */
     @Test
     fun deletingTheOriginMessageLeavesTheRunIntact() {
-        val db = helper.createDatabase(databaseName, 36)
+        val db = helper.createDatabase(databaseName, guruDatabase.SCHEMA_VERSION)
         // Same reason as the cascade test: without this the SET NULL never fires and the
         // test would report a schema defect that does not exist.
         db.execSQL("PRAGMA foreign_keys = ON")
@@ -315,18 +316,188 @@ class AgentFoundationMigrationTest {
     }
 
     /**
+     * The Phase 2 migration: an existing agent gains configuration without losing anything.
+     *
+     * THE SPECIFIC FEAR THIS CLOSES. Adding eleven columns to a table that already holds an
+     * agent's instructions and tool grants, on a device whose owner cannot fix it if it goes
+     * wrong. So the test builds at 36, writes a real agent with a real prompt and real tools,
+     * migrates, and then asserts three things: every original value is unchanged, every new
+     * column carries the versioned empty document rather than a NULL, and `definition_version`
+     * starts at 1 so the first edit appends version 2 rather than colliding with the unique
+     * index at 1.
+     */
+    @Test
+    fun migrationFrom36To37GivesAnExistingAgentConfigurationWithoutLosingAnything() {
+        helper.createDatabase(databaseName, 36).use { db ->
+            db.execSQL(
+                """
+                INSERT INTO guru_agents (id, slug, name, description, system_prompt,
+                    tool_permissions, source, enabled, version, created_at, updated_at)
+                VALUES ('agent-old', 'grafter', 'Grafter', 'does the chain work',
+                    'you are a grafter', 'shellExec, captureScreen', 'user', 1, 3, 1000, 2000)
+                """.trimIndent()
+            )
+        }
+
+        val migrated = helper.runMigrationsAndValidate(
+            databaseName,
+            guruDatabase.SCHEMA_VERSION,
+            true,
+            com.unuslumen.app.database.migrations.MIGRATION_36_37,
+        )
+
+        migrated.use { db ->
+            db.query(
+                "SELECT name, slug, description, system_prompt, tool_permissions, source, " +
+                    "enabled, version, created_at, updated_at, definition_version, " +
+                    "visual_json, visibility_json, autonomy_json, manifest_json, skill_ids " +
+                    "FROM guru_agents WHERE id = 'agent-old'"
+            ).use { c ->
+                assertTrue("the existing agent must survive the migration", c.moveToFirst())
+                assertEquals("the name is unchanged", "Grafter", c.getString(0))
+                assertEquals("the slug is unchanged", "grafter", c.getString(1))
+                assertEquals("does the chain work", c.getString(2))
+                assertEquals("you are a grafter", c.getString(3))
+                assertEquals(
+                    "the tool grants are unchanged, separator and all",
+                    "shellExec, captureScreen",
+                    c.getString(4),
+                )
+                assertEquals("user", c.getString(5))
+                assertEquals(1, c.getInt(6))
+                assertEquals("the published version is unchanged", 3, c.getInt(7))
+                assertEquals(1000L, c.getLong(8))
+                assertEquals(2000L, c.getLong(9))
+                assertEquals(
+                    "an existing agent starts its local edit count at 1, so its first edit " +
+                        "writes version 2 and does not collide with the unique index",
+                    1,
+                    c.getInt(10),
+                )
+                // Every configuration document defaults to the versioned empty envelope, never NULL,
+                // because the domain types are non-null and a NULL would crash a read.
+                for (column in 11..14) {
+                    assertEquals(
+                        "column $column must default to the versioned empty document",
+                        "{\"schemaVersion\":1}",
+                        c.getString(column),
+                    )
+                }
+                assertEquals("no skills were granted before, so none appear now", "", c.getString(15))
+            }
+
+            // The history table exists, is empty, and accepts the first version row.
+            db.query("SELECT COUNT(*) FROM agent_definition_versions").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(
+                    "a migration must not invent history for an agent whose edits were never recorded",
+                    0,
+                    c.getInt(0),
+                )
+            }
+        }
+        helper.closeWhenFinished(migrated)
+    }
+
+    /**
+     * The definition-history uniqueness, proved by the database rather than by a comment.
+     *
+     * Two rows for the same agent and the same version would mean two different definitions both
+     * claiming to be version 3, which is precisely the ambiguity the table exists to remove. The
+     * index has to refuse the second one.
+     */
+    @Test
+    fun twoDefinitionsCannotClaimTheSameVersionOfOneAgent() {
+        val db = helper.createDatabase(databaseName, guruDatabase.SCHEMA_VERSION)
+        db.execSQL(
+            """
+            INSERT INTO agent_definition_versions (version_row_id, agent_id, slug, name,
+                definition_version, description, definition_json, reason, author, saved_at)
+            VALUES ('vr-1', 'agent-x', 'x', 'X', 3, '', '{}', 'EDITED', 'USER', 1000)
+            """.trimIndent()
+        )
+
+        var refused = false
+        try {
+            db.execSQL(
+                """
+                INSERT INTO agent_definition_versions (version_row_id, agent_id, slug, name,
+                    definition_version, description, definition_json, reason, author, saved_at)
+                VALUES ('vr-2', 'agent-x', 'x', 'X', 3, '', '{}', 'EDITED', 'USER', 2000)
+                """.trimIndent()
+            )
+        } catch (e: Exception) {
+            refused = true
+        }
+        assertTrue("two definitions cannot both be version 3 of one agent", refused)
+
+        // A different agent may hold its own version 3.
+        db.execSQL(
+            """
+            INSERT INTO agent_definition_versions (version_row_id, agent_id, slug, name,
+                definition_version, description, definition_json, reason, author, saved_at)
+            VALUES ('vr-3', 'agent-y', 'y', 'Y', 3, '', '{}', 'EDITED', 'USER', 3000)
+            """.trimIndent()
+        )
+        db.query("SELECT COUNT(*) FROM agent_definition_versions").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("versions are scoped to their agent", 2, c.getInt(0))
+        }
+        helper.closeWhenFinished(db)
+    }
+
+    /**
+     * Deleting an agent's row leaves its definition history alive.
+     *
+     * A DELIBERATE ABSENCE OF A FOREIGN KEY. History is evidence of what the agent was, and a
+     * cascade would delete the evidence with the subject: any run that referenced it would then
+     * point at a version nobody can read. Only the owner's own delete removes the history, and
+     * that is an explicit call in the repository rather than a schema behaviour.
+     */
+    @Test
+    fun deletingTheAgentRowLeavesItsDefinitionHistory() {
+        val db = helper.createDatabase(databaseName, guruDatabase.SCHEMA_VERSION)
+        db.execSQL("PRAGMA foreign_keys = ON")
+        db.execSQL(
+            """
+            INSERT INTO guru_agents (id, slug, name, description, system_prompt,
+                tool_permissions, source, enabled, version, created_at, updated_at)
+            VALUES ('agent-d', 'doomed', 'Doomed', '', 'you are doomed', '', 'user', 1, 1, 1, 1)
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            INSERT INTO agent_definition_versions (version_row_id, agent_id, slug, name,
+                definition_version, description, definition_json, reason, author, saved_at)
+            VALUES ('vr-d', 'agent-d', 'doomed', 'Doomed', 1, '', '{}', 'CREATED', 'USER', 1)
+            """.trimIndent()
+        )
+        db.execSQL("DELETE FROM guru_agents WHERE id = 'agent-d'")
+
+        db.query("SELECT COUNT(*) FROM agent_definition_versions WHERE agent_id = 'agent-d'").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals(
+                "the row is gone but what it was is still readable",
+                1,
+                c.getInt(0),
+            )
+        }
+        helper.closeWhenFinished(db)
+    }
+
+    /**
      * The historical chain.
      *
-     * For every checked-in schema from 4 to 35, open it, migrate to 36, and let Room
-     * validate the result against the entity-generated schema. A version with no
-     * checked-in asset is reported as untested rather than silently passing: the
-     * assertion below fails loudly if the schema directory is missing a file the test
+     * For every checked-in schema from 4 to the version before this build, open it, migrate to
+     * the current version, and let Room validate the result against the entity-generated schema.
+     * A version with no checked-in asset is reported as untested rather than silently passing:
+     * the assertion below fails loudly if the schema directory is missing a file the test
      * expects, so the coverage statement in the PR body cannot drift from reality.
      */
     @Test
-    fun everyCheckedInSchemaMigratesTo36() {
+    fun everyCheckedInSchemaMigratesToTheCurrentVersion() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val expected = (4..35).toList()
+        val expected = (4..guruDatabase.SCHEMA_VERSION - 1).toList()
         val tested = mutableListOf<Int>()
         val missing = mutableListOf<Int>()
         val skippedNoFts5 = mutableListOf<Int>()
@@ -376,7 +547,7 @@ class AgentFoundationMigrationTest {
                 helper.createDatabase(name, version).close()
                 val db = helper.runMigrationsAndValidate(
                     name,
-                    36,
+                    guruDatabase.SCHEMA_VERSION,
                     true,
                     *allMigrations.toTypedArray(),
                 )
@@ -384,7 +555,8 @@ class AgentFoundationMigrationTest {
                 tested += version
             } catch (e: Throwable) {
                 throw AssertionError(
-                    "Schema $version did not migrate cleanly to 36: ${e.message}", e
+                    "Schema $version did not migrate cleanly to " +
+                        "${guruDatabase.SCHEMA_VERSION}: ${e.message}", e
                 )
             }
         }
@@ -462,6 +634,7 @@ class AgentFoundationMigrationTest {
             com.unuslumen.app.database.migrations.MIGRATION_33_34,
             com.unuslumen.app.database.migrations.MIGRATION_34_35,
             com.unuslumen.app.database.migrations.MIGRATION_35_36,
+            com.unuslumen.app.database.migrations.MIGRATION_36_37,
         )
     }
 }

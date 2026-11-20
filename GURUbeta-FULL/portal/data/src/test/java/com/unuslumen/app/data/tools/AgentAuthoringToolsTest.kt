@@ -129,8 +129,20 @@ class AgentAuthoringToolsTest {
             ToolExecutionResult.error("not used")
     }
 
+    /**
+     * The repository over a stand-in store.
+     *
+     * The transactor is the direct one because this DAO holds rows in a list and has no transaction
+     * boundary to offer. Atomicity of the live row and its history is proved against real Room in
+     * AgentConfigurationPersistenceTest, which is the only place a rollback can be observed.
+     */
     private fun repository(dao: GuruAgentDao): GuruAgentRepository =
-        GuruAgentRepositoryImpl(dao, mockk(relaxed = true))
+        GuruAgentRepositoryImpl(
+            dao,
+            mockk(relaxed = true),
+            com.unuslumen.app.domain.repository.AgentStoreTransactor.direct,
+            mockk(relaxed = true),
+        )
 
     /**
      * A registry holding the two real tool sets plus a couple of extras, which is what

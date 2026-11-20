@@ -1,0 +1,331 @@
+# GURU Agent System — requirements traceability matrix
+
+Every requirement from `GURU-AGENT-SYSTEM-SPEC.md`, with its source section, the measured
+repository status, the location that implements it and the evidence that closes it.
+
+Status values follow the plan's vocabulary: **Reuse** (already satisfies the
+requirement and is verified), **Extend** (exists, needs more), **Build** (no suitable
+implementation), **Blocked** (a named external dependency).
+
+A requirement is closed only when its Evidence column names a file, a test or a command
+output that actually exists. A design decision is not evidence and an edited file is not
+a passing test.
+
+---
+
+## Section 1 — The fundamental concept
+
+| ID | Requirement | Spec § | Status | Location | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| 1.1 | An agent has identity, purpose, instructions, capabilities, permissions, memory, configuration and an ongoing relationship with GURU and the user | 1 | Extend | `GuruAgentEntity`, `GuruAgent`, Phase 2 additions | Phase 2 |
+| 1.2 | An agent can pursue an objective, plan, revise, reason, retrieve context, execute tools, inspect results, communicate, ask questions, maintain continuity, produce artefacts, identify limits, request capability | 1 | Build | Phase 2 to Phase 6 | See 4.x, 5.x, 6.x rows |
+| 1.3 | The architecture supports a growing ecosystem of first-party, user-created and externally published agents with no hardcoded limit or assumed fixed population | 1, 12 | Extend | `GuruAgentRepository`, `AgentCatalogue`, `AgentLibrarySyncWorker` | Registry is data-driven and already holds user, synced and bundled sources. The four-value `GuruAgentSelector` enum violates this and is replaced in Phase 7 |
+| 1.4 | Definition describes what it is; configuration describes how it operates; runtime determines what it does; event history proves what happened — four separate concerns | 1 | Extend | `guru_agents` (definition), Phase 2 (configuration), `AgentRuntime` (runtime), `agent_run_events` (history) | Definition exists; configuration and separation are Phase 2 |
+
+## Section 2 — Architectural model
+
+| ID | Requirement | Spec § | Status | Location | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| 2.1.1 | Agent Definition holds unique id, name, slug, description, purpose, icon, visual identity and colour | 2.1 | Extend | `GuruAgentEntity` has id, slug, name, description. Icon and colour are chosen at render time from `Memphis.inkFor(index)` rather than stored | Phase 2 adds stored visual identity |
+| 2.1.2 | Definition holds publisher, creator, ownership, version, compatibility and installation provenance | 2.1 | Extend | `source`, `version`; `AgentCatalogueEntry` carries author | Phase 2 and Phase 8 |
+| 2.1.3 | Definition holds core instructions, specialist knowledge, planning preferences, communication style, verification requirements, completion criteria, failure handling, self-assessment | 2.1 | Extend | `systemPrompt` carries all of it as prose today | Phase 2 separates the structured parts that need structure |
+| 2.1.4 | Definition holds available tools, skills, integrations, specialist agents, permitted memory sources, permitted context sources, permitted output types | 2.1 | Extend | `toolPermissions` (flat list) exists. Skills, integrations, memory scope, context scope and output types do not | Phase 2 and Phase 6 |
+| 2.1.5 | Definition holds reasoning and activity visibility, autonomy and approval requirements, model and provider preference, execution limits, tool policies, communication preferences, notification behaviour, memory retention | 2.1 | Build | Only a hardcoded `reasoningVisibility: "FULL"` is written into every run | Phase 2 |
+| 2.1.6 | Definitions are versioned, and updating an agent must not silently rewrite the identity or configuration of previous executions | 2.1 | Build | `updateAgent` overwrites in place without bumping `version` | Phase 2 version table; runs already snapshot by value |
+| 2.2.1 | A run has its own identity, originating assignment, execution state, configuration snapshot, timestamps, events, communications and results | 2.2 | Reuse | `AgentRunEntity` | `AgentFoundationMigrationTest`, migration 35 to 36 |
+| 2.2.2 | A run can execute, wait for GURU, wait for the user, wait for a tool, resume after interruption, adapt its plan, receive instructions, complete, reach a limit, fail or be cancelled | 2.2 | Extend | All thirteen statuses are declared in `AgentRunEntity`. Waiting-for-user resumption and amendments are Phase 5 | Phase 5 |
+| 2.2.3 | A run must survive process death and be recoverable from persisted state wherever technically possible | 2.2, 11.1 | Reuse | `AgentRunEntity` plus `AgentRunCheckpointEntity` plus `AgentRecoveryCoordinator` | Phase 3 tests; `AgentExecutionOwnershipTest` |
+| 2.2.4 | A run must not exist exclusively inside an in-memory runtime session | 2.2 | Reuse | Run row written before execution; session is the live view | `AgentRunService` |
+| 2.3.1 | A session holds the working context to continue: conversation history, model state, working notes, current position | 2.3 | Reuse | `AgentRuntime.Session` plus notebook compaction, checkpointed | `AgentRunCheckpointEntity` |
+| 2.3.2 | A run may contain multiple sessions or model interactions and is not equated with one model request | 2.3 | Reuse | The round loop continues until the model stops asking | `AgentRuntime.runTurn` |
+| 2.3.3 | Compaction preserves outstanding questions, decisions, tool results, constraints and the current plan | 2.3 | Extend | Notebook preserves instructions, tool names, arguments and results. There is no decision record or structured plan to preserve | Phase 2 and Phase 5 |
+| 2.4.1 | An event is a factual record of what happened during a run | 2.4 | Reuse | `AgentRunEventEntity`, append-only | `AgentRunLedgerTest` |
+| 2.4.2 | Events form the authoritative execution history and are never replaced by generated prose or reconstructed from the final answer | 2.4 | Reuse | Payloads carry action data, never a sentence about the action | `AgentRunEventEntity` doc contract, `AgentRunLedger` |
+| 2.5.1 | Messages distinguish user, GURU, agent, agent-to-agent, internal coordination, question and answer, instruction and amendment, notification and approval | 2.5 | Build | No message entity. `MESSAGE_CREATED` is declared and has no producer | Phase 5 |
+| 2.5.2 | Messages have explicit authorship and recipients, and an agent's message is never presented as GURU's | 2.5 | Build | `AgentRunEventEntity` carries `actor_type` but there is no message object | Phase 5 |
+| 2.6.1 | Agent memory is distinct from the assignment, working context, event ledger, user memory and shared GURU knowledge | 2.6 | Build | `AgentRuntime` has no memory lane | Phase 6 |
+| 2.6.2 | Memory access is governed by explicit scopes and permissions, and an agent does not automatically receive everything GURU knows | 2.6 | Build | No scope model exists for agents | Phase 6 |
+| 2.7.1 | An artefact is a persistent output with origin, producing agent, run id, version, creation time and source references | 2.7 | Build | No artefact entity and no link from any output table to a run | Phase 6 |
+
+## Section 3 — GURU as orchestrator
+
+| ID | Requirement | Spec § | Status | Location | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| 3.1 | GURU interprets the request, decides whether specialist expertise is useful, selects or creates a delegation, provides the assignment and context, manages the relationship, answers questions, mediates permissions, reviews findings, integrates results, identifies contradictions, produces the final response | 3 | Extend | The prompt stack and the agent tools carry this today; context supply and result review are thin | Phase 5 and Phase 6 |
+| 3.2 | An agent owns its assigned work; GURU owns the overall user-facing responsibility | 3 | Reuse | `spawnAgent` returns a report to GURU, which answers the user | `AgentToolDefinitions.SPAWN_AGENT` |
+| 3.3 | An agent's completion report is not automatically GURU's final answer | 3 | Reuse | GURU reads `status` and decides | `SpawnAgentResult` |
+| 3.4 | GURU can challenge an agent, request further work, supply context, ask for evidence, redirect or terminate | 3 | Extend | `resumeAgent` carries an answer. Redirect and terminate mid-run are Phase 5 | Phase 5 |
+| 3.5 | An agent can challenge assumptions, identify problems, request clarification and explain a better approach | 3 | Reuse | `askAssistant` pauses the run and hands the question out | `AgentRuntime.runTurn`, `QUESTION_OPENED` |
+
+## Section 4 — Cognitive execution
+
+| ID | Requirement | Spec § | Status | Location | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| 4.1 | Execution can understand, identify constraints, retrieve context, plan, evaluate capabilities, execute, examine, identify gaps, revise, request help, verify, deliver, report | 4 | Extend | The loop supports execute, examine and request. Context retrieval is Phase 6; plan revision is Phase 2 and 5 | Phases 2, 5, 6 |
+| 4.1.1 | Plans are structured data supporting objectives, steps, dependencies, status, expected outputs, verification, assigned capabilities and reasons for change | 4.1 | Build | The only structured plan is a note row titled `[PLAN] ` with no step identity | Phase 2 |
+| 4.1.2 | Plans are revisioned and the previous plan remains available | 4.1 | Build | `updatePlanStep` destroys the previous state | Phase 2 |
+| 4.1.3 | The interface distinguishes a proposed plan from a completed action | 4.1 | Build | No plan surface exists | Phase 7 |
+| 4.2.1 | The architecture captures reasoning-channel output where the runtime exposes it, according to visibility configuration | 4.2 | Reuse | `StreamFrame.ReasoningDelta` captured on both paths, emitted as `MODEL_REASONING_COMPLETED` | `AgentRuntime`, `ProjectAgentRepositoryImpl`, commit `f12ef61` |
+| 4.2.2 | The system distinguishes genuine model reasoning from a generated explanation, structured decision record or retrospective summary, and labels each | 4.2 | Extend | Reasoning is captured as reasoning. No decision record type exists, so nothing can be mislabelled yet | Phase 2 adds declared decision records |
+| 4.2.3 | GURU must not claim to expose information the model or provider does not provide | 4.2, 6.4 | Reuse | Capture is conditional on an actual `ReasoningDelta` frame | `AgentEventTypes` contract; `PHASE4_VERIFICATION.md` |
+| 4.3.1 | All agent tool calls pass through the central dispatch and permission architecture | 4.3, 13 | Reuse | Both paths route through `ToolDispatcher` after commit `45dbc14` | `DispatcherRefusalTest`, issue 537 closed |
+| 4.3.2 | The execution record captures tool identity, invocation time, arguments, state, result, errors, permission decisions, retries, duration and result references | 4.3 | Reuse | `TOOL_CALL_STARTED`, `TOOL_CALL_COMPLETED`, `TOOL_PERMISSION_GRANTED`, `TOOL_PROGRESS`, `TOOL_CALL_FAILED`, `TOOL_CALL_REFUSED`, `TOOL_CALL_OUTCOME_UNKNOWN` | Commits `f12ef61`, `2ce9be0` |
+| 4.3.3 | Sensitive arguments and results follow redaction policy, and the interface distinguishes a withheld value from one never captured | 4.3, 13 | Build | No redaction layer exists in the ledger | Phase 9 security pass |
+| 4.4.1 | Agents can verify their own work, and a completion claim is supported by execution evidence | 4.4 | Extend | A run's completion is recorded as a state change; there is no verification record type | Phase 2 |
+| 4.4.2 | The system distinguishes attempted, accepted and real-world-confirmed outcomes | 4.4 | Extend | `TOOL_CALL_COMPLETED` versus `TOOL_CALL_OUTCOME_UNKNOWN` covers attempt versus acceptance | `AgentRuntime`, Phase 4 |
+| 4.5.1 | An agent can request delegation through GURU, and GURU and policy decide whether it is permitted | 4.5 | Build | `NEVER_SPAWNABLE` prevents an agent spawning anything at all today | Phase 8 |
+| 4.5.2 | Delegation supports parent and child runs, scoped context, restricted permission inheritance, independent histories, result handoff and cancellation propagation | 4.5 | Extend | `parent_run_id` exists with a self-referencing key and cascade rules | Phase 8 |
+| 4.5.3 | Agents do not acquire broader permissions because another agent delegated to them | 4.5, 13 | Build | No inheritance model exists | Phase 8 |
+| 4.5.4 | Uncontrolled recursion and runaway delegation are prevented through configurable depth, resource and execution policies | 4.5 | Build | No depth or budget model | Phase 8 |
+
+## Section 5 — Three-way collaboration
+
+| ID | Requirement | Spec § | Status | Location | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| 5.1 | GURU and an agent communicate throughout the execution, and either can initiate | 5 | Extend | `askAssistant` gives agent-to-GURU initiation. GURU-to-agent initiation mid-run does not exist | Phase 5 |
+| 5.2 | The user can communicate directly with an active agent | 5 | Build | Every user message goes through GURU as `resumeAgent` | Phase 5 |
+| 5.3 | The Portal remains the primary conversation with GURU | 5 | Reuse | `PortalScreen`, the main chat path | Unchanged by this programme |
+| 5.4 | Messages carry id, run id, author, recipient, type, content, timestamp, sequence, correlation and delivery state | 5.1 | Build | No message entity | Phase 5 |
+| 5.5 | An exchange can cause a run to enter a waiting state, and the answer returns to the existing execution context | 5.1 | Reuse | `WAITING_FOR_GURU` and `WAITING_FOR_USER` with `QUESTION_OPENED` and `QUESTION_ANSWERED` | `AgentRuntime.runTurn` |
+| 5.6 | Messages are never injected into a model context without being recorded in the run's history | 5.1 | Reuse | Every message is appended to the session and the corresponding event to the ledger | `AgentRuntime` |
+| 5.7 | The original assignment is immutable and subsequent instructions are amendments with author and timestamp | 5.2 | Build | `assignment` is frozen on the run row; there is no amendment path | Phase 5 |
+| 5.8 | Agents can initiate communication for clarification, findings, blockage, approval, risk, milestone or review | 5.3 | Extend | Only clarification exists, through `askAssistant` | Phase 5 |
+| 5.9 | Initiation is configurable, with notification preferences, urgency and quiet periods | 5.3 | Build | No configuration | Phase 2 and Phase 5 |
+| 5.10 | An agent does not need the user to open its room before communicating with GURU | 5.3 | Reuse | The tool call path does not depend on any UI | `AgentRuntime` |
+
+## Section 6 — Transparency and configuration
+
+| ID | Requirement | Spec § | Status | Location | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| 6.1 | Every agent has its own configurable visibility settings across eleven categories | 6.1 | Build | `AgentVisibility` type written, not yet persisted or wired | Phase 2 |
+| 6.2 | Categories carry meaningful detail controls | 6.1 | Build | `VisibilityDetail` declared with three levels | Phase 2 |
+| 6.3 | Visibility settings are not tied to a single global GURU preference | 6.1 | Build | Today's only setting is the hardcoded per-run `"FULL"` | Phase 2 |
+| 6.4 | The default experience is transparent: activity, plans, decisions, communications, tools and results exposed without discovery | 6.2 | Build | `AgentVisibility.TRANSPARENT` is the declared default | Phase 2 |
+| 6.5 | An unavailable capability is reported honestly rather than silently becoming an ineffective preference | 6.2, 6.4 | Build | No validation exists | Phase 2 |
+| 6.6 | The user can change visibility while the agent is active | 6.3 | Build | No runtime path | Phase 2 and Phase 7 |
+| 6.7 | The interface distinguishes display changes, capture changes, persistent preferences and run-specific overrides | 6.3 | Build | The two-field `VisibilityRule` supports the distinction; no surface or override store exists | Phase 2 and Phase 7 |
+| 6.8 | Changing visibility does not change tool permissions, autonomy, memory access or execution authority | 6.3 | Build | Nothing enforces the separation yet | Phase 2 |
+| 6.9 | Historical records cannot be retroactively populated with information never captured | 6.3 | Reuse | `reasoningCaptureEnabledAtStart` records the truth per run | `AgentRunEntity` |
+| 6.10 | The product supports richer models and runtimes without redesigning the room | 6.4 | Reuse | Capture is conditional on frames actually arriving | `AgentEventTypes` |
+
+## Section 7 — Autonomy and authority
+
+| ID | Requirement | Spec § | Status | Location | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| 7.1 | Autonomy is configurable per agent, describing what it may do independently and where it must involve GURU or the user | 7 | Build | No autonomy policy | Phase 2 |
+| 7.2 | The eight autonomy dimensions are individually representable | 7 | Build | None exist | Phase 2 |
+| 7.3 | Authority and visibility are separate | 7 | Build | Neither exists as configuration | Phase 2 |
+| 7.4 | Permissions are explicit and enforceable by the runtime, distinguishing tool availability, execution authority, data access, memory access, external effects, delegation authority and approval requirements | 7.1 | Extend | Tool availability and execution authority are enforced by the dispatcher. Memory, data and delegation are not modelled | Phase 2, 6, 8 |
+| 7.5 | The effective permission set is determined by system policy, user permissions, agent configuration and runtime restrictions | 7.1 | Extend | The dispatcher enforces Android permissions and the security policy; the agent configuration half is missing | Phase 2 |
+| 7.6 | An agent cannot grant itself authority by editing its own prompt or configuration | 7.1, 12.3 | Reuse | `NEVER_SPAWNABLE` blocks every agent from `saveAgent`, `deleteAgent`, `spawnAgent` and `resumeAgent`. `createAgent` and `editAgent` remain grantable and are a Phase 8 policy question | `AgentRuntime.NEVER_SPAWNABLE` |
+| 7.7 | Where approval is required, a persistent approval request is created showing what, why, what is affected, reversibility, consequences and the exact permission | 7.2 | Build | No approval entity | Phase 5 |
+| 7.8 | Approval, rejection and cancellation become recorded events | 7.2 | Build | No approval events | Phase 5 |
+
+## Section 8 — Memory and context
+
+| ID | Requirement | Spec § | Status | Location | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| 8.1 | Four context layers stay distinct: assignment, working, persistent agent memory, shared GURU context | 8 | Build | Only assignment and working context exist | Phase 6 |
+| 8.2 | Agents connect only to memory tools that actually exist, using their real names and schemas | 8 | Build | `CerebrumBrainApi` and `BrainService` are the real surface; no agent uses them | Phase 6 |
+| 8.3 | Scoped memory search and agent-owned memory operations | 8.1 | Build | None | Phase 6 |
+| 8.4 | Ownership and policy rules apply to shared or user-owned memory, and user data is never silently deleted | 8.1 | Build | None | Phase 6 |
+| 8.5 | Context provenance records source identifier, type, retrieval time, passage reference, permission scope and whether it was supplied to the model | 8.2 | Build | `memory_injections` does this for the main chat only | Phase 6 |
+| 8.6 | Session compaction preserves outstanding questions, decisions, tool results, constraints, current plan and relevant context | 2.3, 8 | Extend | Tool results and instructions survive; decisions and plans are Phase 2 | Phase 2 and Phase 6 |
+| 8.7 | Artefact registration is durable and linked to producing agent, run, version, time and sources | 2.7, 8 | Build | None | Phase 6 |
+| 8.8 | Memory access and mutation are visible according to visibility settings | 8 | Build | No memory surface | Phase 6 and Phase 7 |
+| 8.9 | Sensitive memory and secrets follow access control and redaction policy | 8, 13 | Build | No agent-side policy | Phase 9 |
+
+## Section 9 — Agent Room
+
+| ID | Requirement | Spec § | Status | Location | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| 9.1 | Agent presence in the Portal is a recognisable node with identity and colour, communicating actual execution state | 9.1 | Build | No node. `GuruAgentSelector` chips are a hardcoded four-value enum and are not this | Phase 7 |
+| 9.2 | The Portal's edge treatment may use the active agent's colour | 9.1 | Build | None | Phase 7 |
+| 9.3 | The user can open the Agent Room without interrupting the agent | 9.1 | Build | No room | Phase 7 |
+| 9.4 | Closing the room does not cancel execution | 9.1 | Reuse | Execution is independent of any screen; nothing observes a room | Phase 7 proves it |
+| 9.5 | The presence system supports multiple agent identities and does not imply simultaneous execution the runtime cannot provide | 9.1, 14 | Build | None | Phase 7 and Phase 8 |
+| 9.6 | The landing view is a dashboard, not a chat transcript | 9.2 | Build | None | Phase 7 |
+| 9.7 | Agent overview shows identity, purpose, current assignment, actual status, current activity, plan position, warnings and run controls | 9.2 | Build | None | Phase 7 |
+| 9.8 | Progress indicators are derived from recorded state and never invent a percentage | 9.2 | Build | None | Phase 7 |
+| 9.9 | A dedicated Chat with Agent area supporting questions, information, corrections, instructions, priority changes, evidence requests and control requests | 9.2 | Build | None | Phase 5 and Phase 7 |
+| 9.10 | Reasoning and decisions area showing live reasoning where available, plans, revisions, decisions, evidence, uncertainty, changes of approach and explanations | 9.2 | Build | None | Phase 7 |
+| 9.11 | Tool activity area with expandable arguments, results, errors, refusals, retries, timing and permission decisions | 9.2 | Build | None | Phase 7 |
+| 9.12 | Communications timeline identifying each participant and following a question through to the subsequent action | 9.2 | Build | None | Phase 5 and Phase 7 |
+| 9.13 | Plan and revision history with completed, active, proposed, blocked and abandoned steps distinguishable | 9.2 | Build | None | Phase 2 and Phase 7 |
+| 9.14 | Context and memory area showing sources, retrieval and changes | 9.2 | Build | None | Phase 6 and Phase 7 |
+| 9.15 | Artefacts and outputs area covering intermediate and final work | 9.2 | Build | None | Phase 6 and Phase 7 |
+| 9.16 | Run history showing previous executions with configuration, communications, activity and results | 9.2 | Extend | Runs and events persist and are queryable | Phase 7 |
+| 9.17 | Agent settings, with active-run effects distinguished from future-run effects | 9.2 | Build | None | Phase 2 and Phase 7 |
+| 9.18 | Controls: chat, pause, resume, redirect, amend, change visibility, inspect tools, review decisions, approve or reject, stop, reopen a previous run | 9.3 | Build | None | Phase 5 and Phase 7 |
+| 9.19 | Controls correspond to real runtime capability and are never displayed as operational because they look useful | 9.3 | Build | None | Phase 7 enforces this |
+
+## Section 10 — Runtime and persistence
+
+| ID | Requirement | Spec § | Status | Location | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| 10.1 | Agent Registry discovers and manages installed, available and user-created definitions | 10.1 | Reuse | `GuruAgentRepository`, `AgentCatalogue`, `AgentLibrarySyncWorker` | `AgentCatalogueImpl` |
+| 10.2 | Agent Configuration Service resolves preferences into a validated effective configuration per run | 10.1 | Extend | `AgentRuntime.wiring` resolves provider and model and the effective snapshot is written to the run | Phase 2 completes the validation |
+| 10.3 | Agent Orchestrator manages assignments, lifecycle, delegation, communication and coordination | 10.1 | Extend | Assignment and lifecycle exist in `AgentRunService`. Delegation and communication are Phase 5 and 8 | Phases 5, 8 |
+| 10.4 | Agent Runtime executes the cognitive loop and manages its live session | 10.1 | Reuse | `AgentRuntime` | Commit `f12ef61` |
+| 10.5 | Cognitive Context Resolver retrieves permitted context, memory, instructions and working information | 10.1 | Build | None for agents | Phase 6 |
+| 10.6 | Capability and Tool Dispatcher provides authorised tools and enforces central permissions | 10.1 | Reuse | `ToolDispatcher` | `DispatcherRefusalTest` |
+| 10.7 | Interaction Broker routes messages between agents, GURU and the user | 10.1 | Build | None | Phase 5 |
+| 10.8 | Execution Event Ledger persists actual runtime events and exposes them | 10.1 | Reuse | `agent_run_events`, `AgentRunLedger` | `AgentRunLedgerTest`, `AgentRunLedgerProtectionTest` |
+| 10.9 | Memory Service manages agent memory and permitted access to shared knowledge | 10.1 | Build | None | Phase 6 |
+| 10.10 | Artefact Service stores and manages agent outputs | 10.1 | Build | None | Phase 6 |
+| 10.11 | Policy and Approval Service enforces authority, permissions and approval requirements | 10.1 | Extend | The dispatcher enforces tool permissions. Autonomy and approval are Phase 2 and 5 | Phases 2, 5 |
+| 10.12 | The runtime emits real events in the order: action, typed event, persist, publish, materialise status | 10.2 | Reuse | `AgentRunLedger.append` persists before returning; status is written with its own state-change event | `AgentRunLedger` |
+| 10.13 | Events support stable identifiers, ordered sequencing, timestamps and schema versions | 10.2 | Reuse | `event_id`, unique per-run `sequence_number`, `occurred_at`, `payload_schema_version` | `AgentRunEventEntity` |
+| 10.14 | Delivery is safe against duplicate processing and duplicate tool execution | 10.2 | Reuse | Unique idempotency key per run | `AgentRunLedgerProtectionTest` |
+| 10.15 | Every run receives an immutable snapshot of its effective configuration | 10.3 | Reuse | `effectiveConfigSnapshotJson`, `requestedConfigSnapshotJson`, `agentDefinitionSnapshotJson`, `toolManifestSnapshotJson` | `AgentRunEntity` |
+| 10.16 | Requested and effective configuration are both retained | 10.3 | Reuse | Both columns exist and are written | `AgentRunEntity` |
+| 10.17 | The snapshot includes agent identity and version, instruction reference, provider and model, requested and effective tools, restrictions and reasons, reasoning visibility, scopes, autonomy, budgets and runtime settings | 10.3 | Extend | Identity, version, model, tools and prompt are there. Scopes, autonomy and budgets wait for Phase 2 | Phase 2 |
+| 10.18 | Snapshots are versioned so future builds can interpret historical executions | 10.3 | Reuse | Every snapshot JSON carries `schemaVersion` | `AgentRunEntity`, `ServedConfig` |
+| 10.19 | A definition change never rewrites a previous run's snapshot | 10.3 | Reuse | Snapshots are values on the run row, never joins | `AgentRunEntity` |
+| 10.20 | The ledger is authoritative and run status is a materialised projection of it | 10.4 | Reuse | Status is written only alongside its `RUN_STATE_CHANGED` | `AgentRunEntity` doc contract |
+| 10.21 | Supports atomic sequencing, validation, duplicate protection, recovery, reconstruction, historical inspection and new event types without a migration per type | 10.4 | Reuse | `agent_run_events` accepts any type and payload; `AgentRunReplay` reconstructs | `AgentRunReplayTest`, `AgentEventCoverageTest` |
+| 10.22 | Append-only history during normal operation, with explicit retention and owner deletion | 10.4, 13 | Reuse | No update or delete path in the repository; cascade only with the owning conversation | `AgentRunLedger` |
+| 10.23 | Persistence is capable of storing definitions and versions, configuration, runs, snapshots, events, messages, plan revisions, tool invocations, approvals, context and memory references, checkpoints, artefacts, delegation and outcomes | 10.5 | Extend | Runs, snapshots, events and checkpoints exist. The rest are Phases 2, 5, 6 and 8 | Phases 2, 5, 6, 8 |
+
+## Section 11 — Lifecycle, reliability, recovery
+
+| ID | Requirement | Spec § | Status | Location | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| 11.1 | The thirteen lifecycle states are supported | 11 | Reuse | All thirteen declared in `AgentRunEntity`; `INTERRUPTED` added as the honest process-death state | `AgentRunEntity`, `AgentFoundationMigrationTest` |
+| 11.2 | Recovery accounts for an incomplete model request, an interrupted stream, an unknown tool outcome, a completed-but-unrecorded tool call, an outstanding question, a pending approval, an interrupted compaction and a restart | 11.1 | Extend | Model interruption, unknown outcome and restart are handled. Outstanding question survives in the checkpoint. Approvals are Phase 5 | Phase 5 and Phase 9 |
+| 11.3 | The runtime does not blindly repeat non-idempotent actions whose previous outcome is unknown | 11.1 | Reuse | `TOOL_CALL_OUTCOME_UNKNOWN` prevents replay | `AgentRuntime`, `AgentRunReplay` |
+| 11.4 | Configurable execution limits: exchanges, duration, tool calls, tokens, delegation budgets, retries, resources | 11.2 | Extend | `MAX_EXCHANGES` bounds conversation; tool rounds are deliberately uncapped at the owner's direction. Budgets are Phase 2 | Phase 2 |
+| 11.5 | Limits are configurable at system, agent-default and per-run level | 11.2 | Build | Only constants exist | Phase 2 |
+| 11.6 | Reaching a limit records what happened and preserves partial work, and is never presented as completion | 11.2 | Reuse | `LIMIT_REACHED` is its own terminal status | `AgentRunEntity` |
+| 11.7 | Failures distinguish model, tool, permission, missing capability, external integration, context retrieval, resource exhaustion, cancellation, interruption and unexpected internal errors | 11.3 | Extend | Model failure, tool failure, permission denial and interruption are distinct events. The rest have no producer yet | Phases 5, 6 |
+| 11.8 | A failed operation does not erase the history of preceding work | 11.3 | Reuse | Append-only ledger | `AgentRunLedger` |
+
+## Section 12 — Open ecosystem
+
+| ID | Requirement | Spec § | Status | Location | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| 12.1 | Supports first-party, user-created, imported, community-published, privately shared and agent-created agents | 12 | Extend | user, synced and bundled sources exist and work | `GuruAgentRepositoryImpl` |
+| 12.2 | Discovery is registry-driven and the UI derives identity, purpose, configuration, availability and capabilities from the installed definition | 12 | Extend | The Agents room is registry-driven. `GuruAgentSelector` is a hardcoded enum and violates this | Phase 7 |
+| 12.3 | Each agent has a machine-readable capability manifest describing operations, tools, permissions, dependencies, runtime versions, integrations, input and output types, memory requirements and security characteristics | 12.1 | Build | None | Phase 2 |
+| 12.4 | The manifest is validated before an agent is allowed to execute | 12.1 | Build | None | Phase 2 |
+| 12.5 | Provenance and trust: publisher, installed version, trust, requested permissions, capability changes, local modification, update validation | 12.2 | Extend | Publisher and version exist in the catalogue; the rest do not | Phase 8 |
+| 12.6 | An update does not silently grant new permissions, and a user can review changes and revert | 12.2 | Build | Install replaces by slug without a permission diff | Phase 8 |
+| 12.7 | Agents can propose new tools, skills, prompts, procedures, agents and module improvements | 12.3 | Extend | Authoring verbs exist: `createAgent`, `editAgent`, `deleteAgent`, `setAgentEnabled`, `publishAgent` | `AgentAuthoringToolDefinitions` |
+| 12.8 | Creation, validation, approval and activation are separate stages, and an agent cannot self-authorise | 12.3, 13 | Extend | Publishing goes through review server-side. There is no local validation stage | Phase 8 |
+
+## Section 13 — Security and digital sovereignty
+
+| ID | Requirement | Spec § | Status | Location | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| 13.1 | Centralised tool permission enforcement | 13 | Reuse | `ToolDispatcher` on both paths | `DispatcherRefusalTest` |
+| 13.2 | Scoped data access | 13 | Build | None for agents | Phase 6 |
+| 13.3 | Explicit memory permissions | 13 | Build | None | Phase 6 |
+| 13.4 | Approval for restricted actions | 13 | Build | None | Phase 5 |
+| 13.5 | Isolation of untrusted or externally sourced agents | 13 | Build | Synced agents hold publisher-granted tools with no local restriction by design | Phase 8 policy |
+| 13.6 | Secure storage of sensitive event payloads | 13 | Reuse | `ProtectedData`, `DataProtector`, `ProtectedField` exist | `core/security` |
+| 13.7 | Redaction of secrets from ordinary activity views | 13 | Build | No redaction on the agent ledger | Phase 9 |
+| 13.8 | Auditability of permission decisions | 13 | Reuse | `TOOL_PERMISSION_GRANTED` and `TOOL_PERMISSION_DENIED` | Commit `2ce9be0` |
+| 13.9 | Version and provenance tracking | 13 | Extend | Version exists; provenance is Phase 8 | Phase 8 |
+| 13.10 | Protection against prompt injection and untrusted content | 13 | Reuse | Tool output is treated as data and never as instructions; no path executes model-supplied code without the dispatcher | `ToolSecurityPolicy` |
+| 13.11 | Safe handling of tool outputs and external data | 13 | Reuse | Argument repair and the security policy run before every execution | `ToolArgumentRepair`, `ToolSecurityPolicy` |
+| 13.12 | Explicit ownership and deletion rules | 13 | Reuse | User rows untouchable by sync; synced rows removable only by retraction | `GuruAgentRepositoryImpl` |
+| 13.13 | Agent instructions are not security controls, and enforcement lives in the dispatcher and data layer | 13 | Reuse | `NEVER_SPAWNABLE` is enforced in code, not in a prompt | `AgentRuntime.allowedTools` |
+
+## Section 14 — Scalability and concurrency
+
+| ID | Requirement | Spec § | Status | Location | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| 14.1 | The data model supports independent runs without assuming one permanent active agent | 14 | Reuse | `agent_runs` is keyed by run, not by agent | `AgentRunEntity` |
+| 14.2 | The architecture distinguishes multiple installed agents, multiple runs per agent, multiple runs per conversation, parent-child, concurrent, sequential and paused runs | 14 | Reuse | All representable: agent_id, conversation_id, parent_run_id, status | `AgentRunEntity` |
+| 14.3 | The interface reflects the actual execution model and never implies concurrent work the runtime cannot do | 14 | Build | No interface exists | Phase 7 |
+| 14.4 | Concurrency limits are runtime policy, not assumptions embedded in schema | 14 | Build | The runtime has no limit constant; sessions are capped at eight in memory | Phase 8 |
+
+## Section 15 — Implementation strategy
+
+The eight phases are tracked as work items rather than as requirements. Their state is in
+the phase sections below.
+
+| Phase | Status | Evidence |
+| --- | --- | --- |
+| 1 Repository and architecture reconciliation | **Complete** | `REPOSITORY_RECONCILIATION.md`, `phase1-reconciliation.md` |
+| 2 Agent definition and configuration | **Not started** | Task `64fb98cb` |
+| 3 Durable run and event foundation | **Complete** | Migration 35 to 36, `AgentFoundationMigrationTest` |
+| 4 Runtime instrumentation | **Complete** | Commits `8fcfb6d`, `45dbc14`, `53d4152`, `f12ef61`, `2ce9be0`; `PHASE4_VERIFICATION.md` |
+| 5 Communication and control | **Not started** | Task `dc7a6dcb` |
+| 6 Context, memory and artefacts | **Not started** | Task `e93675de` |
+| 7 Agent Room | **Not started** | Task `17aa1311` |
+| 8 Advanced autonomy and ecosystem | **Not started** | Task `0377e194` |
+
+## Section 16 — Acceptance criteria
+
+| ID | Criterion | Status | Evidence |
+| --- | --- | --- | --- |
+| 16.1 | Agents have independent, versioned identities and configurations | Build | Phase 2 |
+| 16.2 | Visibility and autonomy are configurable per agent | Build | Phase 2 |
+| 16.3 | Configuration changes do not rewrite previous runs | Reuse | Snapshots are values on the run row |
+| 16.4 | The system supports new agents without application hardcoding | Extend | Registry-driven except `GuruAgentSelector` |
+| 16.5 | An agent run receives a durable identity | Reuse | `AgentRunEntity.runId` |
+| 16.6 | Execution events are captured as they happen | Reuse | `AgentRunLedger.append` |
+| 16.7 | A run can continue beyond one model call | Reuse | The round loop |
+| 16.8 | Tool calls and results are recorded accurately | Reuse | Tool event family |
+| 16.9 | Failures, interruptions and limits are visible | Reuse | Distinct events and statuses |
+| 16.10 | GURU and agents communicate during execution | Extend | Agent-to-GURU works; GURU-to-agent mid-run is Phase 5 |
+| 16.11 | The user can communicate directly with an active agent | Build | Phase 5 |
+| 16.12 | Agents can initiate questions and requests | Extend | Clarification only today |
+| 16.13 | Assignment amendments retain their history | Build | Phase 5 |
+| 16.14 | Communication authorship is unambiguous | Build | Phase 5 |
+| 16.15 | The Agent Room exposes actual execution evidence | Build | Phase 7 |
+| 16.16 | The user can configure visibility | Build | Phase 2 |
+| 16.17 | Supported reasoning information can be captured | Reuse | `MODEL_REASONING_COMPLETED` |
+| 16.18 | Unsupported reasoning capabilities are reported honestly | Reuse | Conditional capture |
+| 16.19 | Generated explanations are distinguished from factual runtime events | Extend | No decision type exists to conflate; Phase 2 keeps them separate |
+| 16.20 | Runs and histories survive process death | Reuse | Persisted run plus checkpoint plus recovery scan |
+| 16.21 | Historical configuration remains intact | Reuse | Immutable snapshots |
+| 16.22 | Event ordering is reliable | Reuse | Unique per-run sequence |
+| 16.23 | Previous tool results and communications remain inspectable | Reuse | Ledger queries |
+| 16.24 | Recovery does not silently duplicate external actions | Reuse | `TOOL_CALL_OUTCOME_UNKNOWN` |
+| 16.25 | Agents cannot bypass central tool permissions | Reuse | `DispatcherRefusalTest` |
+| 16.26 | Data and memory access remain scoped | Build | Phase 6 |
+| 16.27 | Approval requirements are enforced by the runtime | Build | Phase 5 |
+| 16.28 | Imported agents cannot silently expand their authority | Build | Phase 8 |
+| 16.29 | The Portal remains the main conversation with GURU | Reuse | Unchanged |
+| 16.30 | Agent nodes open the dedicated Agent Room | Build | Phase 7 |
+| 16.31 | The Agent Room is a functional dashboard, not a chat transcript | Build | Phase 7 |
+| 16.32 | Closing the room does not automatically cancel work | Reuse | Execution is independent of UI |
+| 16.33 | The interface represents actual runtime state | Build | Phase 7 |
+
+## Section 17 — Decisions and principles
+
+The twenty principles in section 17 are architectural commitments. Each is satisfied by
+the section it maps to; the table records only the ones not already covered above.
+
+| ID | Principle | Status | Evidence |
+| --- | --- | --- | --- |
+| 17.1 | GURU is the orchestrator; agents are specialist workers | Reuse | `spawnAgent` returns a report |
+| 17.2 | An agent is a persistent definition with capabilities and configuration, not just a prompt | Extend | Definition exists; configuration is Phase 2 |
+| 17.3 | Every execution has its own run identity and immutable snapshot | Reuse | `AgentRunEntity` |
+| 17.4 | Requested and effective configuration are recorded separately | Reuse | Both columns |
+| 17.5 | Runtime events are the source of truth | Reuse | Append-only ledger |
+| 17.6 | Communications are recorded as messages with explicit authorship | Build | Phase 5 |
+| 17.7 | GURU, the agent and the user collaborate directly | Build | Phase 5 |
+| 17.8 | The user can steer an agent during execution | Build | Phase 5 |
+| 17.9 | Agents can initiate communications when configured | Extend | Clarification only |
+| 17.10 | Reasoning and activity visibility are configurable per agent | Build | Phase 2 |
+| 17.11 | The default experience is meaningfully transparent | Build | `AgentVisibility.TRANSPARENT` is the declared default |
+| 17.12 | Model and runtime limitations are represented honestly | Reuse | Conditional capture |
+| 17.13 | Visibility, autonomy and permissions are independent | Build | Phase 2 |
+| 17.14 | Agent memory, working context and shared knowledge stay distinct | Build | Phase 6 |
+| 17.15 | The Agent Room is a dashboard with dedicated conversational and operational areas | Build | Phase 7 |
+| 17.16 | The architecture supports an open-ended ecosystem | Extend | Registry-driven; enum removed in Phase 7 |
+| 17.17 | Concurrency may evolve without a data-model redesign | Reuse | Run-scoped schema |
+| 17.18 | Security enforcement remains outside agent prompts | Reuse | Dispatcher |
+| 17.19 | Self-improvement without unrestricted self-authorisation | Extend | `NEVER_SPAWNABLE`; Phase 8 adds the validation stage |
+| 17.20 | Migrations require explicit review | Superseded | AD-010: the owner's direct instruction governs, with the plan's safety rules |
+
+## Section 18 — Final architectural principle
+
+| ID | Requirement | Status | Evidence |
+| --- | --- | --- | --- |
+| 18.1 | GURU is an extensible cognitive environment, not a collection of chatbots with different names | Extend | Definition, run and ledger exist; the collaborative and contextual halves are Phases 5 and 6 |
+| 18.2 | The user sees what agents are doing, understands why, communicates while they work and controls the authority granted | Build | Phases 5 and 7 |
+| 18.3 | The execution history is real, the communication is real, the configuration is real, the autonomy is enforceable | Extend | History and execution are real; communication, configuration and autonomy are Phases 2 and 5 |

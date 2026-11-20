@@ -96,6 +96,7 @@ import com.unuslumen.app.database.entity.HeartbeatPromptEntity
 import com.unuslumen.app.database.entity.NetworkDeviceEntity
 import com.unuslumen.app.database.entity.NetworkScanEntity
 import com.unuslumen.app.database.entity.NetworkSightingEntity
+import com.unuslumen.app.database.dao.AgentDefinitionVersionDao
 import com.unuslumen.app.database.dao.AgentRunCheckpointDao
 import com.unuslumen.app.database.dao.AgentRunDao
 import com.unuslumen.app.database.dao.AgentRunEventDao
@@ -103,6 +104,7 @@ import com.unuslumen.app.database.dao.FabricDao
 import com.unuslumen.app.database.dao.HeartbeatBookingDao
 import com.unuslumen.app.database.dao.HeartbeatPromptDao
 import com.unuslumen.app.database.dao.NetworkVisionDao
+import com.unuslumen.app.database.entity.AgentDefinitionVersionEntity
 import com.unuslumen.app.database.entity.AgentRunCheckpointEntity
 import com.unuslumen.app.database.entity.AgentRunEntity
 import com.unuslumen.app.database.entity.AgentRunEventEntity
@@ -171,8 +173,12 @@ import com.unuslumen.app.database.entity.AgentRunEventEntity
         AgentRunEntity::class,
         AgentRunEventEntity::class,
         AgentRunCheckpointEntity::class,
+        // The definition history. An edit to an agent stops destroying the instructions that
+        // were there before it, so a past run's configuration is reproducible rather than
+        // merely numbered.
+        AgentDefinitionVersionEntity::class,
     ],
-    version = 36
+    version = 37
 )
 @TypeConverters(DBConverters::class)
 abstract class guruDatabase: RoomDatabase() {
@@ -224,6 +230,7 @@ abstract class guruDatabase: RoomDatabase() {
     abstract fun agentRunDao(): AgentRunDao
     abstract fun agentRunEventDao(): AgentRunEventDao
     abstract fun agentRunCheckpointDao(): AgentRunCheckpointDao
+    abstract fun agentDefinitionVersionDao(): AgentDefinitionVersionDao
 
     companion object {
         const val DATABASE_NAME = "guru_db"

@@ -66,5 +66,65 @@ data class GuruAgentEntity(
     @ColumnInfo(name = "created_at", defaultValue = "0")
     val createdAt: Long = 0L,
     @ColumnInfo(name = "updated_at", defaultValue = "0")
-    val updatedAt: Long = 0L
+    val updatedAt: Long = 0L,
+
+    /**
+     * The stored operating configuration, as JSON documents.
+     *
+     * WHY JSON COLUMNS RATHER THAN FORTY COLUMNS. These are documents whose shape is owned by the
+     * domain types, not by this table: a visibility rule has three fields, an autonomy policy has
+     * nine booleans and a set, a manifest has ten lists. Flattening them into columns would mean a
+     * migration every time a setting gains a field, and would put the shape in two places that
+     * must be kept identical by hand.
+     *
+     * THE COST IS THAT SQL CANNOT QUERY INSIDE THEM, and that is acceptable because nothing does:
+     * they are read whole when an agent is loaded and written whole when it is saved. What SQL
+     * does need to filter on — name, slug, source, enabled — stays a real column.
+     *
+     * EVERY ONE DEFAULTS TO A VERSIONED EMPTY DOCUMENT SO AN OLD ROW IS READABLE. A row written
+     * before this migration carries `{"schemaVersion":1}`, the domain decoder fills the defaults,
+     * and an existing agent loads with exactly the behaviour it had. No backfill is needed and no
+     * row is rewritten.
+     */
+    @ColumnInfo(name = "visual_json", defaultValue = "{\"schemaVersion\":1}")
+    val visualJson: String = "{\"schemaVersion\":1}",
+
+    @ColumnInfo(name = "visibility_json", defaultValue = "{\"schemaVersion\":1}")
+    val visibilityJson: String = "{\"schemaVersion\":1}",
+
+    @ColumnInfo(name = "autonomy_json", defaultValue = "{\"schemaVersion\":1}")
+    val autonomyJson: String = "{\"schemaVersion\":1}",
+
+    @ColumnInfo(name = "budgets_json", defaultValue = "{\"schemaVersion\":1}")
+    val budgetsJson: String = "{\"schemaVersion\":1}",
+
+    @ColumnInfo(name = "model_preference_json", defaultValue = "{\"schemaVersion\":1}")
+    val modelPreferenceJson: String = "{\"schemaVersion\":1}",
+
+    @ColumnInfo(name = "notifications_json", defaultValue = "{\"schemaVersion\":1}")
+    val notificationsJson: String = "{\"schemaVersion\":1}",
+
+    @ColumnInfo(name = "memory_scope_json", defaultValue = "{\"schemaVersion\":1}")
+    val memoryScopeJson: String = "{\"schemaVersion\":1}",
+
+    @ColumnInfo(name = "context_scope_json", defaultValue = "{\"schemaVersion\":1}")
+    val contextScopeJson: String = "{\"schemaVersion\":1}",
+
+    @ColumnInfo(name = "manifest_json", defaultValue = "{\"schemaVersion\":1}")
+    val manifestJson: String = "{\"schemaVersion\":1}",
+
+    /** Comma-joined skill ids granted, matching how tools are stored. */
+    @ColumnInfo(name = "skill_ids", defaultValue = "")
+    val skillIds: String = "",
+
+    /**
+     * Counts local definition edits, and is what a history row is keyed on.
+     *
+     * NOT THE SAME AS [version]. [version] is the published catalogue version the sync worker
+     * force-pushes on; this counts edits made here, and every increment appends a history row so a
+     * previous prompt or tool set survives the edit. Before this field, `updateAgent` overwrote in
+     * place and the previous definition was gone.
+     */
+    @ColumnInfo(name = "definition_version", defaultValue = "1")
+    val definitionVersion: Int = 1,
 )
