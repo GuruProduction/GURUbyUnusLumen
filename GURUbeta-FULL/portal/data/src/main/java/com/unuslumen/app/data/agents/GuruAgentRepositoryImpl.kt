@@ -209,6 +209,48 @@ class GuruAgentRepositoryImpl(
             updated.toDomain()
         }
 
+    /**
+     * Change visibility, and only visibility.
+     *
+     * THE NARROWNESS IS THE FEATURE. The specification says changing visibility must not silently
+     * change tool permissions, autonomy, memory access or execution authority, and the only way to
+     * keep that true is for the write to touch one column. The creator's save request carries every
+     * one of those, so routing this through it would mean the room saving whatever definition it was
+     * holding — which is how a display preference becomes a permission change.
+     *
+     * IT IS STILL AN EDIT, so it appends a version: a run started afterwards records the new
+     * visibility in its snapshot, and a run already in flight keeps the one it started with. What the
+     * current run draws changes immediately, because display is read at draw time; what it captured
+     * does not, because capture was decided when it started.
+     */
+    override suspend fun updateVisibility(
+        id: String,
+        visibility: com.unuslumen.app.domain.model.AgentVisibility,
+    ): GuruAgent = withContext(Dispatchers.IO) {
+        val existing = guruAgentDao.getAgentById(id)
+            ?: throw IllegalArgumentException("Agent not found: $id")
+        val now = System.currentTimeMillis()
+        val nextVersion = existing.definitionVersion + 1
+        val updated = existing.copy(
+            visibilityJson = AgentConfigurationCodec.encodeVisibility(visibility),
+            definitionVersion = nextVersion,
+            updatedAt = now,
+        )
+        transactor.inTransaction {
+            guruAgentDao.updateAgent(updated)
+            definitionVersionDao.insert(
+                versionRow(
+                    entity = updated,
+                    definitionVersion = nextVersion,
+                    reason = AgentDefinitionVersionEntity.REASON_EDITED,
+                    author = AgentDefinitionVersionEntity.AUTHOR_USER,
+                    savedAt = now,
+                )
+            )
+        }
+        updated.toDomain()
+    }
+
     override suspend fun enableAgent(id: String): GuruAgent = withContext(Dispatchers.IO) {
         guruAgentDao.setEnabled(id, true)
         guruAgentDao.getAgentById(id)?.toDomain()

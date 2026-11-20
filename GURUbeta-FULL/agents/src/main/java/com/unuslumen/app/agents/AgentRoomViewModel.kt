@@ -42,6 +42,15 @@ class AgentRoomViewModel(
     private val broker: AgentInteractionBroker,
     private val runtime: AgentRuntime,
     private val runHost: AgentRunHost,
+    /**
+     * The agent store, for the one write this room owns: visibility.
+     *
+     * THE ROOM MAY CHANGE WHAT IT SHOWS AND NOTHING ELSE. Tool permissions, autonomy, memory scope
+     * and budgets belong to the creator, and the specification is explicit that a visibility change
+     * must not alter any of them. A narrow repository call rather than the creator's save is how that
+     * stays true by construction instead of by care.
+     */
+    private val agents: com.unuslumen.app.domain.repository.GuruAgentRepository,
 ) : ViewModel() {
 
     data class UiState(
@@ -111,6 +120,7 @@ class AgentRoomViewModel(
             Event.Refresh -> refresh()
             Event.ClearControlError -> _state.update { it.copy(controlError = null) }
             is Event.Steer -> steer(event.text, event.messageType)
+            is Event.SetVisibilityDisplay -> setVisibility(event.category, event.shown)
         }
     }
 
@@ -144,6 +154,19 @@ class AgentRoomViewModel(
         data class Reject(val approvalId: String) : Event
         data object Refresh : Event
         data object ClearControlError : Event
+
+        /**
+         * Show or hide one visibility category.
+         *
+         * DISPLAY ONLY, AND THAT IS THE WHOLE CHOICE. The specification separates what is captured
+         * from what is drawn, and hiding a category must never delete what was recorded. So this
+         * changes display and leaves capture alone: a person who hides tool arguments today can turn
+         * them back on tomorrow and see everything that ran in between.
+         */
+        data class SetVisibilityDisplay(
+            val category: com.unuslumen.app.domain.model.VisibilityCategory,
+            val shown: Boolean,
+        ) : Event
     }
 
     /**
@@ -346,6 +369,57 @@ class AgentRoomViewModel(
             }
             _state.update { it.copy(controlError = null, awaitingRun = true) }
             refresh()
+        }
+    }
+
+    /**
+     * Show or hide one category.
+     *
+     * THE STORED RULE IS REBUILT FROM WHAT THE ROOM HOLDS, with one field changed. Building it from
+     * something else — a save request, or a fresh read — would risk writing a stale copy of the rest
+     * of the definition, which is exactly the silent permission change the specification forbids.
+     *
+     * THE CURRENT RUN IS NOT RE-DRAWN WITH THE NEW RULE BY THIS CALL: the refresh that follows reads
+     * the agent again, and the room's next assemble carries it. Capture is untouched, so what the run
+     * recorded stays recorded.
+     */
+    private fun setVisibility(
+        category: com.unuslumen.app.domain.model.VisibilityCategory,
+        shown: Boolean,
+    ) {
+        val room = _state.value.room ?: return
+        val current = room.visibility
+        val changed = current.asMap().toMutableMap().apply {
+            val existing = this[category] ?: com.unuslumen.app.domain.model.VisibilityRule.DEFAULT
+            this[category] = existing.copy(display = shown)
+        }
+        val rebuilt = com.unuslumen.app.domain.model.AgentVisibility(
+            plans = changed.getValue(com.unuslumen.app.domain.model.VisibilityCategory.PLANS),
+            activity = changed.getValue(com.unuslumen.app.domain.model.VisibilityCategory.ACTIVITY),
+            reasoning = changed.getValue(com.unuslumen.app.domain.model.VisibilityCategory.REASONING),
+            decisions = changed.getValue(com.unuslumen.app.domain.model.VisibilityCategory.DECISIONS),
+            tools = changed.getValue(com.unuslumen.app.domain.model.VisibilityCategory.TOOLS),
+            context = changed.getValue(com.unuslumen.app.domain.model.VisibilityCategory.CONTEXT),
+            memory = changed.getValue(com.unuslumen.app.domain.model.VisibilityCategory.MEMORY),
+            communications = changed.getValue(
+                com.unuslumen.app.domain.model.VisibilityCategory.COMMUNICATIONS
+            ),
+            verification = changed.getValue(com.unuslumen.app.domain.model.VisibilityCategory.VERIFICATION),
+            errors = changed.getValue(com.unuslumen.app.domain.model.VisibilityCategory.ERRORS),
+            outputs = changed.getValue(com.unuslumen.app.domain.model.VisibilityCategory.OUTPUTS),
+        )
+
+        viewModelScope.launch {
+            runCatching { agents.updateVisibility(agentId, rebuilt) }
+                .onSuccess {
+                    _state.update { it.copy(controlError = null) }
+                    refresh()
+                }
+                .onFailure { e ->
+                    _state.update {
+                        it.copy(controlError = e.message ?: "Could not change what this room shows.")
+                    }
+                }
         }
     }
 

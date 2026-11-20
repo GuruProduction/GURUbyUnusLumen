@@ -426,6 +426,25 @@ val aiDataModule = module {
             get(),
         )
     }
+    /*
+     * THE ALERT SERVICE. What makes `AgentNotifications` a setting that fires rather than one that is
+     * stored and never read. A singleton because it holds only the context and posts through the
+     * platform, and every alert for one run must replace the previous one rather than stack.
+     */
+    single { com.unuslumen.app.data.agents.AgentAlertService(get<Context>()) }
+    // The schedule runner. A singleton because sweeping twice concurrently would be two runners
+    // racing the same due window, which is what the conditional advance exists to survive but does
+    // not need to be provoked.
+    single {
+        com.unuslumen.app.data.agents.AgentScheduleService(
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+        )
+    }
     factory {
         com.unuslumen.app.data.agents.AgentRuntime(
             get(),
@@ -435,6 +454,8 @@ val aiDataModule = module {
             get<Context>(),
             get(),
             get(),
+            get(),
+            // The alert service: how an agent that finishes or blocks reaches its owner.
             get(),
         )
     }

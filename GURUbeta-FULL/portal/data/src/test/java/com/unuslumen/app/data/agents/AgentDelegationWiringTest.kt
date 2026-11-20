@@ -92,6 +92,9 @@ class AgentDelegationWiringTest {
             // A MOCK, because this test is about tool resolution rather than memory. The real
             // service has its own tests, and a mock here keeps the subject single.
             memory = io.mockk.mockk(relaxed = true),
+            // Also a mock: this test never runs a turn to completion, so nothing would be posted,
+            // and the alert policy has its own tests.
+            alerts = io.mockk.mockk(relaxed = true),
         )
     }
 

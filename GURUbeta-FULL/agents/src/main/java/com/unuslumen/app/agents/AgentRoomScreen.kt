@@ -120,7 +120,7 @@ private fun RoomBody(
                 AgentRoomViewModel.RoomTab.CONTEXT -> context(room)
                 AgentRoomViewModel.RoomTab.OUTPUTS -> outputs(room)
                 AgentRoomViewModel.RoomTab.HISTORY -> history(room)
-                AgentRoomViewModel.RoomTab.SETTINGS -> settings(room)
+                AgentRoomViewModel.RoomTab.SETTINGS -> settings(room, viewModel)
             }
         }
     }
@@ -747,7 +747,10 @@ private fun androidx.compose.foundation.lazy.LazyListScope.history(room: AgentRo
 // Settings
 // ---------------------------------------------------------------------------
 
-private fun androidx.compose.foundation.lazy.LazyListScope.settings(room: AgentRoomState) {
+private fun androidx.compose.foundation.lazy.LazyListScope.settings(
+    room: AgentRoomState,
+    viewModel: AgentRoomViewModel,
+) {
     item("visibility") {
         Column(Modifier.fillMaxWidth()) {
             Text("VISIBILITY", style = captionStyle(10f))
@@ -758,9 +761,24 @@ private fun androidx.compose.foundation.lazy.LazyListScope.settings(room: AgentR
                 style = captionStyle(9f, Memphis.Ink.copy(alpha = 0.6f)),
             )
             Spacer(Modifier.height(9.dp))
+            /*
+             * EACH CATEGORY IS A REAL CONTROL, NOT A READOUT.
+             *
+             * The specification requires a person to be able to change an agent's visibility while it
+             * is running, and a stored preference with no way to change it from the room is the same
+             * defect as a control that does nothing. Tapping toggles DISPLAY only; capture is shown as
+             * a fact and is never turned off from here, because hiding must not delete.
+             */
             room.visibility.asMap().forEach { (category, rule) ->
                 Row(
-                    Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                        .clickable {
+                            viewModel.onEvent(
+                                AgentRoomViewModel.Event.SetVisibilityDisplay(category, !rule.display)
+                            )
+                        },
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
@@ -770,16 +788,25 @@ private fun androidx.compose.foundation.lazy.LazyListScope.settings(room: AgentR
                     )
                     Text(
                         buildString {
-                            append(if (rule.capture) "captured" else "not captured")
-                            append(" · ")
                             append(if (rule.display) "shown" else "hidden")
+                            append(" · ")
+                            append(if (rule.capture) "captured" else "not captured")
                             append(" · ")
                             append(rule.detail.name.lowercase())
                         },
-                        style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.6f)),
+                        style = captionStyle(
+                            8.5f,
+                            if (rule.display) Memphis.Ink.copy(alpha = 0.6f) else Memphis.Coral,
+                        ),
                     )
                 }
             }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Tap a category to show or hide it. What was captured stays captured, so turning it " +
+                    "back on shows what happened in between.",
+                style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.55f)),
+            )
         }
     }
 

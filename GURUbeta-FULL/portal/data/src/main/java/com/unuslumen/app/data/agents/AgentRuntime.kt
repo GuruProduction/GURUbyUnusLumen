@@ -112,6 +112,15 @@ class AgentRuntime(
      * the service, so this only ever receives what the agent is permitted to see.
      */
     private val memory: AgentMemoryService,
+    /**
+     * How an agent reaches its owner when it finishes or gets stuck.
+     *
+     * THE PREFERENCE HAS EXISTED SINCE PHASE 2 AND NOTHING READ IT. An agent that stopped overnight, or
+     * that was waiting on a decision, told nobody: the only way to find out was to open its room and
+     * look, which makes the transparency surface something a person must remember to check rather than
+     * something that reaches them. This is the caller that makes `AgentNotifications` real.
+     */
+    private val alerts: AgentAlertService,
 ) {
 
     companion object {
@@ -1972,6 +1981,23 @@ class AgentRuntime(
                     ledger.releaseLease(session.id, leaseOwner(), "waiting for an answer")
                 }
 
+                /*
+                 * TELL THE OWNER, WHEN THIS AGENT MAY. A run blocked on a question does nothing until
+                 * somebody answers, so this is the moment an agent's notification settings are for.
+                 * The gate decides from the agent's own urgency threshold and quiet window, and a
+                 * suppressed alert costs nothing because the message is already in the room.
+                 */
+                runCatching {
+                    alerts.alertBlocked(
+                        runId = session.id,
+                        agentName = agent.name,
+                        assignment = session.agent.name,
+                        notifications = agent.notifications,
+                        reason = asked,
+                        urgency = com.unuslumen.app.domain.model.AgentUrgency.HIGH,
+                    )
+                }
+
                 return SpawnResult(
                     success = true,
                     agentName = agent.name,
@@ -2014,6 +2040,22 @@ class AgentRuntime(
                     )
                     ledger.releaseLease(session.id, leaseOwner(), "completed")
                 }
+                /*
+                 * A FINISHED RUN TELLS THE OWNER, WHEN THAT AGENT MAY. Normal urgency, so an agent
+                 * with a quiet window holds it until morning rather than waking anybody for a report
+                 * that will still be there.
+                 */
+                runCatching {
+                    alerts.alertFinished(
+                        runId = session.id,
+                        agentName = agent.name,
+                        assignment = session.agent.name,
+                        notifications = agent.notifications,
+                        succeeded = true,
+                        report = lastText.take(500),
+                    )
+                }
+
                 return SpawnResult(
                     success = true,
                     agentName = agent.name,

@@ -345,6 +345,62 @@ class AgentConfigurationPersistenceTest {
     }
 
     @Test
+    fun changingVisibilityTouchesNothingElseAndIsStillAnEdit() = runTest {
+        /*
+         * THE SPECIFICATION'S RULE IS THE ASSERTION: changing visibility must not silently change
+         * tool permissions, autonomy, memory access or execution authority. The only way to prove it
+         * is to set every one of those to a non-default value, change visibility, and check they are
+         * all still exactly as they were.
+         *
+         * IT IS STILL AN EDIT. The version count advances and a history row is written, because a
+         * run started afterwards records the visibility it actually had and the change is
+         * explainable later.
+         */
+        val created = repository.createAgent(
+            SaveAgentRequest(
+                name = "Guarded",
+                systemPrompt = "you do a specific job",
+                toolPermissions = listOf("shellExec", "captureScreen"),
+                visibility = AgentVisibility.TRANSPARENT,
+                autonomy = AgentAutonomy(
+                    performExternalSideEffects = true,
+                    requestDelegation = true,
+                ),
+                memoryScope = AgentMemoryScope(readShared = true, writeOwn = true),
+            )
+        )
+
+        val changed = repository.updateVisibility(
+            created.id,
+            AgentVisibility.TRANSPARENT.copy(reasoning = VisibilityRule.CAPTURE_ONLY),
+        )
+
+        assertFalse("the new rule landed", changed.visibility.reasoning.display)
+        assertTrue("and its capture was left alone", changed.visibility.reasoning.capture)
+        assertEquals(
+            "tool permissions are untouched",
+            listOf("shellExec", "captureScreen"),
+            changed.toolPermissions,
+        )
+        assertTrue(
+            "autonomy is untouched: external side effects were on and stay on",
+            changed.autonomy.performExternalSideEffects,
+        )
+        assertTrue("delegation is untouched", changed.autonomy.requestDelegation)
+        assertTrue("memory read is untouched", changed.memoryScope.readShared)
+        assertTrue("memory write is untouched", changed.memoryScope.writeOwn)
+        assertEquals("the prompt is untouched", "you do a specific job", changed.systemPrompt)
+        assertEquals("the edit count advances", 2, changed.definitionVersion)
+
+        val versions = repository.versionsFor(created.id)
+        assertEquals("the visibility change is recorded as a version", 2, versions.size)
+        assertTrue(
+            "and the newest version carries the new rule",
+            versions.first().definitionJson.contains("\"display\":false"),
+        )
+    }
+
+    @Test
     fun aCapabilityManifestRoundTripsWithItsRequirements() = runTest {
         val manifest = AgentCapabilityManifest(
             requiredTools = listOf("captureScreen"),

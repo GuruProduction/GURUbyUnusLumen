@@ -75,6 +75,26 @@ interface GuruAgentRepository {
      * the ability to spawn another.
      */
     suspend fun grantableTools(): List<GrantableTool>
+
+    /**
+     * Change one agent's visibility, and nothing else.
+     *
+     * WHY THIS IS NOT A `SaveAgentRequest`. The specification is explicit that changing visibility
+     * must not silently change tool permissions, autonomy, memory access or execution authority, and
+     * the creator's save request carries all of those. Routing a visibility change through it would
+     * mean the room writes a whole definition from whatever values it happened to be holding, which
+     * is how a display preference quietly becomes a permission change.
+     *
+     * SO THIS READS THE AGENT, REPLACES ONE FIELD, AND SAVES. Everything else is carried through
+     * exactly as it was found, and the change is still an edit, so it appends a definition version
+     * and a run started afterwards is configured with the new visibility while a run already in
+     * flight keeps its snapshot.
+     *
+     * THE CHANGE APPLIES TO FUTURE RUNS IMMEDIATELY AND TO THE CURRENT ONE ONLY IN WHAT IS DRAWN.
+     * Capture for a run in flight was decided when it started and is recorded per run, so turning a
+     * category off now hides it here and cannot retroactively empty a record that already exists.
+     */
+    suspend fun updateVisibility(id: String, visibility: com.unuslumen.app.domain.model.AgentVisibility): GuruAgent
 }
 
 /** One entry in the creator's tool picker. */

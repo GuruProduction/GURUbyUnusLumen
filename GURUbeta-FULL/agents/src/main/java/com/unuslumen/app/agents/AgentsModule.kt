@@ -35,6 +35,9 @@ val agentsModule = module {
             broker = get(),
             runtime = get(),
             runHost = get(),
+            // The one write the room owns: what it shows. Everything else about an agent is the
+            // creator's, and a narrow binding is how that stays true.
+            agents = get<GuruAgentRepository>(),
         )
     }
     viewModel {
