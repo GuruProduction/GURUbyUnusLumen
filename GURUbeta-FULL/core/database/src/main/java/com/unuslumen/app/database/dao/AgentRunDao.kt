@@ -46,6 +46,17 @@ interface AgentRunDao {
     suspend fun runsForAgent(agentId: String, limit: Int = 50): List<AgentRunEntity>
 
     /**
+     * Every run that named this one as its parent.
+     *
+     * THE CHAIN IS ONE INDEXED QUERY. A delegated run carries `parent_run_id`, so a parent finds its
+     * children without a second table. The fan-out ceiling is counted from these real rows rather
+     * than from a number the parent reported about itself, because a parent that could count its own
+     * children could under-report them.
+     */
+    @Query("SELECT * FROM agent_runs WHERE parent_run_id = :parentRunId ORDER BY created_at ASC")
+    suspend fun childrenOf(parentRunId: String): List<AgentRunEntity>
+
+    /**
      * Every run the recovery scan must consider.
      *
      * NON-TERMINAL ONLY. A finished run needs no recovery, and scanning thousands of

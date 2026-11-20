@@ -73,10 +73,10 @@ a passing test.
 | 4.3.3 | Sensitive arguments and results follow redaction policy, and the interface distinguishes a withheld value from one never captured | 4.3, 13 | Build | No redaction layer exists in the ledger | Phase 9 security pass |
 | 4.4.1 | Agents can verify their own work, and a completion claim is supported by execution evidence | 4.4 | Extend | A run's completion is recorded as a state change; there is no verification record type | Phase 2 |
 | 4.4.2 | The system distinguishes attempted, accepted and real-world-confirmed outcomes | 4.4 | Extend | `TOOL_CALL_COMPLETED` versus `TOOL_CALL_OUTCOME_UNKNOWN` covers attempt versus acceptance | `AgentRuntime`, Phase 4 |
-| 4.5.1 | An agent can request delegation through GURU, and GURU and policy decide whether it is permitted | 4.5 | Build | `NEVER_SPAWNABLE` prevents an agent spawning anything at all today | Phase 8 |
-| 4.5.2 | Delegation supports parent and child runs, scoped context, restricted permission inheritance, independent histories, result handoff and cancellation propagation | 4.5 | Extend | `parent_run_id` exists with a self-referencing key and cascade rules | Phase 8 |
-| 4.5.3 | Agents do not acquire broader permissions because another agent delegated to them | 4.5, 13 | Build | No inheritance model exists | Phase 8 |
-| 4.5.4 | Uncontrolled recursion and runaway delegation are prevented through configurable depth, resource and execution policies | 4.5 | Build | No depth or budget model | Phase 8 |
+| 4.5.1 | An agent can request delegation through GURU, and GURU and policy decide whether it is permitted | 4.5 | **Reuse** | `AgentDelegationService.delegate` resolves the facts and applies `AgentDelegationPolicy` | `AgentDelegationPolicyTest` (19 tests) |
+| 4.5.2 | Delegation supports parent and child runs, scoped context, restricted permission inheritance, independent histories, result handoff and cancellation propagation | 4.5 | **Reuse** | `parent_run_id` on the child run; the child gets its own ledger and conversation; the result returns as a `COMPLETION` message | `AgentDelegationService`, `AgentDelegationPolicyTest` |
+| 4.5.3 | Agents do not acquire broader permissions because another agent delegated to them | 4.5, 13 | **Reuse** | The grant is the intersection of parent, target and request, never the union | `AgentDelegationPolicyTest.aChildNeverGainsAToolItsParentDoesNotHold`, `AgentDelegationWiringTest.aDelegatedRunIsOfferedOnlyWhatItWasGranted` |
+| 4.5.4 | Uncontrolled recursion and runaway delegation are prevented through configurable depth, resource and execution policies | 4.5 | **Reuse** | Depth ceiling of 5 and fan-out of 4, each tighten-able by the agent and never widen-able; self-delegation refused | `AgentDelegationPolicyTest.theDepthCeilingIsEnforced`, `theFanOutCeilingIsEnforced`, `anAgentCannotDelegateToItself` |
 
 ## Section 5 — Three-way collaboration
 
@@ -208,8 +208,8 @@ a passing test.
 | 12.2 | Discovery is registry-driven and the UI derives identity, purpose, configuration, availability and capabilities from the installed definition | 12 | Extend | The Agents room is registry-driven. `GuruAgentSelector` is a hardcoded enum and violates this | Phase 7 |
 | 12.3 | Each agent has a machine-readable capability manifest describing operations, tools, permissions, dependencies, runtime versions, integrations, input and output types, memory requirements and security characteristics | 12.1 | Build | None | Phase 2 |
 | 12.4 | The manifest is validated before an agent is allowed to execute | 12.1 | Build | None | Phase 2 |
-| 12.5 | Provenance and trust: publisher, installed version, trust, requested permissions, capability changes, local modification, update validation | 12.2 | Extend | Publisher and version exist in the catalogue; the rest do not | Phase 8 |
-| 12.6 | An update does not silently grant new permissions, and a user can review changes and revert | 12.2 | Build | Install replaces by slug without a permission diff | Phase 8 |
+| 12.5 | Provenance and trust: publisher, installed version, trust, requested permissions, capability changes, local modification, update validation | 12.2 | **Extend** | Publisher, version and requested permissions exist; the capability diff and its gate are built. Local-modification detection is not | `AgentUpdateReview` |
+| 12.6 | An update does not silently grant new permissions, and a user can review changes and revert | 12.2 | **Reuse** | `AgentUpdateReview.between` diffs the versions and `dispositionFor` gates on an added tool, not on a version number | `AgentUpdateReviewTest` (13 tests) |
 | 12.7 | Agents can propose new tools, skills, prompts, procedures, agents and module improvements | 12.3 | Extend | Authoring verbs exist: `createAgent`, `editAgent`, `deleteAgent`, `setAgentEnabled`, `publishAgent` | `AgentAuthoringToolDefinitions` |
 | 12.8 | Creation, validation, approval and activation are separate stages, and an agent cannot self-authorise | 12.3, 13 | Extend | Publishing goes through review server-side. There is no local validation stage | Phase 8 |
 
@@ -237,8 +237,8 @@ a passing test.
 | --- | --- | --- | --- | --- | --- |
 | 14.1 | The data model supports independent runs without assuming one permanent active agent | 14 | Reuse | `agent_runs` is keyed by run, not by agent | `AgentRunEntity` |
 | 14.2 | The architecture distinguishes multiple installed agents, multiple runs per agent, multiple runs per conversation, parent-child, concurrent, sequential and paused runs | 14 | Reuse | All representable: agent_id, conversation_id, parent_run_id, status | `AgentRunEntity` |
-| 14.3 | The interface reflects the actual execution model and never implies concurrent work the runtime cannot do | 14 | Build | No interface exists | Phase 7 |
-| 14.4 | Concurrency limits are runtime policy, not assumptions embedded in schema | 14 | Build | The runtime has no limit constant; sessions are capped at eight in memory | Phase 8 |
+| 14.3 | The interface reflects the actual execution model and never implies concurrent work the runtime cannot do | 14 | **Reuse** | `MAX_CONCURRENT_RUNS = 1`; the presence strip draws one node per live run and there is one | `AgentDelegationPolicyTest.concurrencyIsConfiguredSequentialTodayAndSaysSo` |
+| 14.4 | Concurrency limits are runtime policy, not assumptions embedded in schema | 14 | **Reuse** | `AgentDelegationPolicy.MAX_CONCURRENT_RUNS` and `admitsAnother`; raising it is a constant, not a migration | `AgentDelegationPolicyTest` |
 
 ## Section 15 — Implementation strategy
 
@@ -254,7 +254,7 @@ the phase sections below.
 | 5 Communication and control | **Complete** | Migration 37 to 38; `AgentInteractionBrokerTest`; `AgentInteractionBroker`; `AgentRuntime.steer` |
 | 6 Context, memory and artefacts | **Not started** | Task `e93675de` |
 | 7 Agent Room | **Extend** | `AgentRoomState`, `AgentRoomAssembler`, `AgentRoomScreen`, `AgentRoomViewModel`, `AgentPresence`; `AgentRoomAssemblerTest` (21 tests). Dashboard areas built; the plan-step source is still empty because the runtime emits no plan events |
-| 8 Advanced autonomy and ecosystem | **Not started** | Task `0377e194` |
+| 8 Advanced autonomy and ecosystem | **Extend** | `AgentDelegationPolicy` (19 tests), `AgentUpdateReview` (13 tests), `AgentDelegationService`, `allowedToolsFrom` (5 wiring tests). Delegation and update trust are real; scheduled execution is not built |
 
 ## Section 16 — Acceptance criteria
 
@@ -287,7 +287,7 @@ the phase sections below.
 | 16.25 | Agents cannot bypass central tool permissions | Reuse | `DispatcherRefusalTest` |
 | 16.26 | Data and memory access remain scoped | Build | Phase 6 |
 | 16.27 | Approval requirements are enforced by the runtime | **Reuse** | `requestApproval` blocks the run in `WAITING_FOR_USER`; `approvalCovers` refuses a mismatched fingerprint | `AgentInteractionBrokerTest.anApprovalCoversOnlyTheActionItWasGrantedFor` |
-| 16.28 | Imported agents cannot silently expand their authority | Build | Phase 8 |
+| 16.28 | Imported agents cannot silently expand their authority | **Reuse** | An added tool forces an approval decision before the update lands | `AgentUpdateReviewTest.aNewToolStopsTheUpdateForApproval`, `aVersionNumberCannotSmuggleAGrantPastTheCheck` |
 | 16.29 | The Portal remains the main conversation with GURU | Reuse | Unchanged |
 | 16.30 | Agent nodes open the dedicated Agent Room | **Reuse** | `AgentPresenceStrip` takes an open callback per node | `AgentPresence.kt` |
 | 16.31 | The Agent Room is a functional dashboard, not a chat transcript | **Reuse** | Eight tabs, overview first, chat one of them | `AgentRoomScreen.kt` |

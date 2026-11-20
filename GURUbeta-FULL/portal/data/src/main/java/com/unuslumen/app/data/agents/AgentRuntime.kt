@@ -426,6 +426,25 @@ class AgentRuntime(
          * not learn it from the result. Defaulted so every existing caller keeps working.
          */
         runId: String = Uuid.random().toString(),
+        /**
+         * The run that delegated this work, when one did.
+         *
+         * A DELEGATED RUN IS STILL A RUN. It gets its own id, its own conversation record, its own
+         * ledger and its own artefacts; `parent_run_id` is the only thing that differs, and it is
+         * what makes a chain auditable without giving the child a second identity. Null means this
+         * work came from the person through GURU rather than from another agent.
+         */
+        parentRunId: String? = null,
+        /**
+         * Tools this run was granted by the delegating policy, already intersected with the parent's.
+         *
+         * NULL MEANS "THE AGENT'S OWN DECLARATION", which is what a top-level run gets. When a
+         * parent delegates, it passes the resolved set, and the child uses exactly that rather than
+         * its own list: a delegated run holds what it was given, never everything it declares.
+         */
+        delegatedTools: Set<String>? = null,
+        /** This run's depth in a delegation chain. Zero at the top. */
+        depth: Int = 0,
     ) = flow {
         val agent = agentRepository.resolveAgent(slugOrName)
         if (agent == null) {
@@ -496,7 +515,19 @@ class AgentRuntime(
             return@flow
         }
 
-        val allowed = allowedTools(agent)
+        /*
+         * A DELEGATED RUN USES WHAT IT WAS GRANTED, NOT EVERYTHING IT DECLARES.
+         *
+         * The policy already intersected the parent's tools with the child's and with what the
+         * parent chose to hand over. Using the agent's own declaration here would throw that away
+         * and give the child its full set, which is precisely the authority widening delegation is
+         * supposed to prevent.
+         */
+        val allowed = if (delegatedTools != null) {
+            allowedToolsFrom(agent, delegatedTools)
+        } else {
+            allowedTools(agent)
+        }
         val resolvedPrompt = buildSystemPrompt(agent, allowed)
 
         // THE RUN IS WRITTEN BEFORE THE FIRST MODEL CALL, NOT AFTER THE LAST.
@@ -511,6 +542,10 @@ class AgentRuntime(
                     runId = runId,
                     conversationId = owningConversation,
                     originMessageId = originMessageId,
+                    // THE CHAIN IS ONE COLUMN. A delegated run names the run that asked for it, so
+                    // a parent can find its children and a child can name its origin without a
+                    // second table or a second identity.
+                    parentRunId = parentRunId,
                     agentId = agent.id,
                     agentSlug = agent.slug,
                     agentName = agent.name,
@@ -523,6 +558,11 @@ class AgentRuntime(
                         put("reasoningVisibility", "FULL")
                     },
                     effectiveConfigSnapshotJson = jsonObject {
+                        // THE DEPTH AND THE PARENT ARE PART OF WHAT THIS RUN AGREED TO, so they go
+                        // in the immutable snapshot rather than being re-derived from a parent that
+                        // may since have been deleted.
+                        put("delegationDepth", depth)
+                        put("parentRunId", parentRunId ?: "")
                         put("provider", wiring.model.provider.id)
                         put("model", wiring.model.id)
                         put("contextWindow", wiring.config.contextWindow)
@@ -2027,6 +2067,23 @@ class AgentRuntime(
             .filter { it !in NEVER_SPAWNABLE }
             .mapNotNull { name -> toolRegistry.getDefinition(name) }
         return if (ask == null) declared else listOf(ask) + declared.filter { it.name != ask.name }
+    }
+
+    /**
+     * The tool set a delegated run was granted.
+     *
+     * INTERSECTED AGAIN HERE, NOT TRUSTED BLINDLY. The caller passed what the policy resolved, and
+     * the registry is the authority on what exists; a granted name that no longer resolves is
+     * dropped rather than handed to the model as a tool it can call and be refused on. The question
+     * tool is still added, because a delegated agent that cannot ask is an agent that guesses.
+     */
+    fun allowedToolsFrom(agent: GuruAgent, granted: Set<String>): List<ToolDefinition> {
+        val ask = toolRegistry.getDefinition(AgentToolDefinitions.ASK_ASSISTANT)
+        val resolved = granted
+            .filter { it.isNotBlank() }
+            .filter { it !in NEVER_SPAWNABLE }
+            .mapNotNull { name -> toolRegistry.getDefinition(name) }
+        return if (ask == null) resolved else listOf(ask) + resolved.filter { it.name != ask.name }
     }
 
     /**

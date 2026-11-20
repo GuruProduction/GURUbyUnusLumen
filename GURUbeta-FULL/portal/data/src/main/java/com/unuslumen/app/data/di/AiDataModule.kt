@@ -400,6 +400,21 @@ val aiDataModule = module {
             get(),
         )
     }
+    /*
+     * THE DELEGATION SERVICE, A SINGLETON FOR THE SAME REASON AS THE BROKER.
+     *
+     * It resolves the parent's depth and child count from the rows and then starts a child. Two
+     * instances would be two objects asking the same questions of the same tables, which is harmless
+     * but pointless, and one keeps the graph honest about there being one route to delegation.
+     */
+    single {
+        com.unuslumen.app.data.agents.AgentDelegationService(
+            get(),
+            get(),
+            get(),
+            get(),
+        )
+    }
     factory {
         com.unuslumen.app.data.agents.AgentRuntime(
             get(),
