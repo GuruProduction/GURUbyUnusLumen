@@ -1818,6 +1818,94 @@ class AgentRuntime(
                          */
                         val telemetryForThisCall = runTelemetry(session.id) as AgentRunToolTelemetry
 
+                        /*
+                         * THE APPROVAL GATE, WHICH IS THE POINT THE WHOLE APPROVAL SYSTEM WAS
+                         * MISSING.
+                         *
+                         * An approval could be requested, stored, decided and recorded, and this
+                         * loop ran every tool regardless. The gate is what puts it in the way.
+                         *
+                         * THE FINGERPRINT IS OVER THE TOOL AND ITS REPAIRED ARGUMENTS, which is the
+                         * action itself rather than a description of it. A yes for one send cannot
+                         * authorise a different one, because the second call produces a different
+                         * seed.
+                         *
+                         * A REFUSED CALL NEVER REACHES THE DISPATCHER. It returns an error to the
+                         * model carrying the reason, so the agent learns it is waiting rather than
+                         * concluding the tool is broken.
+                         */
+                        val approvalSeed = "$toolName|$argsJson"
+                        val granted = runCatching {
+                            broker.grantedApprovalFor(session.id, toolName, approvalSeed)
+                        }.getOrNull()
+                        val pendingApproval = runCatching {
+                            broker.pendingApprovalFor(session.id, toolName, approvalSeed)
+                        }.getOrNull()
+
+                        val gate = com.unuslumen.app.domain.agents.AgentApprovalGate.evaluate(
+                            com.unuslumen.app.domain.agents.AgentApprovalGate.Request(
+                                toolName = toolName,
+                                requiredFor = agent.autonomy.requireApprovalFor,
+                                useToolsWithoutAsking = agent.autonomy.useDeclaredToolsWithoutAsking,
+                                alreadyGranted = granted != null,
+                                alreadyPending = pendingApproval != null,
+                            )
+                        )
+
+                        /*
+                         * A CALL THE GATE HOLDS IS RECORDED AND RETURNED, NOT DISPATCHED.
+                         *
+                         * ASK FILES the approval request, which moves the run to WAITING_FOR_USER and
+                         * puts the six facts in front of the person. BLOCKED files nothing, because a
+                         * question is already out and asking again would be a duplicate.
+                         *
+                         * THE MODEL IS TOLD THE TRUTH. It learns it is waiting on a decision rather
+                         * than that the tool failed, so it stops and says so instead of retrying.
+                         */
+                        if (gate.verdict != com.unuslumen.app.domain.agents.AgentApprovalGate.Verdict.PROCEED) {
+                            if (gate.verdict == com.unuslumen.app.domain.agents.AgentApprovalGate.Verdict.ASK) {
+                                runCatching {
+                                    broker.requestApproval(
+                                        runId = session.id,
+                                        action = toolName,
+                                        what = "$toolName on your device",
+                                        why = gate.reason,
+                                        affected = call.content.take(500),
+                                        reversible = toolName !in
+                                            com.unuslumen.app.domain.agents.AgentApprovalGate.DEFAULT_ALWAYS_ASK,
+                                        consequences =
+                                            "This runs on this device and may not be undoable.",
+                                        requestedPermission = gate.matchedTrigger?.label
+                                            ?: "approval.$toolName",
+                                        fingerprintSeed = approvalSeed,
+                                    )
+                                }
+                            }
+                            ledger.append(
+                                session.id,
+                                AgentRunLedger.EventDraft(
+                                    eventType = com.unuslumen.app.database.entity.AgentRunEventEntity.TOOL_CALL_REFUSED,
+                                    actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_RUNTIME,
+                                    actorId = agent.id,
+                                    payload = jsonObject {
+                                        put("invocationId", invocationId)
+                                        put("tool", toolName)
+                                        put("reason", gate.reason)
+                                        put("kind", "AWAITING_APPROVAL")
+                                    },
+                                )
+                            )
+                            RefusedResult(
+                                """{"status":"awaiting_approval","reason":${jsonString(gate.reason)}}"""
+                            )
+                        }
+
+                        // A GRANT IS SPENT BY THE CALL IT AUTHORISED, so one yes cannot authorise an
+                        // unbounded number of the same action.
+                        if (granted != null) {
+                            runCatching { broker.consumeApproval(granted.approvalId) }
+                        }
+
                         when (val prepared = toolDispatcher.prepare(
                             toolName,
                             argsJson,

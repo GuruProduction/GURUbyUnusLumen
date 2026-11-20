@@ -89,6 +89,9 @@ class AgentDelegationWiringTest {
             context = context,
             ledger = ledger,
             broker = broker,
+            // A MOCK, because this test is about tool resolution rather than memory. The real
+            // service has its own tests, and a mock here keeps the subject single.
+            memory = io.mockk.mockk(relaxed = true),
         )
     }
 

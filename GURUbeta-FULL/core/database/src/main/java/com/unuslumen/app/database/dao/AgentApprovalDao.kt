@@ -65,6 +65,22 @@ interface AgentApprovalDao {
         note: String?,
     ): Int
 
+    /**
+     * Spend a granted approval.
+     *
+     * CONDITIONAL ON THE STATE STILL BEING APPROVED, and that condition is the whole point. `decide`
+     * above only fires against a PENDING row, so reusing it to consume a grant silently did nothing:
+     * the row stayed APPROVED and the same yes authorised every later call of the same kind. The test
+     * that caught this was written against a real database, which is the only place the difference
+     * between "the write ran" and "the write changed a row" is observable.
+     */
+    @Query(
+        "UPDATE agent_approvals SET state = 'CANCELLED', decided_by = :by, " +
+            "decided_at = :at, decision_note = :note " +
+            "WHERE approval_id = :approvalId AND state = 'APPROVED'"
+    )
+    suspend fun consumeGrant(approvalId: String, by: String, at: Long, note: String): Int
+
     @Query("SELECT COUNT(*) FROM agent_approvals WHERE state = 'PENDING'")
     suspend fun pendingCount(): Int
 }

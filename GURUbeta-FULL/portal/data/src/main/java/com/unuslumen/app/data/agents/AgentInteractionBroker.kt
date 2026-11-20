@@ -346,6 +346,73 @@ class AgentInteractionBroker(
         decide(approvalId, approved, decidedBy, note)?.toApprovalView()
 
     /**
+     * Is there an approved, unspent approval for this exact action?
+     *
+     * THE CHECK THE GATE CALLS. It recomputes the fingerprint from what is about to run rather than
+     * trusting a stored one, so an approval granted for one send cannot authorise a different one.
+     * Returns the approval id when one covers this action, which is what lets the caller mark it
+     * spent.
+     */
+    suspend fun grantedApprovalFor(runId: String, action: String, fingerprintSeed: String): AgentApprovalEntity? {
+        val seed = fingerprint(fingerprintSeed)
+        return approvalDao.forRun(runId).firstOrNull { approval ->
+            approval.action == action &&
+                approval.state == AgentApprovalEntity.STATE_APPROVED &&
+                approval.actionFingerprint == seed
+        }
+    }
+
+    /**
+     * Is a request for this exact action already waiting on a person?
+     *
+     * ASKING TWICE IS A FAILURE TO REMEMBER. Without this the agent would file a second request for
+     * something already pending, and the person would see the same question repeated.
+     */
+    suspend fun pendingApprovalFor(runId: String, action: String, fingerprintSeed: String): AgentApprovalEntity? {
+        val seed = fingerprint(fingerprintSeed)
+        return approvalDao.forRun(runId).firstOrNull { approval ->
+            approval.action == action &&
+                approval.state == AgentApprovalEntity.STATE_PENDING &&
+                approval.actionFingerprint == seed
+        }
+    }
+
+    /**
+     * A grant is consumed by the call it authorised.
+     *
+     * THE ONE-YES-ONE-ACTION RULE. An approval that stayed approved would authorise every future send
+     * of the same kind, and the owner would have said yes once for an unbounded number of actions.
+     * Marking it cancelled-on-use is the narrowest way to spend it: the row stays, with a decision
+     * recorded, and it can never be matched again.
+     */
+    suspend fun consumeApproval(approvalId: String) {
+        val existing = approvalDao.approval(approvalId) ?: return
+        // THE GRANT-SPECIFIC UPDATE, because `decide` only fires against a PENDING row and would
+        // leave an APPROVED one untouched. That silent no-op was a real defect and the enforcement
+        // test caught it.
+        val changed = approvalDao.consumeGrant(
+            approvalId = approvalId,
+            by = AgentMessageEntity.AUTHOR_SYSTEM,
+            at = System.currentTimeMillis(),
+            note = "spent by the call it authorised",
+        )
+        if (changed != 1) return
+        runCatching {
+            ledger.append(
+                existing.runId,
+                AgentRunLedger.EventDraft(
+                    eventType = com.unuslumen.app.domain.agents.AgentEventTypes.QUESTION_ANSWERED,
+                    actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_RUNTIME,
+                    payload = buildJson {
+                        put("kind", "APPROVAL_CONSUMED")
+                        put("approvalId", approvalId)
+                    },
+                )
+            )
+        }
+    }
+
+    /**
      * What is waiting on a person. Oldest first, so the oldest is answered first.
      *
      * RETURNS THE DOMAIN VIEW, NOT THE ENTITY. A UI module must be able to ask this question without
