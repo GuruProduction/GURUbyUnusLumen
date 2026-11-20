@@ -104,6 +104,7 @@ import com.unuslumen.app.database.dao.AgentMessageDao
 import com.unuslumen.app.database.dao.AgentRunCheckpointDao
 import com.unuslumen.app.database.dao.AgentRunDao
 import com.unuslumen.app.database.dao.AgentRunEventDao
+import com.unuslumen.app.database.dao.AgentScheduleDao
 import com.unuslumen.app.database.dao.FabricDao
 import com.unuslumen.app.database.dao.HeartbeatBookingDao
 import com.unuslumen.app.database.dao.HeartbeatPromptDao
@@ -116,6 +117,7 @@ import com.unuslumen.app.database.entity.AgentMessageEntity
 import com.unuslumen.app.database.entity.AgentRunCheckpointEntity
 import com.unuslumen.app.database.entity.AgentRunEntity
 import com.unuslumen.app.database.entity.AgentRunEventEntity
+import com.unuslumen.app.database.entity.AgentScheduleEntity
 
 @Database(
     entities = [
@@ -192,8 +194,12 @@ import com.unuslumen.app.database.entity.AgentRunEventEntity
         // What a run produced, and what it was given. The two ends of "why does this exist".
         AgentArtefactEntity::class,
         AgentContextReferenceEntity::class,
+        // A standing instruction: which agent, what job, and when it should next run on its own.
+        // A table rather than an alarm, because the heartbeat fires the assistant and a schedule
+        // starts an agent, and one alarm cannot mean both.
+        AgentScheduleEntity::class,
     ],
-    version = 39
+    version = 40
 )
 @TypeConverters(DBConverters::class)
 abstract class guruDatabase: RoomDatabase() {
@@ -250,6 +256,7 @@ abstract class guruDatabase: RoomDatabase() {
     abstract fun agentApprovalDao(): AgentApprovalDao
     abstract fun agentArtefactDao(): AgentArtefactDao
     abstract fun agentContextReferenceDao(): AgentContextReferenceDao
+    abstract fun agentScheduleDao(): AgentScheduleDao
 
     companion object {
         const val DATABASE_NAME = "guru_db"

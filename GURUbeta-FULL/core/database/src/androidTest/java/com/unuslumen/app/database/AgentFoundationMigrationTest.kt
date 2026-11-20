@@ -95,6 +95,7 @@ class AgentFoundationMigrationTest {
             com.unuslumen.app.database.migrations.MIGRATION_36_37,
             com.unuslumen.app.database.migrations.MIGRATION_37_38,
             com.unuslumen.app.database.migrations.MIGRATION_38_39,
+            com.unuslumen.app.database.migrations.MIGRATION_39_40,
         )
 
         migrated.use { db ->
@@ -348,6 +349,7 @@ class AgentFoundationMigrationTest {
             com.unuslumen.app.database.migrations.MIGRATION_36_37,
             com.unuslumen.app.database.migrations.MIGRATION_37_38,
             com.unuslumen.app.database.migrations.MIGRATION_38_39,
+            com.unuslumen.app.database.migrations.MIGRATION_39_40,
         )
 
         migrated.use { db ->
@@ -524,6 +526,7 @@ class AgentFoundationMigrationTest {
             true,
             com.unuslumen.app.database.migrations.MIGRATION_37_38,
             com.unuslumen.app.database.migrations.MIGRATION_38_39,
+            com.unuslumen.app.database.migrations.MIGRATION_39_40,
         )
 
         migrated.use { db ->
@@ -725,6 +728,7 @@ class AgentFoundationMigrationTest {
             guruDatabase.SCHEMA_VERSION,
             true,
             com.unuslumen.app.database.migrations.MIGRATION_38_39,
+            com.unuslumen.app.database.migrations.MIGRATION_39_40,
         )
 
         migrated.use { db ->
@@ -783,6 +787,97 @@ class AgentFoundationMigrationTest {
                     assertTrue(c.moveToFirst())
                     assertEquals("$table must not outlive its conversation", 0, c.getInt(0))
                 }
+            }
+        }
+        helper.closeWhenFinished(migrated)
+    }
+
+    /**
+     * The Phase 8 migration: schedules exist, and one schedule's window can only be taken once.
+     *
+     * THE CONDITIONAL ADVANCE IS THE WHOLE SAFETY OF SCHEDULED WORK. Two runners — a worker and a
+     * manual trigger, or one worker and a restart — can both see the same window as due. If both
+     * could advance it, the same job would start twice, and the second start would carry real side
+     * effects for work nobody asked for twice. The update names the due time it expects to replace,
+     * so exactly one succeeds.
+     */
+    @Test
+    fun migrationFrom39To40AddsSchedulesAndOnlyOneRunnerCanTakeAWindow() {
+        helper.createDatabase(databaseName, 39).use { db ->
+            db.execSQL(
+                """
+                INSERT INTO conversations (id, title, created_date, updated_date, message_count)
+                VALUES ('conv-p8', 'a conversation', 1, 1, 0)
+                """.trimIndent()
+            )
+        }
+
+        val migrated = helper.runMigrationsAndValidate(
+            databaseName,
+            guruDatabase.SCHEMA_VERSION,
+            true,
+            com.unuslumen.app.database.migrations.MIGRATION_39_40,
+        )
+
+        migrated.use { db ->
+            // The pre-existing conversation survived: the migration touched nothing that existed.
+            db.query("SELECT title FROM conversations WHERE id = 'conv-p8'").use { c ->
+                assertTrue("an existing conversation must survive", c.moveToFirst())
+                assertEquals("a conversation", c.getString(0))
+            }
+
+            // The new table accepts a row, with its defaults.
+            db.execSQL(
+                """
+                INSERT INTO agent_schedules (schedule_id, agent_id, agent_slug, title, assignment,
+                    interval_millis, next_due_at, created_at, updated_at)
+                VALUES ('sch-1', 'agent-1', 'grafter', 'the morning sweep', 'check the thing',
+                    3600000, 5000, 1, 1)
+                """.trimIndent()
+            )
+            db.query(
+                "SELECT enabled, missed_count, next_due_at, conversation_id FROM agent_schedules " +
+                    "WHERE schedule_id = 'sch-1'"
+            ).use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("a schedule starts armed", 1, c.getInt(0))
+                assertEquals("and with no missed windows", 0, c.getInt(1))
+                assertEquals(5000L, c.getLong(2))
+                assertTrue("no conversation exists until the first run", c.isNull(3))
+            }
+
+            /*
+             * THE RACE, PROVED RATHER THAN DESCRIBED. Both runners see the same due time; the first
+             * update matches it and moves it, so the second matches nothing. One window, one run.
+             */
+            db.execSQL(
+                "UPDATE agent_schedules SET next_due_at = 3605000, last_run_id = 'run-a' " +
+                    "WHERE schedule_id = 'sch-1' AND next_due_at = 5000"
+            )
+            db.execSQL(
+                "UPDATE agent_schedules SET next_due_at = 3605000, last_run_id = 'run-b' " +
+                    "WHERE schedule_id = 'sch-1' AND next_due_at = 5000"
+            )
+            db.query("SELECT last_run_id, next_due_at FROM agent_schedules WHERE schedule_id = 'sch-1'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(
+                    "the second runner must not have taken the window",
+                    "run-a",
+                    c.getString(0),
+                )
+                assertEquals(3605000L, c.getLong(1))
+            }
+
+            // A disabled schedule has no next due time, so nothing can find it due.
+            db.execSQL(
+                "UPDATE agent_schedules SET enabled = 0, next_due_at = NULL WHERE schedule_id = 'sch-1'"
+            )
+            db.query(
+                "SELECT COUNT(*) FROM agent_schedules WHERE enabled = 1 AND next_due_at IS NOT NULL " +
+                    "AND next_due_at <= 99999999"
+            ).use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("a disarmed schedule is never due", 0, c.getInt(0))
             }
         }
         helper.closeWhenFinished(migrated)
@@ -940,6 +1035,7 @@ class AgentFoundationMigrationTest {
             com.unuslumen.app.database.migrations.MIGRATION_36_37,
             com.unuslumen.app.database.migrations.MIGRATION_37_38,
             com.unuslumen.app.database.migrations.MIGRATION_38_39,
+            com.unuslumen.app.database.migrations.MIGRATION_39_40,
         )
     }
 }

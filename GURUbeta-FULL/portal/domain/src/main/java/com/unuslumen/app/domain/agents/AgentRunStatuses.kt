@@ -71,6 +71,40 @@ object AgentRunStatuses {
 }
 
 /**
+ * The rules a schedule is held to, as numbers the domain owns.
+ *
+ * WHY THE CONSTANTS LIVE HERE RATHER THAN ON THE ENTITY. The layering runs database → domain, so a
+ * domain test cannot see an entity and a domain rule cannot quote one. These two values are product
+ * decisions about how often an agent may work unattended and how late a missed window may still be
+ * honoured, so they belong to the domain; the entity references them, which keeps one spelling of
+ * each number and lets both sides be tested.
+ */
+object AgentScheduleRules {
+
+    /**
+     * The shortest interval a schedule may have.
+     *
+     * ARITHMETIC, NOT PATERNALISM. A schedule due every second is due again before the first run can
+     * finish, so the sweep would start work faster than anything completes and the queue would grow
+     * without bound. One minute is the shortest interval at which a run has any chance of finishing
+     * before the next window opens.
+     */
+    const val MIN_INTERVAL_MILLIS: Long = 60_000L
+
+    /**
+     * How late a window may still start a run.
+     *
+     * A WINDOW MISSED BY MORE THAN THIS IS COUNTED, NOT RUN. Long enough to absorb a device that was
+     * asleep or busy, short enough that the work is still about the world it was scheduled for.
+     * Starting hours of queued work at once is worse than saying the device was away.
+     */
+    const val MAX_LATE_MILLIS: Long = 15 * 60_000L
+
+    /** Whether a window that fell due this long ago is still worth starting now. */
+    fun isStillWorthRunning(dueAt: Long, now: Long): Boolean = now - dueAt <= MAX_LATE_MILLIS
+}
+
+/**
  * Who can speak in a run's conversation.
  *
  * HERE FOR THE SAME REASON AS THE STATUSES, AND WITH MORE AT STAKE. The specification's section 2.5
