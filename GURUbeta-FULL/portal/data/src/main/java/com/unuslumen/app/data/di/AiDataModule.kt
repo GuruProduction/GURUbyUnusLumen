@@ -435,6 +435,7 @@ val aiDataModule = module {
             get<Context>(),
             get(),
             get(),
+            get(),
         )
     }
     factory { EmailToolExecutor(get<Context>()) }

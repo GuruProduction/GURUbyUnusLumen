@@ -168,12 +168,16 @@ service from the runtime, not making the check real.
 
 ## 7. What is not built, and why
 
-**The memory lane exists and is not yet called from the spawn path.** `AgentMemoryService` reads and
-writes the real Cerebrum brain through `BrainService`, enforces the agent's `AgentMemoryScope` in code
-rather than in a prompt, records each retrieval as a context reference, and attributes every write to
-the agent that made it. It is tested on its own. What it is not yet wired into is `AgentRuntime`, so
-an agent's turns do not currently consult it. That is a wiring job rather than a design one, and it is
-the largest remaining gap.
+**Agents have a memory lane, and it is called at spawn.** `AgentMemoryService` reads and writes the
+real Cerebrum brain through `BrainService`, enforces the agent's `AgentMemoryScope` in code rather
+than in a prompt, records each retrieval as a context reference, and attributes every write to the
+agent that made it. `AgentRuntime.spawn` now fetches what the agent already knows and puts it in the
+prompt before the first model call.
+
+What is not done there is narrower: an agent does not yet *write* memory from inside a run. A run
+reads its own memory and shared memory as permitted, and nothing in the loop chooses to record a fact.
+That is the next increment, and unlike the earlier state it is a policy question (when should an agent
+decide something is worth remembering) rather than a wiring one.
 
 **No plan events are emitted.** The Agent Room has a plan area and `PlanStepView` with five states,
 and nothing ever writes a step: the runtime has no plan producer and the assembler returns an empty

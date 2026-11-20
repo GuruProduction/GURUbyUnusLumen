@@ -104,6 +104,14 @@ class AgentRuntime(
      * that shows something different from what the agent was actually told.
      */
     private val broker: AgentInteractionBroker,
+    /**
+     * The agent's memory lane.
+     *
+     * INJECTED SO A RUN CAN CONSULT WHAT THE AGENT ALREADY KNOWS. Without it every job starts cold,
+     * which is the difference between a worker and a stateless call. The scope check lives inside
+     * the service, so this only ever receives what the agent is permitted to see.
+     */
+    private val memory: AgentMemoryService,
 ) {
 
     companion object {
@@ -528,7 +536,34 @@ class AgentRuntime(
         } else {
             allowedTools(agent)
         }
-        val resolvedPrompt = buildSystemPrompt(agent, allowed)
+
+        /*
+         * WHAT THIS AGENT ALREADY KNOWS, FETCHED BEFORE THE FIRST PROMPT.
+         *
+         * A run that consults no memory starts every job cold, which is the difference between a
+         * worker and a stateless call. The retrieval is scoped by the agent's own memory scope
+         * inside the service, so this receives only what it is permitted to see, and an agent with
+         * no scope gets nothing without the brain being asked at all.
+         *
+         * A FAILURE HERE DOES NOT STOP THE JOB. A brain that will not answer means the agent works
+         * without its memory, which is better than refusing to work. The agent is not told the
+         * search failed, because "I could not read my memory" in a prompt invites it to speculate
+         * about what it might have forgotten.
+         */
+        val remembered = runCatching { memory.search(agent, runId, job) }.getOrNull()
+        val memoryBlock = remembered?.facts?.takeIf { it.isNotEmpty() }?.let { facts ->
+            buildString {
+                appendLine()
+                appendLine("WHAT YOU ALREADY KNOW FROM PREVIOUS WORK:")
+                facts.forEach { fact -> appendLine("- ${fact.text.take(500)}") }
+                appendLine(
+                    "Treat it as context you gathered yourself. Correct it if this job shows it is " +
+                        "wrong, and do not re-do what it already tells you."
+                )
+            }
+        }
+
+        val resolvedPrompt = buildSystemPrompt(agent, allowed) + (memoryBlock ?: "")
 
         // THE RUN IS WRITTEN BEFORE THE FIRST MODEL CALL, NOT AFTER THE LAST.
         // A run recorded only on completion records nothing for the runs that matter
