@@ -209,6 +209,14 @@ class AgentRuntime(
         const val PLANNING_CREATE = "createPlan"
         const val PLANNING_UPDATE = "updatePlanStep"
 
+        /**
+         * The decision tool's name, duplicated for the same reason as the planning pair.
+         *
+         * PINNED BY A TEST against `DecisionToolDefinitions.RECORD_DECISION`, so a rename on either
+         * side fails a build rather than silently stopping the record.
+         */
+        const val DECISION_RECORD = "recordDecision"
+
         /** Shared so every component in this process reports the same lease owner. */
         @Volatile
         private var processLeaseOwner: String? = null
@@ -345,6 +353,14 @@ class AgentRuntime(
         var compactions: Int = 0,
         /** How many plan revisions this run has recorded, so each one is numbered. */
         var planRevision: Int = 0,
+        /**
+         * How many decisions this run has recorded, so each one is numbered.
+         *
+         * NUMBERED PER RUN, NOT PER ROUND. A reader asking "the third thing it decided" gets an
+         * answer without joining anything, and the numbering survives a resume because it is
+         * carried in the checkpoint.
+         */
+        var decisionCount: Int = 0,
         /**
          * Set when a person has asked this run to stop for now.
          *
@@ -1154,6 +1170,13 @@ class AgentRuntime(
             exchangeCount = exchanges,
             pendingQuestion = pending,
             notebook = notebook,
+            /*
+             * THE NUMBERING CARRIES ON RATHER THAN RESTARTING. Two decisions numbered 1 in one run
+             * would make "the third thing it decided" unanswerable, and a plan revision count that
+             * reset would make the history show ten first plans.
+             */
+            planRevision = readCheckpointField(state, "planRevision")?.toIntOrNull() ?: 0,
+            decisionCount = readCheckpointField(state, "decisionCount")?.toIntOrNull() ?: 0,
             /*
              * THE LIMITS TRAVEL WITH THE RESTORE, and the clock starts now rather than at the
              * original spawn. A run that sat paused or interrupted for an hour was not working for
@@ -2016,6 +2039,19 @@ class AgentRuntime(
              */
             recordPlanRevisions(session, agent, toolCalls)
 
+            /*
+             * A DECISION THE AGENT WROTE BECOMES A RECORDED FACT.
+             *
+             * EMITTED FROM THE PROPOSAL, LIKE THE PLAN, and for the same reason: the arguments are
+             * the agent's own words about its intent, and reading them back out of a tool's reply
+             * would let the reply's formatting decide what the record says.
+             *
+             * IT IS NOT THE REASONING CHANNEL AND MUST NEVER BE CONFUSED WITH IT. Reasoning is what
+             * the provider emitted; this is what the agent chose to say it decided. A model with no
+             * reasoning channel still produces decisions, which is exactly why this exists.
+             */
+            recordDecisions(session, agent, toolCalls)
+
             onEvent?.invoke("${agent.name} is using ${toolCalls.size} tool(s), round $rounds")
 
             // ONE ROUND CHECKPOINT, BEFORE THE FIRST DISPATCH.
@@ -2670,6 +2706,22 @@ class AgentRuntime(
                     "repeat what it says you already did, and carry on. Nothing you " +
                     "discovered is lost; the note says which tool returned what."
             )
+            /*
+             * A TOOL THE AGENT DOES NOT KNOW IT HAS IS A TOOL IT NEVER CALLS. The definition alone
+             * tells the model the verb exists; this tells it when the verb is worth using, which is
+             * the difference between a record that gets written and one that stays empty while
+             * somebody wonders why the reasoning tab is blank.
+             */
+            if (allowed.any { it.name == DECISION_RECORD }) {
+                appendLine(
+                    "RECORD THE FORKS YOU TAKE. When you choose an approach, change direction, or " +
+                        "reach a conclusion that matters, call recordDecision with what you decided " +
+                        "and why. A person reading this afterwards can check your reasoning rather " +
+                        "than only your answer, and a decision with no stated reason is worth very " +
+                        "little to them. Do not narrate every step; record the moments where you " +
+                        "picked one route over another."
+                )
+            }
             appendLine(toolLine)
             if (agent.description.isNotBlank()) {
                 appendLine("Your role: ${agent.description}")
@@ -2906,6 +2958,14 @@ class AgentRuntime(
         put("pendingQuestion", session.pendingQuestion)
         put("notebook", session.notebook)
         put("compactionCount", session.compactions)
+        /*
+         * THE COUNTERS SURVIVE THE RESUME, OR THE NUMBERING RESTARTS AND TWO DECISIONS CLAIM TO
+         * BE THE FIRST. A reader asking for "the third decision this run made" would get one of
+         * several. These are cheap fields and the alternative is a history that lies about its own
+         * ordering.
+         */
+        put("planRevision", session.planRevision)
+        put("decisionCount", session.decisionCount)
         put("systemPrompt", session.systemPrompt)
         put("messageCount", session.messages.size)
         /*
@@ -3005,6 +3065,62 @@ class AgentRuntime(
         }
     }
 
+
+    /**
+     * Turn any decision tool call in this round into a recorded fact.
+     *
+     * A DECISION IS AN APPENDED EVENT, NOT A NOTE AND NOT A SUMMARY. It carries the fields the
+     * specification names, in the agent's own words, so a reader can disagree with the reasoning
+     * rather than only with the conclusion. The record survives because it is in the ledger, which
+     * is the same guarantee every other fact about the run has.
+     *
+     * A RECORD MISSING ITS DECISION IS SKIPPED RATHER THAN FILLED IN. The executor already refuses
+     * that shape with a sentence the model can act on, so reaching here without one means the call
+     * was malformed in a way the model was told about; inventing a placeholder would put a decision
+     * in the history that nobody made.
+     */
+    private suspend fun recordDecisions(
+        session: Session,
+        agent: GuruAgent,
+        toolCalls: List<StreamFrame.ToolCallComplete>,
+    ) {
+        for (call in toolCalls) {
+            if (call.name != DECISION_RECORD) continue
+
+            val args = runCatching {
+                json.parseToJsonElement(call.content) as? JsonObject
+            }.getOrNull() ?: continue
+
+            val decision = (args["decision"] as? JsonPrimitive)?.content?.trim().orEmpty()
+            val reason = (args["reason"] as? JsonPrimitive)?.content?.trim().orEmpty()
+            if (decision.isEmpty() || reason.isEmpty()) continue
+
+            session.decisionCount += 1
+
+            runCatching {
+                ledger.append(
+                    session.id,
+                    AgentRunLedger.EventDraft(
+                        eventType = com.unuslumen.app.domain.agents.AgentEventTypes.DECISION_RECORDED,
+                        actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_AGENT,
+                        actorId = agent.id,
+                        payload = jsonObject {
+                            put("decision", decision)
+                            put("problem", (args["problem"] as? JsonPrimitive)?.content.orEmpty())
+                            put("approach", (args["approach"] as? JsonPrimitive)?.content.orEmpty())
+                            put("alternatives", (args["alternatives"] as? JsonPrimitive)?.content.orEmpty())
+                            put("reason", reason)
+                            put("evidence", (args["evidence"] as? JsonPrimitive)?.content.orEmpty())
+                            put("uncertainty", (args["uncertainty"] as? JsonPrimitive)?.content.orEmpty())
+                            put("next", (args["next"] as? JsonPrimitive)?.content.orEmpty())
+                            put("roundIndex", session.rounds)
+                            put("sequence", session.decisionCount)
+                        },
+                    )
+                )
+            }
+        }
+    }
 
     private fun jsonString(value: String): String = buildString {
         append('"')

@@ -23,6 +23,7 @@ import com.unuslumen.app.data.tools.SettingsToolDefinitions
 import com.unuslumen.app.data.tools.IntentToolDefinitions
 import com.unuslumen.app.data.tools.SshToolDefinitions
 import com.unuslumen.app.data.tools.PlanningToolDefinitions
+import com.unuslumen.app.data.tools.DecisionToolDefinitions
 import com.unuslumen.app.data.tools.ApprovalToolDefinitions
 import com.unuslumen.app.data.tools.KeyboardToolDefinitions
 import com.unuslumen.app.data.tools.CameraToolDefinitions
@@ -155,6 +156,11 @@ object GeneratedToolRegistrations {
         IntentToolDefinitions,
         SshToolDefinitions,
         PlanningToolDefinitions,
+        // The agent's own account of what it decided and why. A different kind of information
+        // from the model's reasoning channel: reasoning is whatever the provider emits and is
+        // absent on a model that has none, while a decision is a fact the agent deliberately
+        // writes and therefore exists on every model (specification section 4.2).
+        DecisionToolDefinitions,
         ApprovalToolDefinitions,
         KeyboardToolDefinitions,
         CameraToolDefinitions,

@@ -13,6 +13,7 @@ import com.unuslumen.app.database.entity.AgentRunEventEntity
 import com.unuslumen.app.domain.agents.AgentRoomState
 import com.unuslumen.app.domain.agents.ApprovalView
 import com.unuslumen.app.domain.agents.ArtefactView
+import com.unuslumen.app.domain.agents.DecisionView
 import com.unuslumen.app.domain.agents.PlanStepView
 import com.unuslumen.app.domain.agents.MessageView
 import com.unuslumen.app.domain.agents.ReasoningView
@@ -119,6 +120,7 @@ class AgentRoomAssembler(
             toolActivity = toolActivityFrom(events),
             messages = messages.map { it.toView(run.agentName) },
             reasoning = reasoningFrom(events, effective, run.reasoningCaptureEnabledAtStart),
+            decisions = decisionsFrom(events),
             contextSupplied = contextCounts(run.runId).first,
             contextOffered = contextCounts(run.runId).second,
             artefacts = artefacts.map {
@@ -284,6 +286,43 @@ class AgentRoomAssembler(
                 )
             }
     }
+
+    /**
+     * What the agent said it decided, in the order it said it.
+     *
+     * READ FROM THE LEDGER, NOT FROM THE CONVERSATION AND NOT FROM THE REASONING. A decision is an
+     * event the agent deliberately wrote; reconstructing one out of a message or out of reasoning
+     * prose would be inventing a record from text that was never meant to be one, which the
+     * specification forbids in the same breath as it requires the record.
+     *
+     * ORDERED BY THE RUN'S OWN SEQUENCE, not by when the row was written. The two are almost always
+     * the same and the sequence is the field that actually means "the third decision", so it is the
+     * one used.
+     */
+    private fun decisionsFrom(events: List<AgentRunEventEntity>): List<DecisionView> =
+        events
+            .filter { it.eventType == com.unuslumen.app.domain.agents.AgentEventTypes.DECISION_RECORDED }
+            .mapNotNull { event ->
+                val payload = readObject(event.payloadJson) ?: return@mapNotNull null
+                val decision = stringOf(payload, "decision") ?: return@mapNotNull null
+                DecisionView(
+                    sequence = stringOf(payload, "sequence")?.toIntOrNull() ?: 0,
+                    decision = decision,
+                    problem = stringOf(payload, "problem").orEmpty(),
+                    approach = stringOf(payload, "approach").orEmpty(),
+                    alternatives = stringOf(payload, "alternatives")
+                        .orEmpty()
+                        .split('|')
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() },
+                    reason = stringOf(payload, "reason").orEmpty(),
+                    evidence = stringOf(payload, "evidence").orEmpty(),
+                    uncertainty = stringOf(payload, "uncertainty").orEmpty(),
+                    next = stringOf(payload, "next").orEmpty(),
+                    at = event.occurredAt,
+                )
+            }
+            .sortedBy { it.sequence }
 
     private fun base(invocationId: String, tool: String, event: AgentRunEventEntity) =
         ToolActivityView(

@@ -33,6 +33,7 @@ class AgentRunControlTest {
         toolActivity = emptyList(),
         messages = emptyList(),
         reasoning = ReasoningView("", true, true),
+        decisions = emptyList(),
         contextSupplied = 0,
         contextOffered = 0,
         artefacts = emptyList(),

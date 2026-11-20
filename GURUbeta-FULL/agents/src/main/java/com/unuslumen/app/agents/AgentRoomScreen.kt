@@ -509,10 +509,33 @@ private fun ToolCard(call: ToolActivityView) {
 
 private fun androidx.compose.foundation.lazy.LazyListScope.reasoning(room: AgentRoomState) {
     val run = room.run
+
+    /*
+     * DECISIONS FIRST, BECAUSE THEY EXIST ON EVERY MODEL.
+     *
+     * The two halves of this tab are different kinds of information and the specification requires
+     * them labelled as such. A decision is a fact the agent wrote deliberately, so a model with no
+     * reasoning channel still produces a full record of its thinking here. Putting reasoning above
+     * it would make the one that is often empty the headline.
+     */
+    if (run != null && run.decisions.isNotEmpty()) {
+        item("decisions-head") {
+            Text("DECISIONS IT RECORDED", style = captionStyle(9.5f, Memphis.Ink.copy(alpha = 0.7f)))
+        }
+        items(run.decisions, key = { it.sequence }) { decision -> DecisionCard(decision) }
+        item("decisions-note") {
+            Text(
+                "These are the agent's own account of what it decided and why, written as it worked.",
+                style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.55f)),
+                modifier = Modifier.padding(top = 6.dp, bottom = 14.dp),
+            )
+        }
+    }
+
     item("reasoning") {
         val reasoning = run?.reasoning
         Panel(
-            title = "REASONING",
+            title = "RAW REASONING FROM THE MODEL",
             body = when {
                 reasoning == null -> "Nothing is running."
                 // THE HONEST ANSWER WHEN THERE IS NONE. A model without a reasoning channel cannot
@@ -521,6 +544,65 @@ private fun androidx.compose.foundation.lazy.LazyListScope.reasoning(room: Agent
                 else -> reasoning.text
             },
         )
+    }
+
+    if (run != null && run.decisions.isEmpty() && !run.reasoning.hasAnything) {
+        item("nothing") {
+            Text(
+                "This run recorded no decisions and the model provided no reasoning. An agent that " +
+                    "never calls recordDecision leaves only its report, which is on the Overview tab.",
+                style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.55f)),
+                modifier = Modifier.padding(top = 10.dp),
+            )
+        }
+    }
+}
+
+/** One decision, with every field the agent filled in and nothing it left blank. */
+@Composable
+private fun DecisionCard(decision: com.unuslumen.app.domain.agents.DecisionView) {
+    MemphisSurface(
+        modifier = Modifier.fillMaxWidth().padding(top = 9.dp),
+        color = Memphis.Paper,
+        borderWidth = 2.5.dp,
+        shadowOffset = 4.dp,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(11.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "#${decision.sequence}",
+                    style = posterStyle(12f),
+                    modifier = Modifier.weight(1f),
+                )
+                Badge("DECIDED", Memphis.Lilac)
+            }
+            Text(
+                decision.decision,
+                style = captionStyle(11f, Memphis.Ink),
+                modifier = Modifier.padding(top = 5.dp),
+            )
+            /*
+             * ONLY WHAT WAS SAID. A field the agent left blank is not drawn, because an empty
+             * labelled row reads as a claim that there was nothing to say about it, which is a
+             * different fact from not having been asked.
+             */
+            if (decision.problem.isNotBlank()) Fact("Problem", decision.problem)
+            if (decision.approach.isNotBlank()) Fact("Approach", decision.approach)
+            if (decision.alternatives.isNotEmpty()) {
+                Fact("Considered", decision.alternatives.joinToString("\n"))
+            }
+            if (decision.reason.isNotBlank()) Fact("Why", decision.reason)
+            if (decision.evidence.isNotBlank()) Fact("Evidence", decision.evidence)
+            if (decision.uncertainty.isNotBlank()) Fact("Unsure", decision.uncertainty)
+            if (decision.next.isNotBlank()) Fact("Next", decision.next)
+            if (!decision.hasDetail) {
+                Text(
+                    "It gave a decision and a reason, and nothing further.",
+                    style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.5f)),
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+        }
     }
 }
 

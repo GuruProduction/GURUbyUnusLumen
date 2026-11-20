@@ -103,6 +103,17 @@ data class RunView(
     /** Reasoning the model actually provided. Empty when the provider gave none, and says so. */
     val reasoning: ReasoningView,
 
+    /**
+     * What the agent deliberately recorded as its decisions, in order.
+     *
+     * A DIFFERENT KIND OF INFORMATION FROM [reasoning], AND THE SPECIFICATION IS EXPLICIT THAT THE
+     * TWO MUST NEVER BE PRESENTED AS INTERCHANGEABLE. Reasoning is provider output: it exists only
+     * where the model emits a reasoning channel and says nothing on a model that does not. A
+     * decision is a fact the agent wrote on purpose, so it exists on every model, and it carries
+     * named fields rather than prose a reader has to interpret.
+     */
+    val decisions: List<DecisionView>,
+
     /** What the run was given, and what it was only offered. */
     val contextSupplied: Int,
     val contextOffered: Int,
@@ -229,6 +240,38 @@ data class ReasoningView(
         }
 
     val hasAnything: Boolean get() = text.isNotBlank()
+}
+
+/**
+ * One decision the agent recorded, with its reasons.
+ *
+ * THE FIELDS ARE THE SPECIFICATION'S, NOT A SUMMARY OF THEM. Section 4.1 and 4.2 name what a
+ * decision record should carry: the problem as the agent understood it, the approach, the
+ * alternatives considered, why one was chosen, the evidence, the remaining uncertainty and the
+ * intended next step. A type that flattened those into one paragraph would be a different thing
+ * wearing the same name.
+ *
+ * A BLANK OPTIONAL FIELD IS BLANK, NOT MISSING. The agent may genuinely have had nothing to say
+ * about its uncertainty, and the room renders absence rather than a placeholder sentence that
+ * reads like a claim.
+ */
+data class DecisionView(
+    /** One-based within the run, so "the third thing it decided" is answerable. */
+    val sequence: Int,
+    val decision: String,
+    val problem: String,
+    val approach: String,
+    val alternatives: List<String>,
+    val reason: String,
+    val evidence: String,
+    val uncertainty: String,
+    val next: String,
+    val at: Long,
+) {
+    /** Whether the agent said anything beyond the two required fields. */
+    val hasDetail: Boolean
+        get() = problem.isNotBlank() || approach.isNotBlank() || alternatives.isNotEmpty() ||
+            evidence.isNotBlank() || uncertainty.isNotBlank() || next.isNotBlank()
 }
 
 /** One output, with where it lives. */
