@@ -70,21 +70,51 @@ class AgentEventCoverageTest {
         )
     }
 
-    /** The four Phase 5 types must be classified as later, not quietly treated as ignorable. */
+    /**
+     * The Phase 5 communication types have a producer and a decided policy.
+     *
+     * THIS ASSERTION USED TO SAY THE OPPOSITE, AND THAT IS THE POINT. While nothing emitted these
+     * types they were classified `LaterPhase`, and the earlier version of this test required that
+     * classification so a future phase could not add a producer and forget the reader. Phase 5 is
+     * that future phase: `AgentInteractionBroker` now writes all three, and the policy changed from
+     * "no producer yet" to a decision about what a rebuilt session needs.
+     *
+     * It is updated rather than deleted because the guard is still doing its job. A policy that
+     * drifted back to `LaterPhase` would now be wrong in the other direction: it would describe an
+     * event as belonging to a phase that has already been built.
+     *
+     * `ASSIGNMENT_AMENDED` STAYS LATER, and deliberately. An amendment is carried as a message of
+     * type ASSIGNMENT_AMENDMENT, so no `ASSIGNMENT_AMENDED` event is emitted and the reducer has
+     * nothing to apply. The type is kept declared so that when a producer exists, the classification
+     * is already there.
+     */
     @Test
-    fun thePhaseFiveTypesAreMarkedLaterRatherThanIgnorable() {
+    fun thePhaseFiveCommunicationTypesHaveAProducerAndADecidedPolicy() {
         for (type in listOf(
-            AgentEventTypes.ASSIGNMENT_AMENDED,
+            AgentEventTypes.MESSAGE_CREATED,
             AgentEventTypes.MESSAGE_DELIVERED,
             AgentEventTypes.MESSAGE_DELIVERY_FAILED,
         )) {
             val policy = AgentEventTypes.RESTORE_POLICY[type]
             assertTrue(
-                "'$type' belongs to Phase 5 and must be classified LaterPhase so the reducer " +
-                    "reports it rather than ignoring it once a producer exists. Was: $policy",
-                policy is AgentEventTypes.RestorePolicy.LaterPhase,
+                "'$type' now has a producer in AgentInteractionBroker, so it must no longer be " +
+                    "classified LaterPhase. Was: $policy",
+                policy !is AgentEventTypes.RestorePolicy.LaterPhase,
+            )
+            assertTrue(
+                "'$type' still needs a stated reason, because an excluded event without one is " +
+                    "the silence this classification exists to remove. Was: $policy",
+                (policy is AgentEventTypes.RestorePolicy.NoSessionEffect) ||
+                    (policy is AgentEventTypes.RestorePolicy.Rebuilds),
             )
         }
+
+        assertTrue(
+            "ASSIGNMENT_AMENDED has no producer, because an amendment travels as a message of " +
+                "type ASSIGNMENT_AMENDMENT. It stays classified until one exists.",
+            AgentEventTypes.RESTORE_POLICY[AgentEventTypes.ASSIGNMENT_AMENDED]
+                is AgentEventTypes.RestorePolicy.LaterPhase,
+        )
     }
 
     /**

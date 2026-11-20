@@ -57,6 +57,17 @@ object AgentEventTypes {
     const val QUESTION_OPENED = "QUESTION_OPENED"
     const val QUESTION_ANSWERED = "QUESTION_ANSWERED"
 
+    // ---- artefacts ----
+    /**
+     * A run produced a persistent output.
+     *
+     * ITS OWN EVENT BECAUSE IT IS ITS OWN FACT. Without it, recording an artefact would have had to
+     * borrow a tool event, which would say a tool ran when what actually happened is that the agent
+     * wrote something. The artefact table holds the provenance; this is the point in the run's
+     * history where the output appeared.
+     */
+    const val ARTEFACT_CREATED = "ARTEFACT_CREATED"
+
     // ---- checkpoints ----
     const val CHECKPOINT_CREATED = "CHECKPOINT_CREATED"
 
@@ -71,7 +82,7 @@ object AgentEventTypes {
         TOOL_PERMISSION_GRANTED, TOOL_PERMISSION_DENIED, TOOL_CALL_STARTED, TOOL_PROGRESS,
         TOOL_CALL_COMPLETED, TOOL_CALL_FAILED, TOOL_CALL_REFUSED, TOOL_CALL_OUTCOME_UNKNOWN,
         MESSAGE_CREATED, MESSAGE_DELIVERED, MESSAGE_DELIVERY_FAILED, QUESTION_OPENED,
-        QUESTION_ANSWERED, CHECKPOINT_CREATED,
+        QUESTION_ANSWERED, ARTEFACT_CREATED, CHECKPOINT_CREATED,
     )
 
     /**
@@ -196,17 +207,42 @@ object AgentEventTypes {
         TOOL_CALL_OUTCOME_UNKNOWN to RestorePolicy.Rebuilds,
 
         // ---- communication ----
-        MESSAGE_CREATED to RestorePolicy.Rebuilds,
-        MESSAGE_DELIVERED to RestorePolicy.LaterPhase(
-            "Phase 5 adds delivery state. When a producer exists, replay must decide whether a " +
-                "delivered message enters the model context and an undelivered one does not."
+        /*
+         * MESSAGES NOW HAVE A PRODUCER, SO THEY HAVE A POLICY.
+         *
+         * These three were classified `LaterPhase` while nothing emitted them. Phase 5's broker
+         * writes them, so the classification changes from "no producer yet" to a decision about
+         * what a rebuilt session needs.
+         *
+         * A MESSAGE DOES NOT REBUILD THE SESSION. The conversation is its own table with its own
+         * ordering, and a resume rebuilds the model's context from the checkpoint's message list
+         * rather than from the ledger's record of who said what. What the events provide is the
+         * evidence that an exchange happened at a point in the run, which is a different question
+         * from what the model was holding.
+         */
+        MESSAGE_CREATED to RestorePolicy.NoSessionEffect(
+            "The agent_messages table holds the conversation with its own ordering. A resumed " +
+                "session rebuilds its context from the checkpoint's message list, and the event is " +
+                "the ledger's record that an exchange happened."
         ),
-        MESSAGE_DELIVERY_FAILED to RestorePolicy.LaterPhase(
-            "Phase 5 adds delivery failure. A message that never arrived must not appear in the " +
-                "rebuilt conversation as though it had, so this needs its own branch then."
+        MESSAGE_DELIVERED to RestorePolicy.NoSessionEffect(
+            "Delivery is a fact about the message row, which carries the same state. Rebuilding a " +
+                "session from a delivery marker would be reconstructing a conversation from its " +
+                "postal history."
+        ),
+        MESSAGE_DELIVERY_FAILED to RestorePolicy.NoSessionEffect(
+            "A message that never arrived is marked FAILED on its own row, so it cannot appear in " +
+                "the rebuilt conversation as though it had. The event is evidence, not input."
         ),
         QUESTION_OPENED to RestorePolicy.Rebuilds,
         QUESTION_ANSWERED to RestorePolicy.Rebuilds,
+
+        // ---- artefacts ----
+        ARTEFACT_CREATED to RestorePolicy.NoSessionEffect(
+            "An artefact is a durable output in its own table with its own provenance. A resumed " +
+                "session does not hold artefacts in its message list, and rebuilding them from " +
+                "their announcement would be inventing content from a title."
+        ),
 
         // ---- checkpoints ----
         CHECKPOINT_CREATED to RestorePolicy.NoSessionEffect(

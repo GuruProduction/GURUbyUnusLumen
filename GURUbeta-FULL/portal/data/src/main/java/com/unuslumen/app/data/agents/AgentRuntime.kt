@@ -96,6 +96,14 @@ class AgentRuntime(
     private val context: android.content.Context,
     /** The durable run ledger. A run that is not written down has not happened. */
     private val ledger: AgentRunLedger,
+    /**
+     * The conversation between the user, GURU and the agent.
+     *
+     * INJECTED RATHER THAN CONSTRUCTED HERE, so the messages this run exchanges are the same rows a
+     * surface reads. A runtime with its own private notion of the conversation would produce a room
+     * that shows something different from what the agent was actually told.
+     */
+    private val broker: AgentInteractionBroker,
 ) {
 
     companion object {
@@ -569,6 +577,29 @@ class AgentRuntime(
         )
         sessions[session.id] = session
 
+        /*
+         * THE CONVERSATION OPENS WITH THE BRIEF, AND IT IS MARKED PROCESSED.
+         *
+         * The run row already carries the assignment and is the authoritative copy. This is the
+         * conversation's opening message, so a room that shows the exchange has a first line
+         * rather than beginning mid-thread. It is marked processed immediately because the agent
+         * was given it as its first turn when the session was constructed; leaving it queued would
+         * make the loop inject the job a second time on its very first round.
+         */
+        runCatching {
+            val opening = broker.send(
+                session.id,
+                AgentInteractionBroker.Outgoing(
+                    authorType = com.unuslumen.app.database.entity.AgentMessageEntity.AUTHOR_GURU,
+                    recipientType = com.unuslumen.app.database.entity.AgentMessageEntity.RECIPIENT_AGENT,
+                    recipientId = agent.id,
+                    messageType = com.unuslumen.app.database.entity.AgentMessageEntity.MESSAGE_TYPE_ASSIGNMENT,
+                    content = job,
+                ),
+            )
+            opening?.let { broker.markProcessed(it.messageId) }
+        }
+
         // A SESSION THAT BEGAN SAYS SO. Until this existed the ledger could show a run
         // receiving model output with no record that a session was ever constructed, which
         // reads as work appearing from nowhere.
@@ -620,6 +651,38 @@ class AgentRuntime(
         foreground(session.id, agent.name)
 
         emit(bounded(session, onEvent))
+    }
+
+    /**
+     * Send a message to a live agent without waiting for it.
+     *
+     * THE DOOR THE USER NEEDED. Every other entry point blocks: `spawn` starts work and `resume`
+     * hands over an answer and both wait for the result. Neither can be used while a run is in
+     * flight, which is exactly when a person wants to say "no, the other one" or "here is the
+     * thing you were missing".
+     *
+     * THE MESSAGE IS QUEUED, NOT INJECTED. The loop takes it at its next round boundary, so nothing
+     * arrives in the middle of a tool call. The return value says whether it was accepted; whether
+     * it has been read yet is the message's own delivery state, which the caller can watch.
+     */
+    suspend fun steer(
+        runId: String,
+        text: String,
+        messageType: String = com.unuslumen.app.database.entity.AgentMessageEntity.MESSAGE_TYPE_INSTRUCTION,
+        authorType: String = com.unuslumen.app.database.entity.AgentMessageEntity.AUTHOR_USER,
+    ): com.unuslumen.app.database.entity.AgentMessageEntity? {
+        if (text.isBlank()) return null
+        val session = sessions[runId]
+        return broker.send(
+            runId,
+            AgentInteractionBroker.Outgoing(
+                authorType = authorType,
+                recipientType = com.unuslumen.app.database.entity.AgentMessageEntity.RECIPIENT_AGENT,
+                recipientId = session?.agent?.id,
+                messageType = messageType,
+                content = text.trim(),
+            ),
+        )
     }
 
     /**
@@ -840,6 +903,25 @@ class AgentRuntime(
 
     /** Record a resume and reopen the run, so the ledger says the work carried on. */
     private suspend fun recordResume(runId: String, answer: String) {
+        /*
+         * THE ANSWER IS A MESSAGE TOO, WITH GURU AS ITS AUTHOR.
+         *
+         * The correlation is left null because the question it answers already carries the thread
+         * id and the resume carries no reference back to it — the runtime answers one outstanding
+         * question per run by construction. Naming an author is the part that matters: an answer
+         * arriving in the conversation must not read as though the user said it.
+         */
+        runCatching {
+            broker.send(
+                runId,
+                AgentInteractionBroker.Outgoing(
+                    authorType = com.unuslumen.app.database.entity.AgentMessageEntity.AUTHOR_GURU,
+                    recipientType = com.unuslumen.app.database.entity.AgentMessageEntity.RECIPIENT_AGENT,
+                    messageType = com.unuslumen.app.database.entity.AgentMessageEntity.MESSAGE_TYPE_ANSWER,
+                    content = answer,
+                ),
+            )?.let { broker.markProcessed(it.messageId) }
+        }
         runCatching {
             ledger.append(
                 runId,
@@ -1075,6 +1157,27 @@ class AgentRuntime(
                         "is above; anything not yet done is not done.",
                 )
             }
+
+            /*
+             * WHAT THE PERSON SAID WHILE THE AGENT WAS WORKING, TAKEN IN AT A SAFE BOUNDARY.
+             *
+             * THIS IS THE HALF OF THE THREE-WAY COLLABORATION THAT WAS MISSING. Until now the only
+             * thing a person could do to a running agent was answer its own question: a correction,
+             * a new priority or a piece of information had to wait for the run to end, which is
+             * exactly when it is useless.
+             *
+             * IT IS READ HERE, BETWEEN ROUNDS, NOT DURING ONE. Nothing is in flight at this point,
+             * so an instruction cannot arrive in the middle of a tool call and cannot be acted on
+             * by half a round. Messages addressed to the agent that are still queued are appended
+             * as user turns and marked processed, so the same instruction is never delivered twice
+             * on the next round.
+             *
+             * THE ORIGINAL ASSIGNMENT IS UNTOUCHED. An amendment is a message with its own author
+             * and time, and the run row's assignment stays as it was. That is what makes "why did
+             * the work change direction" answerable later.
+             */
+            ingestPendingUserMessages(session)
+            messages = session.messages
 
             // FOLD BEFORE THE CALL, NOT AFTER. The point is to keep the request small
             // enough to start quickly, so compacting after building the prompt would
@@ -1441,6 +1544,31 @@ class AgentRuntime(
                     isFailed = false,
                 )
 
+                /*
+                 * THE QUESTION BECOMES A MESSAGE WITH AN AUTHOR AND A CORRELATION.
+                 *
+                 * Before this, the question existed only as a field on the return value and a
+                 * ledger event, so the conversation had a hole where the exchange was. Now it is a
+                 * real message from the agent, correlated to whatever will answer it, and a room
+                 * showing the exchange has both halves.
+                 */
+                val questionThreadId = Uuid.random().toString()
+                runCatching {
+                    val asked_message = broker.send(
+                        session.id,
+                        AgentInteractionBroker.Outgoing(
+                            authorType = com.unuslumen.app.database.entity.AgentMessageEntity.AUTHOR_AGENT,
+                            authorId = agent.id,
+                            recipientType = com.unuslumen.app.database.entity.AgentMessageEntity.RECIPIENT_GURU,
+                            messageType = com.unuslumen.app.database.entity.AgentMessageEntity.MESSAGE_TYPE_QUESTION,
+                            content = asked,
+                            correlationId = questionThreadId,
+                        ),
+                    )
+                    // It has been handed outward with the result, so it is delivered, not queued.
+                    asked_message?.let { broker.markDelivered(it.messageId, session.id) }
+                }
+
                 // ASKING IS A RECORDED STATE, NOT A RETURN VALUE. The run row has to say
                 // WAITING_FOR_GURU or a restart has no idea the work is paused on a
                 // question, and the lease has to be released because nothing is driving
@@ -1771,6 +1899,62 @@ class AgentRuntime(
             "${agent.name} stopped without answering or asking, which should not be possible. " +
                 "The job did not complete.",
         )
+    }
+
+    /**
+     * Turn anything the person has said into part of the agent's working context.
+     *
+     * THE MESSAGE ROW IS THE SOURCE OF TRUTH, NOT THE SESSION. Reading the session would only ever
+     * find what this loop already knows; reading the broker finds what was written while the loop
+     * was busy, which is the whole point.
+     *
+     * EACH MESSAGE IS MARKED PROCESSED IMMEDIATELY AFTER IT IS APPENDED. If the process dies between
+     * the two, the message is delivered twice on the next resume — which is the safe direction for
+     * an instruction, because repeating an instruction is recoverable and silently dropping one is
+     * not. A tool call is the opposite case and is handled by the unknown-outcome rule instead.
+     *
+     * A FAILURE HERE DOES NOT KILL THE RUN. If the broker cannot be read, the agent carries on with
+     * the context it has rather than dying on a database wobble, and the message stays queued for
+     * the next boundary.
+     */
+    private suspend fun ingestPendingUserMessages(session: Session) {
+        val pending = runCatching {
+            broker.pendingFor(session.id, com.unuslumen.app.database.entity.AgentMessageEntity.RECIPIENT_AGENT)
+        }.getOrNull().orEmpty()
+
+        if (pending.isEmpty()) return
+
+        val additions = mutableListOf<AiMessage>()
+        for (message in pending) {
+            /*
+             * ONLY THE PERSON'S OWN WORDS BECOME TURNS. An answer to a question travels through
+             * resumeAgent and is already in the session; re-injecting it here would make the agent
+             * read the same answer twice and infer that two separate answers had been given.
+             */
+            if (message.messageType == com.unuslumen.app.database.entity.AgentMessageEntity.MESSAGE_TYPE_ANSWER) {
+                runCatching { broker.markProcessed(message.messageId) }
+                continue
+            }
+
+            val framing = when (message.messageType) {
+                com.unuslumen.app.database.entity.AgentMessageEntity.MESSAGE_TYPE_ASSIGNMENT_AMENDMENT ->
+                    "THE PERSON AMENDED YOUR ASSIGNMENT. Your original brief still stands except " +
+                        "where this changes it. Take it into account from now on:\n\n"
+                com.unuslumen.app.database.entity.AgentMessageEntity.MESSAGE_TYPE_PROGRESS_REQUEST ->
+                    "THE PERSON ASKED FOR PROGRESS. Answer this in your next reply:\n\n"
+                else -> "THE PERSON SAID, WHILE YOU WERE WORKING:\n\n"
+            }
+
+            additions += AiMessage.UserMessage(
+                uuid = Uuid.random().toString(),
+                content = framing + message.content,
+                time = System.currentTimeMillis(),
+            )
+            runCatching { broker.markProcessed(message.messageId) }
+        }
+
+        if (additions.isEmpty()) return
+        session.messages = session.messages + additions
     }
 
     /**

@@ -369,6 +369,37 @@ val aiDataModule = module {
         )
     }
     single { com.unuslumen.app.data.agents.AgentRecoveryCoordinator(get(), get()) }
+    /*
+     * THE INTERACTION BROKER, AND WHY IT IS A SINGLETON.
+     *
+     * The message sequence is a read-modify-write against one run's last row, exactly as the
+     * ledger's is. Two instances would be two writers racing the same counter, and the unique
+     * index on (run_id, sequence_number) would then refuse a legitimate write with an error
+     * nobody could explain from the code that caused it.
+     */
+    single {
+        com.unuslumen.app.data.agents.AgentInteractionBroker(
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+        )
+    }
+    /*
+     * THE ARTEFACT AND CONTEXT SERVICE.
+     *
+     * A singleton because it owns no state and every call is a database write: two instances would
+     * behave identically, and one keeps the dependency graph smaller.
+     */
+    single {
+        com.unuslumen.app.data.agents.AgentArtefactService(
+            get(),
+            get(),
+            get(),
+            get(),
+        )
+    }
     factory {
         com.unuslumen.app.data.agents.AgentRuntime(
             get(),
@@ -376,6 +407,7 @@ val aiDataModule = module {
             get(),
             get(),
             get<Context>(),
+            get(),
             get(),
         )
     }

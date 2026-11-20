@@ -93,6 +93,8 @@ class AgentFoundationMigrationTest {
             true,
             com.unuslumen.app.database.migrations.MIGRATION_35_36,
             com.unuslumen.app.database.migrations.MIGRATION_36_37,
+            com.unuslumen.app.database.migrations.MIGRATION_37_38,
+            com.unuslumen.app.database.migrations.MIGRATION_38_39,
         )
 
         migrated.use { db ->
@@ -344,6 +346,8 @@ class AgentFoundationMigrationTest {
             guruDatabase.SCHEMA_VERSION,
             true,
             com.unuslumen.app.database.migrations.MIGRATION_36_37,
+            com.unuslumen.app.database.migrations.MIGRATION_37_38,
+            com.unuslumen.app.database.migrations.MIGRATION_38_39,
         )
 
         migrated.use { db ->
@@ -483,6 +487,305 @@ class AgentFoundationMigrationTest {
             )
         }
         helper.closeWhenFinished(db)
+    }
+
+    /**
+     * The Phase 5 migration: a run gains a conversation and an approval record without losing
+     * anything, and both cascade with the run.
+     *
+     * THE CASCADE IS THE IMPORTANT HALF. A message that outlives its run belongs to nothing, and a
+     * person who deletes a conversation expects the whole record to go: runs, events, checkpoints,
+     * messages and approvals. Proved here rather than assumed from the foreign key's declaration,
+     * because SQLite only enforces it when the pragma is on.
+     */
+    @Test
+    fun migrationFrom37To38AddsMessagesAndApprovalsAndTheyCascadeWithTheRun() {
+        helper.createDatabase(databaseName, 37).use { db ->
+            db.execSQL(
+                """
+                INSERT INTO conversations (id, title, created_date, updated_date, message_count)
+                VALUES ('conv-p5', 'a conversation', 1000, 2000, 0)
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                INSERT INTO agent_runs (run_id, conversation_id, agent_id, agent_name, assignment,
+                    status, agent_definition_snapshot_json, resolved_system_prompt,
+                    tool_manifest_snapshot_json, model_provider, model_name, created_at, updated_at)
+                VALUES ('run-p5', 'conv-p5', 'agent-1', 'Researcher', 'find it', 'RUNNING',
+                    '{"schemaVersion":1}', 'you research', '{"schemaVersion":1}', 'UnusLumen', 'm', 1, 1)
+                """.trimIndent()
+            )
+        }
+
+        val migrated = helper.runMigrationsAndValidate(
+            databaseName,
+            guruDatabase.SCHEMA_VERSION,
+            true,
+            com.unuslumen.app.database.migrations.MIGRATION_37_38,
+            com.unuslumen.app.database.migrations.MIGRATION_38_39,
+        )
+
+        migrated.use { db ->
+            // The pre-existing run survived the migration untouched.
+            db.query("SELECT agent_name, assignment, status FROM agent_runs WHERE run_id = 'run-p5'").use { c ->
+                assertTrue("the run must survive", c.moveToFirst())
+                assertEquals("Researcher", c.getString(0))
+                assertEquals("find it", c.getString(1))
+                assertEquals("RUNNING", c.getString(2))
+            }
+
+            // The new tables accept their first rows.
+            db.execSQL(
+                """
+                INSERT INTO agent_messages (message_id, run_id, sequence_number, author_type,
+                    recipient_type, message_type, content, created_at)
+                VALUES ('msg-1', 'run-p5', 1, 'GURU', 'AGENT', 'ASSIGNMENT', 'find it', 1000)
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                INSERT INTO agent_approvals (approval_id, run_id, action, what, why, affected,
+                    reversible, consequences, requested_permission, action_fingerprint, requested_at)
+                VALUES ('ap-1', 'run-p5', 'sendSms', 'send it', 'needed', 'one message', 0,
+                    'cannot be recalled', 'approval.external.sms', 'abc123', 1000)
+                """.trimIndent()
+            )
+
+            db.query("SELECT delivery_state FROM agent_messages WHERE message_id = 'msg-1'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(
+                    "a message defaults to QUEUED, because nothing has taken it yet",
+                    "QUEUED",
+                    c.getString(0),
+                )
+            }
+            db.query("SELECT state FROM agent_approvals WHERE approval_id = 'ap-1'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("PENDING", c.getString(0))
+            }
+
+            // Cascade: delete the conversation, and the whole record goes with it.
+            db.execSQL("PRAGMA foreign_keys = ON")
+            db.execSQL("DELETE FROM conversations WHERE id = 'conv-p5'")
+
+            for (table in listOf("agent_runs", "agent_messages", "agent_approvals")) {
+                db.query("SELECT COUNT(*) FROM $table").use { c ->
+                    assertTrue(c.moveToFirst())
+                    assertEquals(
+                        "$table must not outlive the conversation that owns it",
+                        0,
+                        c.getInt(0),
+                    )
+                }
+            }
+        }
+        helper.closeWhenFinished(migrated)
+    }
+
+    /** Two messages in one run cannot share a sequence, and one agent's sequence is its own. */
+    @Test
+    fun messageSequenceIsUniquePerRun() {
+        val db = helper.createDatabase(databaseName, guruDatabase.SCHEMA_VERSION)
+        db.execSQL(
+            """
+            INSERT INTO conversations (id, title, created_date, updated_date, message_count)
+            VALUES ('conv-m', 't', 1, 1, 0)
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            INSERT INTO agent_runs (run_id, conversation_id, agent_id, agent_name, assignment,
+                status, agent_definition_snapshot_json, resolved_system_prompt,
+                tool_manifest_snapshot_json, model_provider, model_name, created_at, updated_at)
+            VALUES ('run-a', 'conv-m', 'a', 'A', 'job', 'RUNNING', '{}', 'p', '{}', 'U', 'm', 1, 1),
+                   ('run-b', 'conv-m', 'a', 'A', 'job', 'RUNNING', '{}', 'p', '{}', 'U', 'm', 1, 1)
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            INSERT INTO agent_messages (message_id, run_id, sequence_number, author_type,
+                recipient_type, message_type, content, created_at)
+            VALUES ('m1', 'run-a', 1, 'USER', 'AGENT', 'INSTRUCTION', 'one', 1)
+            """.trimIndent()
+        )
+
+        var refused = false
+        try {
+            db.execSQL(
+                """
+                INSERT INTO agent_messages (message_id, run_id, sequence_number, author_type,
+                    recipient_type, message_type, content, created_at)
+                VALUES ('m2', 'run-a', 1, 'USER', 'AGENT', 'INSTRUCTION', 'two', 2)
+                """.trimIndent()
+            )
+        } catch (e: Exception) {
+            refused = true
+        }
+        assertTrue("two messages cannot share a sequence within one run", refused)
+
+        // A second run may hold its own sequence 1.
+        db.execSQL(
+            """
+            INSERT INTO agent_messages (message_id, run_id, sequence_number, author_type,
+                recipient_type, message_type, content, created_at)
+            VALUES ('m3', 'run-b', 1, 'USER', 'AGENT', 'INSTRUCTION', 'three', 3)
+            """.trimIndent()
+        )
+        db.query("SELECT COUNT(*) FROM agent_messages").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("message ordering is scoped to the run", 2, c.getInt(0))
+        }
+        helper.closeWhenFinished(db)
+    }
+
+    /** A decision is made once. The conditional update is what makes a second tap a no-op. */
+    @Test
+    fun anApprovalCanOnlyBeDecidedOnce() {
+        val db = helper.createDatabase(databaseName, guruDatabase.SCHEMA_VERSION)
+        db.execSQL(
+            """
+            INSERT INTO conversations (id, title, created_date, updated_date, message_count)
+            VALUES ('conv-ap', 't', 1, 1, 0)
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            INSERT INTO agent_runs (run_id, conversation_id, agent_id, agent_name, assignment,
+                status, agent_definition_snapshot_json, resolved_system_prompt,
+                tool_manifest_snapshot_json, model_provider, model_name, created_at, updated_at)
+            VALUES ('run-ap', 'conv-ap', 'a', 'A', 'job', 'WAITING_FOR_USER', '{}', 'p', '{}', 'U', 'm', 1, 1)
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            INSERT INTO agent_approvals (approval_id, run_id, action, what, why, affected,
+                reversible, consequences, requested_permission, action_fingerprint, requested_at)
+            VALUES ('ap-x', 'run-ap', 'sendSms', 'send', 'why', 'affected', 0, 'consequences',
+                'perm', 'fp', 1)
+            """.trimIndent()
+        )
+
+        // The first decision lands.
+        db.execSQL(
+            "UPDATE agent_approvals SET state = 'APPROVED', decided_by = 'USER', decided_at = 10 " +
+                "WHERE approval_id = 'ap-x' AND state = 'PENDING'"
+        )
+        db.query("SELECT state FROM agent_approvals WHERE approval_id = 'ap-x'").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("APPROVED", c.getString(0))
+        }
+
+        // The second finds nothing pending and changes nothing.
+        db.execSQL(
+            "UPDATE agent_approvals SET state = 'REJECTED', decided_by = 'USER', decided_at = 20 " +
+                "WHERE approval_id = 'ap-x' AND state = 'PENDING'"
+        )
+        db.query("SELECT state, decided_at FROM agent_approvals WHERE approval_id = 'ap-x'").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals(
+                "a second decision must not overwrite the first",
+                "APPROVED",
+                c.getString(0),
+            )
+            assertEquals(10L, c.getLong(1))
+        }
+        helper.closeWhenFinished(db)
+    }
+
+    /**
+     * The Phase 6 migration: a run gains artefacts and context provenance, and both cascade.
+     *
+     * THE TWO ENDS OF "WHY DOES THIS EXIST" ARE PROVED TOGETHER. An artefact says what was produced
+     * and by which run; a context reference says what that run was reading. Both hang off the run,
+     * so deleting the conversation takes the whole record and neither is left pointing at nothing.
+     */
+    @Test
+    fun migrationFrom38To39AddsArtefactsAndContextAndBothCascade() {
+        helper.createDatabase(databaseName, 38).use { db ->
+            db.execSQL(
+                """
+                INSERT INTO conversations (id, title, created_date, updated_date, message_count)
+                VALUES ('conv-p6', 'a conversation', 1, 1, 0)
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                INSERT INTO agent_runs (run_id, conversation_id, agent_id, agent_name, assignment,
+                    status, agent_definition_snapshot_json, resolved_system_prompt,
+                    tool_manifest_snapshot_json, model_provider, model_name, created_at, updated_at)
+                VALUES ('run-p6', 'conv-p6', 'agent-1', 'Writer', 'write it', 'RUNNING',
+                    '{"schemaVersion":1}', 'you write', '{"schemaVersion":1}', 'UnusLumen', 'm', 1, 1)
+                """.trimIndent()
+            )
+        }
+
+        val migrated = helper.runMigrationsAndValidate(
+            databaseName,
+            guruDatabase.SCHEMA_VERSION,
+            true,
+            com.unuslumen.app.database.migrations.MIGRATION_38_39,
+        )
+
+        migrated.use { db ->
+            // The pre-existing run survived.
+            db.query("SELECT agent_name FROM agent_runs WHERE run_id = 'run-p6'").use { c ->
+                assertTrue("the run must survive the migration", c.moveToFirst())
+                assertEquals("Writer", c.getString(0))
+            }
+
+            // Both new tables accept rows.
+            db.execSQL(
+                """
+                INSERT INTO agent_artefacts (artefact_id, run_id, agent_id, agent_name, title, kind,
+                    storage_kind, storage_ref, created_at)
+                VALUES ('art-1', 'run-p6', 'agent-1', 'Writer', 'the report', 'REPORT',
+                    'INLINE', 'inline-1', 1000)
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                INSERT INTO agent_context_references (reference_id, run_id, source_kind, source_ref,
+                    created_at)
+                VALUES ('ctx-1', 'run-p6', 'MEMORY', 'mem-abc', 1000)
+                """.trimIndent()
+            )
+
+            db.query("SELECT storage_kind, final_output FROM agent_artefacts WHERE artefact_id = 'art-1'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("INLINE", c.getString(0))
+                assertEquals(
+                    "an artefact defaults to being a final output",
+                    1,
+                    c.getInt(1),
+                )
+            }
+            db.query(
+                "SELECT supplied_to_model, within_scope FROM agent_context_references " +
+                    "WHERE reference_id = 'ctx-1'"
+            ).use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(
+                    "a candidate is NOT supplied until the caller says so, which is the whole " +
+                        "distinction between a retrieval and an influence",
+                    0,
+                    c.getInt(0),
+                )
+                assertEquals(1, c.getInt(1))
+            }
+
+            // Cascade: deleting the conversation takes both new tables with it.
+            db.execSQL("PRAGMA foreign_keys = ON")
+            db.execSQL("DELETE FROM conversations WHERE id = 'conv-p6'")
+
+            for (table in listOf("agent_runs", "agent_artefacts", "agent_context_references")) {
+                db.query("SELECT COUNT(*) FROM $table").use { c ->
+                    assertTrue(c.moveToFirst())
+                    assertEquals("$table must not outlive its conversation", 0, c.getInt(0))
+                }
+            }
+        }
+        helper.closeWhenFinished(migrated)
     }
 
     /**
@@ -635,6 +938,8 @@ class AgentFoundationMigrationTest {
             com.unuslumen.app.database.migrations.MIGRATION_34_35,
             com.unuslumen.app.database.migrations.MIGRATION_35_36,
             com.unuslumen.app.database.migrations.MIGRATION_36_37,
+            com.unuslumen.app.database.migrations.MIGRATION_37_38,
+            com.unuslumen.app.database.migrations.MIGRATION_38_39,
         )
     }
 }

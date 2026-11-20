@@ -96,7 +96,11 @@ import com.unuslumen.app.database.entity.HeartbeatPromptEntity
 import com.unuslumen.app.database.entity.NetworkDeviceEntity
 import com.unuslumen.app.database.entity.NetworkScanEntity
 import com.unuslumen.app.database.entity.NetworkSightingEntity
+import com.unuslumen.app.database.dao.AgentApprovalDao
+import com.unuslumen.app.database.dao.AgentArtefactDao
+import com.unuslumen.app.database.dao.AgentContextReferenceDao
 import com.unuslumen.app.database.dao.AgentDefinitionVersionDao
+import com.unuslumen.app.database.dao.AgentMessageDao
 import com.unuslumen.app.database.dao.AgentRunCheckpointDao
 import com.unuslumen.app.database.dao.AgentRunDao
 import com.unuslumen.app.database.dao.AgentRunEventDao
@@ -104,7 +108,11 @@ import com.unuslumen.app.database.dao.FabricDao
 import com.unuslumen.app.database.dao.HeartbeatBookingDao
 import com.unuslumen.app.database.dao.HeartbeatPromptDao
 import com.unuslumen.app.database.dao.NetworkVisionDao
+import com.unuslumen.app.database.entity.AgentApprovalEntity
+import com.unuslumen.app.database.entity.AgentArtefactEntity
+import com.unuslumen.app.database.entity.AgentContextReferenceEntity
 import com.unuslumen.app.database.entity.AgentDefinitionVersionEntity
+import com.unuslumen.app.database.entity.AgentMessageEntity
 import com.unuslumen.app.database.entity.AgentRunCheckpointEntity
 import com.unuslumen.app.database.entity.AgentRunEntity
 import com.unuslumen.app.database.entity.AgentRunEventEntity
@@ -177,8 +185,15 @@ import com.unuslumen.app.database.entity.AgentRunEventEntity
         // were there before it, so a past run's configuration is reproducible rather than
         // merely numbered.
         AgentDefinitionVersionEntity::class,
+        // The conversation: who said what to whom, in order, with how far it got.
+        AgentMessageEntity::class,
+        // What a run had to ask before it was allowed to act, and what it was told.
+        AgentApprovalEntity::class,
+        // What a run produced, and what it was given. The two ends of "why does this exist".
+        AgentArtefactEntity::class,
+        AgentContextReferenceEntity::class,
     ],
-    version = 37
+    version = 39
 )
 @TypeConverters(DBConverters::class)
 abstract class guruDatabase: RoomDatabase() {
@@ -231,6 +246,10 @@ abstract class guruDatabase: RoomDatabase() {
     abstract fun agentRunEventDao(): AgentRunEventDao
     abstract fun agentRunCheckpointDao(): AgentRunCheckpointDao
     abstract fun agentDefinitionVersionDao(): AgentDefinitionVersionDao
+    abstract fun agentMessageDao(): AgentMessageDao
+    abstract fun agentApprovalDao(): AgentApprovalDao
+    abstract fun agentArtefactDao(): AgentArtefactDao
+    abstract fun agentContextReferenceDao(): AgentContextReferenceDao
 
     companion object {
         const val DATABASE_NAME = "guru_db"
