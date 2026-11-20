@@ -352,7 +352,10 @@ val aiDataModule = module {
     // three, plus one: the registry is a dependency because listTools reports what
     // this phone actually holds, and because a grant is checked against a tool name
     // that exists rather than stored as one that would never fire.
-    factory { com.unuslumen.app.data.tools.AgentAuthoringToolExecutor(get(), get(), get()) }
+    // Four arguments since schedules landed: the executor now stands an agent up to run on its own,
+    // and the permission for that is checked at creation so a caller learns immediately rather than
+    // finding an empty history a week later.
+    factory { com.unuslumen.app.data.tools.AgentAuthoringToolExecutor(get(), get(), get(), get()) }
     /*
      * THE RUN LEDGER, AND WHY IT IS A SINGLETON.
      *

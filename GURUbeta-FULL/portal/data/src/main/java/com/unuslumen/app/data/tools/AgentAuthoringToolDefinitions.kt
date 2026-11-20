@@ -45,6 +45,18 @@ object AgentAuthoringToolDefinitions : ToolSetRegistration {
     const val SEARCH_AGENTS = "searchAgents"
     const val LIST_TOOLS = "listTools"
 
+    /** Stand an agent up to work on its own: a job, an interval, and when it first runs. */
+    const val SCHEDULE_AGENT = "scheduleAgent"
+
+    /** Every schedule and when each one next runs, so a caller can see what is armed. */
+    const val LIST_SCHEDULES = "listSchedules"
+
+    /** Arm or disarm a schedule without losing its job. */
+    const val SET_SCHEDULE_ENABLED = "setScheduleEnabled"
+
+    /** Remove a schedule. The runs it already started stay. */
+    const val DELETE_SCHEDULE = "deleteSchedule"
+
     /**
      * The categories the market browses by.
      *
@@ -69,6 +81,62 @@ object AgentAuthoringToolDefinitions : ToolSetRegistration {
                 ToolParameter("instructions", ToolParameterType.String, true, "The complete brief the agent runs on"),
                 ToolParameter("description", ToolParameterType.String, false, "One line saying what it is for, as another caller would search for it"),
                 ToolParameter("tools", ToolParameterType.String, false, "JSON array of tool names it may use. Empty or omitted means it reasons without touching anything."),
+            ),
+            permissions = emptyList()
+        ),
+        ToolDefinition(
+            name = SCHEDULE_AGENT,
+            description = "Arrange for an agent to run a job on its own, every so often, without anybody " +
+                "asking it to at the time. This is real unattended work: it starts an ordinary run, with " +
+                "the same permissions and the same record as any other, at each due time. THREE THINGS " +
+                "MUST BE TRUE OR IT REFUSES. The agent must exist and be switched on; it must have been " +
+                "granted scheduled operation in its autonomy settings, because a run nobody is watching " +
+                "needs that permission explicitly; and the interval must be at least a minute, because " +
+                "work due faster than a model answers would queue faster than it drains. A job that fell " +
+                "due more than fifteen minutes ago is counted as missed rather than run late, so a phone " +
+                "that was off does not start a backlog.",
+            category = "agents",
+            parameters = listOf(
+                ToolParameter("agent", ToolParameterType.String, true, "Slug or exact name of the agent to run"),
+                ToolParameter("title", ToolParameterType.String, true, "A short name for this schedule, shown in its runs' conversation"),
+                ToolParameter("job", ToolParameterType.String, true, "The complete instruction, sent afresh each time. It cannot see anything you said when you set this up."),
+                ToolParameter("intervalMinutes", ToolParameterType.Integer, true, "How often to run it, in minutes. At least 1."),
+                ToolParameter("firstRunInMinutes", ToolParameterType.Integer, false, "How long until the first run. Omitted means at the next sweep, within fifteen minutes."),
+            ),
+            permissions = emptyList()
+        ),
+        ToolDefinition(
+            name = LIST_SCHEDULES,
+            description = "List the standing instructions on this phone: which agent each one starts, how " +
+                "often, when it next runs, and whether it is armed. Also reports how many windows each one " +
+                "has missed, because a schedule that has been failing says so here rather than looking like " +
+                "work that simply did not happen. Pass an agent to see only that agent's schedules.",
+            category = "agents",
+            parameters = listOf(
+                ToolParameter("agent", ToolParameterType.String, false, "Slug or exact name, to list only this agent's schedules"),
+            ),
+            permissions = emptyList()
+        ),
+        ToolDefinition(
+            name = SET_SCHEDULE_ENABLED,
+            description = "Arm or disarm a schedule. Disarming stops it running without losing the job it was " +
+                "set up with, so it can be armed again later. Arming one that has no next due time gives it " +
+                "one interval from now.",
+            category = "agents",
+            parameters = listOf(
+                ToolParameter("scheduleId", ToolParameterType.String, true, "The id listSchedules reported"),
+                ToolParameter("enabled", ToolParameterType.Boolean, true, "True to arm it, false to disarm it"),
+            ),
+            permissions = emptyList()
+        ),
+        ToolDefinition(
+            name = DELETE_SCHEDULE,
+            description = "Remove a schedule for good. Runs it already started are untouched and stay in that " +
+                "agent's history, because the work happened; what stops is any future run. Use it when a " +
+                "schedule is no longer wanted, and disarm it instead when it is only being paused.",
+            category = "agents",
+            parameters = listOf(
+                ToolParameter("scheduleId", ToolParameterType.String, true, "The id listSchedules reported"),
             ),
             permissions = emptyList()
         ),

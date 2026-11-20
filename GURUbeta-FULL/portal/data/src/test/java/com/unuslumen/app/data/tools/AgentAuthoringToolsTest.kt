@@ -179,7 +179,14 @@ class AgentAuthoringToolsTest {
     }
 
     private fun executor(dao: FakeDao, catalogue: AgentCatalogue = FakeCatalogue()): AgentAuthoringToolExecutor =
-        AgentAuthoringToolExecutor(repository(dao), catalogue, registry())
+        AgentAuthoringToolExecutor(
+            repository(dao),
+            catalogue,
+            registry(),
+            // A mock, because these tests are about authoring rather than scheduling. The schedule
+            // verbs have their own test file, where the refusals that matter are proved.
+            io.mockk.mockk(relaxed = true),
+        )
 
     private fun json(result: ToolExecutionResult): JsonObject =
         Json.parseToJsonElement(result.rawJson) as? JsonObject
@@ -624,6 +631,9 @@ class AgentAuthoringToolsTest {
             setOf(
                 "createAgent", "editAgent", "deleteAgent", "setAgentEnabled",
                 "publishAgent", "searchAgents", "listTools",
+                // Scheduling is authoring: it changes an agent's operating arrangement, so its four
+                // verbs live in the same set rather than in a second place to look.
+                "scheduleAgent", "listSchedules", "setScheduleEnabled", "deleteSchedule",
             ),
             names,
         )
