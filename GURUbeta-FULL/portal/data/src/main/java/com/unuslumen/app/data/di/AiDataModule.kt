@@ -507,6 +507,18 @@ val aiDataModule = module {
     factory { com.unuslumen.app.data.tools.MaskToolExecutor() }
     // The heartbeat diary tools ride the repository that already exists; every write goes
     // through its own contract rather than around it (issue 488).
-    factory { com.unuslumen.app.data.tools.HeartbeatToolExecutor(get()) }
+    //
+    // THREE ARGUMENTS SINCE THE MASTER PROMPT AND THE MANUAL FIRE LANDED. A booking says what
+    // to do in one half hour and the master prompt says what GURU does with every half hour
+    // nobody claimed, so a surface that could schedule work but not read the standing
+    // instruction would let a model build a diary around a prompt it cannot see. The Context
+    // is here only because firing a beat by hand starts a service the app already owns.
+    factory {
+        com.unuslumen.app.data.tools.HeartbeatToolExecutor(
+            get(),
+            get(),
+            get<Context>(),
+        )
+    }
     single { com.unuslumen.app.data.notestoself.NotesToSelfEngine(get()) }
 }

@@ -3,6 +3,7 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.data.tools
 
+import com.unuslumen.app.data.heartbeat.HeartbeatScheduler
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
 import com.unuslumen.app.domain.heartbeat.HeartbeatBookingDraft
@@ -23,6 +24,23 @@ import java.util.TimeZone
  */
 class HeartbeatToolExecutor(
     private val repository: HeartbeatBookingRepository,
+    /**
+     * The master prompt, which is a different table and a different owner decision.
+     *
+     * INJECTED BECAUSE IT IS THE OTHER HALF OF THE DIARY. A booking says what to do in
+     * one half hour; the master prompt says what GURU does with every half hour nobody
+     * claimed. A tool surface that could schedule work and not read the standing
+     * instruction would let a model book a diary around a prompt it cannot see.
+     */
+    private val promptRepository: com.unuslumen.app.domain.repository.HeartbeatPromptRepository,
+    /**
+     * The context, needed only to start the beat's service by hand.
+     *
+     * NOT A PERMISSION: the diary is the app's own database and firing a beat starts a
+     * service the app already owns. It is here because a manual fire is the one verb
+     * that reaches outside the database.
+     */
+    private val context: android.content.Context,
 ) : ToolExecutor {
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -35,8 +53,104 @@ class HeartbeatToolExecutor(
             HeartbeatToolDefinitions.SET_HEARTBEAT_ENABLED -> setEnabled(args)
             HeartbeatToolDefinitions.READ_HEARTBEAT_DAY -> readDay(args)
             HeartbeatToolDefinitions.REMOVE_HEARTBEAT -> remove(args)
+            HeartbeatToolDefinitions.GET_HEARTBEAT_PROMPT -> getPrompt()
+            HeartbeatToolDefinitions.SAVE_HEARTBEAT_PROMPT -> savePrompt(args)
+            HeartbeatToolDefinitions.FIRE_HEARTBEAT_NOW -> fireNow()
             else -> ToolExecutionResult.error("Unknown tool: $toolName")
         }
+    }
+
+    /**
+     * Read the master prompt, and say plainly whether one exists.
+     *
+     * `current()` answers an empty string both for a fresh install and for a prompt that
+     * was cleared, which is why `isEdited()` is asked as well. The two states read the
+     * same in the text and mean different things to a caller.
+     */
+    private suspend fun getPrompt(): ToolExecutionResult {
+        val content = promptRepository.current()
+        val written = promptRepository.isEdited() && content.isNotBlank()
+        val result = HeartbeatPromptResult(
+            success = true,
+            written = written,
+            content = content,
+            message = if (written) {
+                "This is the master prompt: the standing instruction GURU gives itself in every half " +
+                    "hour no booking claims."
+            } else {
+                "No master prompt is written. GURU ships no default, because what it says to itself " +
+                    "every half hour is its owner's decision rather than the app's. Any half hour that " +
+                    "no booking claims will end before reaching a model until one is written."
+            },
+        )
+        return ToolExecutionResult.success(result, json.encodeToString(HeartbeatPromptResult.serializer(), result))
+    }
+
+    /**
+     * Write the master prompt.
+     *
+     * AN EMPTY PROMPT IS REFUSED, NOT STORED. The repository refuses it too; this returns
+     * the refusal as a result carrying the reason rather than letting an exception through,
+     * so the caller is told what to do instead of seeing a failed tool call with no text.
+     */
+    private suspend fun savePrompt(args: Map<String, Any?>): ToolExecutionResult {
+        val content = (args["content"] as? String).orEmpty()
+        if (content.isBlank()) {
+            val result = HeartbeatPromptResult(
+                success = false,
+                written = false,
+                content = "",
+                message = "Nothing was saved: the prompt was empty. A beat with an empty prompt injects " +
+                    "nothing and looks exactly like a beat that failed, so an empty one is refused " +
+                    "rather than stored.",
+            )
+            return ToolExecutionResult.success(result, json.encodeToString(HeartbeatPromptResult.serializer(), result))
+        }
+
+        val saved = promptRepository.save(content)
+        if (saved.isFailure) {
+            val reason = saved.exceptionOrNull()?.message ?: "the prompt could not be saved"
+            val result = HeartbeatPromptResult(success = false, written = false, content = "", message = reason)
+            return ToolExecutionResult.success(result, json.encodeToString(HeartbeatPromptResult.serializer(), result))
+        }
+
+        val result = HeartbeatPromptResult(
+            success = true,
+            written = true,
+            content = content,
+            updatedAtMillis = System.currentTimeMillis(),
+            message = "Saved. This replaces the previous master prompt and applies to every half hour " +
+                "that no booking claims, starting with the next beat.",
+        )
+        return ToolExecutionResult.success(result, json.encodeToString(HeartbeatPromptResult.serializer(), result))
+    }
+
+    /**
+     * Run a beat immediately.
+     *
+     * WHAT THIS PROVES AND WHAT IT DOES NOT. It proves the beat itself can start: the
+     * service was accepted and the chain is not the thing refusing. It does not prove the
+     * beat reached a model or that it did the work, because that is recorded in the diary
+     * as the occurrence's state and outcome, and reading the day afterwards is how a
+     * caller finds out. `accepted` carries exactly that and nothing more.
+     */
+    private suspend fun fireNow(): ToolExecutionResult {
+        val accepted = HeartbeatScheduler.fireNow(context)
+        val result = HeartbeatFireResult(
+            success = accepted,
+            accepted = accepted,
+            message = if (accepted) {
+                "A beat was started. This answers whether Android accepted the request, not whether " +
+                    "the work landed: read the day with readHeartbeatDay to see the occurrence's state " +
+                    "and the outcome it recorded. A beat that finds no master prompt and no booking for " +
+                    "this half hour is recorded as having ended early, with the reason."
+            } else {
+                "Android refused to start the beat. The reason has been recorded as the last outcome, " +
+                    "which is what tells a refused beat apart from one that never fired at all."
+            },
+            error = if (accepted) null else "the beat service was refused by Android",
+        )
+        return ToolExecutionResult.success(result, json.encodeToString(HeartbeatFireResult.serializer(), result))
     }
 
     private suspend fun listBookings(): ToolExecutionResult {
