@@ -39,56 +39,53 @@ class AgentRunLedger(
     private val runDao: AgentRunDao,
     private val eventDao: AgentRunEventDao,
     private val checkpointDao: AgentRunCheckpointDao,
+    /**
+     * The protector. Injected rather than reached for statically so the fail-closed rule
+     * can be proved on a JVM where no Android Keystore exists at all.
+     */
+    private val protector: com.unuslumen.app.domain.security.DataProtector =
+        com.unuslumen.app.data.security.ProtectedData,
 ) {
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     /**
-     * The protection policy, applied at the one door every write goes through.
+     * Seal a value, and REFUSE THE WRITE when it cannot be sealed.
      *
-     * WHY HERE AND NOT AT EACH CALL SITE. Protection that a caller has to remember is
-     * protection that will be forgotten at the call site nobody reviewed. Every checkpoint
-     * state and every event payload passes through this class, so sealing is done once,
-     * in the place all writes share.
+     * THIS WAS FAILING OPEN AND THAT WAS THE DEFECT. The previous version logged a failure
+     * and stored the plaintext, on the argument that keeping the record mattered more than
+     * protecting it. That argument is wrong for a value classified as protected: silently
+     * persisting somebody's messages, prompts or tool arguments in the clear on a device
+     * where the keystore is unavailable is precisely the outcome the classification exists
+     * to prevent, and the log line announcing it is not a mitigation.
      *
-     * SEALING IS BEST-EFFORT AND RECORDED. If the keystore refuses, the value is stored
-     * plainly with a marker saying so, rather than the run failing or the write being
-     * silently skipped. A ledger that stops recording because the hardware said no is
-     * worse than a ledger that records and admits the value is unprotected, because the
-     * second one can still be read six months later and the first cannot.
+     * So a failure throws. The transaction rolls back, nothing is written, and the caller
+     * is told the record could not be kept securely. A missing record is recoverable and
+     * honest; a plaintext one is neither.
+     *
+     * A deliberate redaction is different and is allowed: that is a decision made before
+     * the write to withhold a value, recorded with its reason, not a failure afterwards.
      */
     private fun protect(field: com.unuslumen.app.domain.security.ProtectionContext, value: String): String {
         if (value.isBlank()) return value
-        return when (val outcome = com.unuslumen.app.data.security.ProtectedData.seal(field, value)) {
+        return when (val outcome = protector.seal(field, value)) {
             is com.unuslumen.app.domain.security.ProtectedWrite.Sealed -> outcome.envelope
             is com.unuslumen.app.domain.security.ProtectedWrite.Redacted ->
                 "{\"protected\":\"redacted\",\"reason\":${quote(outcome.reason)}}"
             is com.unuslumen.app.domain.security.ProtectedWrite.Failed ->
-                /*
-                 * THE VALUE IS STORED, THE SEAL IS NOT, AND THE ROW SAYS WHICH.
-                 *
-                 * A wrapper object was the first attempt and it was wrong: it changed the
-                 * shape a reader gets back, so every consumer of a payload had to know
-                 * about a marker that only exists when the hardware said no. Instead the
-                 * raw value is stored as written and the fact that it is unprotected goes
-                 * into the log, because a payload that changes shape depending on device
-                 * capability is a payload nobody can write a stable reader for.
-                 */
-                run {
-                    android.util.Log.w(
-                        "guru_agent_ledger",
-                        "Value for '${field.field}' stored UNPROTECTED: ${outcome.reason}"
-                    )
-                    value
-                }
+                throw IllegalStateException(
+                    "Refusing to write '${field.field}' in the clear: the vault could not seal it " +
+                        "(${outcome.reason}). A record that cannot be kept securely is not kept at all.",
+                )
         }
     }
 
     /**
      * Read a value back through the same policy.
      *
-     * A value that was never sealed comes back as it was written, so a row from before
-     * protection existed is still readable rather than being refused as tampered.
+     * Values written before this class protected anything come back as they were stored,
+     * so old rows stay readable. Everything written since is an envelope, and an envelope
+     * that will not open is reported as locked or tampered rather than as plaintext.
      */
     fun unprotect(
         field: com.unuslumen.app.domain.security.ProtectionContext,
@@ -97,11 +94,11 @@ class AgentRunLedger(
         if (stored.isBlank()) {
             return com.unuslumen.app.domain.security.ProtectedRead.Absent("nothing was stored for this field")
         }
-        if (!com.unuslumen.app.data.security.ProtectedData.isEnvelope(stored)) {
+        if (!protector.isEnvelope(stored)) {
             // A plaintext historical value. Readable, and honestly not protected.
             return com.unuslumen.app.domain.security.ProtectedRead.Value(stored)
         }
-        return com.unuslumen.app.data.security.ProtectedData.open(field, stored)
+        return protector.open(field, stored)
     }
 
     private fun quote(value: String): String = buildString {
@@ -143,7 +140,39 @@ class AgentRunLedger(
      * it would have to guess what it was for.
      */
     suspend fun createRun(run: AgentRunEntity): AgentRunEntity = database.withTransaction {
-        runDao.insertRun(run)
+        /*
+         * THE RUN ROW'S OWN TEXT FIELDS ARE SEALED TOO.
+         *
+         * `assignment` is the job in the caller's words and `resolvedSystemPrompt` is the
+         * agent's instructions; both can hold something a person typed, and storing either
+         * in the clear would leave an unprotected copy beside the encrypted ledger it
+         * belongs to. Sealing them here means the row on disk carries no plaintext of
+         * either, and `openRun` hands back the readable form.
+         *
+         * A refusal throws out of the transaction, so a run that cannot be stored securely
+         * is not stored at all.
+         */
+        val storedRun = run.copy(
+            assignment = protect(
+                com.unuslumen.app.domain.security.ProtectionContext(
+                    purpose = com.unuslumen.app.domain.security.ProtectionContext.PURPOSE_RUN_SNAPSHOT,
+                    ownerId = run.runId,
+                    field = "assignment",
+                    schemaVersion = 1,
+                ),
+                run.assignment,
+            ),
+            resolvedSystemPrompt = protect(
+                com.unuslumen.app.domain.security.ProtectionContext(
+                    purpose = com.unuslumen.app.domain.security.ProtectionContext.PURPOSE_RUN_SNAPSHOT,
+                    ownerId = run.runId,
+                    field = "resolvedSystemPrompt",
+                    schemaVersion = 1,
+                ),
+                run.resolvedSystemPrompt,
+            ),
+        )
+        runDao.insertRun(storedRun)
         val sequence = 1L
         eventDao.insert(
             AgentRunEventEntity(
@@ -167,6 +196,7 @@ class AgentRunLedger(
             )
         )
         runDao.setLastEventSequence(run.runId, sequence, run.createdAt)
+        // The caller gets its own values back, not the envelopes that went to disk.
         run.copy(lastEventSequence = sequence)
     }
 
@@ -448,7 +478,39 @@ class AgentRunLedger(
     // Reading back
     // ------------------------------------------------------------------
 
-    suspend fun run(runId: String): AgentRunEntity? = runDao.run(runId)
+    /**
+     * One run, with the sealed text fields opened.
+     *
+     * THE ROW ON DISK CARRIES AN ENVELOPE FOR `assignment` AND `resolvedSystemPrompt`;
+     * a caller gets the words. A value that will not open is left as a marker naming why,
+     * so a locked vault is visible rather than reading as an empty assignment.
+     */
+    suspend fun run(runId: String): AgentRunEntity? {
+        val stored = runDao.run(runId) ?: return null
+        fun openField(field: String, value: String): String =
+            when (val outcome = unprotect(
+                com.unuslumen.app.domain.security.ProtectionContext(
+                    purpose = com.unuslumen.app.domain.security.ProtectionContext.PURPOSE_RUN_SNAPSHOT,
+                    ownerId = runId,
+                    field = field,
+                    schemaVersion = 1,
+                ),
+                value,
+            )) {
+                is com.unuslumen.app.domain.security.ProtectedRead.Value -> outcome.plaintext
+                is com.unuslumen.app.domain.security.ProtectedRead.Absent -> ""
+                is com.unuslumen.app.domain.security.ProtectedRead.Redacted ->
+                    "[withheld: ${outcome.reason}]"
+                is com.unuslumen.app.domain.security.ProtectedRead.Locked ->
+                    "[unavailable: ${outcome.reason}]"
+                is com.unuslumen.app.domain.security.ProtectedRead.Tampered ->
+                    "[altered: ${outcome.reason}]"
+            }
+        return stored.copy(
+            assignment = openField("assignment", stored.assignment),
+            resolvedSystemPrompt = openField("resolvedSystemPrompt", stored.resolvedSystemPrompt),
+        )
+    }
 
     /**
      * Every event for a run, with payloads opened.

@@ -40,7 +40,7 @@ import javax.crypto.spec.GCMParameterSpec
  * NO PLAINTEXT DUPLICATES. Nothing here writes a clear copy anywhere. A caller that
  * needs a value in the clear holds it for the length of one call and lets it go.
  */
-object ProtectedData {
+object ProtectedData : com.unuslumen.app.domain.security.DataProtector {
 
     /**
      * The current envelope format.
@@ -100,7 +100,7 @@ object ProtectedData {
      * rebuilt from the same [context] on the way back in. A caller that reuses the
      * envelope under a different context gets a tamper refusal, not a wrong value.
      */
-    fun seal(context: ProtectionContext, plaintext: String): ProtectedWrite {
+    override fun seal(context: ProtectionContext, plaintext: String): ProtectedWrite {
         return try {
             // Sealing is the one place a key may be created: writing a new value under the
             // current version is exactly when a device without one needs one.
@@ -133,7 +133,7 @@ object ProtectedData {
      * a null would make the first two indistinguishable from the last two and would let
      * a run resume against a hole it does not know it has.
      */
-    fun open(context: ProtectionContext, envelope: String?): ProtectedRead {
+    override fun open(context: ProtectionContext, envelope: String?): ProtectedRead {
         if (envelope.isNullOrBlank()) {
             return ProtectedRead.Absent("no value was written for this field")
         }
@@ -204,8 +204,8 @@ object ProtectedData {
      * written before this facility existed. A legacy row is readable as it always was;
      * it simply is not protected, and the reader says so rather than pretending.
      */
-    fun isEnvelope(value: String?): Boolean =
-        value != null && value.startsWith("$MAGIC:")
+    override fun isEnvelope(stored: String?): Boolean =
+        stored != null && stored.startsWith("$MAGIC:")
 
     /** Wipe the protector's keys. Used by a full vault reset, never by ordinary operation. */
     fun destroyKeys() {

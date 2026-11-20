@@ -54,11 +54,43 @@ class AgentRunService : Service(), KoinComponent {
         const val EXTRA_AGENT_NAME = "agent_name"
         const val ACTION_STOP = "com.unuslumen.app.action.STOP_AGENT_RUN"
 
-        /** Start the service for one run. */
+        /**
+         * How a run is handed to the service to be OWNED.
+         *
+         * [RESUME_ANSWER] is the case that matters. A run waiting on a question can be
+         * resumed here rather than from whatever screen the person happened to be on, so
+         * the work lives in this process's own scope and cannot be cancelled by a UI or a
+         * tool call finishing.
+         */
+        const val EXTRA_RESUME_ANSWER = "resume_answer"
+
+        /** Start the service to hold a live run and show its notification. */
         fun start(context: Context, runId: String, agentName: String) {
             val intent = Intent(context, AgentRunService::class.java).apply {
                 putExtra(EXTRA_RUN_ID, runId)
                 putExtra(EXTRA_AGENT_NAME, agentName)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        /**
+         * Hand a waiting run and its answer to the service, which then owns the execution.
+         *
+         * THIS IS THE DIFFERENCE BETWEEN A NOTIFICATION AND OWNERSHIP. Resuming from a
+         * caller's coroutine means the agent dies when that caller's scope dies, while the
+         * service keeps heartbeating and telling the person work is in progress. Resuming
+         * inside the service means the work's lifetime is the service's lifetime, which is
+         * exactly what a foreground service is for.
+         */
+        fun resume(context: Context, runId: String, agentName: String, answer: String) {
+            val intent = Intent(context, AgentRunService::class.java).apply {
+                putExtra(EXTRA_RUN_ID, runId)
+                putExtra(EXTRA_AGENT_NAME, agentName)
+                putExtra(EXTRA_RESUME_ANSWER, answer)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -74,10 +106,21 @@ class AgentRunService : Service(), KoinComponent {
 
     private val coordinator: AgentRecoveryCoordinator by inject()
     private val ledger: AgentRunLedger by inject()
+    private val runtime: AgentRuntime by inject()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var heartbeat: Job? = null
+    private var execution: Job? = null
     private var currentRunId: String? = null
+
+    /**
+     * The owner this service heartbeats under.
+     *
+     * THE SAME ID THE RUNTIME CLAIMED THE LEASE WITH. A separate id here would mean the
+     * heartbeat never matched the claim, so the run would read as stale while it was
+     * working and the recovery scan would interrupt live work.
+     */
+    private val owner: String get() = AgentRuntime.leaseOwner()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -120,6 +163,31 @@ class AgentRunService : Service(), KoinComponent {
         coordinator.registerLease(runId)
 
         startInForeground(runId, agentName)
+
+        /*
+         * THE WORK RUNS HERE, OR THE NOTIFICATION IS A LIE.
+         *
+         * A resume handed to this service is executed in this service's own scope, so the
+         * agent's lifetime is the service's lifetime. That is the whole point of a
+         * foreground service: a UI being destroyed, a tool call returning, or a screen
+         * being popped must not kill work the person was told was still running.
+         *
+         * An ordinary spawn still runs through its caller, because a job the person just
+         * started is already inside a live conversation; what this service guarantees for
+         * it is the notification and the lease, and the heartbeat below stops the moment
+         * the work does.
+         */
+        val resumeAnswer = intent.getStringExtra(EXTRA_RESUME_ANSWER)
+        execution = scope.launch {
+            if (!resumeAnswer.isNullOrBlank()) {
+                runCatching {
+                    runtime.resume(runId, resumeAnswer).collect { /* events are in the ledger */ }
+                }.onFailure {
+                    android.util.Log.w("guru_agents", "Service-owned resume of '$runId' failed: ${it.message}")
+                }
+            }
+        }
+
         beginHeartbeat(runId)
 
         // NOT STICKY. A service restarted by the platform has no execution behind it: the
@@ -129,11 +197,25 @@ class AgentRunService : Service(), KoinComponent {
         return START_NOT_STICKY
     }
 
+    /**
+     * Heartbeat, and ONLY while the work is actually alive.
+     *
+     * A HEARTBEAT THAT OUTLIVES ITS WORK IS A LIE THE RECOVERY SCAN BELIEVES. Renewing a
+     * lease for a coroutine that has already finished would keep a dead run looking
+     * healthy for ever, which is worse than no heartbeat at all. So this renews only while
+     * [execution] is active, and stops the moment it is not.
+     */
     private fun beginHeartbeat(runId: String) {
         heartbeat?.cancel()
         heartbeat = scope.launch {
             while (true) {
-                runCatching { ledger.heartbeat(runId, runId) }
+                val working = execution?.isActive == true
+                if (!working) {
+                    // Nothing is running, so nothing is renewed. The lease is left to go
+                    // stale on purpose: that is how the scan learns the work stopped.
+                    break
+                }
+                runCatching { ledger.heartbeat(runId, owner) }
                 delay(AgentRecoveryCoordinator.HEARTBEAT_INTERVAL_MS)
             }
         }
@@ -214,6 +296,9 @@ class AgentRunService : Service(), KoinComponent {
 
     override fun onDestroy() {
         heartbeat?.cancel()
+        // The execution is cancelled with the scope, and the heartbeat stops with it, so
+        // the lease is left to go stale. A run whose service has been destroyed is a run
+        // whose owner is gone, and the scan must be able to see that.
         currentRunId?.let { coordinator.releaseLocalLease(it) }
         scope.cancel()
         super.onDestroy()

@@ -181,6 +181,26 @@ class AgentRuntime(
         const val OUTPUT_FLUSH_MILLIS = 250L
         const val OUTPUT_FLUSH_CHARS = 8 * 1024
 
+        /** Shared so every component in this process reports the same lease owner. */
+        @Volatile
+        private var processLeaseOwner: String? = null
+        private val leaseOwnerLock = Any()
+
+        /**
+         * The process incarnation id, minted once.
+         *
+         * ONE ID FOR THE WHOLE PROCESS, NOT A PID. The runtime and the foreground service
+         * both write the lease and they are the same process, so they must agree about who
+         * they are or the service renews a claim the runtime never made. A PID cannot serve
+         * because the kernel reuses it, and a recycled number would make a dead owner look
+         * alive, which is the one failure the lease exists to prevent.
+         */
+        fun leaseOwner(): String = synchronized(leaseOwnerLock) {
+            processLeaseOwner ?: com.unuslumen.app.data.agents.AgentRecoveryCoordinator
+                .newOwnerId()
+                .also { processLeaseOwner = it }
+        }
+
         private val NO_TIMEOUTS = ai.koog.prompt.executor.clients.ConnectionTimeoutConfig(
             requestTimeoutMillis = Long.MAX_VALUE,
             connectTimeoutMillis = Long.MAX_VALUE,
@@ -310,6 +330,7 @@ class AgentRuntime(
     @Volatile
     private var boundConversationId: String? = null
 
+
     /** Bind the conversation this dispatch is happening in. Called by the send path. */
     fun bindConversation(conversationId: String?) {
         boundConversationId = conversationId?.takeIf { it.isNotBlank() }
@@ -317,6 +338,17 @@ class AgentRuntime(
 
     /** The conversation this dispatch belongs to, or null when nothing bound one. */
     fun currentConversationId(): String? = boundConversationId
+
+    /**
+     * The lease owner for everything this process does.
+     *
+     * ONE INCARNATION ID FOR THE WHOLE PROCESS, NOT ONE PER RUN AND NOT A PID. The runtime
+     * and the foreground service both write the lease, and they are the same process, so
+     * they must agree about who they are — otherwise the service renews a lease the runtime
+     * claimed and neither can tell which one is really alive. A PID cannot serve here
+     * because the kernel reuses it, so a recycled number would make a dead owner look
+     * alive, which is the one failure the lease exists to prevent.
+     */
 
     /**
      * The wiring an agent runs on, resolved fresh at spawn time so switching
@@ -468,7 +500,7 @@ class AgentRuntime(
         // scan finds it. Without this, a killed run is indistinguishable from one that is
         // thinking hard.
         runCatching {
-            ledger.acquireLease(session.id, session.id)
+            ledger.acquireLease(session.id, leaseOwner())
             ledger.appendStateChange(
                 session.id,
                 com.unuslumen.app.database.entity.AgentRunEntity.STATUS_CREATED,
@@ -669,7 +701,7 @@ class AgentRuntime(
                 com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
                 "the answer arrived and the work carried on",
             )
-            ledger.acquireLease(runId, runId)
+            ledger.acquireLease(runId, leaseOwner())
         }
     }
 
@@ -750,7 +782,7 @@ class AgentRuntime(
                     "cancelled by the caller",
                     finishedAt = System.currentTimeMillis(),
                 )
-                ledger.releaseLease(session.id, session.id, "cancelled")
+                ledger.releaseLease(session.id, leaseOwner(), "cancelled")
             }
             throw e
         } catch (e: Exception) {
@@ -767,7 +799,7 @@ class AgentRuntime(
                     "${session.agent.name} failed: $reason",
                     finishedAt = System.currentTimeMillis(),
                 )
-                ledger.releaseLease(session.id, session.id, "failed")
+                ledger.releaseLease(session.id, leaseOwner(), "failed")
             }
             failed(session.agent.name, "${session.agent.name} failed: $reason")
         }
@@ -1094,7 +1126,7 @@ class AgentRuntime(
                         reason = com.unuslumen.app.database.entity.AgentRunCheckpointEntity.REASON_ENTERING_WAITING,
                         stateJson = checkpointState(session),
                     )
-                    ledger.releaseLease(session.id, session.id, "waiting for an answer")
+                    ledger.releaseLease(session.id, leaseOwner(), "waiting for an answer")
                 }
 
                 return SpawnResult(
@@ -1137,7 +1169,7 @@ class AgentRuntime(
                         "the agent finished its assignment",
                         finishedAt = System.currentTimeMillis(),
                     )
-                    ledger.releaseLease(session.id, session.id, "completed")
+                    ledger.releaseLease(session.id, leaseOwner(), "completed")
                 }
                 return SpawnResult(
                     success = true,

@@ -76,7 +76,46 @@ class AgentRunLedgerTest {
             database.agentRunDao(),
             database.agentRunEventDao(),
             database.agentRunCheckpointDao(),
+            /*
+             * A STAND-IN PROTECTOR, BECAUSE FAIL-CLOSED MEANS THE REAL ONE CANNOT WORK HERE.
+             *
+             * There is no Android Keystore on a JVM, so the production protector reports
+             * every seal as failed — and the ledger now correctly refuses to write a value
+             * it cannot seal. That would fail every test in this file for a reason that has
+             * nothing to do with what they are testing. This stand-in seals and opens
+             * faithfully so the storage rules can be proved; the refusal path itself is
+             * proved separately in AgentRunLedgerProtectionTest with a protector that
+             * always fails.
+             */
+            TestProtector,
         )
+    }
+
+    /** A protector that seals and opens faithfully with the context bound in. */
+    private object TestProtector : com.unuslumen.app.domain.security.DataProtector {
+        override fun seal(
+            context: com.unuslumen.app.domain.security.ProtectionContext,
+            plaintext: String,
+        ): com.unuslumen.app.domain.security.ProtectedWrite =
+            com.unuslumen.app.domain.security.ProtectedWrite.Sealed(
+                "SEALED[" + context.purpose + ":" + context.ownerId + ":" + context.field + ":" + plaintext + "]"
+            )
+
+        override fun open(
+            context: com.unuslumen.app.domain.security.ProtectionContext,
+            stored: String?,
+        ): com.unuslumen.app.domain.security.ProtectedRead {
+            if (stored == null || stored.isBlank()) {
+                return com.unuslumen.app.domain.security.ProtectedRead.Absent("nothing")
+            }
+            val prefix = "SEALED[" + context.purpose + ":" + context.ownerId + ":" + context.field + ":"
+            if (!stored.startsWith(prefix)) {
+                return com.unuslumen.app.domain.security.ProtectedRead.Tampered("sealed for another place")
+            }
+            return com.unuslumen.app.domain.security.ProtectedRead.Value(stored.removePrefix(prefix).removeSuffix("]"))
+        }
+
+        override fun isEnvelope(stored: String?): Boolean = stored?.startsWith("SEALED[") == true
     }
 
     @After
