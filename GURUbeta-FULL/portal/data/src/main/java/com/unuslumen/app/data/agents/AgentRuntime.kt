@@ -3038,6 +3038,22 @@ class AgentRuntime(
                     .filter { it.isNotEmpty() }
             }
 
+            /*
+             * THE STRUCTURED FIELDS TRAVEL WITH THE REVISION, NOT JUST THE STEPS.
+             *
+             * Section 4.1 asks a plan to carry its objective, dependencies, expected outputs,
+             * verification requirements and the tools it expects to use. The runtime records what
+             * the agent actually supplied, and a field it left out is simply absent rather than
+             * filled with an empty string, because a blank EXPECTED reads as "nothing is expected"
+             * while a missing one reads as "not stated".
+             */
+            val objectiveText = (args["objective"] as? JsonPrimitive)?.content?.trim().orEmpty()
+            val dependenciesText = (args["dependencies"] as? JsonPrimitive)?.content?.trim().orEmpty()
+            val expectedText = (args["expectedOutputs"] as? JsonPrimitive)?.content?.trim().orEmpty()
+            val verificationText = (args["verification"] as? JsonPrimitive)?.content?.trim().orEmpty()
+            val toolsText = (args["tools"] as? JsonPrimitive)?.content?.trim().orEmpty()
+            val reasonText = (args["reason"] as? JsonPrimitive)?.content?.trim().orEmpty()
+
             session.planRevision += 1
             val revision = session.planRevision
 
@@ -3058,6 +3074,12 @@ class AgentRuntime(
                             // appear inside a step, so a reader can split them back out.
                             put("steps", steps.joinToString("\u001F"))
                             put("stepCount", steps.size)
+                            if (objectiveText.isNotEmpty()) put("objective", objectiveText)
+                            if (dependenciesText.isNotEmpty()) put("dependencies", dependenciesText)
+                            if (expectedText.isNotEmpty()) put("expectedOutputs", expectedText)
+                            if (verificationText.isNotEmpty()) put("verification", verificationText)
+                            if (toolsText.isNotEmpty()) put("tools", toolsText)
+                            if (reasonText.isNotEmpty()) put("reason", reasonText)
                         },
                     )
                 )

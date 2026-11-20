@@ -15,6 +15,7 @@ import com.unuslumen.app.domain.agents.ApprovalView
 import com.unuslumen.app.domain.agents.ArtefactView
 import com.unuslumen.app.domain.agents.DecisionView
 import com.unuslumen.app.domain.agents.PlanStepView
+import com.unuslumen.app.domain.agents.PlanView
 import com.unuslumen.app.domain.agents.MessageView
 import com.unuslumen.app.domain.agents.ReasoningView
 import com.unuslumen.app.domain.agents.RunSummaryView
@@ -117,6 +118,7 @@ class AgentRoomAssembler(
             failureMessage = run.failureMessage,
             resultSummary = run.resultSummary,
             planSteps = planStepsFrom(events),
+            plan = planFrom(events),
             toolActivity = toolActivityFrom(events),
             messages = messages.map { it.toView(run.agentName) },
             reasoning = reasoningFrom(events, effective, run.reasoningCaptureEnabledAtStart),
@@ -285,6 +287,37 @@ class AgentRoomAssembler(
                     updatedAt = 0,
                 )
             }
+    }
+
+    /**
+     * The newest plan revision's own fields, as opposed to its steps.
+     *
+     * ONE REVISION IS READ, the same one the step reader reads, so the steps and the plan around
+     * them cannot come from different versions. Null when the run recorded no plan, which the room
+     * draws differently from a plan whose optional fields were left blank.
+     */
+    private fun planFrom(events: List<AgentRunEventEntity>): PlanView? {
+        val latest = events
+            .filter { it.eventType == com.unuslumen.app.domain.agents.AgentEventTypes.PLAN_REVISED }
+            .mapNotNull { event ->
+                val payload = readObject(event.payloadJson) ?: return@mapNotNull null
+                val revision = stringOf(payload, "revision")?.toIntOrNull() ?: return@mapNotNull null
+                Triple(revision, payload, event.occurredAt)
+            }
+            .maxByOrNull { it.first } ?: return null
+
+        val plan = latest.second
+        return PlanView(
+            revision = latest.first,
+            title = stringOf(plan, "title").orEmpty(),
+            objective = stringOf(plan, "objective").orEmpty(),
+            dependencies = stringOf(plan, "dependencies").orEmpty(),
+            expectedOutputs = stringOf(plan, "expectedOutputs").orEmpty(),
+            verification = stringOf(plan, "verification").orEmpty(),
+            tools = stringOf(plan, "tools").orEmpty(),
+            reason = stringOf(plan, "reason").orEmpty(),
+            at = latest.third,
+        )
     }
 
     /**

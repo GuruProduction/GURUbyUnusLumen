@@ -94,6 +94,16 @@ data class RunView(
     /** The plan, as steps the runtime actually recorded. Empty when it recorded none. */
     val planSteps: List<PlanStepView>,
 
+    /**
+     * The rest of the plan the steps belong to, when the agent supplied any of it.
+     *
+     * SEPARATE FROM THE STEPS BECAUSE IT IS ABOUT THE PLAN RATHER THAN A STEP. Section 4.1 asks a
+     * plan to carry objectives, dependencies, expected outputs, verification requirements and the
+     * tools it expects, and none of those belong on an individual step. Null when the run recorded
+     * no plan at all, which is different from a plan whose extras were left blank.
+     */
+    val plan: PlanView?,
+
     /** Tool activity, newest last. Expandable in the UI; the data is the actual calls. */
     val toolActivity: List<ToolActivityView>,
 
@@ -106,8 +116,8 @@ data class RunView(
     /**
      * What the agent deliberately recorded as its decisions, in order.
      *
-     * A DIFFERENT KIND OF INFORMATION FROM [reasoning], AND THE SPECIFICATION IS EXPLICIT THAT THE
-     * TWO MUST NEVER BE PRESENTED AS INTERCHANGEABLE. Reasoning is provider output: it exists only
+     * A DIFFERENT KIND OF INFORMATION FROM THE REASONING ABOVE, AND THE SPECIFICATION IS EXPLICIT
+     * THAT THE TWO MUST NEVER BE PRESENTED AS INTERCHANGEABLE. Reasoning is provider output: it exists only
      * where the model emits a reasoning channel and says nothing on a model that does not. A
      * decision is a fact the agent wrote on purpose, so it exists on every model, and it carries
      * named fields rather than prose a reader has to interpret.
@@ -170,6 +180,37 @@ data class RunView(
     val planProgress: String? get() = if (planSteps.isEmpty()) null else {
         "${planSteps.count { it.state == PlanStepView.STATE_DONE }} of ${planSteps.size} steps done"
     }
+}
+
+/**
+ * The plan a run recorded, beyond its steps.
+ *
+ * EVERY FIELD IS BLANK RATHER THAN ABSENT WHEN THE AGENT DID NOT SAY, because the room renders
+ * nothing for a blank one. That is the same rule the decision record follows: an empty labelled row
+ * reads as a claim that there was nothing to say, which is a different fact from not having been
+ * asked, and a surface that cannot tell them apart is lying by layout.
+ *
+ * The revision is the run's own count, so "the third plan it made" is answerable, and the ledger
+ * keeps every revision so a reader can see the approach change rather than only where it landed.
+ */
+data class PlanView(
+    val revision: Int,
+    val title: String,
+    val objective: String,
+    /** Pairs such as 2>3, meaning step two must finish before step three. */
+    val dependencies: String,
+    val expectedOutputs: String,
+    val verification: String,
+    val tools: String,
+    /** Why this plan rather than another, especially when replacing one that failed. */
+    val reason: String,
+    val at: Long,
+) {
+    /** Whether the agent said anything about the plan beyond its steps. */
+    val hasDetail: Boolean
+        get() = objective.isNotBlank() || dependencies.isNotBlank() ||
+            expectedOutputs.isNotBlank() || verification.isNotBlank() ||
+            tools.isNotBlank() || reason.isNotBlank()
 }
 
 /** One step of a plan, as it was recorded. */

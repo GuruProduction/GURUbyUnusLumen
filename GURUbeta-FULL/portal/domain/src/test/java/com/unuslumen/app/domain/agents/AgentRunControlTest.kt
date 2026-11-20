@@ -30,6 +30,7 @@ class AgentRunControlTest {
         failureMessage = null,
         resultSummary = null,
         planSteps = emptyList(),
+        plan = null,
         toolActivity = emptyList(),
         messages = emptyList(),
         reasoning = ReasoningView("", true, true),

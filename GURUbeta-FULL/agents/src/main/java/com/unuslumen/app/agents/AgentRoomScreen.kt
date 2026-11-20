@@ -244,9 +244,32 @@ private fun androidx.compose.foundation.lazy.LazyListScope.overview(
 
     run.planProgress?.let { progress ->
         item("plan") {
-            Panel(title = "PLAN · $progress", body = run.planSteps.joinToString("\n") {
-                "${stateMark(it.state)} ${it.description}"
-            }, modifier = Modifier.padding(top = 12.dp))
+            /*
+             * THE PLAN AROUND THE STEPS, THEN THE STEPS.
+             *
+             * A list of steps with no objective tells a reader what is being done and not what for,
+             * and the specification asks for both. The extra fields are drawn only when the agent
+             * supplied them, because a labelled blank row claims there was nothing to say.
+             */
+            val plan = run.plan
+            Panel(
+                title = "PLAN · $progress",
+                body = buildString {
+                    if (plan != null && plan.hasDetail) {
+                        if (plan.objective.isNotBlank()) appendLine("OBJECTIVE: ${plan.objective}")
+                        if (plan.dependencies.isNotBlank()) appendLine("ORDER: ${plan.dependencies}")
+                        if (plan.expectedOutputs.isNotBlank()) appendLine("EXPECTED: ${plan.expectedOutputs}")
+                        if (plan.verification.isNotBlank()) appendLine("VERIFY: ${plan.verification}")
+                        if (plan.tools.isNotBlank()) appendLine("TOOLS: ${plan.tools}")
+                        if (plan.reason.isNotBlank()) appendLine("WHY THIS PLAN: ${plan.reason}")
+                        appendLine()
+                    }
+                    append(
+                        run.planSteps.joinToString("\n") { "${stateMark(it.state)} ${it.description}" }
+                    )
+                },
+                modifier = Modifier.padding(top = 12.dp),
+            )
         }
     }
 
