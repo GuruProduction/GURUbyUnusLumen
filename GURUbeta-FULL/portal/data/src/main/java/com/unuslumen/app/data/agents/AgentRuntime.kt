@@ -468,6 +468,26 @@ class AgentRuntime(
         )
         sessions[session.id] = session
 
+        // A SESSION THAT BEGAN SAYS SO. Until this existed the ledger could show a run
+        // receiving model output with no record that a session was ever constructed, which
+        // reads as work appearing from nowhere.
+        runCatching {
+            ledger.append(
+                session.id,
+                AgentRunLedger.EventDraft(
+                    eventType = com.unuslumen.app.domain.agents.AgentEventTypes.SESSION_CREATED,
+                    actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_RUNTIME,
+                    payload = jsonObject {
+                        put("sessionId", session.id)
+                        put("conversationId", owningConversation)
+                        put("runtimeKind", "AGENT_RUNTIME")
+                        put("toolsOffered", allowed.size)
+                        put("messageCount", session.messages.size)
+                    },
+                )
+            )
+        }
+
         // TAKE THE LEASE, THEN SAY IT IS RUNNING. The lease is what makes a dead run
         // detectable: a process that vanishes leaves a stale heartbeat, and the recovery
         // scan finds it. Without this, a killed run is indistinguishable from one that is
@@ -658,6 +678,33 @@ class AgentRuntime(
         val rounds = readCheckpointField(state, "rounds")?.toIntOrNull() ?: 0
         val exchanges = readCheckpointField(state, "exchangeCount")?.toIntOrNull() ?: 0
         val notebook = readCheckpointField(state, "notebook").orEmpty()
+
+        /*
+         * A RESTORE SAYS SO, AND NAMES ITS BOUNDARY.
+         *
+         * The event carries the checkpoint it came from and the event sequence that
+         * checkpoint already reflects. Without the boundary a reader cannot tell which
+         * events were applied after the restore and which were already inside it, which is
+         * the difference between a session and a session plus or minus some history.
+         *
+         * Written after every check has passed, so a refused restore leaves no event
+         * claiming the work carried on.
+         */
+        runCatching {
+            ledger.append(
+                runId,
+                AgentRunLedger.EventDraft(
+                    eventType = com.unuslumen.app.domain.agents.AgentEventTypes.SESSION_RESTORED,
+                    actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_RUNTIME,
+                    payload = jsonObject {
+                        put("sessionId", runId)
+                        put("checkpointId", checkpoint.checkpointId)
+                        put("eventBoundary", checkpoint.eventSequence)
+                        put("runtimeKind", "AGENT_RUNTIME")
+                    },
+                )
+            )
+        }
 
         return Session(
             id = runId,
@@ -865,6 +912,16 @@ class AgentRuntime(
             val requestId = Uuid.random().toString()
             val roundIndex = rounds
 
+            /**
+             * How many frames this request actually produced.
+             *
+             * COUNTED AT ARRIVAL, NOT DERIVED LATER. `outputFrames` is drained by every
+             * flush, so summing it after the fact would count only the last batch. It is
+             * declared here rather than beside the buffer because the stream-end event reads
+             * it, and that event is written before the buffer's own block closes.
+             */
+            var outputFrameCount = 0
+
             ledger.append(
                 session.id,
                 AgentRunLedger.EventDraft(
@@ -902,6 +959,20 @@ class AgentRuntime(
                 )
             }
 
+            /*
+             * THE REQUEST IS DECLARED BEFORE IT CAN FAIL.
+             *
+             * The collect below is where a provider, a proxy or a network can throw, and the
+             * event that names WHICH request failed has to carry this id. Wrapping it means
+             * the failure is recorded against the request that produced it rather than
+             * against the run as a whole, which is the difference between "the agent failed"
+             * and "round 3's request to this model failed with this reason".
+             *
+             * A CANCELLATION IS NOT A FAILURE. It is a person stopping their own work, so it
+             * gets its own event and the loop rethrows it so the caller's cancellation
+             * semantics are unchanged.
+             */
+            try {
             /*
              * FLUSH ON A BOUNDARY, NOT AT THE END.
              *
@@ -948,6 +1019,7 @@ class AgentRuntime(
                     is StreamFrame.TextDelta -> {
                         textBuilder.append(frame.text)
                         pendingChars += frame.text.length
+                        outputFrameCount++
                         outputFrames.add(outputFrame(com.unuslumen.app.domain.agents.AgentRunReplay.OutputFrame.Kind.TEXT, frame.text, frame.index))
                         flushOutput(force = false)
                     }
@@ -971,6 +1043,7 @@ class AgentRuntime(
                         val chunk = frame.text.orEmpty()
                         if (chunk.isNotEmpty()) reasoningBuilder.append(chunk)
                         pendingChars += chunk.length
+                        outputFrameCount++
                         outputFrames.add(outputFrame(com.unuslumen.app.domain.agents.AgentRunReplay.OutputFrame.Kind.REASONING, chunk, frame.index))
                         flushOutput(force = false)
                     }
@@ -986,10 +1059,93 @@ class AgentRuntime(
                 }
             }
 
+            // THE CLEAN PATH IS INSIDE THE TRY, so a throw cannot reach the flush below and
+            // write a stream-end event for a stream that broke.
             // Whatever is left when the stream ends, then the canonical completions. Both
             // land before anything is dispatched, so a tool call always has a recorded
             // request behind it.
             flushOutput(force = true)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // DELIBERATE STOP. Its own event, and the exception is rethrown so the
+                // caller's cancellation semantics are exactly what they were.
+                runCatching {
+                    ledger.append(
+                        session.id,
+                        AgentRunLedger.EventDraft(
+                            eventType = com.unuslumen.app.domain.agents.AgentEventTypes.MODEL_REQUEST_INTERRUPTED,
+                            actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_RUNTIME,
+                            correlationId = requestId,
+                            payload = jsonObject {
+                                put("requestId", requestId)
+                                put("roundIndex", roundIndex)
+                                put("reason", "the work was cancelled while this request was in flight")
+                            },
+                        )
+                    )
+                }
+                throw e
+            } catch (e: Exception) {
+                /*
+                 * THE REQUEST THAT FAILED, NAMED WITH ITS REASON.
+                 *
+                 * Before this, a model failure left only a RUN_STATE_CHANGED saying the run
+                 * failed. The ledger could say a run died and could not say which request
+                 * died or why, which is the question anyone reading it actually has.
+                 *
+                 * THE REASON IS BOUNDED. A provider exception can carry a stack trace or a
+                 * multi-kilobyte body, and neither belongs in an event payload.
+                 */
+                runCatching {
+                    ledger.append(
+                        session.id,
+                        AgentRunLedger.EventDraft(
+                            eventType = com.unuslumen.app.domain.agents.AgentEventTypes.MODEL_REQUEST_FAILED,
+                            actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_RUNTIME,
+                            correlationId = requestId,
+                            payload = jsonObject {
+                                put("requestId", requestId)
+                                put("provider", wiring.model.provider.id)
+                                put("model", wiring.model.id)
+                                put("roundIndex", roundIndex)
+                                put("failureKind", e::class.simpleName ?: "Exception")
+                                put("reason", (e.getRootCause().message ?: e.message ?: "no message")
+                                    .take(1_000))
+                            },
+                        )
+                    )
+                }
+                throw e
+            }
+
+            /*
+             * A STREAM THAT ENDED CLEANLY SAYS SO, WITH ITS COUNTS.
+             *
+             * THIS IS EMITTED HERE BECAUSE THE COLLECTOR COMPLETED, NOT BECAUSE A ROUND DID.
+             * The `collect` above returns only when the flow finished without throwing, so
+             * reaching this line IS the clean end. A throw skips it and is recorded as a
+             * failure instead, which keeps the two facts apart: "the stream ended" and "the
+             * stream broke" must never both be written for one request.
+             *
+             * The counts are the runtime's own - frames seen, characters of text, characters
+             * of reasoning - so a reader can tell a reply that was empty from one that was
+             * never delivered without parsing the batches.
+             */
+            runCatching {
+                ledger.append(
+                    session.id,
+                    AgentRunLedger.EventDraft(
+                        eventType = com.unuslumen.app.domain.agents.AgentEventTypes.MODEL_STREAM_ENDED,
+                        actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_MODEL,
+                        correlationId = requestId,
+                        payload = jsonObject {
+                            put("requestId", requestId)
+                            put("frameCount", outputFrameCount)
+                            put("textChars", textBuilder.length)
+                            put("reasoningChars", reasoningBuilder.length)
+                        },
+                    )
+                )
+            }
 
             lastText = textBuilder.toString()
             if (textBuilder.isNotEmpty()) {
@@ -1410,10 +1566,27 @@ class AgentRuntime(
      * [NOTEBOOK_EXCERPT_CHARS]; the agent can re-run a tool if it needs the whole
      * payload again, and the note says what it was so it knows to.
      */
-    private fun compactIfNeeded(session: Session) {
+    /**
+     * Suspend, because a fold is now a recorded fact rather than a private mutation.
+     *
+     * The write is the whole point: a fold that changed the conversation and left no trace
+     * made every later discontinuity a mystery. Callers already sit in a suspend context.
+     */
+    private suspend fun compactIfNeeded(session: Session) {
         val total = session.messages.sumOf { messageWeight(it) }
         if (total < COMPACTION_THRESHOLD_CHARS) return
         if (session.messages.size <= RECENT_MESSAGES_KEPT + 2) return
+
+        /*
+         * WHAT THE FOLD IS ABOUT TO DO, CAPTURED BEFORE IT DOES IT.
+         *
+         * The event reports the message count before the fold and the notes produced by it,
+         * so a reader can tell a fold that removed a thousand turns from one that removed
+         * three. Reading those after the mutation would report the state the fold created
+         * rather than the state it replaced.
+         */
+        val before = session.messages.size
+        val notesBefore = session.notebook.length
 
         val first = session.messages.first()
         val tail = session.messages.takeLast(RECENT_MESSAGES_KEPT)
@@ -1459,6 +1632,43 @@ class AgentRuntime(
         // The notebook rides as a system-role note at the head of the conversation, so
         // it is read on every round without pretending to be something the person said.
         session.messages = listOf(first) + notebookMessage(session.notebook) + tail
+
+        /*
+         * A FOLD THAT HAPPENED SAYS SO.
+         *
+         * THIS WAS INVISIBLE FOR THE WHOLE OF PHASE 3. The runtime folded its history,
+         * dropped most of the conversation and carried on, and the ledger recorded nothing,
+         * so a session that had lost a thousand turns looked identical to one that had
+         * never folded. Anyone reading a run afterwards could not tell why the agent had
+         * stopped referring to work it plainly did.
+         *
+         * It is written even though it is not a rebuild input, because it is the only
+         * explanation for a discontinuity in the conversation that is otherwise a mystery.
+         * The reducer ignores it by declared policy, not by falling through.
+         */
+        runCatching {
+            ledger.append(
+                session.id,
+                AgentRunLedger.EventDraft(
+                    eventType = com.unuslumen.app.domain.agents.AgentEventTypes.SESSION_COMPACTED,
+                    actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_RUNTIME,
+                    payload = jsonObject {
+                        put("sessionId", session.id)
+                        put("reason", "the conversation passed $COMPACTION_THRESHOLD_CHARS characters, " +
+                            "so the older turns were folded into the notebook")
+                        put("messagesBefore", before)
+                        put("messagesAfter", session.messages.size)
+                        put("notesBefore", notesBefore)
+                        put("notesAfter", session.notebook.length)
+                        put("roundIndex", session.rounds)
+                        put("compactionCount", session.compactions)
+                        // The notebook whole, so replay can restore without reproducing the
+                        // folding algorithm.
+                        put("notebook", session.notebook)
+                    },
+                )
+            )
+        }
     }
 
     /** The notebook as a message the model reads before the recent turns. */
