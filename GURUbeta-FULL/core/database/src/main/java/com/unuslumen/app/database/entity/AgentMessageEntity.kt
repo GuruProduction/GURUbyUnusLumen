@@ -159,6 +159,27 @@ data class AgentMessageEntity(
         const val MESSAGE_TYPE_APPROVAL_REQUEST = "APPROVAL_REQUEST"
         const val MESSAGE_TYPE_APPROVAL_DECISION = "APPROVAL_DECISION"
 
+        /**
+         * A stage of the work is finished, reported before the whole job is.
+         *
+         * A MILESTONE IS NOT AN EARLY COMPLETION. COMPLETION means the assignment is done and the
+         * report is the answer; a milestone means the agent is still working and has something worth
+         * saying now. Collapsing them would make a room unable to tell a finished run from a chatty
+         * one, and would let a milestone be read as the final report.
+         */
+        const val MESSAGE_TYPE_MILESTONE = "MILESTONE"
+
+        /**
+         * Something the agent noticed that could go wrong.
+         *
+         * NOT AN ERROR. An ERROR means something failed; a risk means something has not failed and
+         * might. Reporting a risk as an error would tell the person the work broke when it did not.
+         */
+        const val MESSAGE_TYPE_RISK = "RISK"
+
+        /** The agent wants the person to look at what it produced before it builds on it. */
+        const val MESSAGE_TYPE_REVIEW_REQUEST = "REVIEW_REQUEST"
+
         // ---- delivery ----
         /** Written, not yet picked up. A message queued behind a running tool lives here. */
         const val DELIVERY_QUEUED = "QUEUED"

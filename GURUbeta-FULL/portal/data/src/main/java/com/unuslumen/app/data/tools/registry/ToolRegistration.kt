@@ -161,6 +161,10 @@ object GeneratedToolRegistrations {
         // absent on a model that has none, while a decision is a fact the agent deliberately
         // writes and therefore exists on every model (specification section 4.2).
         DecisionToolDefinitions,
+        // The verb an agent uses to say something mid-run without stopping. Section 5.3 asks for
+        // findings, blockage, milestones, risks and review requests as well as clarification; before
+        // this, every one of them had to arrive as a question and halt the work.
+        com.unuslumen.app.data.tools.AgentReportToolDefinitions,
         ApprovalToolDefinitions,
         KeyboardToolDefinitions,
         CameraToolDefinitions,

@@ -192,8 +192,13 @@ class AgentRuntime(
          */
         const val COMPACTION_THRESHOLD_CHARS = 320_000
 
-        /** How much of one tool result is quoted verbatim in the notebook before it is shortened. */
-        private const val NOTEBOOK_EXCERPT_CHARS = 300
+        /**
+         * How much of one tool result is quoted verbatim in the notebook before it is shortened.
+         *
+         * ALIASED RATHER THAN REDECLARED, so the rule and its proof cannot drift apart: the tests
+         * put documents through `AgentNotebookFold` and this loop writes with the same constants.
+         */
+        private const val NOTEBOOK_EXCERPT_CHARS = com.unuslumen.app.domain.agents.AgentNotebookFold.EXCERPT_CHARS
 
         /**
          * When buffered model output is written, rather than held.
@@ -225,6 +230,15 @@ class AgentRuntime(
          * side fails a build rather than silently stopping the record.
          */
         const val DECISION_RECORD = "recordDecision"
+
+        /**
+         * The verb an agent uses to say something without stopping.
+         *
+         * DUPLICATED FOR THE SAME REASON as the planning pair and the decision verb, and pinned by a
+         * test against `AgentReportToolDefinitions.REPORT_TO_PERSON`, so a rename on either side
+         * fails a build rather than silently stopping the report.
+         */
+        const val REPORT_TO_PERSON = "reportToPerson"
 
         /** Shared so every component in this process reports the same lease owner. */
         @Volatile
@@ -2094,6 +2108,19 @@ class AgentRuntime(
              */
             recordDecisions(session, agent, toolCalls)
 
+            /*
+             * A REPORT THE AGENT CHOSE TO SEND BECOMES A REAL MESSAGE, AND THE RUN KEEPS GOING.
+             *
+             * Section 5.3 asks an agent to initiate communication for findings, blockage, milestones,
+             * risks and review, not only for questions. Every one of those used to have to arrive as
+             * a clarification, which halted the work for something that only needed mentioning.
+             *
+             * IT IS RECORDED HERE RATHER THAN BY THE EXECUTOR, because this is what knows the run id
+             * and the agent's identity. An executor that recorded it would need the run id as an
+             * argument, and a model that can name a run is a model that can post into another one.
+             */
+            recordReports(session, agent, toolCalls)
+
             onEvent?.invoke("${agent.name} is using ${toolCalls.size} tool(s), round $rounds")
 
             // ONE ROUND CHECKPOINT, BEFORE THE FIRST DISPATCH.
@@ -2580,6 +2607,16 @@ class AgentRuntime(
         // arrives without it and nobody has to remember to grant it.
         val ask = toolRegistry.getDefinition(AgentToolDefinitions.ASK_ASSISTANT)
         /*
+         * THE REPORTING VERB IS OFFERED TO EVERY AGENT FOR THE SAME REASON THE QUESTION ONE IS.
+         *
+         * An agent that can only speak by stopping will stop for things it should simply mention, so
+         * the door it talks through while it keeps working is not a grant anybody should have to
+         * remember to make. It is added here rather than listed in each definition, exactly as
+         * `askAssistant` is, and it is not in `NEVER_SPAWNABLE` because it grants no reach over
+         * anything: it writes a message to the person who is already reading the run.
+         */
+        val report = toolRegistry.getDefinition(REPORT_TO_PERSON)
+        /*
          * THE LOCAL RESTRICTION IS APPLIED HERE, WHICH IS THE ONLY PLACE THAT MATTERS.
          *
          * A person may hold an imported agent to fewer tools than its publisher granted, and a
@@ -2598,7 +2635,13 @@ class AgentRuntime(
             .filter { it.isNotBlank() }
             .filter { it !in NEVER_SPAWNABLE }
             .mapNotNull { name -> toolRegistry.getDefinition(name) }
-        return if (ask == null) declared else listOf(ask) + declared.filter { it.name != ask.name }
+        /*
+         * BOTH UNIVERSAL VERBS ARE ADDED ONCE, AND IN A FIXED ORDER. An agent whose own grant
+         * happens to name one of them must not get it twice, because two identical tool definitions
+         * in one request is an ambiguity the model resolves by guessing.
+         */
+        val universal = listOfNotNull(ask, report)
+        return universal + declared.filter { candidate -> universal.none { it.name == candidate.name } }
     }
 
     /**
@@ -2611,11 +2654,16 @@ class AgentRuntime(
      */
     fun allowedToolsFrom(agent: GuruAgent, granted: Set<String>): List<ToolDefinition> {
         val ask = toolRegistry.getDefinition(AgentToolDefinitions.ASK_ASSISTANT)
+        val report = toolRegistry.getDefinition(REPORT_TO_PERSON)
         val resolved = granted
             .filter { it.isNotBlank() }
             .filter { it !in NEVER_SPAWNABLE }
             .mapNotNull { name -> toolRegistry.getDefinition(name) }
-        return if (ask == null) resolved else listOf(ask) + resolved.filter { it.name != ask.name }
+        // A DELEGATED RUN GETS THE UNIVERSAL VERBS TOO. A child that could not ask a question or
+        // report a blocker would have to fail its way out of anything it could not finish, and the
+        // parent would see a dead run rather than a reason.
+        val universal = listOfNotNull(ask, report)
+        return universal + resolved.filter { candidate -> universal.none { it.name == candidate.name } }
     }
 
     /**
@@ -2663,41 +2711,20 @@ class AgentRuntime(
         val tail = session.messages.takeLast(RECENT_MESSAGES_KEPT)
         val middle = session.messages.drop(1).dropLast(RECENT_MESSAGES_KEPT)
 
-        val written = StringBuilder(session.notebook)
-        if (written.isNotEmpty()) written.append('\n')
-        written.append("— folded at round ").append(session.rounds).append(" —\n")
-
-        for (message in middle) {
-            when (message) {
-                is AiMessage.UserMessage -> {
-                    written.append("INSTRUCTION: ")
-                        .append(message.content.take(NOTEBOOK_EXCERPT_CHARS).replace('\n', ' '))
-                        .append('\n')
-                }
-                is AiMessage.ToolCall -> {
-                    val failed = if (message.isFailed) " (FAILED)" else ""
-                    written.append("RAN ").append(message.name).append(failed).append(": ")
-                        .append(message.rawContent.take(NOTEBOOK_EXCERPT_CHARS).replace('\n', ' '))
-                        .append('\n')
-                    val result = message.resultRawContent
-                    if (result.isNotBlank()) {
-                        written.append("  RETURNED: ")
-                            .append(result.take(NOTEBOOK_EXCERPT_CHARS).replace('\n', ' '))
-                            .append('\n')
-                    }
-                }
-                is AiMessage.AssistantMessage -> {
-                    if (message.content.isNotBlank()) {
-                        written.append("SAID: ")
-                            .append(message.content.take(NOTEBOOK_EXCERPT_CHARS).replace('\n', ' '))
-                            .append('\n')
-                    }
-                }
-                else -> Unit
-            }
-        }
-
-        session.notebook = written.toString()
+        /*
+         * THE FOLDING RULE ITSELF LIVES IN THE DOMAIN AND IS PROVED THERE. What stays here is the
+         * decision about which messages are the middle, which is a property of this loop's window,
+         * not of what a note looks like.
+         */
+        session.notebook = com.unuslumen.app.domain.agents.AgentNotebookFold.append(
+            existing = session.notebook,
+            middle = middle,
+            round = session.rounds,
+            documents = com.unuslumen.app.domain.agents.AgentNotebookFold.DocumentTools(
+                decisions = setOf(DECISION_RECORD),
+                plans = setOf(PLANNING_CREATE, PLANNING_UPDATE),
+            ),
+        )
         session.compactions += 1
 
         // The notebook rides as a system-role note at the head of the conversation, so
@@ -2801,6 +2828,23 @@ class AgentRuntime(
              * the difference between a record that gets written and one that stays empty while
              * somebody wonders why the reasoning tab is blank.
              */
+            /*
+             * A VERB THE AGENT DOES NOT KNOW IT HAS IS A VERB IT NEVER CALLS, which is why this is
+             * here and not only in the tool's own description. The description tells the model the
+             * verb exists; this tells it when speaking is worth doing, and which of the six kinds it
+             * is holding.
+             */
+            if (allowed.any { it.name == REPORT_TO_PERSON }) {
+                appendLine(
+                    "YOU CAN TELL THE PERSON SOMETHING WHILE YOU WORK. reportToPerson sends a message " +
+                        "that does not stop your run. Use it for a finding worth knowing, a blocker " +
+                        "you have hit, a stage you have finished, a risk you noticed, or a request " +
+                        "that they look at what you produced. Choose the kind honestly: " +
+                        com.unuslumen.app.domain.agents.AgentInitiatedMessages.describeForModel() +
+                        ". If you genuinely cannot continue without an answer, use askAssistant " +
+                        "instead, because reportToPerson will not wait for anybody."
+                )
+            }
             if (allowed.any { it.name == DECISION_RECORD }) {
                 appendLine(
                     "RECORD THE FORKS YOU TAKE. When you choose an approach, change direction, or " +
@@ -3230,6 +3274,67 @@ class AgentRuntime(
                     )
                 )
             }
+        }
+    }
+
+    /**
+     * Turn any report the agent made this round into a real message to the person.
+     *
+     * A MESSAGE, NOT AN EVENT ONLY. The ledger records that a report was made, and the conversation
+     * is where the person will actually read it. Writing only the event would leave the text in a
+     * payload nobody opens; writing only the message would lose the fact from the run's history.
+     *
+     * URGENCY IS CARRIED, NOT DECIDED HERE. The agent says how urgent it thinks this is; whether it
+     * is allowed to interrupt is a decision the agent's own notification settings make, in the same
+     * place every other alert passes through. A report marked high still gets held by an agent whose
+     * quiet window covers this hour, because that setting belongs to the person rather than to it.
+     */
+    private suspend fun recordReports(
+        session: Session,
+        agent: GuruAgent,
+        toolCalls: List<StreamFrame.ToolCallComplete>,
+    ) {
+        for (call in toolCalls) {
+            if (call.name != REPORT_TO_PERSON) continue
+
+            val args = runCatching {
+                json.parseToJsonElement(call.content) as? JsonObject
+            }.getOrNull() ?: continue
+
+            val message = (args["message"] as? JsonPrimitive)?.content?.trim().orEmpty()
+            if (message.isEmpty()) continue
+
+            val requested = (args["kind"] as? JsonPrimitive)?.content?.trim().orEmpty()
+            val option = com.unuslumen.app.domain.agents.AgentInitiatedMessages.option(requested)
+                ?: continue
+            // A clarification through this verb was already refused by the executor; if one reaches
+            // here it still must not be recorded as a report, because it is a question that nobody
+            // is going to answer.
+            if (option.pauses) continue
+
+            val urgency = (args["urgency"] as? JsonPrimitive)?.content?.trim()?.uppercase()
+                ?.takeIf { it == "LOW" || it == "HIGH" } ?: "NORMAL"
+
+            runCatching {
+                broker.send(
+                    session.id,
+                    AgentInteractionBroker.Outgoing(
+                        authorType = com.unuslumen.app.database.entity.AgentMessageEntity.AUTHOR_AGENT,
+                        authorId = agent.id,
+                        recipientType = com.unuslumen.app.database.entity.AgentMessageEntity.RECIPIENT_USER,
+                        messageType = option.type,
+                        content = message,
+                        urgency = urgency,
+                    ),
+                )
+            }
+
+            /*
+             * NO SECOND LEDGER EVENT. `broker.send` already appends MESSAGE_CREATED with the author,
+             * the recipient, the type and the length, so writing one here would put two entries in a
+             * run's history for one thing the agent said. What the broker's event does not carry is
+             * the urgency, which belongs to the message row it also writes.
+             */
         }
     }
 

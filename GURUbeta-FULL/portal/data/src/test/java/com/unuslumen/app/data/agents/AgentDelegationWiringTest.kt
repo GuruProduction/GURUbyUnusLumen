@@ -155,6 +155,10 @@ class AgentDelegationWiringTest {
          * THE QUESTION TOOL SURVIVES THE NARROWING. A delegated agent that cannot ask is an agent
          * that guesses or gives up when it hits a gap, which is the defect the ask tool exists to
          * remove. Narrowing the grant must not narrow that.
+         *
+         * THE REPORTING VERB IS CHECKED IN ITS OWN TEST, which uses a registry holding it. This one
+         * asserts the question tool, because a registry without the report definition cannot resolve
+         * it and asserting on an absent tool would be asserting nothing.
          */
         val runtime = runtime(registry())
         val child = agent(listOf("captureScreen"))
@@ -167,16 +171,68 @@ class AgentDelegationWiringTest {
     }
 
     @Test
-    fun anEmptyGrantLeavesOnlyTheQuestionTool() {
-        val runtime = runtime(registry())
+    fun anEmptyGrantLeavesOnlyTheTwoVerbsThatTouchNothing() {
+        /*
+         * TWO, NOT ONE, AND NEITHER REACHES THE DEVICE. `askAssistant` stops the run and hands a
+         * question out; `reportToPerson` writes a message to the person who is already reading the
+         * run. A toolless agent therefore reasons, asks and reports, and still touches nothing.
+         */
+        // A REGISTRY HOLDING BOTH VERBS, because the assertion is about both of them. The plain
+        // registry omits the report definition and would leave nothing to resolve it to.
+        val runtime = runtime(registryWithReport())
         val child = agent(listOf("captureScreen", "phoneCall"))
 
         val names = runtime.allowedToolsFrom(child, emptySet()).map { it.name }.toSet()
         assertEquals(
-            "a toolless delegated agent reasons and asks, and touches nothing",
-            setOf(com.unuslumen.app.data.tools.AgentToolDefinitions.ASK_ASSISTANT),
+            "a toolless delegated agent reasons, asks and reports, and touches nothing",
+            setOf(
+                com.unuslumen.app.data.tools.AgentToolDefinitions.ASK_ASSISTANT,
+                com.unuslumen.app.data.tools.AgentReportToolDefinitions.REPORT_TO_PERSON,
+            ),
             names,
         )
+    }
+
+    @Test
+    fun theReportingVerbIsUniversalAndNeverAppearsTwice() {
+        /*
+         * A CHILD THAT COULD NOT REPORT could only fail its way out of a blocker, and the parent
+         * would see a dead run rather than a reason. An agent whose own grant happens to name the
+         * verb must still be offered it once: two identical definitions in one request is an
+         * ambiguity the model resolves by guessing.
+         */
+        val runtime = runtime(registryWithReport())
+        val child = agent(
+            listOf(
+                "captureScreen",
+                com.unuslumen.app.data.tools.AgentReportToolDefinitions.REPORT_TO_PERSON,
+            )
+        )
+
+        val offered = runtime.allowedToolsFrom(
+            child,
+            setOf("captureScreen", com.unuslumen.app.data.tools.AgentReportToolDefinitions.REPORT_TO_PERSON),
+        )
+        val reportCount = offered.count {
+            it.name == com.unuslumen.app.data.tools.AgentReportToolDefinitions.REPORT_TO_PERSON
+        }
+        assertEquals("exactly once", 1, reportCount)
+        assertTrue(
+            "and it reaches a run with no other grant at all",
+            runtime.allowedToolsFrom(child, emptySet()).any {
+                it.name == com.unuslumen.app.data.tools.AgentReportToolDefinitions.REPORT_TO_PERSON
+            },
+        )
+    }
+
+    /** The same registry plus the real reporting verb, for the test that needs it to resolve. */
+    private fun registryWithReport(): ToolRegistry {
+        val registry = registry()
+        val executor = DummyExecutor()
+        com.unuslumen.app.data.tools.AgentReportToolDefinitions.definitions.forEach {
+            registry.register(it, executor, null)
+        }
+        return registry
     }
 
     @Test
