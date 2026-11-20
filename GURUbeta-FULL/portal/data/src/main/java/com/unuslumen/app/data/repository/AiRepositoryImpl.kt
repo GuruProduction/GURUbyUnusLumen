@@ -1497,6 +1497,11 @@ class AiRepositoryImpl(
                                                     )
                                                 )
                                             },
+                                            // The assistant message that asked for this
+                                            // call. It exists, it is the turn being run,
+                                            // and a memory written from inside this tool
+                                            // belongs to it.
+                                            issuingMessageId = streamingMsgId,
                                         )
                                     } finally {
                                         progressChannel.close()
@@ -1796,10 +1801,29 @@ class AiRepositoryImpl(
          * flow, which is how a long tool's findings reach the canvas live.
          */
         onProgress: (com.unuslumen.app.data.tools.registry.ToolProgressEvent) -> Unit = {},
+        /**
+         * The assistant message that issued this tool call, when the caller knows it.
+         *
+         * Carried so a memory written mid-turn can name the turn it came out of. It
+         * defaults to null and is never filled with a made-up value: a caller that
+         * does not know which message caused the call passes nothing, and the
+         * provenance records an empty id rather than the wrong one.
+         */
+        issuingMessageId: String? = null,
     ): Result<AiMessage.ToolCall> = runCatching {
         if (frame.name.isBlank()) {
             throw IllegalArgumentException("Tool call received with empty tool name. Content: ${frame.content.take(200)}")
         }
+
+        // WHO IS ASKING. This is GURU itself, reasoning in the chat the person is
+        // typing into, so the actor is named and the conversation is the one this
+        // turn belongs to. Without this the memory tools had no way to tell a fact
+        // written by GURU from one written by a spawned agent, because the
+        // provenance label's role, conversation and message fields were all empty.
+        val actor = com.unuslumen.app.data.tools.registry.ToolActor.guru(
+            conversationId = conversationId.orEmpty(),
+            messageId = issuingMessageId.orEmpty(),
+        )
 
         // Check if this is a Guru-defined tool first
         val isGuruTool = guruToolRegistryManager.isGuruTool(frame.name)
@@ -1838,6 +1862,7 @@ class AiRepositoryImpl(
                 frame.contentJson,
                 conversationId,
                 com.unuslumen.app.data.tools.registry.ToolProgressSink { event -> onProgress(event) },
+                actor,
             )
             if (dispatchResult.success) {
                 val resultObject = extractResultObject(frame.name, dispatchResult.rawJson)
@@ -1869,6 +1894,7 @@ class AiRepositoryImpl(
                 frame.contentJson,
                 conversationId,
                 com.unuslumen.app.data.tools.registry.ToolProgressSink { event -> onProgress(event) },
+                actor,
             )
             if (dispatchResult.success) {
                 val resultObject = extractResultObject(dispatchResult.resolvedName ?: frame.name, dispatchResult.rawJson)

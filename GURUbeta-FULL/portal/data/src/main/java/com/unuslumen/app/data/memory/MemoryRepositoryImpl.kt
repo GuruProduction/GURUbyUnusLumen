@@ -5,6 +5,7 @@ package com.unuslumen.app.data.memory
 
 import com.unuslumen.app.data.brain.BrainService
 import com.unuslumen.app.data.brain.cerebrum.CerebrumHost
+import com.unuslumen.app.data.tools.registry.ToolActor
 import com.unuslumen.app.domain.memory.Conversation
 import com.unuslumen.app.domain.memory.ConversationMessage
 import com.unuslumen.app.domain.memory.FactListing
@@ -46,7 +47,7 @@ class MemoryRepositoryImpl(
     private val brainService: BrainService,
     private val conversationDao: com.unuslumen.app.database.dao.ConversationDao,
     private val messageDao: com.unuslumen.app.database.dao.MessageDao
-) : MemoryRepository {
+) : MemoryRepository, AttributedMemoryWriter {
 
     private val logTag = "guru_memrep"
 
@@ -171,6 +172,38 @@ class MemoryRepositoryImpl(
         return storedRows
     }
 
+    /**
+     * Persist facts with the actor recorded in each row's provenance.
+     *
+     * THE SAME WRITE, ONE FIELD DIFFERENT. `BrainService.storeFact` has always
+     * accepted conversationId, messageId and role and used them to build the
+     * provenance label; nothing ever passed them, so every row the tool lane wrote
+     * carried `guru.role= conversation= message=` and two different agents were
+     * indistinguishable in storage.
+     *
+     * An unattributed actor passes empty strings, which reproduces that label
+     * exactly. That is deliberate: the default path has to keep writing byte-identical
+     * provenance or every memory written before this change would read differently
+     * from every memory written after.
+     */
+    override suspend fun persistFactsAs(
+        facts: List<MemoryFact>,
+        actor: ToolActor,
+    ): List<MemoryFact> {
+        val storedRows = ArrayList<MemoryFact>(facts.size)
+        for (oneFact in facts) {
+            storedRows.add(
+                brainService.storeFact(
+                    oneFact,
+                    conversationId = actor.conversationId,
+                    messageId = actor.messageId,
+                    role = actor.roleLabel(),
+                )
+            )
+        }
+        return storedRows
+    }
+
     override suspend fun storeRecord(
         content: String,
         domain: String,
@@ -190,6 +223,41 @@ class MemoryRepositoryImpl(
         relatedTo = relatedTo,
         confidence = confidence,
     )
+
+    /**
+     * Write one typed record with the actor appended to the caller's provenance.
+     *
+     * APPENDED, NOT SUBSTITUTED. `cortexRecord` takes a provenance label from the
+     * model, and that label is the model's own account of where the memory came
+     * from — `conversation`, `tool_result`, `web`, `inference`. Replacing it with
+     * the actor would trade one true fact for another. The suffix sits beside it.
+     */
+    override suspend fun storeRecordAs(
+        content: String,
+        domain: String,
+        topic: String,
+        subtopic: String,
+        provenance: String,
+        rationale: String,
+        relatedTo: List<String>,
+        confidence: Float,
+        actor: ToolActor,
+    ): MemoryFact {
+        val suffix = actor.provenanceSuffix()
+        val labelled = if (suffix.isBlank()) provenance else listOf(provenance, suffix)
+            .filter { it.isNotBlank() }
+            .joinToString(" ")
+        return brainService.storeRecord(
+            content = content,
+            domain = domain,
+            topic = topic,
+            subtopic = subtopic,
+            provenance = labelled,
+            rationale = rationale,
+            relatedTo = relatedTo,
+            confidence = confidence,
+        )
+    }
 
     override suspend fun getAllFacts(): List<MemoryFact> = brainService.getAllFacts()
 

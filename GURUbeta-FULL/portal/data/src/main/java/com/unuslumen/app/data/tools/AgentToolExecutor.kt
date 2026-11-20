@@ -4,8 +4,11 @@
 package com.unuslumen.app.data.tools
 
 import com.unuslumen.app.data.agents.AgentRuntime
+import com.unuslumen.app.data.tools.registry.ActorAwareToolExecutor
+import com.unuslumen.app.data.tools.registry.ToolActor
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
+import com.unuslumen.app.data.tools.registry.ToolProgressSink
 import com.unuslumen.app.data.tools.registry.ToolResultData
 import com.unuslumen.app.domain.repository.AgentCatalogue
 import com.unuslumen.app.domain.repository.GuruAgentRepository
@@ -24,7 +27,7 @@ class AgentToolExecutor(
     private val agentRepository: GuruAgentRepository,
     private val agentRuntime: AgentRuntime,
     private val agentCatalogue: AgentCatalogue
-) : ToolExecutor {
+) : ToolExecutor, ActorAwareToolExecutor {
 
     /**
      * ENCODE DEFAULTS, OR A FIELD CAN VANISH FROM A RESULT.
@@ -38,10 +41,41 @@ class AgentToolExecutor(
      */
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
-    override suspend fun execute(toolName: String, args: Map<String, Any?>): ToolExecutionResult {
+    /**
+     * The plain entry point: a call nobody attributed.
+     *
+     * Required by [ToolExecutor], and it stays because a caller that has not been
+     * taught about actors must keep working; `spawnAgent` from such a caller simply
+     * has no conversation to hand the agent.
+     */
+    override suspend fun execute(toolName: String, args: Map<String, Any?>): ToolExecutionResult =
+        executeForActor(toolName, args, ToolActor.UNATTRIBUTED)
+
+    /**
+     * The attributed entry point.
+     *
+     * THE ACTOR IS A PARAMETER, NOT A FIELD. `spawnAgent` is the only verb that uses
+     * it: it carries the conversation and message that asked for the job into the
+     * agent's own session, so a memory that agent later writes can name the turn
+     * that caused it. A mutable field was tried first and rejected, because this
+     * executor sits behind a singleton dispatcher and two concurrent spawns would
+     * have shared one slot.
+     */
+    override suspend fun executeAsActor(
+        toolName: String,
+        args: Map<String, Any?>,
+        actor: ToolActor,
+        progress: ToolProgressSink,
+    ): ToolExecutionResult = executeForActor(toolName, args, actor)
+
+    private suspend fun executeForActor(
+        toolName: String,
+        args: Map<String, Any?>,
+        actor: ToolActor,
+    ): ToolExecutionResult {
         return when (toolName) {
             AgentToolDefinitions.LIST_AGENTS -> listAgents()
-            AgentToolDefinitions.SPAWN_AGENT -> spawnAgent(args)
+            AgentToolDefinitions.SPAWN_AGENT -> spawnAgent(args, actor)
             AgentToolDefinitions.RESUME_AGENT -> resumeAgent(args)
             AgentToolDefinitions.BROWSE_AGENT_CATALOGUE -> browseCatalogue()
             AgentToolDefinitions.FETCH_CATALOGUE_AGENT -> fetchCatalogueAgent(args)
@@ -77,7 +111,7 @@ class AgentToolExecutor(
         )
     }
 
-    private suspend fun spawnAgent(args: Map<String, Any?>): ToolExecutionResult {
+    private suspend fun spawnAgent(args: Map<String, Any?>, actor: ToolActor): ToolExecutionResult {
         val agentName = (args["agent"] as? String)?.trim()
             ?: return ToolExecutionResult.error("Missing 'agent' parameter")
         val job = (args["job"] as? String)?.trim()
@@ -90,7 +124,15 @@ class AgentToolExecutor(
             )
         }
 
-        val outcome = agentRuntime.spawn(agentName, job).last()
+        // THE CAUSING TURN RIDES WITH THE JOB. The agent runs in its own session, far
+        // from the chat that asked for it, so unless the conversation and message are
+        // handed over here nothing downstream can say which turn a fact came from.
+        val outcome = agentRuntime.spawn(
+            agentName,
+            job,
+            conversationId = actor.conversationId,
+            messageId = actor.messageId,
+        ).last()
         return asSpawnResult(outcome)
     }
 

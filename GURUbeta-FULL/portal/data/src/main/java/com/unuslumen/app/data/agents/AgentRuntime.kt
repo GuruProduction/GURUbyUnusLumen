@@ -15,6 +15,7 @@ import com.unuslumen.app.data.getRootCause
 import com.unuslumen.app.data.gurutools.GuruToolSchemaMapper
 import com.unuslumen.app.data.repository.UnusLumenStreamingClient
 import com.unuslumen.app.data.tools.AgentToolDefinitions
+import com.unuslumen.app.data.tools.registry.ToolActor
 import com.unuslumen.app.data.tools.registry.ToolDefinition
 import com.unuslumen.app.data.tools.registry.ToolDispatcher
 import com.unuslumen.app.data.tools.registry.ToolRegistry
@@ -244,10 +245,35 @@ class AgentRuntime(
          */
         var notebook: String = "",
         /** How many times this session has folded its history down. */
-        var compactions: Int = 0
+        var compactions: Int = 0,
+        /**
+         * The conversation that caused this spawn, or blank when it was not caused by one.
+         *
+         * Kept on the session rather than resolved per tool call because it is a
+         * property of why the job started, not of the round being run. Empty is a
+         * real answer: an agent started from somewhere with no conversation records
+         * no conversation and says so.
+         */
+        val conversationId: String = "",
+        /** The assistant message that spawned this session, when there was one. */
+        val spawningMessageId: String = "",
     ) {
         /** Exchanges this session has already spent asking the assistant something. */
         fun exchangesUsed(): Int = exchangeCount
+
+        /**
+         * Who this session writes as.
+         *
+         * The agent's own id and name, so a fact it stores says which intelligence
+         * stored it. The conversation and message are the turn that asked for the
+         * work, which is as close as this app can honestly get to "why".
+         */
+        fun actor(): ToolActor = ToolActor.agent(
+            agentId = agent.id,
+            agentName = agent.name,
+            conversationId = conversationId,
+            messageId = spawningMessageId,
+        )
     }
 
     /**
@@ -288,7 +314,17 @@ class AgentRuntime(
     fun spawn(
         slugOrName: String,
         job: String,
-        onEvent: ((String) -> Unit)? = null
+        onEvent: ((String) -> Unit)? = null,
+        /**
+         * The conversation the assistant was answering when it called this agent.
+         *
+         * Carried so a fact this agent writes can be attributed to the turn that
+         * caused it. Defaults to blank for a caller that has no conversation, and an
+         * empty value is recorded honestly as absent rather than filled with a guess.
+         */
+        conversationId: String = "",
+        /** The assistant message that asked for this spawn, when the caller knows it. */
+        messageId: String = "",
     ) = flow {
         val agent = agentRepository.resolveAgent(slugOrName)
         if (agent == null) {
@@ -320,7 +356,9 @@ class AgentRuntime(
                     content = job,
                     time = System.currentTimeMillis()
                 )
-            )
+            ),
+            conversationId = conversationId,
+            spawningMessageId = messageId,
         )
         sessions[session.id] = session
 
@@ -579,6 +617,12 @@ class AgentRuntime(
 
             onEvent?.invoke("${agent.name} is using ${toolCalls.size} tool(s), round $rounds")
 
+            // WHO IS USING THE TOOLS. The agent's own identity, resolved once for
+            // the whole round. Without it a fact this agent stores is byte-identical
+            // in storage to one GURU stored, because the memory tools' provenance
+            // fields were never populated by anything on this path.
+            val actor = session.actor()
+
             val executed = toolCalls.map { call ->
                 val toolName = call.name
                 val declared = allowed.firstOrNull { it.name == toolName }
@@ -595,8 +639,14 @@ class AgentRuntime(
 
                         // The dispatcher is the only door: it checks the device
                         // permissions, runs the security policy and repairs the
-                        // arguments before anything executes.
-                        val dispatch = toolDispatcher.dispatch(toolName, argsJson)
+                        // arguments before anything executes. The actor rides the
+                        // same door, so a memory write from here records this agent.
+                        val dispatch = toolDispatcher.dispatch(
+                            toolName,
+                            argsJson,
+                            actor.conversationId.ifBlank { null },
+                            actor,
+                        )
                         if (dispatch.success) {
                             dispatch.rawJson
                         } else {

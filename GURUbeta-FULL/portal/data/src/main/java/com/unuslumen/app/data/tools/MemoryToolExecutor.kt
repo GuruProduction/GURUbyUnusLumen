@@ -3,9 +3,13 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.data.tools
 
+import com.unuslumen.app.data.memory.AttributedMemoryWriter
 import com.unuslumen.app.data.memory.persistedFactRoundTrip
+import com.unuslumen.app.data.tools.registry.ActorAwareToolExecutor
+import com.unuslumen.app.data.tools.registry.ToolActor
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
+import com.unuslumen.app.data.tools.registry.ToolProgressSink
 import com.unuslumen.app.domain.memory.MemoryCategories
 import com.unuslumen.app.domain.memory.MemoryFact
 import com.unuslumen.app.domain.memory.MemoryRepository
@@ -28,8 +32,61 @@ import kotlinx.serialization.json.Json
  * So: no uuid is ever created here, no listing is used as an existence check,
  * and a failure is reported as a failure with the reason attached.
  */
-class MemoryToolExecutor(private val memoryRepository: MemoryRepository) : ToolExecutor {
+class MemoryToolExecutor(private val memoryRepository: MemoryRepository) :
+    ToolExecutor, ActorAwareToolExecutor {
+
     private val json = Json { ignoreUnknownKeys = true }
+
+    /**
+     * The plain entry point: a call nobody attributed.
+     *
+     * Required by [ToolExecutor], and it stays because a caller that has not been
+     * taught about actors must keep working. It writes exactly the provenance the
+     * app wrote before attribution existed, which is why every memory already in the
+     * brain keeps the label it already has.
+     */
+    override suspend fun execute(toolName: String, args: Map<String, Any?>): ToolExecutionResult =
+        executeForActor(toolName, args, ToolActor.UNATTRIBUTED)
+
+    /**
+     * The attributed entry point.
+     *
+     * THE ACTOR IS A PARAMETER, NOT A FIELD, AND THAT IS THE FIX.
+     *
+     * A mutable field was the first shape of this and it was wrong: [ToolDispatcher]
+     * is a singleton and `MemoryToolExecutor` is a singleton behind it, so two
+     * concurrent calls — GURU in the chat and an agent in a spawn — would share one
+     * slot and one of them would record the other's identity. A wrong attribution is
+     * worse than none, because it is a row that lies. Threading the actor as an
+     * argument down to the two branches that use it makes a race impossible and makes
+     * it readable from the signature that only the writes are attributed.
+     */
+    override suspend fun executeAsActor(
+        toolName: String,
+        args: Map<String, Any?>,
+        actor: ToolActor,
+        progress: ToolProgressSink,
+    ): ToolExecutionResult = executeForActor(toolName, args, actor)
+
+    /**
+     * Write facts through the attributed path when the store supports it.
+     *
+     * Falls back to the plain round trip for a store that does not implement
+     * [AttributedMemoryWriter], which is every test fake and every read-only
+     * surface. The fallback is not a silent degradation of a working feature: those
+     * stores have no provenance field to write, so there is nothing to attribute.
+     */
+    private suspend fun persistAttributed(draft: MemoryFact, actor: ToolActor): MemoryFact {
+        val writer = memoryRepository as? AttributedMemoryWriter
+            ?: return persistedFactRoundTrip(memoryRepository, draft)
+        val rows = writer.persistFactsAs(listOf(draft), actor)
+        val stored = rows.firstOrNull()
+            ?: error("brain persist returned no row for: ${draft.fact.take(80)}")
+        if (stored.id.isBlank()) {
+            error("brain persist returned a blank id for: ${draft.fact.take(80)}")
+        }
+        return stored
+    }
 
     private fun MemoryFact.toInfo() = MemoryFactInfo(id, category, fact, confidence, extractedDate)
     private fun com.unuslumen.app.domain.memory.Conversation.toInfo() = ConversationInfo(id, title, createdDate, updatedDate, messageCount)
@@ -64,7 +121,18 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) : ToolE
     private fun isBrainId(candidate: String): Boolean =
         candidate.length == 64 && candidate.all { ch -> ch in "0123456789abcdef" }
 
-    override suspend fun execute(toolName: String, args: Map<String, Any?>): ToolExecutionResult = when (toolName) {
+    /**
+     * One implementation for both entry points.
+     *
+     * The only tools that read [actor] are the two writes; everything else is a query
+     * with no author, so the parameter is threaded and ignored. That is deliberate:
+     * a read that recorded an actor would be claiming authorship of a question.
+     */
+    private suspend fun executeForActor(
+        toolName: String,
+        args: Map<String, Any?>,
+        actor: ToolActor,
+    ): ToolExecutionResult = when (toolName) {
         MemoryToolDefinitions.SEARCH_MEMORY_FACTS -> {
             val query = args["query"] as? String ?: ""
             val category = args["category"] as? String
@@ -108,7 +176,7 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) : ToolE
                 lastRecalledDate = System.currentTimeMillis(),
             )
             try {
-                val stored = persistedFactRoundTrip(memoryRepository, draft)
+                val stored = persistAttributed(draft, actor)
                 val result = MemoryFactResult(stored.toInfo())
                 ToolExecutionResult.success(result, json.encodeToString(MemoryFactResult.serializer(), result))
             } catch (e: Exception) {
@@ -141,16 +209,35 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) : ToolE
             }
             val confidence = (args["confidence"] as? Number)?.toFloat() ?: 0.9f
             try {
-                val stored = memoryRepository.storeRecord(
-                    content = content,
-                    domain = (args["domain"] as? String).orEmpty(),
-                    topic = (args["topic"] as? String).orEmpty(),
-                    subtopic = (args["subtopic"] as? String).orEmpty(),
-                    provenance = (args["provenance"] as? String).orEmpty(),
-                    rationale = (args["rationale"] as? String).orEmpty(),
-                    relatedTo = relationIds.map { it.lowercase() },
-                    confidence = confidence.coerceIn(0f, 1f),
-                )
+                // THE ACTOR IS APPENDED, NOT SUBSTITUTED. The model's own provenance
+                // ("conversation", "tool_result", "inference") is a real fact about
+                // where the memory came from; the actor says who did the writing.
+                // Both belong in the label, so the attributed writer joins them.
+                val writer = memoryRepository as? AttributedMemoryWriter
+                val stored = if (writer == null) {
+                    memoryRepository.storeRecord(
+                        content = content,
+                        domain = (args["domain"] as? String).orEmpty(),
+                        topic = (args["topic"] as? String).orEmpty(),
+                        subtopic = (args["subtopic"] as? String).orEmpty(),
+                        provenance = (args["provenance"] as? String).orEmpty(),
+                        rationale = (args["rationale"] as? String).orEmpty(),
+                        relatedTo = relationIds.map { it.lowercase() },
+                        confidence = confidence.coerceIn(0f, 1f),
+                    )
+                } else {
+                    writer.storeRecordAs(
+                        content = content,
+                        domain = (args["domain"] as? String).orEmpty(),
+                        topic = (args["topic"] as? String).orEmpty(),
+                        subtopic = (args["subtopic"] as? String).orEmpty(),
+                        provenance = (args["provenance"] as? String).orEmpty(),
+                        rationale = (args["rationale"] as? String).orEmpty(),
+                        relatedTo = relationIds.map { it.lowercase() },
+                        confidence = confidence.coerceIn(0f, 1f),
+                        actor = actor,
+                    )
+                }
                 val result = MemoryFactResult(stored.toInfo())
                 ToolExecutionResult.success(result, json.encodeToString(MemoryFactResult.serializer(), result))
             } catch (e: Exception) {
@@ -242,7 +329,7 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) : ToolE
                 lastRecalledDate = now,
             )
             try {
-                val stored = persistedFactRoundTrip(memoryRepository, replacement)
+                val stored = persistAttributed(replacement, actor)
                 // Content-addressed identity: an edit produces a new content id,
                 // so the row holding the OLD content is archived. Best effort
                 // because the new row is already live and correct; a failure

@@ -46,8 +46,10 @@ class ToolDispatcher(
     suspend fun dispatch(
         toolName: String,
         rawArgs: JsonObject,
-        conversationId: String? = null
-    ): ToolDispatchResult = dispatchStreaming(toolName, rawArgs, conversationId, ToolProgressSink.NONE)
+        conversationId: String? = null,
+        actor: ToolActor = ToolActor.UNATTRIBUTED,
+    ): ToolDispatchResult =
+        dispatchStreaming(toolName, rawArgs, conversationId, ToolProgressSink.NONE, actor)
 
     /**
      * Dispatch a tool and forward whatever it reports while it runs.
@@ -56,12 +58,18 @@ class ToolDispatcher(
      * which every tool inherits as a plain call. A tool with something to say calls
      * the sink as it finds things; one with nothing to say never touches it. Nothing
      * about the returned result changes.
+     *
+     * [actor] is handed to whichever executors declare [ActorAwareToolExecutor], and
+     * ignored by every other one. It defaults to [ToolActor.UNATTRIBUTED] so a caller
+     * that has not been taught to attribute a call records the same empty provenance
+     * the app recorded before attribution existed, rather than claiming to be GURU.
      */
     suspend fun dispatchStreaming(
         toolName: String,
         rawArgs: JsonObject,
         conversationId: String? = null,
         progress: ToolProgressSink = ToolProgressSink.NONE,
+        actor: ToolActor = ToolActor.UNATTRIBUTED,
     ): ToolDispatchResult {
         val resolvedName = nameResolver.resolve(toolName, registry, rawArgs)
             ?: return ToolDispatchResult.unknownTool(toolName)
@@ -96,7 +104,16 @@ class ToolDispatcher(
         // The progress-aware entry point, which every executor inherits as a
         // plain execute(). A tool that reports as it goes has its events forwarded
         // by the caller's sink; one that does not behaves exactly as before.
-        val execResult = executor.executeWithProgress(resolvedName, repairedArgs, progress)
+        //
+        // The actor travels the same way and by the same rule: an executor that
+        // needs to know who called declares ActorAwareToolExecutor and receives it,
+        // and one that does not is called exactly as it was before. Two optional
+        // capabilities, one call site, no executor edited to make room for either.
+        val execResult = if (executor is ActorAwareToolExecutor) {
+            executor.executeAsActor(resolvedName, repairedArgs, actor, progress)
+        } else {
+            executor.executeWithProgress(resolvedName, repairedArgs, progress)
+        }
         val durationMs = System.currentTimeMillis() - startedAt
 
         val didFail = failed(execResult)
