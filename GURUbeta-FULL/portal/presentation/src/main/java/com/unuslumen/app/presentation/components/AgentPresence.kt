@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -71,6 +72,100 @@ data class AgentPresenceNode(
             AgentRunStatuses.CREATED -> "STARTING"
             else -> status
         }
+}
+
+/**
+ * The Portal's ambient presence: a coloured edge bloom and one tappable mark, and nothing else.
+ *
+ * WHY THERE IS NO STRIP, NO CHIP AND NO LINE OF TEXT. This is the specification's section 9.1 and the
+ * owner's ruling of 2026-11-19 in the same breath: while an agent is active the Portal shows a glow
+ * around the screen in that agent's colour and one thing to tap into its room. Every fact — the name,
+ * the state, the rounds, the tools — belongs on the dashboard one tap away, because the Portal is the
+ * person's conversation with GURU and an agent's presence in it must be ambient and wordless.
+ *
+ * THE GLOW CARRIES THE STATE, WHICH IS WHY IT IS NOT DECORATION. It is drawn in the agent's colour and
+ * breathes only while work is genuine; a run waiting on a person is a still glow, and a run waiting on
+ * an answer is a still glow in a different colour. A pulse over a run that is not moving would say
+ * "busy" about something that is waiting for the person.
+ *
+ * GONE WHEN NOTHING IS RUNNING. No bloom, no mark, no placeholder. A permanent indicator of an absence
+ * is a fact nobody needs while GURU is answering a question.
+ *
+ * @param node the single live run, or null when no agent is executing. Only one is drawn because the
+ *   runtime admits one concurrent run today, and pretending otherwise would imply work that is not
+ *   happening; when concurrency arrives this takes the most urgent node and says so.
+ */
+@Composable
+fun AgentPortalGlow(
+    node: AgentPresenceNode?,
+    onOpen: (AgentPresenceNode) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (node == null) return
+
+    val ink = Memphis.inkFor(node.colourIndex)
+    // The pulse is the difference between "working" and "stopped", so a still run gets a still edge.
+    val transition = rememberInfiniteTransition(label = "portalGlow")
+    val bloom by transition.animateFloat(
+        initialValue = if (node.isExecuting) 0.30f else 0.55f,
+        targetValue = if (node.isExecuting) 0.85f else 0.55f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1_600),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "portalGlowAlpha",
+    )
+
+    /*
+     * THE EDGE, DRAWN AS FOUR BANDS RATHER THAN A BORDER. A uniform border reads as chrome around a
+     * panel; a bloom that is heaviest at the edges and fades inward reads as light coming from behind
+     * the screen, which is what an ambient presence is. It never intercepts a touch, because the
+     * Portal underneath is the person's conversation and must stay usable.
+     */
+    androidx.compose.foundation.layout.Box(modifier.fillMaxSize()) {
+        androidx.compose.foundation.Canvas(
+            Modifier
+                .fillMaxSize()
+                .alpha(bloom),
+        ) {
+            val band = size.minDimension * 0.06f
+            val colours = listOf(ink, ink.copy(alpha = 0f))
+            // Top and bottom fade inward.
+            drawRect(
+                brush = androidx.compose.ui.graphics.Brush.verticalGradient(colours),
+                size = androidx.compose.ui.geometry.Size(size.width, band),
+            )
+            drawRect(
+                brush = androidx.compose.ui.graphics.Brush.verticalGradient(colours.reversed()),
+                topLeft = androidx.compose.ui.geometry.Offset(0f, size.height - band),
+                size = androidx.compose.ui.geometry.Size(size.width, band),
+            )
+            // Left and right, the same treatment across.
+            drawRect(
+                brush = androidx.compose.ui.graphics.Brush.horizontalGradient(colours),
+                size = androidx.compose.ui.geometry.Size(band, size.height),
+            )
+            drawRect(
+                brush = androidx.compose.ui.graphics.Brush.horizontalGradient(colours.reversed()),
+                topLeft = androidx.compose.ui.geometry.Offset(size.width - band, 0f),
+                size = androidx.compose.ui.geometry.Size(band, size.height),
+            )
+        }
+
+        /*
+         * THE ONE TAP TARGET, AND IT SAYS NOTHING. A mark in the agent's ink, at the edge where the
+         * bloom is strongest, carrying no name and no state because the glow already carries both.
+         */
+        Box(
+            Modifier
+                .align(Alignment.TopEnd)
+                .padding(10.dp)
+                .size(18.dp)
+                .background(ink)
+                .border(2.dp, Memphis.Ink)
+                .clickable { onOpen(node) },
+        )
+    }
 }
 
 @Composable

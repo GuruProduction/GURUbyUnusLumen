@@ -154,10 +154,12 @@ Counted from the JUnit XML, not the console summary:
 
 | Module | Classes | Tests | Failures | Errors | Skipped |
 | --- | --- | --- | --- | --- | --- |
-| `:portal:domain` | 34 | 378 | 0 | 0 | 0 |
+| `:portal:domain` | 35 | 383 | 0 | 0 | 0 |
 | `:portal:data` | 133 | 1,432 | 0 | 0 | 0 |
 | `:core:database` | 3 | 29 | 0 | 0 | 0 |
-| **Total** | **170** | **1,839** | **0** | **0** | **0** |
+| **Total** | **171** | **1,844** | **0** | **0** | **0** |
+
+The app module compiles, including the Agent Room's navigation destination and the Portal's presence glow.
 
 The instrumented migration suite is a fourth set that has not executed: `:core:database` shows the
 three JVM classes, and `AgentFoundationMigrationTest` is androidTest covering migrations 35→36 through

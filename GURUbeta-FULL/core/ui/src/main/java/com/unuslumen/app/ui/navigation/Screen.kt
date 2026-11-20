@@ -105,6 +105,23 @@ sealed class Screen {
     @Serializable
     data object AgentMarketScreen : Screen()
 
+    /**
+     * One agent's room: its dashboard, its run and its conversation.
+     *
+     * KEYED BY AGENT, NOT BY RUN. A person opens an agent's room to see what it is doing, and which
+     * run that is changes underneath them as work starts and finishes. Keying on the run would make
+     * the room a view of one execution, so returning to it after a run ended would open a dead run
+     * rather than the agent.
+     *
+     * THIS IS THE ONE DOOR THE PORTAL'S GLOW OPENS. Until it existed the room had a composable and no
+     * route, so nothing in the app could reach it and the glow would have been an indicator into
+     * nowhere.
+     */
+    @Serializable
+    data class AgentRoomScreen(
+        val agentId: String
+    ) : Screen()
+
     // Thought cycles — the background reflection engine's own screens
     @Serializable
     data object ThoughtCyclesScreen : Screen()

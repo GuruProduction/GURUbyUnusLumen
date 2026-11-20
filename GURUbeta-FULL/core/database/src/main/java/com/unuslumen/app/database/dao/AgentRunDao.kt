@@ -71,6 +71,23 @@ interface AgentRunDao {
     )
     suspend fun nonTerminalRuns(): List<AgentRunEntity>
 
+    /**
+     * Every run that is still alive, as it changes.
+     *
+     * WHAT THE PORTAL'S GLOW READS. `nonTerminalRuns` is a one-shot query for the recovery scan; a
+     * glow must appear when work starts and disappear when it ends, which needs a stream. The status
+     * set is the same one recovery considers alive, so the indicator and the recovery scan cannot
+     * disagree about whether a run is still around.
+     */
+    @Query(
+        """
+        SELECT * FROM agent_runs
+        WHERE status IN ('CREATED','STARTING','RUNNING','WAITING_FOR_GURU','WAITING_FOR_USER','WAITING_FOR_TOOL','PAUSED','INTEGRATING','INTERRUPTED')
+        ORDER BY updated_at DESC
+        """
+    )
+    fun observeActiveRuns(): Flow<List<AgentRunEntity>>
+
     /** The runs whose owner may have died: not waiting, and holding a lease that has gone quiet. */
     @Query(
         """
