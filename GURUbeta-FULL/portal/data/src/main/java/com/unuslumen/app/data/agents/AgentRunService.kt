@@ -55,42 +55,23 @@ class AgentRunService : Service(), KoinComponent {
         const val ACTION_STOP = "com.unuslumen.app.action.STOP_AGENT_RUN"
 
         /**
-         * How a run is handed to the service to be OWNED.
+         * Bring the service up for a run so it holds the foreground and shows the notification.
          *
-         * [RESUME_ANSWER] is the case that matters. A run waiting on a question can be
-         * resumed here rather than from whatever screen the person happened to be on, so
-         * the work lives in this process's own scope and cannot be cancelled by a UI or a
-         * tool call finishing.
+         * THIS SERVICE DOES NOT RUN WORK, WHICH IS THE POINT. Execution lives on
+         * [AgentRunHost]'s application-lifetime scope, and the caller that wants an answer
+         * awaits it there. The service exists for the two things only a foreground service
+         * can do: keep the process alive while an agent is visibly working, and give the
+         * person a standing notification with a stop action.
+         *
+         * EVERY WAY A RUN STARTS CALLS THIS, spawn and resume alike. An earlier version
+         * started it from spawn only, so a resumed run worked with no notification and no
+         * foreground protection, and a variant of that version executed the resume here as
+         * well, which would have run the same turn twice. One service, one responsibility.
          */
-        const val EXTRA_RESUME_ANSWER = "resume_answer"
-
-        /** Start the service to hold a live run and show its notification. */
         fun start(context: Context, runId: String, agentName: String) {
             val intent = Intent(context, AgentRunService::class.java).apply {
                 putExtra(EXTRA_RUN_ID, runId)
                 putExtra(EXTRA_AGENT_NAME, agentName)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
-        }
-
-        /**
-         * Hand a waiting run and its answer to the service, which then owns the execution.
-         *
-         * THIS IS THE DIFFERENCE BETWEEN A NOTIFICATION AND OWNERSHIP. Resuming from a
-         * caller's coroutine means the agent dies when that caller's scope dies, while the
-         * service keeps heartbeating and telling the person work is in progress. Resuming
-         * inside the service means the work's lifetime is the service's lifetime, which is
-         * exactly what a foreground service is for.
-         */
-        fun resume(context: Context, runId: String, agentName: String, answer: String) {
-            val intent = Intent(context, AgentRunService::class.java).apply {
-                putExtra(EXTRA_RUN_ID, runId)
-                putExtra(EXTRA_AGENT_NAME, agentName)
-                putExtra(EXTRA_RESUME_ANSWER, answer)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -106,11 +87,18 @@ class AgentRunService : Service(), KoinComponent {
 
     private val coordinator: AgentRecoveryCoordinator by inject()
     private val ledger: AgentRunLedger by inject()
-    private val runtime: AgentRuntime by inject()
+
+    /**
+     * The only authority on whether work is genuinely executing.
+     *
+     * NOT A LOCAL JOB REFERENCE. This component does not run the work any more, so a job
+     * field here would report "finished" the instant this scope moved on and the heartbeat
+     * would stop renewing a lease for a run that is still going.
+     */
+    private val host: AgentRunHost by inject()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var heartbeat: Job? = null
-    private var execution: Job? = null
     private var currentRunId: String? = null
 
     /**
@@ -165,29 +153,20 @@ class AgentRunService : Service(), KoinComponent {
         startInForeground(runId, agentName)
 
         /*
-         * THE WORK RUNS HERE, OR THE NOTIFICATION IS A LIE.
+         * THIS SERVICE DOES NOT RUN THE WORK. IT HOLDS THE PROCESS AND HEARTBEATS.
          *
-         * A resume handed to this service is executed in this service's own scope, so the
-         * agent's lifetime is the service's lifetime. That is the whole point of a
-         * foreground service: a UI being destroyed, a tool call returning, or a screen
-         * being popped must not kill work the person was told was still running.
+         * A previous version launched a coroutine here to execute a resume, which meant the
+         * same turn could be executed twice: once by whatever caller had already started it
+         * on the host, and once by this component. Two executions of one assignment is the
+         * worst defect in this whole subsystem, because a resume carries a real answer into
+         * a real job and running it twice repeats every side effect behind it.
          *
-         * An ordinary spawn still runs through its caller, because a job the person just
-         * started is already inside a live conversation; what this service guarantees for
-         * it is the notification and the lease, and the heartbeat below stops the moment
-         * the work does.
+         * Execution lives in [AgentRunHost], and callers start it there. This component owns
+         * exactly two jobs: the foreground notification, and the heartbeat that tells the
+         * recovery scan the work is genuinely alive. The heartbeat asks the host rather than
+         * trusting a local job reference, because a local reference would always look
+         * finished the moment this component's own scope moved on.
          */
-        val resumeAnswer = intent.getStringExtra(EXTRA_RESUME_ANSWER)
-        execution = scope.launch {
-            if (!resumeAnswer.isNullOrBlank()) {
-                runCatching {
-                    runtime.resume(runId, resumeAnswer).collect { /* events are in the ledger */ }
-                }.onFailure {
-                    android.util.Log.w("guru_agents", "Service-owned resume of '$runId' failed: ${it.message}")
-                }
-            }
-        }
-
         beginHeartbeat(runId)
 
         // NOT STICKY. A service restarted by the platform has no execution behind it: the
@@ -198,19 +177,22 @@ class AgentRunService : Service(), KoinComponent {
     }
 
     /**
-     * Heartbeat, and ONLY while the work is actually alive.
+     * Heartbeat, and ONLY while the work is genuinely alive.
      *
      * A HEARTBEAT THAT OUTLIVES ITS WORK IS A LIE THE RECOVERY SCAN BELIEVES. Renewing a
-     * lease for a coroutine that has already finished would keep a dead run looking
-     * healthy for ever, which is worse than no heartbeat at all. So this renews only while
-     * [execution] is active, and stops the moment it is not.
+     * lease for work that has already finished keeps a dead run looking healthy for ever,
+     * which is worse than no heartbeat at all, because the scan will never interrupt it and
+     * a person is never told.
+     *
+     * IT ASKS THE HOST, NOT A LOCAL JOB. Work now runs under [AgentRunHost]'s
+     * application-lifetime scope, so this service's own job reference says nothing about
+     * whether the agent is still running. The host is the one authority on that.
      */
     private fun beginHeartbeat(runId: String) {
         heartbeat?.cancel()
         heartbeat = scope.launch {
             while (true) {
-                val working = execution?.isActive == true
-                if (!working) {
+                if (!host.isActive(runId)) {
                     // Nothing is running, so nothing is renewed. The lease is left to go
                     // stale on purpose: that is how the scan learns the work stopped.
                     break

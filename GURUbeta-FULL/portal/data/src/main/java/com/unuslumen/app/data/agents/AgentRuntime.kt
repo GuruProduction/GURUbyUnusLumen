@@ -316,41 +316,6 @@ class AgentRuntime(
     )
 
     /**
-     * The conversation the current dispatch belongs to.
-     *
-     * WHY THE RUNTIME HOLDS THIS RATHER THAN THE TOOL ARGUMENTS. A run belongs to the
-     * conversation that owns it, and `agent_runs.conversation_id` says so with a foreign
-     * key. But `spawnAgent` reaches this class through the dispatcher, which carries tool
-     * arguments and nothing else — there is no conversation in the call. The send path
-     * knows it, so it binds it here before dispatching, and the spawn reads it back.
-     *
-     * Scoped per dispatch rather than per session, and cleared when the send finishes, so
-     * a later spawn cannot quietly inherit a conversation the person has left.
-     */
-    @Volatile
-    private var boundConversationId: String? = null
-
-
-    /** Bind the conversation this dispatch is happening in. Called by the send path. */
-    fun bindConversation(conversationId: String?) {
-        boundConversationId = conversationId?.takeIf { it.isNotBlank() }
-    }
-
-    /** The conversation this dispatch belongs to, or null when nothing bound one. */
-    fun currentConversationId(): String? = boundConversationId
-
-    /**
-     * The lease owner for everything this process does.
-     *
-     * ONE INCARNATION ID FOR THE WHOLE PROCESS, NOT ONE PER RUN AND NOT A PID. The runtime
-     * and the foreground service both write the lease, and they are the same process, so
-     * they must agree about who they are — otherwise the service renews a lease the runtime
-     * claimed and neither can tell which one is really alive. A PID cannot serve here
-     * because the kernel reuses it, so a recycled number would make a dead owner look
-     * alive, which is the one failure the lease exists to prevent.
-     */
-
-    /**
      * The wiring an agent runs on, resolved fresh at spawn time so switching
      * provider mid-session takes effect on the next job.
      */
@@ -377,6 +342,15 @@ class AgentRuntime(
         /** Where this work came from, so the run can be found from the conversation. */
         conversationId: String? = null,
         originMessageId: String? = null,
+        /**
+         * The run id, supplied by a caller that has to name the run before it starts.
+         *
+         * WHY A CALLER WOULD NEED IT FIRST. Work now runs under [AgentRunHost]'s
+         * application-lifetime scope so it outlives whoever started it, and the host keys
+         * its jobs by run id. A caller therefore has to allocate the id before dispatching,
+         * not learn it from the result. Defaulted so every existing caller keeps working.
+         */
+        runId: String = Uuid.random().toString(),
     ) = flow {
         val agent = agentRepository.resolveAgent(slugOrName)
         if (agent == null) {
@@ -398,14 +372,14 @@ class AgentRuntime(
          * and the agent cannot start at all. A sentence naming the actual cause is far
          * better than a foreign-key violation nobody can read.
          */
-        val owningConversation = conversationId ?: boundConversationId
+        val owningConversation = conversationId
         if (owningConversation.isNullOrBlank()) {
             emit(
                 failed(
                     agent.name,
-                    "${agent.name} was not started because no conversation is bound. An agent run " +
-                        "belongs to the conversation that asked for it, so one must be known before " +
-                        "the job begins."
+                    "${agent.name} was not started because no conversation was supplied. An agent " +
+                        "run belongs to the conversation that asked for it, so the caller must pass " +
+                        "one rather than relying on ambient state that another dispatch could change."
                 )
             )
             return@flow
@@ -419,7 +393,6 @@ class AgentRuntime(
 
         val allowed = allowedTools(agent)
         val resolvedPrompt = buildSystemPrompt(agent, allowed)
-        val runId = Uuid.random().toString()
 
         // THE RUN IS WRITTEN BEFORE THE FIRST MODEL CALL, NOT AFTER THE LAST.
         // A run recorded only on completion records nothing for the runs that matter
@@ -522,12 +495,8 @@ class AgentRuntime(
             )
         }
 
-        // The foreground service owns this run so it survives the Portal being backgrounded.
-        runCatching {
-            AgentRunService.start(context, session.id, agent.name)
-        }.onFailure {
-            android.util.Log.w("guru_agents", "AgentRunService did not start: ${it.message}")
-        }
+        // The foreground service holds this run so it survives the Portal being backgrounded.
+        foreground(session.id, agent.name)
 
         emit(bounded(session, onEvent))
     }
@@ -588,6 +557,11 @@ class AgentRuntime(
                 time = System.currentTimeMillis()
             )
             recordResume(restored.id, answer.trim())
+            // A RESUMED RUN IS A LIVE RUN AND GETS THE SAME FOREGROUND TREATMENT.
+            // The earlier version started the service from spawn only, so a resumed run
+            // carried on with no notification and no foreground protection: the process
+            // could be reaped mid-turn while the person saw nothing at all.
+            foreground(restored.id, restored.agent.name)
             emit(bounded(restored, onEvent))
             return@flow
         }
@@ -604,7 +578,23 @@ class AgentRuntime(
             time = System.currentTimeMillis()
         )
         recordResume(live.id, answer.trim())
+        foreground(live.id, live.agent.name)
         emit(bounded(live, onEvent))
+    }
+
+    /**
+     * Put a run in the foreground, so it survives the Portal being backgrounded.
+     *
+     * FAILING TO START THE SERVICE IS NOT FATAL. The work is already running on
+     * [AgentRunHost]; a service that will not start costs the notification and the
+     * process protection, not the execution. Logged rather than thrown so a device that
+     * refuses a foreground start does not also lose the turn.
+     */
+    private fun foreground(runId: String, agentName: String) {
+        runCatching { AgentRunService.start(context, runId, agentName) }
+            .onFailure {
+                android.util.Log.w("guru_agents", "AgentRunService did not start: ${it.message}")
+            }
     }
 
     /**

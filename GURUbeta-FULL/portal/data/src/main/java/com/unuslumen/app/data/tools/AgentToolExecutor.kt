@@ -23,7 +23,15 @@ import kotlinx.serialization.json.Json
 class AgentToolExecutor(
     private val agentRepository: GuruAgentRepository,
     private val agentRuntime: AgentRuntime,
-    private val agentCatalogue: AgentCatalogue
+    private val agentCatalogue: AgentCatalogue,
+    /**
+     * Where the work actually runs.
+     *
+     * Injected rather than reached for statically so the ownership guarantee is a
+     * dependency this class visibly has, rather than an ambient fact somebody has to
+     * remember when they change how spawn is called.
+     */
+    private val host: com.unuslumen.app.data.agents.AgentRunHost,
 ) : ToolExecutor {
 
     /**
@@ -104,7 +112,9 @@ class AgentToolExecutor(
             )
         }
 
-        val conversationId = agentRuntime.currentConversationId()
+        // FROM THE COROUTINE, NOT FROM A FIELD. Two concurrent dispatches hold two
+        // different scopes and cannot overwrite each other.
+        val conversationId = com.unuslumen.app.data.agents.currentDispatchScope()?.conversationId()
         if (conversationId.isNullOrBlank()) {
             return ToolExecutionResult.error(
                 "An agent can only be started from inside a conversation, because its run " +
@@ -113,11 +123,26 @@ class AgentToolExecutor(
             )
         }
 
-        val outcome = agentRuntime.spawn(
-            slugOrName = agentName,
-            job = job,
-            conversationId = conversationId,
-        ).last()
+        /*
+         * THE WORK RUNS ON THE HOST, AND THIS CALL ONLY WAITS.
+         *
+         * Collecting the runtime's flow here would put the agent's lifetime inside the
+         * dispatcher's coroutine, so a cancelled tool call or a destroyed screen would kill
+         * an agent the person had been told was running. The host runs it on an
+         * application-lifetime scope and this awaits the result, which means cancelling
+         * this call cancels the wait and nothing else.
+         */
+        val runId = java.util.UUID.randomUUID().toString()
+        val deferred = kotlinx.coroutines.CompletableDeferred<AgentRuntime.SpawnResult>()
+        host.start(runId, deferred) {
+            agentRuntime.spawn(
+                slugOrName = agentName,
+                job = job,
+                conversationId = conversationId,
+                runId = runId,
+            ).last()
+        }
+        val outcome = deferred.await()
         return asSpawnResult(outcome)
     }
 
@@ -128,6 +153,12 @@ class AgentToolExecutor(
      * spawnAgent hands back would be a dead end: the agent would be waiting, the
      * answer would have nowhere to arrive, and the work would be stranded exactly
      * where the old one-shot design left it.
+     *
+     * IT RUNS ON THE HOST FOR THE SAME REASON SPAWN DOES. A resume is the continuation
+     * of a real job with real side effects behind it, so it must not live in the
+     * dispatcher's coroutine: a cancelled tool call would kill the turn the person had
+     * just answered, while the run row still said RUNNING. The caller waits; the host
+     * owns the work.
      */
     private suspend fun resumeAgent(args: Map<String, Any?>): ToolExecutionResult {
         val sessionId = (args["sessionId"] as? String)?.trim()
@@ -142,7 +173,11 @@ class AgentToolExecutor(
             )
         }
 
-        val outcome = agentRuntime.resume(sessionId, answer).last()
+        val deferred = kotlinx.coroutines.CompletableDeferred<AgentRuntime.SpawnResult>()
+        host.start(sessionId, deferred) {
+            agentRuntime.resume(sessionId, answer).last()
+        }
+        val outcome = deferred.await()
         return asSpawnResult(outcome)
     }
 

@@ -290,25 +290,40 @@ class ToolDispatcher(
         conversationId: String? = null,
         progress: ToolProgressSink = ToolProgressSink.NONE,
     ): ToolDispatchResult {
-        val prepared = prepare(toolName, rawArgs)
-        return when (prepared) {
-            is Preparation.Refused -> when (prepared.kind) {
-                RefusalKind.UNKNOWN_TOOL -> ToolDispatchResult.unknownTool(toolName)
-                RefusalKind.PERMISSION_DENIED ->
-                    prepared.grantCheck
-                        ?.let { ToolDispatchResult.permissionDenied(it) }
-                        // No check carried means no structured body to build, so the
-                        // sentence stands alone rather than inventing a body shape.
-                        ?: ToolDispatchResult.blocked(prepared.reason)
-                RefusalKind.SECURITY_BLOCKED -> ToolDispatchResult.blocked(prepared.reason)
-                RefusalKind.NO_EXECUTOR ->
-                    ToolDispatchResult.unknownTool(prepared.resolvedName ?: toolName)
+        /*
+         * THE CONVERSATION RIDES THE COROUTINE, INSTALLED HERE.
+         *
+         * This is the one place every tool call passes through and the one place the
+         * conversation id is already in hand, so it is where the dispatch scope is set. A
+         * tool that starts an agent — spawnAgent — reads it from the coroutine rather than
+         * from a field on the runtime, which means two conversations dispatching at once
+         * hold two different values and neither can overwrite the other's.
+         *
+         * An id of null is installed deliberately rather than skipped: the spawn path then
+         * finds nothing and refuses with a sentence naming the cause, instead of inheriting
+         * whatever the last dispatch happened to leave behind.
+         */
+        return com.unuslumen.app.data.agents.withDispatchScope(conversationId) {
+            val prepared = prepare(toolName, rawArgs)
+            when (prepared) {
+                is Preparation.Refused -> when (prepared.kind) {
+                    RefusalKind.UNKNOWN_TOOL -> ToolDispatchResult.unknownTool(toolName)
+                    RefusalKind.PERMISSION_DENIED ->
+                        prepared.grantCheck
+                            ?.let { ToolDispatchResult.permissionDenied(it) }
+                            // No check carried means no structured body to build, so the
+                            // sentence stands alone rather than inventing a body shape.
+                            ?: ToolDispatchResult.blocked(prepared.reason)
+                    RefusalKind.SECURITY_BLOCKED -> ToolDispatchResult.blocked(prepared.reason)
+                    RefusalKind.NO_EXECUTOR ->
+                        ToolDispatchResult.unknownTool(prepared.resolvedName ?: toolName)
+                }
+                is Preparation.Ready -> executePrepared(
+                    invocation = prepared.invocation,
+                    conversationId = conversationId,
+                    progress = progress,
+                )
             }
-            is Preparation.Ready -> executePrepared(
-                invocation = prepared.invocation,
-                conversationId = conversationId,
-                progress = progress,
-            )
         }
     }
 
