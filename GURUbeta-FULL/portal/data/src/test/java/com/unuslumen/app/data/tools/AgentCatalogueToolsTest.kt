@@ -115,6 +115,9 @@ class AgentCatalogueToolsTest {
         repository(dao),
         mockk<AgentRuntime>(relaxed = true),
         catalogue,
+        // A real host, because it holds no state this test cares about and a mock would
+        // only prove that a mock answers.
+        com.unuslumen.app.data.agents.AgentRunHost(),
     )
 
     /**

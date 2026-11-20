@@ -46,7 +46,15 @@ import androidx.room.PrimaryKey
         Index(
             value = ["package_name", "timestamp"],
             name = "index_tool_observations_package_timestamp"
-        )
+        ),
+        Index(
+            value = ["agent_run_id", "timestamp"],
+            name = "index_tool_observations_agent_run_id_timestamp"
+        ),
+        Index(
+            value = ["agent_run_id", "agent_invocation_id"],
+            name = "index_tool_observations_agent_run_id_agent_invocation_id"
+        ),
     ]
 )
 data class ToolObservationEntity(
@@ -97,7 +105,20 @@ data class ToolObservationEntity(
 
     /** How long the tool took, in milliseconds. */
     @ColumnInfo(name = "duration_ms", defaultValue = "0")
-    val durationMs: Long = 0
+    val durationMs: Long = 0,
+
+    /**
+     * The agent run this observation belongs to, or NULL for an ordinary chat tool call.
+     *
+     * NULL for every row written before durable runs existed, because those calls had
+     * no run and inventing one would be a fabricated provenance.
+     */
+    @ColumnInfo(name = "agent_run_id")
+    val agentRunId: String? = null,
+
+    /** The individual invocation, so a failed call can be matched to its start event. */
+    @ColumnInfo(name = "agent_invocation_id")
+    val agentInvocationId: String? = null
 ) {
     companion object {
         private const val MAX_ARGUMENTS_CHARS = 10_000

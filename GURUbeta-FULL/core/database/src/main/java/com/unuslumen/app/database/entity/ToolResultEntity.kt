@@ -19,7 +19,12 @@ import kotlinx.serialization.json.contentOrNull
     indices = [
         Index("tool_name"),
         Index("timestamp"),
-        Index("conversation_id")
+        Index("conversation_id"),
+        Index(value = ["agent_run_id", "timestamp"], name = "index_tool_results_agent_run_id_timestamp"),
+        Index(
+            value = ["agent_run_id", "agent_invocation_id"],
+            name = "index_tool_results_agent_run_id_agent_invocation_id"
+        ),
     ]
 )
 data class ToolResultEntity(
@@ -42,7 +47,22 @@ data class ToolResultEntity(
     @ColumnInfo(name = "ttl_minutes")
     val ttlMinutes: Long? = null,
     @ColumnInfo(name = "result_signature")
-    val resultSignature: String = ""
+    val resultSignature: String = "",
+
+    /**
+     * The agent run this call belonged to, or NULL for an ordinary chat tool call.
+     *
+     * NULL IS THE HONEST VALUE FOR HISTORY. Every row written before durable runs
+     * existed has no run to point at, and inventing one would make old data claim a
+     * provenance it does not have. New agent calls set it; everything else keeps doing
+     * exactly what it did.
+     */
+    @ColumnInfo(name = "agent_run_id")
+    val agentRunId: String? = null,
+
+    /** The individual invocation within that run, so a result can be reconciled by call. */
+    @ColumnInfo(name = "agent_invocation_id")
+    val agentInvocationId: String? = null
 ) {
     companion object {
         private const val MAX_RESULT_CHARS = 100_000
@@ -127,5 +147,7 @@ data class ToolResultWithScore(
     val success: Boolean,
     val ttlMinutes: Long?,
     val resultSignature: String,
+    val agentRunId: String? = null,
+    val agentInvocationId: String? = null,
     val bm25Score: Double
 )

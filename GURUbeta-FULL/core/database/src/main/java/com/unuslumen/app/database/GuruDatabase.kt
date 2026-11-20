@@ -96,10 +96,16 @@ import com.unuslumen.app.database.entity.HeartbeatPromptEntity
 import com.unuslumen.app.database.entity.NetworkDeviceEntity
 import com.unuslumen.app.database.entity.NetworkScanEntity
 import com.unuslumen.app.database.entity.NetworkSightingEntity
+import com.unuslumen.app.database.dao.AgentRunCheckpointDao
+import com.unuslumen.app.database.dao.AgentRunDao
+import com.unuslumen.app.database.dao.AgentRunEventDao
 import com.unuslumen.app.database.dao.FabricDao
 import com.unuslumen.app.database.dao.HeartbeatBookingDao
 import com.unuslumen.app.database.dao.HeartbeatPromptDao
 import com.unuslumen.app.database.dao.NetworkVisionDao
+import com.unuslumen.app.database.entity.AgentRunCheckpointEntity
+import com.unuslumen.app.database.entity.AgentRunEntity
+import com.unuslumen.app.database.entity.AgentRunEventEntity
 
 @Database(
     entities = [
@@ -158,8 +164,15 @@ import com.unuslumen.app.database.dao.NetworkVisionDao
         NetworkDeviceEntity::class,
         NetworkSightingEntity::class,
         NetworkScanEntity::class,
+        // The agent execution foundation: a run that outlives the process, an append-only
+        // record of what actually happened, and recovery points that can bring a session
+        // back. Three tables because an execution is three questions at once: where it is
+        // now, what it did, and what it needs to carry on.
+        AgentRunEntity::class,
+        AgentRunEventEntity::class,
+        AgentRunCheckpointEntity::class,
     ],
-    version = 35
+    version = 36
 )
 @TypeConverters(DBConverters::class)
 abstract class guruDatabase: RoomDatabase() {
@@ -208,6 +221,9 @@ abstract class guruDatabase: RoomDatabase() {
     abstract fun heartbeatPromptDao(): HeartbeatPromptDao
     abstract fun heartbeatBookingDao(): HeartbeatBookingDao
     abstract fun networkVisionDao(): NetworkVisionDao
+    abstract fun agentRunDao(): AgentRunDao
+    abstract fun agentRunEventDao(): AgentRunEventDao
+    abstract fun agentRunCheckpointDao(): AgentRunCheckpointDao
 
     companion object {
         const val DATABASE_NAME = "guru_db"

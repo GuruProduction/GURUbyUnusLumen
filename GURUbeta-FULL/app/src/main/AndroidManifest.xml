@@ -730,6 +730,23 @@
                 android:value="Guru encrypted on-device memory brain (Cerebrum), resident for the app lifetime" />
         </service>
 
+        <!-- Agent run host. Owns a live, user-visible agent execution so it keeps
+             working when the Portal is backgrounded, and holds the heartbeat that
+             lets the recovery scan tell a working run from a dead one.
+
+             specialUse with a declared subtype, NOT dataSync: agent execution is
+             not synchronisation, and borrowing dataSync's foreground status would
+             be a misdeclaration with a review consequence later. This is the same
+             choice Tor and Cerebrum already made, for the same reason. -->
+        <service
+            android:name="com.unuslumen.app.data.agents.AgentRunService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="GURU agent execution host: runs a user-started specialist agent and its model conversation while the app is backgrounded, with an ongoing notification and a stop action" />
+        </service>
+
     </application>
 
 </manifest>

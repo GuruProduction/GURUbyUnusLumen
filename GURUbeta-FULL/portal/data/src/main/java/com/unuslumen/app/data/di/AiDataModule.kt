@@ -345,19 +345,38 @@ val aiDataModule = module {
     // Three arguments since the catalogue tools landed: the executor now reaches the
     // publisher as well as the local store and the runtime, so GURU can browse and
     // install an agent rather than only call one already on the phone.
-    factory { com.unuslumen.app.data.tools.AgentToolExecutor(get(), get(), get()) }
+    // Four arguments now: the executor reaches the run host so agent work lives on
+    // an application-lifetime scope rather than inside the caller's coroutine.
+    factory { com.unuslumen.app.data.tools.AgentToolExecutor(get(), get(), get(), get()) }
     // The authoring lane. Three arguments for the same reason the lane above takes
     // three, plus one: the registry is a dependency because listTools reports what
     // this phone actually holds, and because a grant is checked against a tool name
     // that exists rather than stored as one that would never fire.
     factory { com.unuslumen.app.data.tools.AgentAuthoringToolExecutor(get(), get(), get()) }
+    /*
+     * THE RUN LEDGER, AND WHY IT IS A SINGLETON.
+     *
+     * Every agent path writes through this one object. The sequence allocation is a
+     * read-modify-write against one row, so two instances would be two writers racing
+     * the same counter. One ledger, one database handle, one truth.
+     */
+    single {
+        com.unuslumen.app.data.agents.AgentRunLedger(
+            get(),
+            get(),
+            get(),
+            get(),
+        )
+    }
+    single { com.unuslumen.app.data.agents.AgentRecoveryCoordinator(get(), get()) }
     factory {
         com.unuslumen.app.data.agents.AgentRuntime(
             get(),
             get(),
             get(),
             get(),
-            get<Context>()
+            get<Context>(),
+            get(),
         )
     }
     factory { EmailToolExecutor(get<Context>()) }

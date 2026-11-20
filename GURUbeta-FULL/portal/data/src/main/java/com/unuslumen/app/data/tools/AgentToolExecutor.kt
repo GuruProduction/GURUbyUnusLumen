@@ -23,7 +23,15 @@ import kotlinx.serialization.json.Json
 class AgentToolExecutor(
     private val agentRepository: GuruAgentRepository,
     private val agentRuntime: AgentRuntime,
-    private val agentCatalogue: AgentCatalogue
+    private val agentCatalogue: AgentCatalogue,
+    /**
+     * Where the work actually runs.
+     *
+     * Injected rather than reached for statically so the ownership guarantee is a
+     * dependency this class visibly has, rather than an ambient fact somebody has to
+     * remember when they change how spawn is called.
+     */
+    private val host: com.unuslumen.app.data.agents.AgentRunHost,
 ) : ToolExecutor {
 
     /**
@@ -77,6 +85,20 @@ class AgentToolExecutor(
         )
     }
 
+    /**
+     * Start an agent, with the conversation it was asked from.
+     *
+     * THE CONVERSATION ID IS NOT OPTIONAL ANY MORE, AND THE TOOL LAYER DOES NOT HAVE IT.
+     *
+     * `agent_runs.conversation_id` has a foreign key to `conversations.id`, because a run
+     * belongs to the conversation that owns it and deleting that conversation must take
+     * the run with it. This call site has no conversation in hand: the dispatcher passes
+     * tool arguments and nothing else. The runtime therefore resolves it through
+     * [AgentRuntime]'s conversation binding, which the send path sets before it dispatches
+     * anything. If nothing has been bound the run is refused with a sentence that names
+     * the reason, rather than being written under the run id and failing the foreign key
+     * with an error nobody can read.
+     */
     private suspend fun spawnAgent(args: Map<String, Any?>): ToolExecutionResult {
         val agentName = (args["agent"] as? String)?.trim()
             ?: return ToolExecutionResult.error("Missing 'agent' parameter")
@@ -90,7 +112,48 @@ class AgentToolExecutor(
             )
         }
 
-        val outcome = agentRuntime.spawn(agentName, job).last()
+        // FROM THE COROUTINE, NOT FROM A FIELD. Two concurrent dispatches hold two
+        // different scopes and cannot overwrite each other.
+        val conversationId = com.unuslumen.app.data.agents.currentDispatchScope()?.conversationId()
+        if (conversationId.isNullOrBlank()) {
+            return ToolExecutionResult.error(
+                "An agent can only be started from inside a conversation, because its run " +
+                    "belongs to one. No conversation is bound to this dispatch, so nothing " +
+                    "was started rather than starting work with no record of where it came from."
+            )
+        }
+
+        /*
+         * THE WORK RUNS ON THE HOST, AND THIS CALL ONLY WAITS.
+         *
+         * Collecting the runtime's flow here would put the agent's lifetime inside the
+         * dispatcher's coroutine, so a cancelled tool call or a destroyed screen would kill
+         * an agent the person had been told was running. The host runs it on an
+         * application-lifetime scope and this awaits the result, which means cancelling
+         * this call cancels the wait and nothing else.
+         *
+         * A FRESH RUN ID, SO ADMISSION CANNOT BE REFUSED HERE. Every spawn is a new
+         * execution and therefore a new id, so the id is always free. Admission is still
+         * checked rather than assumed, because a refusal that was swallowed would await a
+         * deferred nothing completes.
+         */
+        val runId = java.util.UUID.randomUUID().toString()
+        val deferred = kotlinx.coroutines.CompletableDeferred<AgentRuntime.SpawnResult>()
+        val admission = host.start(runId, deferred) {
+            agentRuntime.spawn(
+                slugOrName = agentName,
+                job = job,
+                conversationId = conversationId,
+                runId = runId,
+            ).last()
+        }
+        if (admission is com.unuslumen.app.data.agents.AgentRunHost.Admission.AlreadyRunning) {
+            return ToolExecutionResult.error(
+                "A run with the id '$runId' was already executing, so nothing was started. " +
+                    "That should be impossible for a new spawn and means the id was reused."
+            )
+        }
+        val outcome = deferred.await()
         return asSpawnResult(outcome)
     }
 
@@ -101,6 +164,12 @@ class AgentToolExecutor(
      * spawnAgent hands back would be a dead end: the agent would be waiting, the
      * answer would have nowhere to arrive, and the work would be stranded exactly
      * where the old one-shot design left it.
+     *
+     * IT RUNS ON THE HOST FOR THE SAME REASON SPAWN DOES. A resume is the continuation
+     * of a real job with real side effects behind it, so it must not live in the
+     * dispatcher's coroutine: a cancelled tool call would kill the turn the person had
+     * just answered, while the run row still said RUNNING. The caller waits; the host
+     * owns the work.
      */
     private suspend fun resumeAgent(args: Map<String, Any?>): ToolExecutionResult {
         val sessionId = (args["sessionId"] as? String)?.trim()
@@ -115,7 +184,38 @@ class AgentToolExecutor(
             )
         }
 
-        val outcome = agentRuntime.resume(sessionId, answer).last()
+        /*
+         * A DUPLICATE RESUME IS A REFUSAL, NOT A SECOND EXECUTION.
+         *
+         * This is the case the atomic admission exists for. Two answers to one question, or
+         * a tool call retried by the model, both arrive under the same session id. Running
+         * both would carry two answers into one job and repeat every side effect behind it,
+         * so the second is refused with a sentence the assistant can read and act on.
+         *
+         * The refusal is returned as a successful tool call carrying success=false, the same
+         * shape every other agent refusal uses, so the model can tell "it is already working"
+         * from "the tool broke" and wait rather than retry.
+         */
+        val deferred = kotlinx.coroutines.CompletableDeferred<AgentRuntime.SpawnResult>()
+        val admission = host.start(sessionId, deferred) {
+            agentRuntime.resume(sessionId, answer).last()
+        }
+        if (admission is com.unuslumen.app.data.agents.AgentRunHost.Admission.AlreadyRunning) {
+            return success(
+                SpawnAgentResult(
+                    success = false,
+                    agent = "",
+                    status = AgentRuntime.SpawnResult.Status.ASKING.name,
+                    report = "",
+                    toolRounds = 0,
+                    sessionId = sessionId,
+                    error = "That agent is already working on this run, so the answer was not " +
+                        "delivered a second time. Wait for it to finish or ask it something else.",
+                ),
+                SpawnAgentResult.serializer(),
+            )
+        }
+        val outcome = deferred.await()
         return asSpawnResult(outcome)
     }
 

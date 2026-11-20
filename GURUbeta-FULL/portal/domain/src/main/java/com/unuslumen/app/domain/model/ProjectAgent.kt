@@ -39,11 +39,19 @@ interface ProjectAgentRepository {
     /**
      * Send a message to a project's agent.
      * The agent will use the project's context (messages, documents, facts).
+     *
+     * [conversationId] lets the durable run hang off the project conversation it belongs
+     * to, so the execution history is reachable from the place the work was asked for.
+     * It is nullable and defaulted because a project agent is a different feature from the
+     * spawn path and existing callers predate the run ledger; a caller that supplies it
+     * gets an execution history attached to its conversation, and a caller that does not
+     * still gets a run under the project id rather than no record at all.
      */
     suspend fun sendMessage(
         projectId: String,
         messages: List<AiMessage>,
-        config: ProjectAgentConfig? = null
+        config: ProjectAgentConfig? = null,
+        conversationId: String? = null,
     ): kotlinx.coroutines.flow.Flow<AiMessage>
     
     /**

@@ -66,11 +66,52 @@ class ProjectAgentRepositoryImpl(
     @Named("applicationScope") private val applicationScope: CoroutineScope,
     private val toolRegistryHolder: ToolRegistryHolder,
     private val guruToolRegistryManager: GuruToolRegistryManager,
-    private val context: android.content.Context
+    private val context: android.content.Context,
+    /**
+     * The same ledger the spawn path writes to.
+     *
+     * ONE EXECUTION HISTORY ARCHITECTURE, NOT TWO. A project agent is a different loop
+     * with a different prompt and a different tool set, but it is still an agent doing
+     * delegated work. A second, weaker persistence story for it would mean two answers
+     * to "what did this agent do" depending on which surface started it, and the weaker
+     * one would be the one nobody thinks to check.
+     */
+    private val runLedger: com.unuslumen.app.data.agents.AgentRunLedger,
 ) : ProjectAgentRepository {
 
     companion object {
         private const val TAG = "ProjectAgent"
+
+        /**
+         * The project agent's own contract version.
+         *
+         * Bumped when the built-in definition changes shape — the prompt it builds, the
+         * way it filters tools, or the loop it runs. It is not a publisher version and not
+         * an installed-agent version; those belong to `guru_agents`, and a project agent
+         * has no row there. The run snapshot records this so an old execution is
+         * explainable after the contract moves on.
+         */
+        const val PROJECT_AGENT_DEFINITION_VERSION = 1
+    }
+
+    /**
+     * Record a failure that ended the turn.
+     *
+     * A RUN THAT THREW IS MARKED FAILED, not left RUNNING. A row still claiming to be
+     * working is one the recovery scan keeps revisiting and a person keeps seeing as
+     * alive, which is worse than an honest failure they can read.
+     */
+    private suspend fun recordRunFailure(runId: String, reason: String) {
+        runCatching {
+            runLedger.appendStateChange(
+                runId,
+                com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
+                com.unuslumen.app.database.entity.AgentRunEntity.STATUS_FAILED,
+                reason,
+                finishedAt = System.currentTimeMillis(),
+            )
+            runLedger.releaseLease(runId, runId, "failed")
+        }
     }
 
     private val toolRegistry get() = toolRegistryHolder.toolRegistry
@@ -189,7 +230,8 @@ class ProjectAgentRepositoryImpl(
     override suspend fun sendMessage(
         projectId: String,
         messages: List<AiMessage>,
-        config: ProjectAgentConfig?
+        config: ProjectAgentConfig?,
+        conversationId: String?,
     ): Flow<AiMessage> = flow {
         val model = llModel ?: throw Exception("Model not selected")
         val client = streamingClient ?: throw Exception("AI Client not initialized")
@@ -204,6 +246,106 @@ class ProjectAgentRepositoryImpl(
 
         // Build project-specific system prompt
         val systemPrompt = buildProjectSystemPrompt(projectId, effectiveConfig)
+
+        /*
+         * THE RUN IS OPENED BEFORE THE FIRST MODEL CALL.
+         *
+         * This path has always had an execution history of a sort — messages saved back to
+         * the project — but nothing that says which invocation produced them, what tools
+         * ran, or why a turn stopped. The ledger gives it the same record the spawn path
+         * has, under the reserved project-agent identity, with the project and its overlay
+         * frozen into the definition snapshot so the run stays explainable after the
+         * overlay is edited.
+         */
+        val runId = Uuid.random().toString()
+        val runStart = System.currentTimeMillis()
+        val toolNames = if (toolsEnabled && effectiveConfig.enableTools) {
+            getFilteredToolDescriptors(effectiveConfig).map { it.name }
+        } else {
+            emptyList()
+        }
+        /*
+         * A FAILED RECORD STOPS THE TURN, THE SAME AS THE SPAWN PATH.
+         *
+         * The first version logged this and carried on, on the reasoning that a project
+         * chat should not fail over bookkeeping. That was wrong: it means work can execute
+         * with no evidence that it happened, which is exactly the state this whole phase
+         * exists to remove. If the run cannot be opened the person is told, in one
+         * sentence, and nothing runs.
+         *
+         * `conversationId` must be a real conversation, because the foreign key says a run
+         * belongs to one. A project id is only a fallback when no conversation was given,
+         * and it has to exist for the same reason.
+         */
+        val owningConversation = conversationId?.takeIf { it.isNotBlank() } ?: projectId
+        runCatching {
+            runLedger.createRun(
+                com.unuslumen.app.database.entity.AgentRunEntity(
+                    runId = runId,
+                    conversationId = owningConversation,
+                    agentId = com.unuslumen.app.database.entity.AgentRunEntity.PROJECT_AGENT_ID,
+                    agentSlug = com.unuslumen.app.database.entity.AgentRunEntity.PROJECT_AGENT_ID,
+                    agentName = "Project agent",
+                    agentVersion = PROJECT_AGENT_DEFINITION_VERSION,
+                    assignment = messages.filterIsInstance<AiMessage.UserMessage>().lastOrNull()?.content.orEmpty(),
+                    status = com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
+                    agentDefinitionSnapshotJson = json.encodeToString(
+                        kotlinx.serialization.json.JsonObject.serializer(),
+                        buildJsonObject {
+                            put("schemaVersion", kotlinx.serialization.json.JsonPrimitive(1))
+                            put("kind", kotlinx.serialization.json.JsonPrimitive("PROJECT_AGENT"))
+                            put("projectId", kotlinx.serialization.json.JsonPrimitive(projectId))
+                            put("definitionVersion", kotlinx.serialization.json.JsonPrimitive(PROJECT_AGENT_DEFINITION_VERSION))
+                            put("overlay", kotlinx.serialization.json.JsonPrimitive(effectiveConfig.systemPromptOverlay))
+                            put("allowedToolCategories", kotlinx.serialization.json.JsonPrimitive(effectiveConfig.allowedToolCategories.joinToString(",")))
+                            put("blockedToolCategories", kotlinx.serialization.json.JsonPrimitive(effectiveConfig.blockedToolCategories.joinToString(",")))
+                            put("enableTools", kotlinx.serialization.json.JsonPrimitive(effectiveConfig.enableTools))
+                        }
+                    ),
+                    resolvedSystemPrompt = systemPrompt,
+                    toolManifestSnapshotJson = json.encodeToString(
+                        kotlinx.serialization.json.JsonObject.serializer(),
+                        buildJsonObject {
+                            put("schemaVersion", kotlinx.serialization.json.JsonPrimitive(1))
+                            put("tools", kotlinx.serialization.json.JsonPrimitive(toolNames.joinToString(",")))
+                        }
+                    ),
+                    modelProvider = model.provider.id,
+                    modelName = model.id,
+                    requestedConfigSnapshotJson = json.encodeToString(
+                        kotlinx.serialization.json.JsonObject.serializer(),
+                        buildJsonObject {
+                            put("schemaVersion", kotlinx.serialization.json.JsonPrimitive(1))
+                            put("temperature", kotlinx.serialization.json.JsonPrimitive(effectiveConfig.temperature))
+                            put("maxTokens", kotlinx.serialization.json.JsonPrimitive(effectiveConfig.maxTokens))
+                        }
+                    ),
+                    effectiveConfigSnapshotJson = json.encodeToString(
+                        kotlinx.serialization.json.JsonObject.serializer(),
+                        buildJsonObject {
+                            put("schemaVersion", kotlinx.serialization.json.JsonPrimitive(1))
+                            put("model", kotlinx.serialization.json.JsonPrimitive(model.id))
+                            put("toolsEnabled", kotlinx.serialization.json.JsonPrimitive(toolsEnabled && effectiveConfig.enableTools))
+                            put("maxConsecutiveToolCalls", kotlinx.serialization.json.JsonPrimitive(MAX_CONSECUTIVE_TOOL_CALLS))
+                            put("reasoningCaptureEnabled", kotlinx.serialization.json.JsonPrimitive(true))
+                            put("runtimeKind", kotlinx.serialization.json.JsonPrimitive("PROJECT_AGENT"))
+                        }
+                    ),
+                    createdAt = runStart,
+                    startedAt = runStart,
+                    updatedAt = runStart,
+                )
+            )
+            runLedger.acquireLease(runId, runId)
+        }.onFailure { failure ->
+            android.util.Log.e(TAG, "Project-agent run could not be opened: ${failure.message}")
+            throw IllegalStateException(
+                "This turn was not run, because its execution record could not be opened: " +
+                    "${failure.message}. Work that leaves no record is work nobody can explain " +
+                    "or recover, so it was stopped rather than run blind.",
+                failure
+            )
+        }
 
         // Get project context for enrichment
         val context = projectRepository.buildProjectContext(
@@ -239,6 +381,35 @@ class ProjectAgentRepositoryImpl(
 
             val textBuilder = StringBuilder()
             val collectedToolCalls = mutableListOf<StreamFrame.ToolCallComplete>()
+            /*
+             * THE REASONING LANE THIS PATH NEVER HAD.
+             *
+             * This `when` used to drop ReasoningDelta on the floor in exactly the way the
+             * spawn path did, so a project agent's thinking was discarded before anything
+             * could record it. The wire carries it, so it is captured here and flushed as
+             * one batch per round, in arrival order, keeping text and reasoning distinct.
+             */
+            val reasoningBuilder = StringBuilder()
+            val outputFrames = mutableListOf<com.unuslumen.app.domain.agents.AgentRunReplay.OutputFrame>()
+            val requestId = Uuid.random().toString()
+
+            runCatching {
+                runLedger.append(
+                    runId,
+                    com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
+                        eventType = com.unuslumen.app.domain.agents.AgentEventTypes.MODEL_REQUEST_STARTED,
+                        actorType = "RUNTIME",
+                        correlationId = requestId,
+                        payload = buildJsonObject {
+                            put("requestId", kotlinx.serialization.json.JsonPrimitive(requestId))
+                            put("provider", kotlinx.serialization.json.JsonPrimitive(model.provider.id))
+                            put("model", kotlinx.serialization.json.JsonPrimitive(model.id))
+                            put("roundIndex", kotlinx.serialization.json.JsonPrimitive(consecutiveToolCalls + 1))
+                            put("runtimeKind", kotlinx.serialization.json.JsonPrimitive("PROJECT_AGENT"))
+                        }.toString(),
+                    )
+                )
+            }
 
             try {
                 client.executeStreamingWithTools(
@@ -248,22 +419,96 @@ class ProjectAgentRepositoryImpl(
                     llmConfig = currentLlmConfig
                 ).collect { frame ->
                     when (frame) {
-                        is StreamFrame.TextDelta -> textBuilder.append(frame.text)
+                        is StreamFrame.TextDelta -> {
+                            textBuilder.append(frame.text)
+                            outputFrames.add(
+                                com.unuslumen.app.domain.agents.AgentRunReplay.OutputFrame(
+                                    com.unuslumen.app.domain.agents.AgentRunReplay.OutputFrame.Kind.TEXT,
+                                    frame.text,
+                                    null,
+                                )
+                            )
+                        }
                         is StreamFrame.TextComplete -> {
                             textBuilder.clear()
                             textBuilder.append(frame.text)
                         }
                         is StreamFrame.ToolCallDelta -> {}
                         is StreamFrame.ToolCallComplete -> collectedToolCalls.add(frame)
-                        is StreamFrame.ReasoningDelta -> {}
+                        is StreamFrame.ReasoningDelta -> {
+                            // CAPTURED, NOT DISCARDED. Visibility is a display concern.
+                            val chunk = frame.text.orEmpty()
+                            if (chunk.isNotEmpty()) reasoningBuilder.append(chunk)
+                            outputFrames.add(
+                                com.unuslumen.app.domain.agents.AgentRunReplay.OutputFrame(
+                                    com.unuslumen.app.domain.agents.AgentRunReplay.OutputFrame.Kind.REASONING,
+                                    chunk,
+                                    null,
+                                )
+                            )
+                        }
                         is StreamFrame.ReasoningComplete -> {}
                         is StreamFrame.End -> {}
                     }
                 }
             } catch (e: LLMClientException) {
+                recordRunFailure(runId, "LLM error: ${e.message}")
                 throw Exception("LLM error: ${e.message}")
             } catch (e: IOException) {
+                recordRunFailure(runId, "Network error: ${e.message}")
                 throw Exception("Network error: ${e.message}")
+            }
+
+            // Flush the batch, then the canonical completions. Both land before any tool
+            // call is proposed, so a dispatch always has a recorded request behind it.
+            runCatching {
+                if (outputFrames.isNotEmpty()) {
+                    runLedger.append(
+                        runId,
+                        com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
+                            eventType = com.unuslumen.app.domain.agents.AgentEventTypes.MODEL_OUTPUT_BATCH,
+                            actorType = "MODEL",
+                            correlationId = requestId,
+                            payload = buildJsonObject {
+                                put("requestId", kotlinx.serialization.json.JsonPrimitive(requestId))
+                                put(
+                                    "frames",
+                                    kotlinx.serialization.json.JsonPrimitive(
+                                        com.unuslumen.app.domain.agents.OutputFrames.encode(outputFrames)
+                                    )
+                                )
+                            }.toString(),
+                        )
+                    )
+                }
+                if (textBuilder.isNotEmpty()) {
+                    runLedger.append(
+                        runId,
+                        com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
+                            eventType = com.unuslumen.app.domain.agents.AgentEventTypes.MODEL_TEXT_COMPLETED,
+                            actorType = "MODEL",
+                            correlationId = requestId,
+                            payload = buildJsonObject {
+                                put("requestId", kotlinx.serialization.json.JsonPrimitive(requestId))
+                                put("text", kotlinx.serialization.json.JsonPrimitive(textBuilder.toString()))
+                            }.toString(),
+                        )
+                    )
+                }
+                if (reasoningBuilder.isNotEmpty()) {
+                    runLedger.append(
+                        runId,
+                        com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
+                            eventType = com.unuslumen.app.domain.agents.AgentEventTypes.MODEL_REASONING_COMPLETED,
+                            actorType = "MODEL",
+                            correlationId = requestId,
+                            payload = buildJsonObject {
+                                put("requestId", kotlinx.serialization.json.JsonPrimitive(requestId))
+                                put("reasoning", kotlinx.serialization.json.JsonPrimitive(reasoningBuilder.toString()))
+                            }.toString(),
+                        )
+                    )
+                }
             }
 
             val finalText = textBuilder.toString()
@@ -281,7 +526,116 @@ class ProjectAgentRepositoryImpl(
                         saveMessageToProject(projectId, msg)
                     }
                 }
+                // A FINISHED PROJECT TURN IS A FINISHED RUN. The row stops being
+                // non-terminal so the recovery scan leaves it alone, and the report goes on
+                // the run so the history answers what the work produced.
+                runCatching {
+                    runLedger.append(
+                        runId,
+                        com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
+                            eventType = com.unuslumen.app.domain.agents.AgentEventTypes.MODEL_REQUEST_COMPLETED,
+                            actorType = "MODEL",
+                            correlationId = requestId,
+                            payload = buildJsonObject {
+                                put("report", kotlinx.serialization.json.JsonPrimitive(finalText))
+                            }.toString(),
+                        )
+                    )
+                    runLedger.appendStateChange(
+                        runId,
+                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
+                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_COMPLETED,
+                        "the project agent answered",
+                        finishedAt = System.currentTimeMillis(),
+                    )
+                    runLedger.releaseLease(runId, runId, "completed")
+                }
                 break
+            }
+
+            /*
+             * TOOL CALLS GO IN THE LEDGER BEFORE THEY RUN, AND THE PROPOSAL IS KEPT.
+             *
+             * The proposal event carries what the model actually wrote, and the start event
+             * carries the same arguments plus the invocation id. The id is what pairs a
+             * completion to its own start; without it the ledger has two facts that cannot
+             * be matched to each other, which is the same defect as a tool call with no
+             * result.
+             *
+             * A ROUND CHECKPOINT IS TAKEN BEFORE THE FIRST DISPATCH, matching the spawn
+             * path. Without one there is nothing to resume from if the process dies during
+             * a tool call.
+             */
+            runCatching {
+                runLedger.commitCheckpoint(
+                    runId = runId,
+                    reason = com.unuslumen.app.database.entity.AgentRunCheckpointEntity.REASON_ROUND_BOUNDARY,
+                    stateJson = buildJsonObject {
+                        put("schemaVersion", kotlinx.serialization.json.JsonPrimitive(1))
+                        put("runId", kotlinx.serialization.json.JsonPrimitive(runId))
+                        put("rounds", kotlinx.serialization.json.JsonPrimitive(consecutiveToolCalls))
+                        put("projectId", kotlinx.serialization.json.JsonPrimitive(projectId))
+                        put("notebook", kotlinx.serialization.json.JsonPrimitive(""))
+                        put("systemPrompt", kotlinx.serialization.json.JsonPrimitive(systemPrompt))
+                        put("pendingQuestion", kotlinx.serialization.json.JsonPrimitive(""))
+                        put("messageCount", kotlinx.serialization.json.JsonPrimitive(currentMessages.size))
+                        put(
+                            "messages",
+                            kotlinx.serialization.json.JsonPrimitive(
+                                currentMessages.joinToString("\n\u001E\n") { m ->
+
+                                    when (m) {
+                                        is AiMessage.UserMessage -> "user:${m.content}"
+                                        is AiMessage.AssistantMessage -> "assistant:${m.content}"
+                                        is AiMessage.ToolCall ->
+                                            "tool:${m.name}:${m.id ?: ""}:${m.rawContent}:${m.resultRawContent}"
+                                        else -> "other:"
+                                    }
+                                }
+                            )
+                        )
+                        put("runtimeKind", kotlinx.serialization.json.JsonPrimitive("PROJECT_AGENT"))
+                    }.toString(),
+                )
+            }
+
+            val invocationIds = mutableListOf<String>()
+            collectedToolCalls.forEach { frame ->
+                val invocationId = Uuid.random().toString()
+                invocationIds += invocationId
+                runCatching {
+                    runLedger.append(
+                        runId,
+                        com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
+                            eventType = com.unuslumen.app.domain.agents.AgentEventTypes.MODEL_TOOL_CALL_PROPOSED,
+                            actorType = "MODEL",
+                            payload = buildJsonObject {
+                                put("tool", kotlinx.serialization.json.JsonPrimitive(frame.name))
+                                put("callId", kotlinx.serialization.json.JsonPrimitive(frame.id ?: ""))
+                                put("arguments", kotlinx.serialization.json.JsonPrimitive(frame.content))
+                            }.toString(),
+                        )
+                    )
+                    runLedger.append(
+                        runId,
+                        com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
+                            eventType = com.unuslumen.app.domain.agents.AgentEventTypes.TOOL_CALL_STARTED,
+                            actorType = "RUNTIME",
+                            idempotencyKey = "tool-start-$invocationId",
+                            payload = buildJsonObject {
+                                put("invocationId", kotlinx.serialization.json.JsonPrimitive(invocationId))
+                                put("tool", kotlinx.serialization.json.JsonPrimitive(frame.name))
+                                put("arguments", kotlinx.serialization.json.JsonPrimitive(frame.content))
+                                put("runtimeKind", kotlinx.serialization.json.JsonPrimitive("PROJECT_AGENT"))
+                                // RECORDED HONESTLY: this path dispatches through the koog
+                                // tool list rather than ToolDispatcher, so no permission or
+                                // security check precedes it. The ledger says so rather than
+                                // implying checks that did not run.
+                                put("permissionChecked", kotlinx.serialization.json.JsonPrimitive(false))
+                            }.toString(),
+                        )
+                    )
+                }
             }
 
             consecutiveToolCalls++
@@ -295,10 +649,16 @@ class ProjectAgentRepositoryImpl(
                 emit(msg)
             }
 
-            // Execute tool calls from streaming frames
-            val toolCallMessages = collectedToolCalls.map { frame ->
+            // Execute tool calls from streaming frames.
+            //
+            // THE INVOCATION ID IS CARRIED THROUGH EVERY EVENT FOR THIS CALL. The starts
+            // were written in the same order a moment ago, so the index pairs a completion
+            // to its own start. Without that id the ledger holds two facts that cannot be
+            // matched, which is the same defect as a result with no call.
+            val toolCallMessages = collectedToolCalls.mapIndexed { callIndex, frame ->
                 val toolName = frame.name
                 val argsContent = frame.content
+                val invocationId = invocationIds.getOrNull(callIndex)
                 val resultContent = try {
                     val tool = toolRegistry.tools.find { it.descriptor.name == toolName }
                     if (tool != null) {
@@ -310,11 +670,59 @@ class ProjectAgentRepositoryImpl(
                             buildJsonObject {}
                         }
                         val args = tool.decodeArgs(argsJson)
-                        tool.encodeResult(tool.execute(args)).toString()
+                        val content = tool.encodeResult(tool.execute(args)).toString()
+                        runCatching {
+                            runLedger.append(
+                                runId,
+                                com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
+                                    eventType = com.unuslumen.app.domain.agents.AgentEventTypes.TOOL_CALL_COMPLETED,
+                                    actorType = "TOOL",
+                                    idempotencyKey = invocationId?.let { "tool-done-$it" },
+                                    payload = buildJsonObject {
+                                        invocationId?.let { put("invocationId", kotlinx.serialization.json.JsonPrimitive(it)) }
+                                        put("tool", kotlinx.serialization.json.JsonPrimitive(toolName))
+                                        put("result", kotlinx.serialization.json.JsonPrimitive(content))
+                                        put("runtimeKind", kotlinx.serialization.json.JsonPrimitive("PROJECT_AGENT"))
+                                    }.toString(),
+                                )
+                            )
+                        }
+                        content
                     } else {
+                        runCatching {
+                            runLedger.append(
+                                runId,
+                                com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
+                                    eventType = com.unuslumen.app.domain.agents.AgentEventTypes.TOOL_CALL_REFUSED,
+                                    actorType = "RUNTIME",
+                                    payload = buildJsonObject {
+                                        invocationId?.let { put("invocationId", kotlinx.serialization.json.JsonPrimitive(it)) }
+                                        put("tool", kotlinx.serialization.json.JsonPrimitive(toolName))
+                                        put("reason", kotlinx.serialization.json.JsonPrimitive("no such tool in this build"))
+                                    }.toString(),
+                                )
+                            )
+                        }
                         "Tool not found: $toolName"
                     }
                 } catch (e: Exception) {
+                    // AN EXCEPTION DOES NOT PROVE THE CALL DID NOT RUN. It becomes an
+                    // unknown outcome, never a failure, for the same reason as the spawn
+                    // path: a side effect may already have happened.
+                    runCatching {
+                        runLedger.append(
+                            runId,
+                            com.unuslumen.app.data.agents.AgentRunLedger.EventDraft(
+                                eventType = com.unuslumen.app.domain.agents.AgentEventTypes.TOOL_CALL_OUTCOME_UNKNOWN,
+                                actorType = "RUNTIME",
+                                payload = buildJsonObject {
+                                    invocationId?.let { put("invocationId", kotlinx.serialization.json.JsonPrimitive(it)) }
+                                    put("tool", kotlinx.serialization.json.JsonPrimitive(toolName))
+                                    put("reason", kotlinx.serialization.json.JsonPrimitive(e.message ?: "the call threw"))
+                                }.toString(),
+                            )
+                        )
+                    }
                     "Error: ${e.message}"
                 }
 
