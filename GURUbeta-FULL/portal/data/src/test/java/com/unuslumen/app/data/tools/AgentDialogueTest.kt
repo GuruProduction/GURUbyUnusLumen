@@ -18,18 +18,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The agent conversation: the question, the answer, and the three outcomes.
+ * The agent conversation: the question, the answer, and the four outcomes.
  *
  * WHY THIS EXISTS. `spawnAgent` used to be fire-and-forget. The agent got a job, ran to
  * completion, and returned a report, so it could not ask what it did not know; and
  * because the caller took `.last()` from the flow, a question emitted mid-run would
  * have been discarded even if the runtime had produced one.
  *
- * These tests pin the shape that replaces it: three statuses rather than two, a session
- * that survives between calls, and a resumed agent that keeps everything it had already
- * found. They are written against the published descriptions and the result contract
- * rather than the internals, because the internals are free to change and the contract
- * is what the model reads.
+ * These tests pin the shape that replaces it: four distinct outcomes rather than two, a session
+ * that survives between calls, and a resumed agent that keeps everything it had already found.
+ * They are written against the published descriptions and the result contract rather than the
+ * internals, because the internals are free to change and the contract is what the model reads.
  */
 class AgentDialogueTest {
 
@@ -184,16 +183,53 @@ class AgentDialogueTest {
     }
 
     /**
-     * The three statuses are distinct values.
+     * Every outcome is a distinct value, and there are now four.
      *
-     * If two of them ever collapsed into one name, a caller reading the status could no
-     * longer tell a waiting agent from a dead one, which is the whole reason the field
-     * exists rather than being inferred from `success`.
+     * IF TWO OF THEM EVER COLLAPSED into one name, a caller reading the status could no longer tell
+     * a waiting agent from a dead one, which is the whole reason the field exists rather than being
+     * inferred from `success`.
+     *
+     * [PAUSED] WAS ADDED FOR THE SAME REASON THE FIELD EXISTS. A person can now stop a run part way
+     * through with its state kept, and that is neither a finish nor a failure: reporting it as a
+     * failure says the work was no good, and reporting it as finished hands back a partial report as
+     * an answer. A caller that cannot tell the three apart cannot decide whether to carry on, ask a
+     * question or start again.
      */
     @Test
-    fun theThreeStatusesAreDistinct() {
+    fun theOutcomesAreDistinct() {
         val statuses = AgentRuntime.SpawnResult.Status.values().map { it.name }.toSet()
-        assertEquals(3, statuses.size)
-        assertTrue(statuses.containsAll(setOf("FINISHED", "ASKING", "FAILED")))
+        assertEquals(4, statuses.size)
+        assertTrue(
+            "a pause is its own outcome, not a failure and not a finish",
+            statuses.containsAll(setOf("FINISHED", "ASKING", "PAUSED", "FAILED")),
+        )
+    }
+
+    /**
+     * A paused turn carries the session and a partial report, and does not claim success.
+     *
+     * THE SHAPE MATTERS AS MUCH AS THE NAME. A caller continues a paused run with the session id, so
+     * the id has to travel. The report is what it had produced before stopping, so it must not be
+     * empty when there was work. And `success` must be false, because the assignment was not
+     * completed.
+     */
+    @Test
+    fun aPausedTurnCarriesTheSessionAndWhatItHadSoFar() {
+        val body = AgentRuntime.SpawnResult(
+            success = false,
+            agentName = "Researcher",
+            report = "Half the survey is done.",
+            toolRounds = 6,
+            sessionId = "session-3",
+            status = AgentRuntime.SpawnResult.Status.PAUSED,
+            error = "Paused at round 6. Everything it had produced is above and its working state " +
+                "is kept. Resume it to carry on.",
+        ).asResult()
+
+        assertEquals("PAUSED", body.str("status"))
+        assertEquals("session-3", body.str("sessionId"))
+        assertEquals("Half the survey is done.", body.str("report"))
+        assertFalse("a paused run did not complete its assignment", body.flag("success") == true)
+        assertNull("pausing is not a question, so there is nothing to answer", body.str("question"))
     }
 }

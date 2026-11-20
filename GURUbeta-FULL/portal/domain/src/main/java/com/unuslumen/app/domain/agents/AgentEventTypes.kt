@@ -23,6 +23,17 @@ object AgentEventTypes {
     const val RUN_CONFIGURATION_CHANGED = "RUN_CONFIGURATION_CHANGED"
     const val ASSIGNMENT_AMENDED = "ASSIGNMENT_AMENDED"
     const val RUN_CANCEL_REQUESTED = "RUN_CANCEL_REQUESTED"
+
+    /**
+     * A person asked for this run to stop for now.
+     *
+     * SEPARATE FROM THE PAUSE ITSELF, AND THE SEPARATION IS THE POINT. Pausing is cooperative: the
+     * loop can only stop safely at a round boundary, so between the request and the effect there is
+     * a window in which a person has asked and the agent is still finishing its current round. That
+     * window is a real fact and a surface showing "Paused" during it would be lying. The transition
+     * itself is the `RUN_STATE_CHANGED` that follows, which is why this carries no state of its own.
+     */
+    const val RUN_PAUSE_REQUESTED = "RUN_PAUSE_REQUESTED"
     const val RUN_LEASE_ACQUIRED = "RUN_LEASE_ACQUIRED"
     const val RUN_LEASE_RELEASED = "RUN_LEASE_RELEASED"
     const val SESSION_CREATED = "SESSION_CREATED"
@@ -82,21 +93,38 @@ object AgentEventTypes {
      */
     const val ARTEFACT_CREATED = "ARTEFACT_CREATED"
 
+    // ---- decisions ----
+    /**
+     * The agent recorded a decision, with its reasons.
+     *
+     * WHY THIS IS NOT THE REASONING CHANNEL. Reasoning is whatever the provider chose to emit, in
+     * whatever shape it emits it, and a model without a reasoning channel produces none at all. A
+     * decision record is a fact the agent deliberately wrote: the problem as it understood it, the
+     * approach it took, what it considered and rejected, why it chose what it chose, what evidence
+     * it had, where it is still uncertain, and what it will do next. Those are different kinds of
+     * information and the specification requires them labelled as such.
+     *
+     * IT IS ALSO THE ONLY ONE OF THE TWO THAT WORKS ON EVERY MODEL. A structured decision can be
+     * recorded by any agent that calls the tool, so a BYO model with no reasoning channel still
+     * produces an explanation of its thinking rather than an empty panel.
+     */
+    const val DECISION_RECORDED = "DECISION_RECORDED"
+
     // ---- checkpoints ----
     const val CHECKPOINT_CREATED = "CHECKPOINT_CREATED"
 
     /** Every name, so a test can prove the writer and the reducer have not drifted. */
     val ALL: List<String> = listOf(
         RUN_CREATED, RUN_STATE_CHANGED, RUN_CONFIGURATION_CHANGED, ASSIGNMENT_AMENDED,
-        RUN_CANCEL_REQUESTED, RUN_LEASE_ACQUIRED, RUN_LEASE_RELEASED, SESSION_CREATED,
-        SESSION_RESTORED, SESSION_COMPACTED,
+        RUN_CANCEL_REQUESTED, RUN_PAUSE_REQUESTED, RUN_LEASE_ACQUIRED, RUN_LEASE_RELEASED,
+        SESSION_CREATED, SESSION_RESTORED, SESSION_COMPACTED,
         MODEL_REQUEST_STARTED, MODEL_OUTPUT_BATCH, MODEL_TEXT_COMPLETED,
         MODEL_REASONING_COMPLETED, MODEL_TOOL_CALL_PROPOSED, MODEL_STREAM_ENDED,
         MODEL_REQUEST_COMPLETED, MODEL_REQUEST_FAILED, MODEL_REQUEST_INTERRUPTED,
         TOOL_PERMISSION_GRANTED, TOOL_PERMISSION_DENIED, TOOL_CALL_STARTED, TOOL_PROGRESS,
         TOOL_CALL_COMPLETED, TOOL_CALL_FAILED, TOOL_CALL_REFUSED, TOOL_CALL_OUTCOME_UNKNOWN,
         MESSAGE_CREATED, MESSAGE_DELIVERED, MESSAGE_DELIVERY_FAILED, QUESTION_OPENED,
-        QUESTION_ANSWERED, PLAN_REVISED, ARTEFACT_CREATED, CHECKPOINT_CREATED,
+        QUESTION_ANSWERED, PLAN_REVISED, ARTEFACT_CREATED, DECISION_RECORDED, CHECKPOINT_CREATED,
     )
 
     /**
@@ -163,6 +191,12 @@ object AgentEventTypes {
         RUN_CANCEL_REQUESTED to RestorePolicy.NoSessionEffect(
             "A cancellation request is an instruction about the run, and whether it was honoured " +
                 "is recorded by the state change that follows. The session is not rebuilt from it."
+        ),
+        RUN_PAUSE_REQUESTED to RestorePolicy.NoSessionEffect(
+            "A pause request is an instruction about the run. The pause itself is the state change " +
+                "that follows and the checkpoint taken with it, which is what a resume restores. " +
+                "Re-applying the request during a replay would pause a run that had already been " +
+                "resumed, which is the defect this policy prevents."
         ),
         RUN_LEASE_ACQUIRED to RestorePolicy.NoSessionEffect(
             "Operational liveness metadata. It says who held the run, not what the session contained."
@@ -263,6 +297,13 @@ object AgentEventTypes {
             "An artefact is a durable output in its own table with its own provenance. A resumed " +
                 "session does not hold artefacts in its message list, and rebuilding them from " +
                 "their announcement would be inventing content from a title."
+        ),
+
+        // ---- decisions ----
+        DECISION_RECORDED to RestorePolicy.NoSessionEffect(
+            "A decision is a record the agent wrote about its own reasoning, kept for the room to " +
+                "show. The agent's working context is the checkpoint, and replaying decisions into " +
+                "it would tell the model it had already deliberated again."
         ),
 
         // ---- checkpoints ----

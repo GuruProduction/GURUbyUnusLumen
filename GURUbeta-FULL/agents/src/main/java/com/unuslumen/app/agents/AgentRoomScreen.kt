@@ -186,21 +186,58 @@ private fun androidx.compose.foundation.lazy.LazyListScope.overview(
     }
 
     item("controls") {
-        Row(
-            Modifier.fillMaxWidth().padding(top = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(9.dp),
-        ) {
-            PaperButton("Talk to it", Modifier.weight(1f)) {
-                viewModel.onEvent(
-                    AgentRoomViewModel.Event.SelectTab(AgentRoomViewModel.RoomTab.CHAT)
-                )
+        Column(Modifier.fillMaxWidth().padding(top = 12.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(9.dp),
+            ) {
+                PaperButton("Talk to it", Modifier.weight(1f)) {
+                    viewModel.onEvent(
+                        AgentRoomViewModel.Event.SelectTab(AgentRoomViewModel.RoomTab.CHAT)
+                    )
+                }
+                if (!run.isTerminal) {
+                    PaperButton(
+                        label = "Stop",
+                        modifier = Modifier.weight(1f),
+                        filled = true,
+                    ) { viewModel.onEvent(AgentRoomViewModel.Event.StopRun) }
+                }
             }
-            if (!run.isTerminal) {
-                PaperButton(
-                    label = "Stop",
-                    modifier = Modifier.weight(1f),
-                    filled = true,
-                ) { viewModel.onEvent(AgentRoomViewModel.Event.StopRun) }
+            /*
+             * PAUSE AND RESUME ARE DRAWN ONLY WHERE EACH ONE IS REAL.
+             *
+             * Pause is offered while the run is moving, because there has to be a loop to stop. A
+             * run that is already waiting on a person or on GURU is not moving, so a Pause button
+             * there would do nothing and say otherwise. Resume is offered only when the recorded
+             * state is PAUSED, because that is the one state a resume can continue from; every
+             * other non-terminal state either resumes itself or is waiting on an answer.
+             */
+            if (run.canPause || run.canResume) {
+                Spacer(Modifier.height(9.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                    if (run.canPause) {
+                        PaperButton("Pause", Modifier.weight(1f)) {
+                            viewModel.onEvent(AgentRoomViewModel.Event.PauseRun)
+                        }
+                    }
+                    if (run.canResume) {
+                        PaperButton("Carry on", Modifier.weight(1f), filled = true) {
+                            viewModel.onEvent(AgentRoomViewModel.Event.ResumeRun())
+                        }
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    if (run.canResume) {
+                        "This run is stopped with its working state kept. Carrying on continues the " +
+                            "same run rather than starting a new one."
+                    } else {
+                        "Pausing stops at the agent's next safe boundary, keeping everything it has " +
+                            "worked out. Stopping ends the work instead."
+                    },
+                    style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.55f)),
+                )
             }
         }
     }

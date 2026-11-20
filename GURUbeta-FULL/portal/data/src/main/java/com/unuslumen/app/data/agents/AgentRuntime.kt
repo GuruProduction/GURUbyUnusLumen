@@ -277,7 +277,16 @@ class AgentRuntime(
         val compactions: Int = 0,
         val error: String? = null
     ) {
-        enum class Status { FINISHED, ASKING, FAILED }
+        /**
+         * Four outcomes, because there are four facts.
+         *
+         * [PAUSED] IS NOT [FAILED] AND NOT [FINISHED]. A person stopped the work part way through
+         * and everything it had decided is on disk, waiting to be picked up. Reporting that as a
+         * failure would tell the caller the work was no good; reporting it as finished would hand
+         * back a partial report as though it were an answer. Neither is true, so it gets its own
+         * name and the caller is told to continue it rather than replace it.
+         */
+        enum class Status { FINISHED, ASKING, PAUSED, FAILED }
     }
 
     /**
@@ -336,6 +345,19 @@ class AgentRuntime(
         var compactions: Int = 0,
         /** How many plan revisions this run has recorded, so each one is numbered. */
         var planRevision: Int = 0,
+        /**
+         * Set when a person has asked this run to stop for now.
+         *
+         * A FLAG RATHER THAN A CANCELLATION, AND THAT IS THE WHOLE DISTINCTION. Cancelling throws
+         * away the loop and its in-flight work; pausing lets the current round finish and then
+         * stops between rounds with the checkpoint current, so everything that was decided is
+         * still on disk when the person resumes. The loop reads this at exactly the boundary it
+         * already checks its time and tool-call ceilings, because a pause that interrupted a model
+         * call or a tool dispatch would leave an action with an unknown outcome, which is the
+         * state the recovery rules exist to avoid creating.
+         */
+        @Volatile
+        var pauseRequested: Boolean = false,
         /**
          * This run's limits, resolved once at spawn from the agent's own budgets.
          *
@@ -778,6 +800,118 @@ class AgentRuntime(
     }
 
     /**
+     * Ask a live run to stop at its next round boundary.
+     *
+     * REQUESTS, AND SAYS SO. The loop is either inside a model call or a tool dispatch at the
+     * instant this arrives, and neither can be abandoned safely. So this records the request and
+     * sets the flag; the loop itself writes the PAUSED state, the checkpoint and the released lease
+     * when it reaches a boundary it can stop at. A caller that reported "paused" from here would be
+     * reporting a request as a fact.
+     *
+     * A RUN THAT IS NOT LIVE IN THIS PROCESS IS REFUSED RATHER THAN APPROXIMATED. Pausing needs a
+     * loop to set a flag on. A run on disk that is not executing is already not moving, so the
+     * honest answer is that there is nothing to pause, and a resume of it goes through the
+     * checkpoint path exactly as a restart does.
+     */
+    suspend fun pause(runId: String, requestedBy: String = "user"): Boolean {
+        val session = sessions[runId] ?: return false
+        session.pauseRequested = true
+        runCatching {
+            ledger.append(
+                runId,
+                AgentRunLedger.EventDraft(
+                    eventType = com.unuslumen.app.domain.agents.AgentEventTypes.RUN_PAUSE_REQUESTED,
+                    actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_USER,
+                    actorId = requestedBy,
+                    payload = jsonObject {
+                        put("roundIndex", session.rounds)
+                        put("reason", "a person asked for this run to stop at the next boundary")
+                    },
+                )
+            )
+        }
+        return true
+    }
+
+    /**
+     * Carry on a run that was paused, from the state it was paused with.
+     *
+     * THIS IS A RESUME OF THE WORK, NOT OF A QUESTION. `resume` answers an agent that asked
+     * something; this starts a loop again that a person stopped, adding an optional instruction
+     * they want it to take into account. Both end in the same place — a live session running
+     * another turn — which is why they share the restore path rather than each having their own.
+     *
+     * THE PAUSED RUN IS ON DISK AND MAY NOT BE IN MEMORY. A pause keeps the session so a fast
+     * resume costs nothing, but a process that died in between leaves only the checkpoint. Both
+     * cases arrive here, and the second is what [restoreFromLedger] already handles honestly: a
+     * checkpoint that will not verify, or a model that no longer resolves, is a refusal with a
+     * reason rather than a run made up from whatever is connected.
+     */
+    fun resumeRun(
+        runId: String,
+        instruction: String? = null,
+        onEvent: ((String) -> Unit)? = null,
+    ) = flow {
+        val id = runId.trim()
+        val live = sessions[id] ?: restoreFromLedger(id)
+        if (live == null) {
+            emit(
+                failed(
+                    "",
+                    "No live session and no recoverable checkpoint for '$id', so it was not " +
+                        "resumed. Start the job again with spawnAgent if the work is still wanted.",
+                )
+            )
+            return@flow
+        }
+
+        sessions[live.id] = live
+        live.pauseRequested = false
+
+        if (!instruction.isNullOrBlank()) {
+            /*
+             * THE INSTRUCTION IS AN AMENDMENT, NOT A NEW ASSIGNMENT.
+             *
+             * The run's original assignment is frozen on its row and must stay that way, so what a
+             * person adds on resume travels as its own message with its own author and its own
+             * time. That is what makes "why did this work change direction" answerable afterwards,
+             * which is the whole reason amendments are messages rather than edits.
+             */
+            val trimmed = instruction.trim()
+            runCatching {
+                broker.send(
+                    live.id,
+                    AgentInteractionBroker.Outgoing(
+                        authorType = com.unuslumen.app.database.entity.AgentMessageEntity.AUTHOR_USER,
+                        recipientType = com.unuslumen.app.database.entity.AgentMessageEntity.RECIPIENT_AGENT,
+                        recipientId = live.agent.id,
+                        messageType = com.unuslumen.app.database.entity.AgentMessageEntity.MESSAGE_TYPE_ASSIGNMENT_AMENDMENT,
+                        content = trimmed,
+                    ),
+                )
+            }
+            live.messages = live.messages + AiMessage.UserMessage(
+                uuid = Uuid.random().toString(),
+                content = trimmed,
+                time = System.currentTimeMillis(),
+            )
+        }
+
+        runCatching {
+            ledger.appendStateChange(
+                live.id,
+                com.unuslumen.app.database.entity.AgentRunEntity.STATUS_PAUSED,
+                com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
+                "resumed by a person",
+            )
+            ledger.acquireLease(live.id, leaseOwner())
+        }
+
+        foreground(live.id, live.agent.name)
+        emit(bounded(live, onEvent))
+    }
+
+    /**
      * Hand a waiting agent the answer it asked for, and let it carry on.
      *
      * The answer is appended as a user message, which is exactly what it is from the
@@ -952,6 +1086,36 @@ class AgentRuntime(
         val notebook = readCheckpointField(state, "notebook").orEmpty()
 
         /*
+         * THE BUDGET SURVIVES THE RESTORE, BECAUSE A RESUMED RUN DID NOT GET A NEW ONE.
+         *
+         * The limits a run agreed to are part of what that run is, not a property of the process
+         * that happened to be holding it. Re-deriving them from the agent's current row would let
+         * an edit made while the run was stopped give the continued work a different budget, which
+         * is the same defect as rewriting a run's snapshot by editing the definition.
+         *
+         * A run whose checkpoint predates this field falls back to the agent's own budgets, which is
+         * the best available answer and is exactly what it would have had at spawn.
+         */
+        /*
+         * THE PRESENCE CHECK IS ON `maxExchanges`, BECAUSE IT IS THE ONE FIELD THAT IS ALWAYS
+         * WRITTEN. An agent with no wall-clock or tool-call budget legitimately records neither of
+         * those, so keying the "did this checkpoint carry a budget" question on either would make
+         * a normal unbudgeted checkpoint look like one from an older build.
+         */
+        val recordedExchanges = readCheckpointField(state, "maxExchanges")?.toIntOrNull()
+        val limits = if (recordedExchanges != null) {
+            RunLimits(
+                maxExchanges = recordedExchanges,
+                maxToolRounds = readCheckpointField(state, "maxToolRounds")?.toIntOrNull()
+                    ?: RunLimits.SYSTEM_DEFAULT.maxToolRounds,
+                maxToolCalls = readCheckpointField(state, "maxToolCalls")?.toIntOrNull(),
+                maxDurationMillis = readCheckpointField(state, "maxDurationMillis")?.toLongOrNull(),
+            )
+        } else {
+            RunLimits.from(agent)
+        }
+
+        /*
          * A RESTORE SAYS SO, AND NAMES ITS BOUNDARY.
          *
          * The event carries the checkpoint it came from and the event sequence that
@@ -990,6 +1154,15 @@ class AgentRuntime(
             exchangeCount = exchanges,
             pendingQuestion = pending,
             notebook = notebook,
+            /*
+             * THE LIMITS TRAVEL WITH THE RESTORE, and the clock starts now rather than at the
+             * original spawn. A run that sat paused or interrupted for an hour was not working for
+             * an hour, and carrying the original start forward would make it fail its own
+             * wall-clock ceiling the instant it resumed. What the ceiling measures is time spent
+             * working, so the resume is where that clock restarts.
+             */
+            limits = limits,
+            startedAt = System.currentTimeMillis(),
         )
     }
 
@@ -1100,17 +1273,39 @@ class AgentRuntime(
         return try {
             runTurn(session, onEvent)
         } catch (e: kotlinx.coroutines.CancellationException) {
-            // A deliberate stop. Recorded as cancelled rather than failed, because a
-            // person stopping their own work is not the work going wrong.
+            /*
+             * A DELIBERATE STOP, AND TWO DIFFERENT ONES.
+             *
+             * A PAUSE ALSO CANCELS THE JOB, because the work has to leave the host for the run to
+             * read as inactive. Marking that CANCELLED would tell every reader the work was
+             * abandoned when a person simply stopped it for now and everything is on disk waiting.
+             * The pause flag is what tells the two apart, and it is the only thing that can: by
+             * the time cancellation arrives the loop is gone.
+             */
+            val paused = session.pauseRequested
             runCatching {
-                ledger.appendStateChange(
-                    session.id,
-                    com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
-                    com.unuslumen.app.database.entity.AgentRunEntity.STATUS_CANCELLED,
-                    "cancelled by the caller",
-                    finishedAt = System.currentTimeMillis(),
-                )
-                ledger.releaseLease(session.id, leaseOwner(), "cancelled")
+                if (paused) {
+                    ledger.appendStateChange(
+                        session.id,
+                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
+                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_PAUSED,
+                        "paused part way through a round; the state up to the last checkpoint stands",
+                    )
+                    ledger.commitCheckpoint(
+                        runId = session.id,
+                        reason = com.unuslumen.app.database.entity.AgentRunCheckpointEntity.REASON_DELIBERATE_PAUSE,
+                        stateJson = checkpointState(session),
+                    )
+                } else {
+                    ledger.appendStateChange(
+                        session.id,
+                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
+                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_CANCELLED,
+                        "cancelled by the caller",
+                        finishedAt = System.currentTimeMillis(),
+                    )
+                }
+                ledger.releaseLease(session.id, leaseOwner(), if (paused) "paused" else "cancelled")
             }
             throw e
         } catch (e: Exception) {
@@ -1215,6 +1410,66 @@ class AgentRuntime(
                     status = SpawnResult.Status.FAILED,
                     error = "Reached its time limit of ${ceiling}ms. The work it had produced is " +
                         "above; anything not yet done is not done.",
+                )
+            }
+
+            /*
+             * A PAUSE IS TAKEN AT THE SAME BOUNDARY AS THE CEILINGS, FOR THE SAME REASON.
+             *
+             * NOTHING IS IN FLIGHT HERE. The previous round finished and its results are in the
+             * conversation, so stopping now leaves the run in a state a checkpoint can describe
+             * exactly. Interrupting a model call or a tool dispatch instead would produce an action
+             * whose outcome nobody knows, which is the one thing the recovery rules exist to stop.
+             *
+             * IT PRESERVES THE WORK AND SAYS SO. The state goes to PAUSED rather than CANCELLED,
+             * the partial report travels back, and the lease is released because nothing is driving
+             * the run: a paused run that kept a lease would look alive to the recovery scan.
+             */
+            if (session.pauseRequested) {
+                sessions[session.id] = session
+                runCatching {
+                    ledger.append(
+                        session.id,
+                        AgentRunLedger.EventDraft(
+                            eventType = com.unuslumen.app.domain.agents.AgentEventTypes.RUN_STATE_CHANGED,
+                            actorType = com.unuslumen.app.database.entity.AgentRunEventEntity.ACTOR_USER,
+                            payload = jsonObject {
+                                put("from", com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING)
+                                put("to", com.unuslumen.app.database.entity.AgentRunEntity.STATUS_PAUSED)
+                                put("reason", "a person paused this run at a round boundary")
+                                put("roundIndex", rounds)
+                            },
+                        )
+                    )
+                    ledger.appendStateChange(
+                        session.id,
+                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
+                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_PAUSED,
+                        "paused by a person, with its state kept",
+                    )
+                    /*
+                     * A CHECKPOINT WITH ITS OWN REASON. `DELIBERATE_PAUSE` already exists in the
+                     * vocabulary and nothing emitted it until now, because nothing could pause.
+                     * It matters which reason is recorded: a resume reads the newest checkpoint
+                     * whichever reason it carries, and a reader asking "why does this run have a
+                     * checkpoint in the middle of nowhere" gets the actual answer.
+                     */
+                    ledger.commitCheckpoint(
+                        runId = session.id,
+                        reason = com.unuslumen.app.database.entity.AgentRunCheckpointEntity.REASON_DELIBERATE_PAUSE,
+                        stateJson = checkpointState(session),
+                    )
+                    ledger.releaseLease(session.id, leaseOwner(), "paused")
+                }
+                return SpawnResult(
+                    success = false,
+                    agentName = agent.name,
+                    report = lastText.take(MAX_REPORT_CHARS),
+                    toolRounds = rounds,
+                    sessionId = session.id,
+                    status = SpawnResult.Status.PAUSED,
+                    error = "Paused at round $rounds. Everything it had produced is above and its " +
+                        "working state is kept. Resume it to carry on.",
                 )
             }
 
@@ -2653,6 +2908,16 @@ class AgentRuntime(
         put("compactionCount", session.compactions)
         put("systemPrompt", session.systemPrompt)
         put("messageCount", session.messages.size)
+        /*
+         * THE BUDGET IS PART OF THE STATE, so a restore can put the run back under the terms it
+         * agreed to rather than under whatever the agent row now says. These four are read back in
+         * `restoreFromLedger`; a checkpoint written before this field existed restores with the
+         * agent's current budgets, which is the honest fallback.
+         */
+        put("maxExchanges", session.limits.maxExchanges)
+        put("maxToolRounds", session.limits.maxToolRounds)
+        session.limits.maxToolCalls?.let { put("maxToolCalls", it) }
+        session.limits.maxDurationMillis?.let { put("maxDurationMillis", it) }
         put("messages", session.messages.joinToString("\n\u001E\n") { m ->
             when (m) {
                 is AiMessage.UserMessage -> "user:${m.content}"

@@ -15,6 +15,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.last
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -103,6 +104,8 @@ class AgentRoomViewModel(
             is Event.UpdateDraft -> _state.update { it.copy(draft = event.text) }
             Event.SendToAgent -> sendToAgent()
             Event.StopRun -> stopRun()
+            Event.PauseRun -> pauseRun()
+            is Event.ResumeRun -> resumeRun(event.instruction)
             is Event.Approve -> decide(event.approvalId, approved = true)
             is Event.Reject -> decide(event.approvalId, approved = false)
             Event.Refresh -> refresh()
@@ -121,8 +124,21 @@ class AgentRoomViewModel(
         /** Send an instruction that changes the work rather than asking a question. */
         data class Steer(val text: String, val messageType: String) : Event
 
-        /** Stop the run. The only control that cancels work. */
+        /** Stop the run. The only control that ends work for good. */
         data object StopRun : Event
+
+        /**
+         * Stop the run for now, keeping everything it has.
+         *
+         * A DIFFERENT CONTROL FROM STOP, because it is a different capability. Stopping ends the
+         * work; pausing keeps its working state and lets it be continued. A room that offered only
+         * one of them would be hiding a real option, and one that offered both wired to the same
+         * action would be lying about one.
+         */
+        data object PauseRun : Event
+
+        /** Carry on a paused run, optionally with something the person wants taken into account. */
+        data class ResumeRun(val instruction: String? = null) : Event
 
         data class Approve(val approvalId: String) : Event
         data class Reject(val approvalId: String) : Event
@@ -257,6 +273,80 @@ class AgentRoomViewModel(
         val runId = _state.value.room?.run?.runId ?: return
         runHost.cancel(runId)
         refresh()
+    }
+
+    /**
+     * Ask the run to stop at its next boundary.
+     *
+     * THE REQUEST AND THE PAUSE ARE TWO FACTS AND THE ROOM SAYS BOTH. The runtime sets the flag and
+     * records the request; the loop writes the PAUSED state when it reaches a boundary it can stop
+     * at. So this reports "pausing" rather than "paused", because claiming the second before the
+     * loop has stopped would be a surface telling a person something that has not happened yet.
+     */
+    private fun pauseRun() {
+        val runId = _state.value.room?.run?.runId
+        if (runId == null) {
+            _state.update {
+                it.copy(controlError = "There is no run to pause. Nothing is executing for this agent.")
+            }
+            return
+        }
+        viewModelScope.launch {
+            runCatching { runtime.pause(runId) }
+                .onSuccess { accepted ->
+                    if (!accepted) {
+                        /*
+                         * THE HONEST REFUSAL. A run held only on disk is not executing, so there
+                         * is nothing to pause; the work is already stopped and resuming it goes
+                         * through the checkpoint. Saying so is better than a button that appears
+                         * to work on a run that is not moving anyway.
+                         */
+                        _state.update {
+                            it.copy(
+                                controlError = "This run is not executing in this process, so there " +
+                                    "is nothing to pause. Its work is already stopped.",
+                            )
+                        }
+                    } else {
+                        _state.update { it.copy(controlError = null) }
+                        refresh()
+                    }
+                }
+                .onFailure { e ->
+                    _state.update { it.copy(controlError = e.message ?: "Could not pause the run.") }
+                }
+        }
+    }
+
+    /**
+     * Carry on a paused run, through the host so it outlives this screen.
+     *
+     * THE HOST ADMITS IT BECAUSE THE PAUSED JOB ENDED. A pause returns from the loop, so the job
+     * for that run id is finished and the same id can be started again. The room keeps watching
+     * the same run rather than opening a new one, which is what makes the history continuous.
+     */
+    private fun resumeRun(instruction: String?) {
+        val runId = _state.value.room?.run?.runId
+        if (runId == null) {
+            _state.update { it.copy(controlError = "There is no run to resume.") }
+            return
+        }
+        viewModelScope.launch {
+            val deferred = kotlinx.coroutines.CompletableDeferred<AgentRuntime.SpawnResult>()
+            val admission = runHost.start(runId, deferred) {
+                runtime.resumeRun(runId, instruction).last()
+            }
+            if (admission is AgentRunHost.Admission.AlreadyRunning) {
+                _state.update {
+                    it.copy(
+                        controlError = "That run is already executing, so it was not started twice.",
+                    )
+                }
+                return@launch
+            }
+            _state.update { it.copy(controlError = null, awaitingRun = true) }
+            refresh()
+        }
     }
 
     /**

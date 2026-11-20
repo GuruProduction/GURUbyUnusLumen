@@ -124,6 +124,33 @@ data class RunView(
         get() = status in AgentRunStatuses.TERMINAL
 
     /**
+     * Whether pausing this run would do anything.
+     *
+     * A PAUSE NEEDS A LIVE LOOP TO SET A FLAG ON, so this is true only for a run that is executing
+     * right now. Everything else is already stopped and a Pause control would do nothing while
+     * implying it does, which is the exact defect the specification forbids by name:
+     *
+     *  - the waiting states have released their lease, so nothing is driving them;
+     *  - PAUSED is already paused;
+     *  - INTERRUPTED is stopped because the process died, not because anyone asked, and it is
+     *    carried on with resume rather than paused;
+     *  - CREATED and STARTING exist for the instant before a loop is running, during which the
+     *    runtime is already at the boundary a pause would ask it to stop at.
+     */
+    val canPause: Boolean
+        get() = status == AgentRunStatuses.RUNNING
+
+    /**
+     * Whether this run can be carried on from where it stopped.
+     *
+     * TWO STATES, AND THEY ARE DIFFERENT. PAUSED is a person stopping work that could continue.
+     * INTERRUPTED is the platform killing it, which is also continuable because the checkpoint holds
+     * the state. Every other non-terminal state either resumes itself or is waiting on a person.
+     */
+    val canResume: Boolean
+        get() = status == AgentRunStatuses.PAUSED || status == AgentRunStatuses.INTERRUPTED
+
+    /**
      * How far through the plan the run is, as a count and never a percentage.
      *
      * A COUNT OF RECORDED STEPS. A percentage would need a denominator the runtime does not have:

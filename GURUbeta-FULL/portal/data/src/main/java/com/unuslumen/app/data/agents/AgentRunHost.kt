@@ -162,6 +162,14 @@ class AgentRunHost {
         jobs.remove(runId)?.cancel()
     }
 
-    /** Every run currently executing, for diagnostics and the recovery scan's own report. */
+    /**
+     * Every run currently executing, for diagnostics and the recovery scan's own report.
+     *
+     * A PAUSED RUN READS AS INACTIVE HERE, AND THAT IS CORRECT. Pausing returns from the loop, so
+     * the job for that run finishes and this stops reporting it. Nothing is driving it, its lease
+     * is released, and the recovery scan must leave it alone rather than interrupting work a person
+     * deliberately stopped. Carrying on is a new job under the same run id, which [start] admits
+     * because the previous job for that id is no longer active.
+     */
     fun activeRuns(): Set<String> = jobs.filterValues { it.isActive }.keys
 }
