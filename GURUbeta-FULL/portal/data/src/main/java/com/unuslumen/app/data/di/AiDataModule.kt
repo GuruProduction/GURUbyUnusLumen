@@ -407,6 +407,17 @@ val aiDataModule = module {
      * instances would be two objects asking the same questions of the same tables, which is harmless
      * but pointless, and one keeps the graph honest about there being one route to delegation.
      */
+    /*
+     * THE AGENT MEMORY LANE. A singleton because it holds no state and every call goes to the one
+     * brain, which is the point: agents read and write the same memory the main chat does rather
+     * than growing a second store.
+     */
+    single {
+        com.unuslumen.app.data.agents.AgentMemoryService(
+            get(),
+            get(),
+        )
+    }
     single {
         com.unuslumen.app.data.agents.AgentDelegationService(
             get(),

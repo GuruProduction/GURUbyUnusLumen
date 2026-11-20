@@ -43,9 +43,9 @@ a passing test.
 | 2.4.2 | Events form the authoritative execution history and are never replaced by generated prose or reconstructed from the final answer | 2.4 | Reuse | Payloads carry action data, never a sentence about the action | `AgentRunEventEntity` doc contract, `AgentRunLedger` |
 | 2.5.1 | Messages distinguish user, GURU, agent, agent-to-agent, internal coordination, question and answer, instruction and amendment, notification and approval | 2.5 | **Reuse** | `AgentMessageEntity` with 15 `MESSAGE_TYPE_` constants covering assignment, amendment, question, answer, clarification, instruction, finding, evidence, blocker, progress request, completion, error, cancellation and both approval kinds | `AgentInteractionBrokerTest` (20 tests) |
 | 2.5.2 | Messages have explicit authorship and recipients, and an agent's message is never presented as GURU's | 2.5 | **Reuse** | `author_type`, `author_id`, `recipient_type`, `recipient_id` are stored columns on `agent_messages` | `AgentInteractionBrokerTest.aMessageFromTheAgentIsNotAttributedToGuru` |
-| 2.6.1 | Agent memory is distinct from the assignment, working context, event ledger, user memory and shared GURU knowledge | 2.6 | Build | `AgentRuntime` has no memory lane | Phase 6 |
-| 2.6.2 | Memory access is governed by explicit scopes and permissions, and an agent does not automatically receive everything GURU knows | 2.6 | Build | No scope model exists for agents | Phase 6 |
-| 2.7.1 | An artefact is a persistent output with origin, producing agent, run id, version, creation time and source references | 2.7 | Build | No artefact entity and no link from any output table to a run | Phase 6 |
+| 2.6.1 | Agent memory is distinct from the assignment, working context, event ledger, user memory and shared GURU knowledge | 2.6 | **Reuse** | `AgentMemoryService` reads and writes the brain in its own domain; assignment and working context stay on the run | `AgentMemoryServiceTest` |
+| 2.6.2 | Memory access is governed by explicit scopes and permissions, and an agent does not automatically receive everything GURU knows | 2.6 | **Reuse** | `AgentMemoryScope` enforced in `AgentMemoryService`, not in a prompt | `AgentMemoryServiceTest.anAgentWithOwnOnlyScopeSeesOnlyItsOwnFacts`, `aCategoryScopeNarrowsFurther` |
+| 2.7.1 | An artefact is a persistent output with origin, producing agent, run id, version, creation time and source references | 2.7 | **Reuse** | `AgentArtefactEntity` + `AgentArtefactService.recordArtefact` | `AgentArtefactServiceTest.anArtefactCarriesTheAgentRunAndVersionThatProducedIt` |
 
 ## Section 3 — GURU as orchestrator
 
@@ -97,14 +97,14 @@ a passing test.
 
 | ID | Requirement | Spec § | Status | Location | Evidence |
 | --- | --- | --- | --- | --- | --- |
-| 6.1 | Every agent has its own configurable visibility settings across eleven categories | 6.1 | Build | `AgentVisibility` type written, not yet persisted or wired | Phase 2 |
-| 6.2 | Categories carry meaningful detail controls | 6.1 | Build | `VisibilityDetail` declared with three levels | Phase 2 |
-| 6.3 | Visibility settings are not tied to a single global GURU preference | 6.1 | Build | Today's only setting is the hardcoded per-run `"FULL"` | Phase 2 |
-| 6.4 | The default experience is transparent: activity, plans, decisions, communications, tools and results exposed without discovery | 6.2 | Build | `AgentVisibility.TRANSPARENT` is the declared default | Phase 2 |
-| 6.5 | An unavailable capability is reported honestly rather than silently becoming an ineffective preference | 6.2, 6.4 | Build | No validation exists | Phase 2 |
-| 6.6 | The user can change visibility while the agent is active | 6.3 | Build | No runtime path | Phase 2 and Phase 7 |
-| 6.7 | The interface distinguishes display changes, capture changes, persistent preferences and run-specific overrides | 6.3 | Build | The two-field `VisibilityRule` supports the distinction; no surface or override store exists | Phase 2 and Phase 7 |
-| 6.8 | Changing visibility does not change tool permissions, autonomy, memory access or execution authority | 6.3 | Build | Nothing enforces the separation yet | Phase 2 |
+| 6.1 | Every agent has its own configurable visibility settings across eleven categories | 6.1 | **Reuse** | `AgentVisibility` persisted per agent and read by the room | `AgentConfigurationPersistenceTest.visibilityRulesRoundTripPerCategory` |
+| 6.2 | Categories carry meaningful detail controls | 6.1 | **Reuse** | `VisibilityDetail` SUMMARY, STANDARD, FULL per category | `AgentConfigurationValidatorTest` |
+| 6.3 | Visibility settings are not tied to a single global GURU preference | 6.1 | **Reuse** | A column per agent, not a global | `AgentConfigurationPersistenceTest` |
+| 6.4 | The default experience is transparent: activity, plans, decisions, communications, tools and results exposed without discovery | 6.2 | **Reuse** | `AgentVisibility.TRANSPARENT` is the default on every agent | `AgentConfigurationValidatorTest.visibilityDefaultsCaptureAndDisplayEveryCategory` |
+| 6.5 | An unavailable capability is reported honestly rather than silently becoming an ineffective preference | 6.2, 6.4 | **Reuse** | `AgentConfigurationValidator` separates refusal from warning and names the cause | `AgentConfigurationValidatorTest.aMissingReasoningChannelWarnsAndStillRuns` |
+| 6.6 | The user can change visibility while the agent is active | 6.3 | **Extend** | The rules are stored and the room reads them; there is no edit control in the room yet | `AgentRoomScreen` settings tab is read-only |
+| 6.7 | The interface distinguishes display changes, capture changes, persistent preferences and run-specific overrides | 6.3 | **Extend** | `VisibilityRule` carries capture and display separately; a run-specific override store does not exist | `AgentConfigurationValidatorTest.captureOnlyKeepsTheRecordWhileHidingIt` | Phase 2 and Phase 7 |
+| 6.8 | Changing visibility does not change tool permissions, autonomy, memory access or execution authority | 6.3 | **Reuse** | Four independent types on the agent; nothing derives one from another | `AgentConfigurationPersistenceTest.visibilityRulesRoundTripPerCategory` |
 | 6.9 | Historical records cannot be retroactively populated with information never captured | 6.3 | Reuse | `reasoningCaptureEnabledAtStart` records the truth per run | `AgentRunEntity` |
 | 6.10 | The product supports richer models and runtimes without redesigning the room | 6.4 | Reuse | Capture is conditional on frames actually arriving | `AgentEventTypes` |
 
@@ -125,15 +125,15 @@ a passing test.
 
 | ID | Requirement | Spec § | Status | Location | Evidence |
 | --- | --- | --- | --- | --- | --- |
-| 8.1 | Four context layers stay distinct: assignment, working, persistent agent memory, shared GURU context | 8 | Build | Only assignment and working context exist | Phase 6 |
-| 8.2 | Agents connect only to memory tools that actually exist, using their real names and schemas | 8 | Build | `CerebrumBrainApi` and `BrainService` are the real surface; no agent uses them | Phase 6 |
-| 8.3 | Scoped memory search and agent-owned memory operations | 8.1 | Build | None | Phase 6 |
-| 8.4 | Ownership and policy rules apply to shared or user-owned memory, and user data is never silently deleted | 8.1 | Build | None | Phase 6 |
-| 8.5 | Context provenance records source identifier, type, retrieval time, passage reference, permission scope and whether it was supplied to the model | 8.2 | Build | `memory_injections` does this for the main chat only | Phase 6 |
+| 8.1 | Four context layers stay distinct: assignment, working, persistent agent memory, shared GURU context | 8 | **Reuse** | Assignment on the run row, working state in the checkpoint, agent memory in the brain under its own domain, shared knowledge gated by scope | `AgentMemoryServiceTest`, `AgentRunCheckpointEntity` |
+| 8.2 | Agents connect only to memory tools that actually exist, using their real names and schemas | 8 | **Reuse** | `AgentMemoryService` calls `BrainService.search`, `storeRecord` and `getFactsByDomain` | `AgentMemoryServiceTest` |
+| 8.3 | Scoped memory search and agent-owned memory operations | 8.1 | **Reuse** | `search` filters by scope after the brain ranks; `remember` writes under the agent's own domain; `ownFacts` reads it back | `AgentMemoryServiceTest` (12 tests) |
+| 8.4 | Ownership and policy rules apply to shared or user-owned memory, and user data is never silently deleted | 8.1 | **Reuse** | A write is its own permission; the brain archives rather than deletes; nothing in the agent path calls delete | `AgentMemoryServiceTest.writingIsASeparatePermissionFromReading` |
+| 8.5 | Context provenance records source identifier, type, retrieval time, passage reference, permission scope and whether it was supplied to the model | 8.2 | **Reuse** | `AgentContextReferenceEntity` with all six fields; `markSupplied` scoped to the run | `AgentArtefactServiceTest.aCandidateThatNeverReachedTheModelIsNotClaimedAsAnInfluence` |
 | 8.6 | Session compaction preserves outstanding questions, decisions, tool results, constraints, current plan and relevant context | 2.3, 8 | Extend | Tool results and instructions survive; decisions and plans are Phase 2 | Phase 2 and Phase 6 |
-| 8.7 | Artefact registration is durable and linked to producing agent, run, version, time and sources | 2.7, 8 | Build | None | Phase 6 |
-| 8.8 | Memory access and mutation are visible according to visibility settings | 8 | Build | No memory surface | Phase 6 and Phase 7 |
-| 8.9 | Sensitive memory and secrets follow access control and redaction policy | 8, 13 | Build | No agent-side policy | Phase 9 |
+| 8.7 | Artefact registration is durable and linked to producing agent, run, version, time and sources | 2.7, 8 | **Reuse** | `AgentArtefactService.recordArtefact` | `AgentArtefactServiceTest.anArtefactCarriesTheAgentRunAndVersionThatProducedIt` |
+| 8.8 | Memory access and mutation are visible according to visibility settings | 8 | **Extend** | Retrieval is recorded as context references the room can read; there is no memory panel yet | `AgentArtefactService.contextFor` |
+| 8.9 | Sensitive memory and secrets follow access control and redaction policy | 8, 13 | **Extend** | Run rows, events and checkpoints are sealed through `DataProtector`; memory uses the brain's own encrypted vault. No redaction layer on agent memory yet | `AgentRunLedger.protect` |
 
 ## Section 9 — Agent Room
 
