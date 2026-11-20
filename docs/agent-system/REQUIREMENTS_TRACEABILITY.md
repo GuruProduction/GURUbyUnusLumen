@@ -139,25 +139,25 @@ a passing test.
 
 | ID | Requirement | Spec § | Status | Location | Evidence |
 | --- | --- | --- | --- | --- | --- |
-| 9.1 | Agent presence in the Portal is a recognisable node with identity and colour, communicating actual execution state | 9.1 | Build | No node. `GuruAgentSelector` chips are a hardcoded four-value enum and are not this | Phase 7 |
+| 9.1 | Agent presence in the Portal is a recognisable node with identity and colour, communicating actual execution state | 9.1 | **Reuse** | `AgentPresenceStrip` + `AgentPresenceNode`; the hardcoded `GuruAgentSelector` enum was DELETED | `AgentPresence.kt`; the enum is gone from the tree |
 | 9.2 | The Portal's edge treatment may use the active agent's colour | 9.1 | Build | None | Phase 7 |
-| 9.3 | The user can open the Agent Room without interrupting the agent | 9.1 | Build | No room | Phase 7 |
-| 9.4 | Closing the room does not cancel execution | 9.1 | Reuse | Execution is independent of any screen; nothing observes a room | Phase 7 proves it |
+| 9.3 | The user can open the Agent Room without interrupting the agent | 9.1 | **Reuse** | Opening the room reads state; nothing on the open path cancels anything | `AgentRoomViewModel.onCleared` leaves the run on the host |
+| 9.4 | Closing the room does not cancel execution | 9.1 | **Reuse** | `onCleared` cancels only the poll; work lives on `AgentRunHost` | `AgentRoomViewModel.onCleared` |
 | 9.5 | The presence system supports multiple agent identities and does not imply simultaneous execution the runtime cannot provide | 9.1, 14 | Build | None | Phase 7 and Phase 8 |
-| 9.6 | The landing view is a dashboard, not a chat transcript | 9.2 | Build | None | Phase 7 |
-| 9.7 | Agent overview shows identity, purpose, current assignment, actual status, current activity, plan position, warnings and run controls | 9.2 | Build | None | Phase 7 |
-| 9.8 | Progress indicators are derived from recorded state and never invent a percentage | 9.2 | Build | None | Phase 7 |
+| 9.6 | The landing view is a dashboard, not a chat transcript | 9.2 | **Reuse** | `AgentRoomScreen` opens on OVERVIEW with eight tabs; chat is one of them | `AgentRoomScreen.kt` |
+| 9.7 | Agent overview shows identity, purpose, current assignment, actual status, current activity, plan position, warnings and run controls | 9.2 | **Reuse** | Identity, description, `StatusBand`, assignment panel, counts, controls | `AgentRoomAssemblerTest` |
+| 9.8 | Progress indicators are derived from recorded state and never invent a percentage | 9.2 | **Reuse** | `RunView.planProgress` is a count of recorded steps or null; there is no percentage field to fill | `AgentRoomAssemblerTest.planProgressIsACountAndNeverAPercentage` |
 | 9.9 | A dedicated Chat with Agent area supporting questions, information, corrections, instructions, priority changes, evidence requests and control requests | 9.2 | Extend | The broker and `AgentRuntime.steer` support every type; the surface is Phase 7 | Phase 7 |
-| 9.10 | Reasoning and decisions area showing live reasoning where available, plans, revisions, decisions, evidence, uncertainty, changes of approach and explanations | 9.2 | Build | None | Phase 7 |
-| 9.11 | Tool activity area with expandable arguments, results, errors, refusals, retries, timing and permission decisions | 9.2 | Build | None | Phase 7 |
-| 9.12 | Communications timeline identifying each participant and following a question through to the subsequent action | 9.2 | Build | None | Phase 5 and Phase 7 |
+| 9.10 | Reasoning and decisions area showing live reasoning where available, plans, revisions, decisions, evidence, uncertainty, changes of approach and explanations | 9.2 | **Extend** | Reasoning tab shows captured reasoning or names why there is none; decisions are not a recorded type yet | `AgentRoomAssemblerTest.aModelWithoutAReasoningChannelSaysSoRatherThanShowingAnEmptyPanel` |
+| 9.11 | Tool activity area with expandable arguments, results, errors, refusals, retries, timing and permission decisions | 9.2 | **Reuse** | `toolActivityFrom` pairs invocations from ledger events; the screen expands arguments and result | `AgentRoomAssemblerTest.toolActivityIsReconstructedFromTheLedgerWithItsRealOutcome`, `aRefusedCallIsNotDrawnAsAFailure`, `anUnknownOutcomeIsItsOwnState` |
+| 9.12 | Communications timeline identifying each participant and following a question through to the subsequent action | 9.2 | **Reuse** | Chat tab draws `MessageView` with stored author and type | `AgentRoomAssemblerTest.messagesCarryTheirStoredAuthorshipAndNeverTheAgentsAsGurus` |
 | 9.13 | Plan and revision history with completed, active, proposed, blocked and abandoned steps distinguishable | 9.2 | Build | None | Phase 2 and Phase 7 |
 | 9.14 | Context and memory area showing sources, retrieval and changes | 9.2 | Build | None | Phase 6 and Phase 7 |
-| 9.15 | Artefacts and outputs area covering intermediate and final work | 9.2 | Build | None | Phase 6 and Phase 7 |
-| 9.16 | Run history showing previous executions with configuration, communications, activity and results | 9.2 | Extend | Runs and events persist and are queryable | Phase 7 |
-| 9.17 | Agent settings, with active-run effects distinguished from future-run effects | 9.2 | Build | None | Phase 2 and Phase 7 |
-| 9.18 | Controls: chat, pause, resume, redirect, amend, change visibility, inspect tools, review decisions, approve or reject, stop, reopen a previous run | 9.3 | Build | None | Phase 5 and Phase 7 |
-| 9.19 | Controls correspond to real runtime capability and are never displayed as operational because they look useful | 9.3 | Build | None | Phase 7 enforces this |
+| 9.15 | Artefacts and outputs area covering intermediate and final work | 9.2 | **Reuse** | Outputs tab draws `ArtefactView` from `agent_artefacts` | `AgentRoomAssemblerTest.anArtefactAppearsInTheOutputsWithItsProvenance` |
+| 9.16 | Run history showing previous executions with configuration, communications, activity and results | 9.2 | **Reuse** | History tab lists finished runs with tool and artefact counts and relative age | `AgentRoomAssemblerTest.finishedRunsAppearInHistoryNewestFirst` |
+| 9.17 | Agent settings, with active-run effects distinguished from future-run effects | 9.2 | **Extend** | Settings tab shows visibility and autonomy read-only, and says editing lives in the creator | `AgentRoomScreen` settings tab |
+| 9.18 | Controls: chat, pause, resume, redirect, amend, change visibility, inspect tools, review decisions, approve or reject, stop, reopen a previous run | 9.3 | **Extend** | Chat, amend, approve/refuse and stop are wired to real capabilities. Pause and resume have no runtime path and are NOT drawn | `AgentRoomViewModel` |
+| 9.19 | Controls correspond to real runtime capability and are never displayed as operational because they look useful | 9.3 | **Reuse** | Stop is drawn only when a non-terminal run exists; pause/resume are absent because nothing implements them | `AgentRoomScreen.overview` |
 
 ## Section 10 — Runtime and persistence
 
@@ -253,7 +253,7 @@ the phase sections below.
 | 4 Runtime instrumentation | **Complete** | Commits `8fcfb6d`, `45dbc14`, `53d4152`, `f12ef61`, `2ce9be0`; `PHASE4_VERIFICATION.md` |
 | 5 Communication and control | **Complete** | Migration 37 to 38; `AgentInteractionBrokerTest`; `AgentInteractionBroker`; `AgentRuntime.steer` |
 | 6 Context, memory and artefacts | **Not started** | Task `e93675de` |
-| 7 Agent Room | **Not started** | Task `17aa1311` |
+| 7 Agent Room | **Extend** | `AgentRoomState`, `AgentRoomAssembler`, `AgentRoomScreen`, `AgentRoomViewModel`, `AgentPresence`; `AgentRoomAssemblerTest` (21 tests). Dashboard areas built; the plan-step source is still empty because the runtime emits no plan events |
 | 8 Advanced autonomy and ecosystem | **Not started** | Task `0377e194` |
 
 ## Section 16 — Acceptance criteria
@@ -274,7 +274,7 @@ the phase sections below.
 | 16.12 | Agents can initiate questions and requests | Extend | Clarification only today |
 | 16.13 | Assignment amendments retain their history | **Reuse** | Amendments are messages; the run's `assignment` is untouched | `AgentInteractionBrokerTest.theAssignmentIsNeverRewrittenByAnAmendment` |
 | 16.14 | Communication authorship is unambiguous | **Reuse** | Stored `author_type` and `recipient_type` | `AgentInteractionBrokerTest.aMessageFromTheAgentIsNotAttributedToGuru` |
-| 16.15 | The Agent Room exposes actual execution evidence | Build | Phase 7 |
+| 16.15 | The Agent Room exposes actual execution evidence | **Reuse** | Every field comes from a row; `AgentRoomAssembler` is the single reader | `AgentRoomAssemblerTest` (21 tests) |
 | 16.16 | The user can configure visibility | **Reuse** | `AgentVisibility` per agent, persisted as its own column; the settings surface is Phase 7 | `AgentConfigurationPersistenceTest.visibilityRulesRoundTripPerCategory` |
 | 16.17 | Supported reasoning information can be captured | Reuse | `MODEL_REASONING_COMPLETED` |
 | 16.18 | Unsupported reasoning capabilities are reported honestly | Reuse | Conditional capture |
@@ -289,10 +289,10 @@ the phase sections below.
 | 16.27 | Approval requirements are enforced by the runtime | **Reuse** | `requestApproval` blocks the run in `WAITING_FOR_USER`; `approvalCovers` refuses a mismatched fingerprint | `AgentInteractionBrokerTest.anApprovalCoversOnlyTheActionItWasGrantedFor` |
 | 16.28 | Imported agents cannot silently expand their authority | Build | Phase 8 |
 | 16.29 | The Portal remains the main conversation with GURU | Reuse | Unchanged |
-| 16.30 | Agent nodes open the dedicated Agent Room | Build | Phase 7 |
-| 16.31 | The Agent Room is a functional dashboard, not a chat transcript | Build | Phase 7 |
+| 16.30 | Agent nodes open the dedicated Agent Room | **Reuse** | `AgentPresenceStrip` takes an open callback per node | `AgentPresence.kt` |
+| 16.31 | The Agent Room is a functional dashboard, not a chat transcript | **Reuse** | Eight tabs, overview first, chat one of them | `AgentRoomScreen.kt` |
 | 16.32 | Closing the room does not automatically cancel work | Reuse | Execution is independent of UI |
-| 16.33 | The interface represents actual runtime state | Build | Phase 7 |
+| 16.33 | The interface represents actual runtime state | **Reuse** | Status comes from `agent_runs.status`; nothing is computed for display | `AgentRoomAssembler` |
 
 ## Section 17 — Decisions and principles
 

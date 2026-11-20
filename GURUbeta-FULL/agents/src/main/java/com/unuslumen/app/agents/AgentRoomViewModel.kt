@@ -1,0 +1,294 @@
+// GURU by Unus Lumen - an AI framework that gives a language model real hands on an Android phone.
+// Copyright (C) 2026 Steven Newman, Founder and Developer, Unus Lumen Ltd, Bristol UK.
+// Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
+package com.unuslumen.app.agents
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.unuslumen.app.data.agents.AgentInteractionBroker
+import com.unuslumen.app.data.agents.AgentRoomAssembler
+import com.unuslumen.app.data.agents.AgentRunHost
+import com.unuslumen.app.data.agents.AgentRuntime
+import com.unuslumen.app.domain.agents.AgentRoomState
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+
+/**
+ * The Agent Room's state and controls.
+ *
+ * WHAT A VIEW MODEL IS FOR HERE. The room is a dashboard over a live execution: the state must
+ * refresh as the run writes events, a person must be able to say something to an agent that is
+ * working, and every control must reach a real capability. All of that is orchestration, and none of
+ * it belongs in a composable.
+ *
+ * EVERY EVENT BELOW IS BACKED BY A RUNTIME CAPABILITY. There is no Pause button wired to a boolean,
+ * no Stop that only hides the screen, and no control drawn for a phase that has not been built. The
+ * specification is explicit that a control must not be displayed as operational because it looks
+ * useful, and the way to keep that true is for the ViewModel to expose only what it can actually do.
+ *
+ * CLOSING THE ROOM DOES NOT CANCEL THE RUN. Nothing here cancels anything on teardown: work lives on
+ * [AgentRunHost]'s application-lifetime scope, and the only thing that stops it is Stop.
+ */
+class AgentRoomViewModel(
+    private val agentId: String,
+    private val assembler: AgentRoomAssembler,
+    private val broker: AgentInteractionBroker,
+    private val runtime: AgentRuntime,
+    private val runHost: AgentRunHost,
+) : ViewModel() {
+
+    data class UiState(
+        val isLoading: Boolean = true,
+        /** Null once the agent has been deleted; the screen closes rather than drawing nothing. */
+        val room: AgentRoomState? = null,
+        val error: String? = null,
+        /** What the person is typing into Chat with Agent. */
+        val draft: String = "",
+        /** A control that failed, shown as a sentence rather than swallowed. */
+        val controlError: String? = null,
+        /** True while the poll is waiting for a run to appear after a start. */
+        val awaitingRun: Boolean = false,
+        /** The tab the room is showing. Chat is a destination, not the whole screen. */
+        val tab: RoomTab = RoomTab.OVERVIEW,
+    )
+
+    /**
+     * The room's areas.
+     *
+     * CHAT IS ONE OF THEM, WHICH IS THE SPECIFICATION'S POINT. A room whose only destination is a
+     * chat transcript is not a dashboard, whatever else it draws.
+     */
+    enum class RoomTab {
+        OVERVIEW,
+        CHAT,
+        TOOLS,
+        REASONING,
+        CONTEXT,
+        OUTPUTS,
+        HISTORY,
+        SETTINGS,
+    }
+
+    private val _state = MutableStateFlow(UiState())
+    val state: StateFlow<UiState> = _state.asStateFlow()
+
+    /**
+     * The live poll.
+     *
+     * A POLL RATHER THAN A DATABASE FLOW, DELIBERATELY. The room's state is assembled from six
+     * tables plus the ledger; a Flow would need six subscriptions and a combine, and the assemble
+     * would still run on every emission. One refresh on a short interval is simpler to reason about
+     * and cannot produce a half-updated room.
+     *
+     * The interval is a live view of work in flight, not a load spinner: two seconds is fast enough
+     * that a tool appearing feels immediate and slow enough that the assemble does not run in a
+     * tight loop while nothing changes.
+     */
+    private var poll: Job? = null
+
+    init {
+        refresh()
+        startPolling()
+    }
+
+    fun onEvent(event: Event) {
+        when (event) {
+            is Event.SelectTab -> _state.update { it.copy(tab = event.tab) }
+            is Event.UpdateDraft -> _state.update { it.copy(draft = event.text) }
+            Event.SendToAgent -> sendToAgent()
+            Event.StopRun -> stopRun()
+            is Event.Approve -> decide(event.approvalId, approved = true)
+            is Event.Reject -> decide(event.approvalId, approved = false)
+            Event.Refresh -> refresh()
+            Event.ClearControlError -> _state.update { it.copy(controlError = null) }
+            is Event.Steer -> steer(event.text, event.messageType)
+        }
+    }
+
+    sealed interface Event {
+        data class SelectTab(val tab: RoomTab) : Event
+        data class UpdateDraft(val text: String) : Event
+
+        /** Send the draft to the agent through the broker. */
+        data object SendToAgent : Event
+
+        /** Send an instruction that changes the work rather than asking a question. */
+        data class Steer(val text: String, val messageType: String) : Event
+
+        /** Stop the run. The only control that cancels work. */
+        data object StopRun : Event
+
+        data class Approve(val approvalId: String) : Event
+        data class Reject(val approvalId: String) : Event
+        data object Refresh : Event
+        data object ClearControlError : Event
+    }
+
+    /**
+     * Reload the room from persisted state.
+     *
+     * A FAILURE IS SHOWN, NOT SWALLOWED. A room that silently stops updating looks like an agent
+     * that stopped working, which is the worst possible confusion in a surface whose entire job is
+     * to say what is happening.
+     */
+    private fun refresh() {
+        viewModelScope.launch {
+            try {
+                val room = assembler.assemble(agentId)
+                _state.update {
+                    it.copy(
+                        isLoading = false,
+                        room = room,
+                        error = if (room == null) {
+                            "This agent no longer exists. It may have been deleted."
+                        } else null,
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(
+                        isLoading = false,
+                        error = e.message ?: "Could not read this agent's state.",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun startPolling() {
+        poll?.cancel()
+        poll = viewModelScope.launch {
+            while (isActive) {
+                delay(POLL_INTERVAL_MS)
+                // Only poll while there is something to watch. An idle agent's room does not need a
+                // refresh every two seconds, and polling anyway is a battery cost for no new fact.
+                val room = _state.value.room
+                val worthWatching = room == null ||
+                    room.isRunning ||
+                    _state.value.awaitingRun
+                if (!worthWatching) continue
+                runCatching { assembler.assemble(agentId) }.getOrNull()?.let { fresh ->
+                    _state.update { it.copy(room = fresh, awaitingRun = fresh.run == null && it.awaitingRun) }
+                }
+            }
+        }
+    }
+
+    /**
+     * Send what the person typed to the agent.
+     *
+     * THE MESSAGE IS QUEUED, NOT INJECTED, and the room says so. The loop takes it at its next
+     * round boundary, so nothing arrives in the middle of a tool call. Saying "sent" at the moment
+     * of writing would be the defect that makes sent mean typed.
+     */
+    private fun sendToAgent() {
+        val text = _state.value.draft.trim()
+        if (text.isEmpty()) return
+        val room = _state.value.room
+        val runId = room?.run?.runId
+
+        if (runId == null) {
+            _state.update {
+                it.copy(
+                    controlError = "This agent is not running, so there is nothing to talk to. " +
+                        "Its history is below if you want to read what it did.",
+                )
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                val sent = runtime.steer(
+                    runId = runId,
+                    text = text,
+                    messageType = com.unuslumen.app.domain.agents.AgentMessageTypes.INSTRUCTION,
+                )
+                if (!sent) {
+                    _state.update {
+                        it.copy(controlError = "That message could not be recorded, so it was not sent.")
+                    }
+                } else {
+                    _state.update { it.copy(draft = "", controlError = null) }
+                    refresh()
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(controlError = e.message ?: "Could not send that message.") }
+            }
+        }
+    }
+
+    /** Send a message of a specific type, such as an assignment amendment. */
+    private fun steer(text: String, messageType: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        val runId = _state.value.room?.run?.runId ?: return
+        viewModelScope.launch {
+            runCatching {
+                runtime.steer(runId = runId, text = trimmed, messageType = messageType)
+            }.onSuccess { sent ->
+                _state.update {
+                    it.copy(
+                        draft = "",
+                        controlError = if (!sent) "That instruction was not recorded." else null,
+                    )
+                }
+                refresh()
+            }.onFailure { e ->
+                _state.update { it.copy(controlError = e.message ?: "Could not send that instruction.") }
+            }
+        }
+    }
+
+    /**
+     * Stop the run, and say plainly what stopping means.
+     *
+     * THE HOST CANCELLATION IS THE CAPABILITY. There is no separate cancel flag to keep in step: the
+     * job on [AgentRunHost] is cancelled, the runtime's cancellation handler marks the run CANCELLED
+     * and releases the lease, and the record says a person stopped it.
+     */
+    private fun stopRun() {
+        val runId = _state.value.room?.run?.runId ?: return
+        runHost.cancel(runId)
+        refresh()
+    }
+
+    /**
+     * Decide an approval.
+     *
+     * THE BROKER ENFORCES ONE DECISION. A second tap finds the row already decided and changes
+     * nothing, which is why this does not need its own guard.
+     */
+    private fun decide(approvalId: String, approved: Boolean) {
+        viewModelScope.launch {
+            runCatching {
+                broker.decideAndDescribe(
+                    approvalId = approvalId,
+                    approved = approved,
+                    decidedBy = com.unuslumen.app.domain.agents.AgentMessageAuthors.USER,
+                )
+            }.onSuccess {
+                refresh()
+            }.onFailure { e ->
+                _state.update { it.copy(controlError = e.message ?: "Could not record that decision.") }
+            }
+        }
+    }
+
+    override fun onCleared() {
+        // THE RUN IS NOT TOUCHED. Leaving the room is not stopping the work; that is the whole
+        // point of the run living on the host rather than in this view model's scope.
+        poll?.cancel()
+        super.onCleared()
+    }
+
+    private companion object {
+        const val POLL_INTERVAL_MS = 2_000L
+    }
+}

@@ -330,8 +330,47 @@ class AgentInteractionBroker(
         return approvalDao.approval(approvalId)
     }
 
-    /** What is waiting on a person. Oldest first, so the oldest is answered first. */
-    suspend fun pendingApprovals(): List<AgentApprovalEntity> = approvalDao.pending()
+    /**
+     * Decide, returning the domain view.
+     *
+     * THE SAME DECISION, TWO SHAPES. The entity-returning [decide] is what the tests assert the
+     * stored decision on; this is what a UI module calls, because a screen must not need the
+     * database module to render a button. The decision logic is not duplicated: this delegates.
+     */
+    suspend fun decideAndDescribe(
+        approvalId: String,
+        approved: Boolean,
+        decidedBy: String,
+        note: String? = null,
+    ): com.unuslumen.app.domain.agents.ApprovalView? =
+        decide(approvalId, approved, decidedBy, note)?.toApprovalView()
+
+    /**
+     * What is waiting on a person. Oldest first, so the oldest is answered first.
+     *
+     * RETURNS THE DOMAIN VIEW, NOT THE ENTITY. A UI module must be able to ask this question without
+     * depending on the database module, and an entity leaking through a public signature is how a
+     * screen ends up importing Room to render a button.
+     */
+    suspend fun pendingApprovals(): List<com.unuslumen.app.domain.agents.ApprovalView> =
+        approvalDao.pending().map { it.toApprovalView() }
+
+    /** Everything one run has asked for, as the domain view. */
+    suspend fun approvalViewsFor(runId: String): List<com.unuslumen.app.domain.agents.ApprovalView> =
+        approvalDao.forRun(runId).map { it.toApprovalView() }
+
+    private fun AgentApprovalEntity.toApprovalView() =
+        com.unuslumen.app.domain.agents.ApprovalView(
+            approvalId = approvalId,
+            action = action,
+            what = what,
+            why = why,
+            affected = affected,
+            reversible = reversible,
+            consequences = consequences,
+            requestedPermission = requestedPermission,
+            requestedAt = requestedAt,
+        )
 
     /** Everything one run has asked for. */
     suspend fun approvalsFor(runId: String): List<AgentApprovalEntity> = approvalDao.forRun(runId)

@@ -670,10 +670,10 @@ class AgentRuntime(
         text: String,
         messageType: String = com.unuslumen.app.database.entity.AgentMessageEntity.MESSAGE_TYPE_INSTRUCTION,
         authorType: String = com.unuslumen.app.database.entity.AgentMessageEntity.AUTHOR_USER,
-    ): com.unuslumen.app.database.entity.AgentMessageEntity? {
-        if (text.isBlank()) return null
+    ): Boolean {
+        if (text.isBlank()) return false
         val session = sessions[runId]
-        return broker.send(
+        val sent = broker.send(
             runId,
             AgentInteractionBroker.Outgoing(
                 authorType = authorType,
@@ -683,6 +683,9 @@ class AgentRuntime(
                 content = text.trim(),
             ),
         )
+        // A BOOLEAN, NOT THE ROW. A caller needs to know the message was accepted; handing back an
+        // entity would drag the database type across every module boundary that can reach this.
+        return sent != null
     }
 
     /**

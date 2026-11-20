@@ -23,6 +23,20 @@ import org.koin.dsl.module
  * things across a Gradle boundary, which is where it went wrong twice.
  */
 val agentsModule = module {
+    /*
+     * THE ROOM'S VIEW MODEL TAKES ITS AGENT ID FROM THE CALLER, because a room is always about one
+     * named agent. A factory with a parameter is what Koin needs for that, and it keeps the id a
+     * value rather than something the view model reaches for.
+     */
+    viewModel { params ->
+        AgentRoomViewModel(
+            agentId = params.get(),
+            assembler = get(),
+            broker = get(),
+            runtime = get(),
+            runHost = get(),
+        )
+    }
     viewModel {
         AgentsViewModel(
             agentRepository = get<GuruAgentRepository>(),
