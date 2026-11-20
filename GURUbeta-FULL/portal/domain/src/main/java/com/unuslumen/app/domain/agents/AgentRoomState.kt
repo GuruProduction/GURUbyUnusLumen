@@ -128,6 +128,16 @@ data class RunView(
     val contextSupplied: Int,
     val contextOffered: Int,
 
+    /**
+     * The sources themselves, so a reader can see what informed the work rather than only how many.
+     *
+     * SECTION 9.14 ASKS FOR THE SOURCES, NOT A COUNT. Two numbers say that eight things were found
+     * and two were used; they do not say which two, and the whole point of provenance is answering
+     * "why did it say that". Each entry carries what it was, whether it was in scope, and whether it
+     * actually reached the model.
+     */
+    val contextSources: List<ContextSourceView>,
+
     /** What it produced. */
     val artefacts: List<ArtefactView>,
 
@@ -313,6 +323,29 @@ data class DecisionView(
     val hasDetail: Boolean
         get() = problem.isNotBlank() || approach.isNotBlank() || alternatives.isNotEmpty() ||
             evidence.isNotBlank() || uncertainty.isNotBlank() || next.isNotBlank()
+}
+
+/**
+ * One source a run considered, and whether it reached the model.
+ *
+ * THE TWO FLAGS ARE THE WHOLE POINT. [withinScope] says whether the retrieval was allowed to use it,
+ * and [suppliedToModel] says whether it reached the prompt. A source that was in scope and never
+ * supplied is the interesting case, because it explains a thin answer without blaming the model: the
+ * information was there and the window had no room for it.
+ */
+data class ContextSourceView(
+    val sourceKind: String,
+    val sourceLabel: String,
+    val retrievalQuery: String,
+    val withinScope: Boolean,
+    val scopeLabel: String,
+    val suppliedToModel: Boolean,
+    val excerpt: String,
+    val rankInLane: Int,
+) {
+    /** A name a person can read, falling back to the kind when the retrieval named nothing. */
+    val displayName: String
+        get() = sourceLabel.ifBlank { sourceKind.lowercase().replace('_', ' ') }
 }
 
 /** One output, with where it lives. */

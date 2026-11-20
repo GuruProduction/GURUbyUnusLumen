@@ -635,6 +635,7 @@ private fun DecisionCard(decision: com.unuslumen.app.domain.agents.DecisionView)
 
 private fun androidx.compose.foundation.lazy.LazyListScope.context(room: AgentRoomState) {
     val run = room.run
+
     item("context") {
         Panel(
             title = "CONTEXT",
@@ -649,6 +650,74 @@ private fun androidx.compose.foundation.lazy.LazyListScope.context(room: AgentRo
                         "answer can be explained rather than guessed at."
             },
         )
+    }
+
+    /*
+     * THE SOURCES THEMSELVES, WHICH IS WHAT SECTION 9.14 ASKS FOR.
+     *
+     * A pair of numbers answers "how much" and not "what", and the whole point of provenance is
+     * answering why an agent said what it said. Each row says what the source was, whether it was
+     * allowed to be used, and whether it actually reached the model, because a source that was in
+     * scope and never supplied is the interesting case: the information was there and the window had
+     * no room.
+     */
+    val sources = run?.contextSources.orEmpty()
+    if (sources.isNotEmpty()) {
+        item("context-head") {
+            Text(
+                "WHAT IT WAS GIVEN",
+                style = captionStyle(9.5f, Memphis.Ink.copy(alpha = 0.7f)),
+                modifier = Modifier.padding(top = 14.dp, bottom = 4.dp),
+            )
+        }
+        items(sources, key = { "${it.sourceKind}:${it.rankInLane}:${it.displayName}" }) { source ->
+            MemphisSurface(
+                modifier = Modifier.fillMaxWidth().padding(top = 7.dp),
+                color = Memphis.Paper,
+                borderWidth = 2.5.dp,
+                shadowOffset = 4.dp,
+            ) {
+                Column(Modifier.fillMaxWidth().padding(11.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            source.displayName.uppercase(),
+                            style = posterStyle(11f),
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Badge(
+                            if (source.suppliedToModel) "USED" else "NOT USED",
+                            if (source.suppliedToModel) Memphis.Teal else Memphis.Ink.copy(alpha = 0.4f),
+                        )
+                    }
+                    Text(
+                        buildString {
+                            append(source.sourceKind.lowercase().replace('_', ' '))
+                            if (!source.withinScope) {
+                                append(" · outside ")
+                                append(source.scopeLabel.ifBlank { "its scope" })
+                            }
+                            if (source.retrievalQuery.isNotBlank()) {
+                                append(" · for ")
+                                append(source.retrievalQuery.take(60))
+                            }
+                        },
+                        style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.55f)),
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                    if (source.excerpt.isNotBlank()) {
+                        Text(
+                            source.excerpt,
+                            style = captionStyle(9f, Memphis.Ink),
+                            modifier = Modifier.padding(top = 5.dp),
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 

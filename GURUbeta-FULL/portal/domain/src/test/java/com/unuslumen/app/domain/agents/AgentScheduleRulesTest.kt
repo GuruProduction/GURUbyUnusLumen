@@ -119,6 +119,7 @@ class AgentScheduleRulesTest {
             decisions = emptyList(),
             contextSupplied = 0,
             contextOffered = 0,
+            contextSources = emptyList(),
             artefacts = emptyList(),
             pendingApprovals = emptyList(),
             effectiveConfigSummary = "",

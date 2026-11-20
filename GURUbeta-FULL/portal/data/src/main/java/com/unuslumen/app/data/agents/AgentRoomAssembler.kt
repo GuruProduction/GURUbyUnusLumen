@@ -13,6 +13,7 @@ import com.unuslumen.app.database.entity.AgentRunEventEntity
 import com.unuslumen.app.domain.agents.AgentRoomState
 import com.unuslumen.app.domain.agents.ApprovalView
 import com.unuslumen.app.domain.agents.ArtefactView
+import com.unuslumen.app.domain.agents.ContextSourceView
 import com.unuslumen.app.domain.agents.DecisionView
 import com.unuslumen.app.domain.agents.PlanStepView
 import com.unuslumen.app.domain.agents.PlanView
@@ -108,6 +109,14 @@ class AgentRoomAssembler(
             .filter { it.state == com.unuslumen.app.database.entity.AgentApprovalEntity.STATE_PENDING }
 
         val effective = readObject(run.effectiveConfigSnapshotJson)
+        /*
+         * READ ONCE, AND THE COUNTS DERIVE FROM IT.
+         *
+         * `contextCounts` used to load every reference and discard all but two numbers. The rows are
+         * the answer to section 9.14's question, so they are carried, and the counts come from the
+         * same list so they cannot disagree with the sources beside them.
+         */
+        val contextSources = contextSourcesFor(run.runId)
 
         return RunView(
             runId = run.runId,
@@ -123,8 +132,9 @@ class AgentRoomAssembler(
             messages = messages.map { it.toView(run.agentName) },
             reasoning = reasoningFrom(events, effective, run.reasoningCaptureEnabledAtStart),
             decisions = decisionsFrom(events),
-            contextSupplied = contextCounts(run.runId).first,
-            contextOffered = contextCounts(run.runId).second,
+            contextSupplied = contextSources.count { it.suppliedToModel },
+            contextOffered = contextSources.size,
+            contextSources = contextSources,
             artefacts = artefacts.map {
                 ArtefactView(
                     artefactId = it.artefactId,
@@ -400,17 +410,43 @@ class AgentRoomAssembler(
     }
 
     /**
-     * How many context references the run had, and how many of those reached the model.
+     * Every source the run considered, in the retrieval's own rank order.
      *
-     * READ FROM THE TABLE THAT RECORDS IT, not from the event stream. The event carries the fact
-     * that a retrieval happened; the reference rows carry which sources and whether each was
-     * supplied, which is the pair of numbers the room shows.
+     * READ FROM THE TABLE THAT RECORDS IT, not from the event stream. The event carries the fact that
+     * a retrieval happened; the reference rows carry which sources, whether each was in scope and
+     * whether each reached the model, which is what section 9.14 asks for and what the counts beside
+     * them derive from.
+     *
+     * ORDERED BY THE RETRIEVAL'S RANK so the list reads as the search returned it rather than as the
+     * rows happened to be written.
      */
-    private suspend fun contextCounts(runId: String): Pair<Int, Int> = runCatching {
-        val all = contextDao.forRun(runId)
-        val supplied = all.count { it.suppliedToModel }
-        supplied to all.size
-    }.getOrDefault(0 to 0)
+    private suspend fun contextSourcesFor(runId: String): List<ContextSourceView> {
+        /*
+         * A TRY RATHER THAN runCatching. A suspend call inside runCatching's inline lambda is the
+         * construct this toolchain misreports, the same way a local function inside a loop body was
+         * misreported before: the build fails with a receiver-type mismatch on a generated Koin
+         * extension two files away, which sends you looking at Koin and clean caches. The behaviour
+         * here is identical and the compiler is happy with it.
+         */
+        return try {
+            contextDao.forRun(runId)
+                .sortedBy { it.rankInLane }
+                .map { row ->
+                    ContextSourceView(
+                        sourceKind = row.sourceKind,
+                        sourceLabel = row.sourceLabel,
+                        retrievalQuery = row.retrievalQuery,
+                        withinScope = row.withinScope,
+                        scopeLabel = row.scopeLabel,
+                        suppliedToModel = row.suppliedToModel,
+                        excerpt = row.excerpt,
+                        rankInLane = row.rankInLane,
+                    )
+                }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
 
     private fun AgentMessageEntity.toView(agentName: String): MessageView = MessageView(
         messageId = messageId,
