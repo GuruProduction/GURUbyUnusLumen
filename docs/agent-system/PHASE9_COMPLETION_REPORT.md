@@ -9,18 +9,20 @@ pretends otherwise.
 
 ## 1. Outcome
 
-**Partially complete.** Every phase is real and tested. Three capabilities the specification requires
-are still absent, and nothing in the programme has been device-proven. Both categories are listed in
-section 7 rather than softened, because a completion claim that rounds up is the one failure this
-whole programme exists to avoid.
+**Partially complete.** Every phase is real and tested, and every capability the specification names
+by class is now built. One qualification remains and one gap remains, both named in section 7 rather
+than softened: nothing in the programme has been device-proven, and an agent still does not write
+memory from inside its own run.
 
 What is complete: the durable run and event foundation, agent definitions with configuration and
 versioned history, the three-way conversation, artefacts and context provenance, agent memory on the
-real brain with enforced scope, delegation with enforced authority, the Agent Room dashboard, and the
-update trust check.
+real brain with enforced scope, delegation with enforced authority, the Agent Room dashboard, the
+update trust check, plan revisions carrying the specification's own fields, structured decision
+records kept apart from raw reasoning, pause and resume as real runtime states, and scheduled
+execution gated on the agent's autonomy flag.
 
-What is not: no plan events are emitted, approval requirements are recorded but not yet consulted
-before a consequential action, and scheduled execution is not built.
+What is not: an agent does not yet write memory mid-run, and no instrumented migration or device run
+has executed on an emulator this session.
 
 ---
 
@@ -34,8 +36,8 @@ before a consequential action, and scheduled execution is not built.
 | 4 Runtime instrumentation | Complete | `8fcfb6d`, `45dbc14`, `53d4152`, `f12ef61`, `2ce9be0`; `PHASE4_VERIFICATION.md` |
 | 5 Communication and control | Complete | `3b7b07d`; migration 37→38; `AgentInteractionBrokerTest` (20) |
 | 6 Context, memory and artefacts | Complete | `3b7b07d`; migration 38→39; `AgentArtefactServiceTest` (13), `AgentMemoryServiceTest` (12) |
-| 7 Agent Room | Complete for its areas | `8fe1587`; `AgentRoomAssemblerTest` (21). The plan area is empty because nothing emits plan steps |
-| 8 Advanced autonomy and ecosystem | **Partial** | `16c7fb7`; `AgentDelegationPolicyTest` (19), `AgentUpdateReviewTest` (13), `AgentDelegationWiringTest` (5). Scheduled execution not built |
+| 7 Agent Room | Complete | `8fe1587`; `AgentRoomAssemblerTest` (21), `AgentPlanRecordTest` (10), `AgentDecisionRecordTest` (12), `AgentPlanStructureTest` (6). Plans, decisions and the pause controls are drawn from recorded facts |
+| 8 Advanced autonomy and ecosystem | Complete | `16c7fb7`, `1e5be9a`; `AgentDelegationPolicyTest` (19), `AgentUpdateReviewTest` (13), `AgentDelegationWiringTest` (5), `AgentScheduleRulesTest` (7) |
 | 9 Integration and verification | This document | Section 5 |
 
 ---
@@ -80,11 +82,35 @@ agent cannot delegate to itself.
 the tool set grew rather than on the version number, so a "downgrade" carrying a new permission still
 asks.
 
+**Plan structure.** `createPlan` now takes the specification's fields: an objective, step
+dependencies, expected outputs, verification requirements and the tools the plan expects. Each is
+optional and a field the agent did not supply is absent from the ledger rather than blank, so "not
+stated" and "empty" cannot render the same. The note the model reads back carries the same fields
+under their own headings, and step updates find step lines by their shape rather than by position so
+a header can never be overwritten by a tick.
+
+**Decision records.** `recordDecision` lets an agent record what it decided and why, with the problem
+as it understood it, the approach, the alternatives, the evidence, the remaining uncertainty and the
+next step. It is an appended event, read from its own event type, and the room draws it above raw
+reasoning with the two labelled as different kinds of information. It exists on every model, where
+reasoning exists only where a provider emits a channel.
+
+**Pause and resume.** A run can be stopped at its next round boundary with its working state kept,
+and carried on later under the same id. The pause is cooperative because interrupting a model call
+or a tool dispatch would leave an action with an unknown outcome. The budget travels inside the
+checkpoint, so a resumed run keeps the terms it agreed to, and the wall clock restarts at the resume
+because a run that sat paused was not working.
+
+**Scheduled execution.** A schedule names an agent, a job and a next due time. It starts an ordinary
+run through the ordinary runtime, gated on `operateOnSchedules` in code rather than in a prompt.
+Advance is conditional on the due time the caller saw, so one window cannot be taken twice. A window
+missed by more than fifteen minutes is counted with its reason rather than run late.
+
 ---
 
 ## 4. Database
 
-Four migrations, all additive, all verified against real representative data.
+Five migrations, all additive, each validated against the exported schema for its version.
 
 | Migration | Tables added | Columns added | Data touched |
 | --- | --- | --- | --- |
@@ -92,8 +118,9 @@ Four migrations, all additive, all verified against real representative data.
 | 36→37 | `agent_definition_versions` | 11 on `guru_agents` | none |
 | 37→38 | `agent_messages`, `agent_approvals` | none | none |
 | 38→39 | `agent_artefacts`, `agent_context_references` | none | none |
+| 39→40 | `agent_schedules` | none | none |
 
-Schema goes from 35 to 39, 57 tables. No row is read, rewritten or dropped by any of them. Every new
+Schema goes from 35 to 40, 58 tables. No row is read, rewritten or dropped by any of them. Every new
 table hangs off `agent_runs` with ON DELETE CASCADE, so deleting a conversation still takes the whole
 record.
 
@@ -124,16 +151,17 @@ Counted from the JUnit XML, not the console summary:
 
 | Module | Classes | Tests | Failures | Errors | Skipped |
 | --- | --- | --- | --- | --- | --- |
-| `:portal:domain` | 24 | 280 | 0 | 0 | 0 |
-| `:portal:data` | 124 | 1,349 | 0 | 0 | 0 |
+| `:portal:domain` | 27 | 315 | 0 | 0 | 0 |
+| `:portal:data` | 129 | 1,395 | 0 | 0 | 0 |
 | `:core:database` | 3 | 29 | 0 | 0 | 0 |
-| `:agents` | 1 | 1 | 0 | 0 | 0 |
-| **Total** | **152** | **1,659** | **0** | **0** | **0** |
+| **Total** | **159** | **1,739** | **0** | **0** | **0** |
 
-A note on how that number is obtained, because it has bitten twice. A `--tests` filter set on one
+Two notes on how those numbers are obtained, because both have bitten. A `--tests` filter set on one
 invocation persists into the next, so a later run can report a handful of tests instead of the full
-set while still exiting zero. Every count above comes from a forced `--rerun-tasks --no-build-cache`
-run with no filter, read from the JUnit XML rather than the console summary.
+set while still exiting zero; every count above comes from a run with no filter, read from the JUnit
+XML. And `--rerun-tasks` combined with `--no-build-cache` in this project can invalidate the KSP
+library jar while the KSP task is still reading it, which fails the build with a `FileNotFoundException`
+for a generated Koin class. The counts above come from clean incremental runs after a full compile.
 
 The app module compiles. Nothing in this programme has run on a handset or an emulator: every claim
 is a JVM or Robolectric test plus a compile.
@@ -169,44 +197,29 @@ the brain returns, not in a prompt.
 
 ## 7. What is not built, and why
 
-**Agents have a memory lane, and it is called at spawn.** `AgentMemoryService` reads and writes the
-real Cerebrum brain through `BrainService`, enforces the agent's `AgentMemoryScope` in code rather
-than in a prompt, records each retrieval as a context reference, and attributes every write to the
-agent that made it. `AgentRuntime.spawn` now fetches what the agent already knows and puts it in the
-prompt before the first model call.
+**An agent still does not write memory mid-run.** `AgentMemoryService` reads and writes the real
+Cerebrum brain through `BrainService` and enforces the agent's memory scope in code, and
+`AgentRuntime.spawn` puts what the agent already knows into the prompt before the first model call.
+What nothing does is decide, during a run, that a fact is worth recording. That is a policy question
+rather than a wiring one: a loop that wrote every observation would fill the brain with noise, and the
+decision about what deserves keeping is not one to make on the agent's behalf.
 
-What is not done there is narrower: an agent does not yet *write* memory from inside a run. A run
-reads its own memory and shared memory as permitted, and nothing in the loop chooses to record a fact.
-That is the next increment, and unlike the earlier state it is a policy question (when should an agent
-decide something is worth remembering) rather than a wiring one.
-
-**A plan is recorded, and only where the agent writes one.** `PLAN_REVISED` is emitted when the agent
-calls `createPlan` or `updatePlanStep`, numbered per run, and the room shows the newest revision. The
-history of every revision stays in the ledger, which is the only place it can live because the tools
-themselves overwrite their note.
-
-What is still absent there is a plan the agent forms without calling a tool. An agent that plans in
-prose produces no revision, and the room correctly shows none. A structured plan record for an agent
-that never invokes the planning tools would have to be parsed out of its reasoning, which would be
-inventing intent rather than recording it.
-
-**No scheduled execution.** `AgentAutonomy.operateOnSchedules` is declared and nothing schedules an
-agent. The existing heartbeat fires prompts and cannot start an agent run.
-
-**Pause and resume have no runtime path**, so the room does not draw them.
-
-**Decisions are not a recorded type.** Reasoning is captured where the provider supplies it; a
-structured decision record does not exist, so the reasoning tab shows reasoning and cannot show a
-decision log.
+**Two capabilities the specification names that no tool produces a record for.** An agent that plans
+in prose rather than calling `createPlan` produces no plan revision, and the room correctly shows
+none, because parsing a plan out of reasoning would be inventing intent. The same applies to a
+decision an agent only thinks rather than records: the record exists when it is written, and the room
+does not manufacture one.
 
 ---
 
 ## 8. Git
 
-Branch `lux/phase4-runtime-instrumentation`, seven commits ahead of `origin/main`, pushed.
+Branch `lux/phase4-runtime-instrumentation`, ahead of `origin/main`.
 
 `f0ee407` configuration and history, `3b7b07d` conversation and provenance, `8fe1587` the Agent
-Room, `16c7fb7` delegation and update trust, with the four Phase 4 commits beneath them.
+Room, `16c7fb7` delegation and update trust, `de932ed` the approval gate and plan record, `9010c5d`
+pause and resume, `120f732` decision records, `7274120` plan structure, `1e5be9a` scheduled
+execution, with the four Phase 4 commits beneath them.
 
 Nothing is merged to main and no release is cut, by standing order: nothing publishes until the whole
 programme is finished in full, and it is not.
@@ -220,9 +233,13 @@ recorded with their permission decisions, a person can talk to a working agent, 
 shown to have done what it claims. The Agent Room is a dashboard over that, not a chat screen with
 cards.
 
-Two capabilities remain: scheduled execution, and a structured plan for an agent that never calls the
-planning tools. Both are named here rather than represented by a placeholder that looks finished,
-because a stub that renders is the one artefact this programme was built to prevent.
+Every capability the specification names by class now exists and is exercised by a test. What remains
+is narrow and is stated: an agent does not yet decide to remember something mid-run, a plan or a
+decision it forms in prose without calling the tool leaves no record, and no migration or runtime
+path in this programme has been executed on a device this session. Those are named rather than
+represented by placeholders, because a stub that renders is the one artefact this programme was built
+to prevent.
 
-Pause and resume remain absent because the runtime has no path for them, so the room does not draw
-the controls rather than drawing dead ones.
+The controls the room draws are the ones the runtime honours. Pause is offered only for a run that is
+executing, resume only for one that stopped with its state kept, and neither appears where it would do
+nothing.
