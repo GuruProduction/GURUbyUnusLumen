@@ -3147,19 +3147,36 @@ class AgentRuntime(
         fun put(key: String, value: Boolean) { map[key] = value }
     }
 
-    /** The definition as values, not a reference, so a later edit cannot rewrite history. */
-    private fun definitionSnapshot(agent: GuruAgent): String = jsonObject {
-        put("schemaVersion", 1)
-        put("id", agent.id)
-        put("slug", agent.slug)
-        put("name", agent.name)
-        put("description", agent.description)
-        put("version", agent.version)
-        put("systemPrompt", agent.systemPrompt)
-        put("toolPermissions", agent.toolPermissions.joinToString(","))
-        put("source", agent.source)
-        put("enabled", agent.enabled)
-    }
+    /**
+     * The definition as values, not a reference, so a later edit cannot rewrite history.
+     *
+     * SECTION 10.3 LISTS WHAT A RUN'S SNAPSHOT MUST CARRY, and the first version of this hand-rolled
+     * eleven fields of it into JSON. The gaps were the ones that decide what a run could actually do:
+     * the scopes it read memory and context under, the autonomy it was granted, the budgets it could
+     * spend, the visibility it was configured with, and the local restriction on its tools. Those are
+     * exactly the facts that explain an old run, and re-deriving them from the agent's current row
+     * would describe today rather than that run.
+     *
+     * SO IT SERIALISES THE TYPED SNAPSHOT RATHER THAN WRITING JSON BY HAND. `AgentDefinitionSnapshot`
+     * already carries every one of those fields with its own schema version, and it is the same type
+     * the definition history is encoded from, so the two describe a definition in identical terms. A
+     * hand-written document is a second shape that drifts from the type the moment either gains a
+     * field, and the drift shows up as a snapshot silently missing the fact somebody needed.
+     */
+    private fun definitionSnapshot(agent: GuruAgent): String =
+        definitionSnapshotJson.encodeToString(
+            com.unuslumen.app.domain.model.AgentDefinitionSnapshot.serializer(),
+            agent.definitionSnapshot(),
+        )
+
+    /**
+     * The encoder for a definition snapshot.
+     *
+     * `encodeDefaults = true` BECAUSE A DEFAULT VALUE IS STILL A FACT. Without it a transparent
+     * agent's snapshot would omit every visibility rule and a reader could not tell "fully
+     * transparent" from "this build did not record visibility", which are opposite claims.
+     */
+    private val definitionSnapshotJson = Json { encodeDefaults = true }
 
     /**
      * The working state, as the checkpoint stores it.
