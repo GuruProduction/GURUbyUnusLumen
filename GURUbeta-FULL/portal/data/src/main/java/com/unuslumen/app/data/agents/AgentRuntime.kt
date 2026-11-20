@@ -2301,6 +2301,29 @@ class AgentRuntime(
                                 // STARTED BEFORE THE TOOL RUNS. This row is the only proof
                                 // an attempt was made, and it is why a resumed run refuses
                                 // to repeat a call whose result never landed.
+                                /*
+                                 * A CREDENTIAL IS NOT KEPT IN THE RECORD.
+                                 *
+                                 * The repaired arguments are what the tool receives and must be
+                                 * recorded, but a password in the ledger is a password in every
+                                 * backup and every room anybody opens. Section 13.7 asks for secrets
+                                 * to be redacted from ordinary views, and the ledger is the most
+                                 * ordinary view there is. The rule decides by field name and by
+                                 * tool, never by inspecting a value, and a withheld field keeps its
+                                 * name so the shape of the call is still evidence.
+                                 */
+                                val redaction = com.unuslumen.app.domain.agents.AgentArgumentRedaction.evaluate(
+                                    toolName = prepared.invocation.resolvedName,
+                                    argumentNames = runCatching {
+                                        val obj = json.parseToJsonElement(
+                                            prepared.invocation.repairedArgs.toString()
+                                        ) as? JsonObject
+                                        obj?.keys.orEmpty()
+                                    }.getOrDefault(emptyList()),
+                                )
+                                val recordedArguments = com.unuslumen.app.domain.agents.AgentArgumentRedaction
+                                    .redactArguments(prepared.invocation.repairedArgs.toString(), redaction)
+
                                 ledger.append(
                                     session.id,
                                     AgentRunLedger.EventDraft(
@@ -2313,7 +2336,16 @@ class AgentRuntime(
                                             // THE REPAIRED ARGUMENTS, not the model's. These
                                             // are what the tool receives, and a record of
                                             // anything else describes a call that did not run.
-                                            put("arguments", prepared.invocation.repairedArgs.toString())
+                                            put("arguments", recordedArguments)
+                                            /*
+                                             * WHAT WAS WITHHELD, NAMED RATHER THAN SILENT. A record
+                                             * that simply omits a field is indistinguishable from a
+                                             * call that never carried it, so the reason is stored
+                                             * beside the arguments it applies to.
+                                             */
+                                            if (redaction.hasWithheld) {
+                                                put("redacted", redaction.reason)
+                                            }
                                             put("proposedArguments", call.content)
                                         },
                                     )
