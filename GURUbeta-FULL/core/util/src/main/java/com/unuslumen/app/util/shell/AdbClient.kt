@@ -62,9 +62,20 @@ class AdbClient(
         private const val AUTH_TOKEN = 1
         private const val AUTH_SIGNATURE = 2
         private const val AUTH_RSAPUBLICKEY = 3
-        // Socket read timeout during auth handshake (15s).
-        // Prevents hanging indefinitely if the ADB daemon becomes unresponsive mid-handshake.
-        private const val AUTH_READ_TIMEOUT_MS = 0  // No timeout - AGI doesn't have timeouts
+        /**
+         * How long the auth handshake waits for the device to answer.
+         *
+         * FIFTEEN SECONDS, AS THE COMMENT ABOVE ALWAYS SAID. The value had been set to zero with
+         * "AGI doesn't have timeouts" beside it, which is the right posture for a model call and
+         * the wrong one here. An unpaired device answers the public key by raising a dialog, and
+         * waits for a person to tap Allow. With no read timeout the socket waited for ever: the
+         * tool call never returned, the reply that was waiting on it never arrived, and the main
+         * chat looked like it could not call tools at all while it was really blocked on a prompt.
+         *
+         * A handshake is not thinking. Fifteen seconds is far longer than a healthy daemon takes
+         * and short enough that an unanswered dialog becomes a refusal a person can act on.
+         */
+        private const val AUTH_READ_TIMEOUT_MS = 15_000
 
         private var _isConnected = false
         val isConnected: Boolean get() = _isConnected

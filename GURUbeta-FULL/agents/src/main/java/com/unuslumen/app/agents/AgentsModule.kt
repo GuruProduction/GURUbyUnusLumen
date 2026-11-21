@@ -38,6 +38,14 @@ val agentsModule = module {
             // The one write the room owns: what it shows. Everything else about an agent is the
             // creator's, and a narrow binding is how that stays true.
             agents = get<GuruAgentRepository>(),
+            /*
+             * A RUN NEEDS A CONVERSATION, AND A ROOM HAS NONE UNTIL IT MAKES ONE.
+             *
+             * The foreign key on `agent_runs.conversation_id` is real, so starting an agent from
+             * this screen means creating the conversation it will belong to. Without this the room
+             * could only ever display runs somebody else had started.
+             */
+            conversations = get(),
         )
     }
     viewModel {

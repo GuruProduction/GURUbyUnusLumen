@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -31,6 +32,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.unit.dp
 import com.unuslumen.app.domain.agents.AgentRunStatuses
 import com.unuslumen.app.ui.theme.Memphis
+import com.unuslumen.app.ui.theme.MemphisSurface
 import com.unuslumen.app.ui.theme.captionStyle
 
 /**
@@ -104,11 +106,19 @@ fun AgentPortalGlow(
     if (node == null) return
 
     val ink = Memphis.inkFor(node.colourIndex)
-    // The pulse is the difference between "working" and "stopped", so a still run gets a still edge.
+    /*
+     * THE PULSE IS THE DIFFERENCE BETWEEN "WORKING" AND "STOPPED", and the ceiling is low on purpose.
+     *
+     * THE FIRST VERSION WAS A SOLID FRAME, AND THE REASON WAS ARITHMETIC. It drew four bands, each
+     * six per cent of the screen wide, at up to 85 per cent alpha, so what reached the glass was a
+     * flat opaque border in a saturated colour. That reads as a phone case, not as light. A bloom is
+     * many thin layers near the rim and nothing further in, at an alpha low enough that the layer
+     * count does the work rather than the opacity.
+     */
     val transition = rememberInfiniteTransition(label = "portalGlow")
     val bloom by transition.animateFloat(
-        initialValue = if (node.isExecuting) 0.30f else 0.55f,
-        targetValue = if (node.isExecuting) 0.85f else 0.55f,
+        initialValue = if (node.isExecuting) 0.10f else 0.22f,
+        targetValue = if (node.isExecuting) 0.34f else 0.22f,
         animationSpec = infiniteRepeatable(
             animation = tween(durationMillis = 1_600),
             repeatMode = RepeatMode.Reverse,
@@ -117,54 +127,64 @@ fun AgentPortalGlow(
     )
 
     /*
-     * THE EDGE, DRAWN AS FOUR BANDS RATHER THAN A BORDER. A uniform border reads as chrome around a
-     * panel; a bloom that is heaviest at the edges and fades inward reads as light coming from behind
-     * the screen, which is what an ambient presence is. It never intercepts a touch, because the
-     * Portal underneath is the person's conversation and must stay usable.
+     * THE EDGE, AS NESTED OUTLINES RATHER THAN FOUR FLAT BANDS.
+     *
+     * Each ring is a rectangle stroke one step further in, at an alpha that rises as it approaches
+     * the rim. Lines that get denser toward the edge accumulate into a smooth falloff, which is what
+     * the eye reads as light coming from behind the glass. Four rectangular gradients could never do
+     * that: their corners were the darkest point of the picture.
+     *
+     * It takes no touch anywhere, because the Portal underneath is the person's conversation and must
+     * stay usable while an agent works.
      */
-    androidx.compose.foundation.layout.Box(modifier.fillMaxSize()) {
+    Box(modifier.fillMaxSize()) {
         androidx.compose.foundation.Canvas(
-            Modifier
-                .fillMaxSize()
-                .alpha(bloom),
+            Modifier.fillMaxSize(),
         ) {
-            val band = size.minDimension * 0.06f
-            val colours = listOf(ink, ink.copy(alpha = 0f))
-            // Top and bottom fade inward.
-            drawRect(
-                brush = androidx.compose.ui.graphics.Brush.verticalGradient(colours),
-                size = androidx.compose.ui.geometry.Size(size.width, band),
-            )
-            drawRect(
-                brush = androidx.compose.ui.graphics.Brush.verticalGradient(colours.reversed()),
-                topLeft = androidx.compose.ui.geometry.Offset(0f, size.height - band),
-                size = androidx.compose.ui.geometry.Size(size.width, band),
-            )
-            // Left and right, the same treatment across.
-            drawRect(
-                brush = androidx.compose.ui.graphics.Brush.horizontalGradient(colours),
-                size = androidx.compose.ui.geometry.Size(band, size.height),
-            )
-            drawRect(
-                brush = androidx.compose.ui.graphics.Brush.horizontalGradient(colours.reversed()),
-                topLeft = androidx.compose.ui.geometry.Offset(size.width - band, 0f),
-                size = androidx.compose.ui.geometry.Size(band, size.height),
-            )
+            val rings = 14
+            val step = size.minDimension * 0.006f
+            for (index in 0 until rings) {
+                // 0 at the innermost ring, 1 at the rim, squared so most of the dark is in the outer
+                // few pixels and the middle stays clean.
+                val position = (rings - index).toFloat() / rings
+                val alpha = bloom * position * position
+                val inset = index * step
+                drawRect(
+                    color = ink.copy(alpha = alpha),
+                    topLeft = androidx.compose.ui.geometry.Offset(inset, inset),
+                    size = androidx.compose.ui.geometry.Size(
+                        size.width - inset * 2f,
+                        size.height - inset * 2f,
+                    ),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = step),
+                )
+            }
         }
 
         /*
-         * THE ONE TAP TARGET, AND IT SAYS NOTHING. A mark in the agent's ink, at the edge where the
-         * bloom is strongest, carrying no name and no state because the glow already carries both.
+         * THE ONE TAP TARGET, AND IT SAYS NOTHING.
+         *
+         * IT WAS 18dp AT 10dp FROM THE CORNER, WHICH PUT IT UNDER THE STATUS BAR ICONS. That is why it
+         * could not be tapped: the system's own clock, wifi and battery sat on top of it. It now
+         * clears the status bar, has a real 48dp touch area with a 26dp mark inside, and carries a
+         * border and a drop so it reads as something pressable rather than a stray dot.
          */
         Box(
-            Modifier
+            modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(10.dp)
-                .size(18.dp)
-                .background(ink)
-                .border(2.dp, Memphis.Ink)
-                .clickable { onOpen(node) },
-        )
+                .statusBarsPadding()
+                .padding(top = 10.dp, end = 10.dp)
+                .size(48.dp)
+                .clickable(onClick = { onOpen(node) }),
+            contentAlignment = Alignment.Center,
+        ) {
+            MemphisSurface(
+                modifier = Modifier.size(26.dp),
+                color = ink,
+                borderWidth = 2.5.dp,
+                shadowOffset = 3.dp,
+            ) {}
+        }
     }
 }
 

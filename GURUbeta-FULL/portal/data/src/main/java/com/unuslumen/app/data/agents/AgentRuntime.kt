@@ -248,6 +248,15 @@ class AgentRuntime(
          */
         const val RECORD_VERIFICATION = "recordVerification"
 
+        /**
+         * The verb an agent uses to register an output.
+         *
+         * PINNED BY A TEST against `ArtefactToolDefinitions.RECORD_OUTPUT`. The runtime does not
+         * intercept this one — the executor writes the artefact itself, because the artefact service
+         * only needs the run id, which the dispatch scope already carries.
+         */
+        const val RECORD_OUTPUT = "recordOutput"
+
         /** Shared so every component in this process reports the same lease owner. */
         @Volatile
         private var processLeaseOwner: String? = null
@@ -1870,6 +1879,46 @@ class AgentRuntime(
                         payload = jsonObject { put("requestId", requestId); put("text", textBuilder.toString()) },
                     )
                 )
+                /*
+                 * WHAT THE AGENT SAYS IS SAID TO SOMEBODY, NOT ONLY TO THE LEDGER.
+                 *
+                 * THE DEFECT THIS FIXES. An agent's words went to `MODEL_TEXT_COMPLETED` and nowhere
+                 * else unless it happened to finish or to call `reportToPerson`. So a person typed
+                 * into the chat, the loop read it at the next boundary, the model answered — and the
+                 * answer existed only as an event payload nobody opens. The chat showed one side of
+                 * a conversation that was actually happening, which reads exactly like the messages
+                 * not working.
+                 *
+                 * SO EVERY ROUND'S TEXT BECOMES A MESSAGE FROM THE AGENT. A round that ends in tool
+                 * calls is the agent saying what it is about to do, and that is worth reading for
+                 * the same reason its findings are; a round that ends in prose is its answer. The
+                 * message is recorded after the text is in the ledger, so the record is the durable
+                 * one and a failure to write the message cannot lose what it said.
+                 */
+                runCatching {
+                    broker.send(
+                        session.id,
+                        AgentInteractionBroker.Outgoing(
+                            authorType = com.unuslumen.app.database.entity.AgentMessageEntity.AUTHOR_AGENT,
+                            authorId = agent.id,
+                            recipientType = com.unuslumen.app.database.entity.AgentMessageEntity.RECIPIENT_USER,
+                            messageType = com.unuslumen.app.database.entity.AgentMessageEntity.MESSAGE_TYPE_FINDING,
+                            content = textBuilder.toString().take(MAX_REPORT_CHARS),
+                        ),
+                    )?.let { spoken ->
+                        /*
+                         * DELIVERED, BECAUSE THIS IS A REPLY AND NOT A QUEUED ORDER.
+                         *
+                         * The delivery states exist so a person can tell a message that has been
+                         * read from one that is still waiting. An agent's own words have already
+                         * arrived the instant they exist: there is no reader between it and the
+                         * screen. Marking them PROCESSED was wrong for a second reason too, since
+                         * that state records a message entering a model's context, and nobody feeds
+                         * the agent's reply back to it as a turn.
+                         */
+                        broker.markDelivered(spoken.messageId, session.id)
+                    }
+                }
             }
             if (reasoningBuilder.isNotEmpty()) {
                 ledger.append(
@@ -2062,6 +2111,15 @@ class AgentRuntime(
                             },
                         )
                     )
+                    /*
+                     * THE REPORT GOES ON THE ROW, IN THE SAME BREATH AS THE COMPLETION.
+                     *
+                     * The column existed and nothing wrote it, so every finished run in the room
+                     * showed an empty REPORT panel while its answer sat in the ledger. Writing it
+                     * here means a completed run always carries what it said, and a failure between
+                     * these two lines loses the summary rather than the whole record.
+                     */
+                    ledger.recordResultSummary(session.id, lastText.take(MAX_REPORT_CHARS))
                     ledger.appendStateChange(
                         session.id,
                         com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
@@ -2346,6 +2404,19 @@ class AgentRuntime(
                                             put("tool", prepared.resolvedName ?: toolName)
                                             put("reason", prepared.reason)
                                             put("kind", prepared.kind.name)
+                                            /*
+                                             * THE ARGUMENTS IT TRIED, SO THE REFUSAL NAMES THE CALL.
+                                             *
+                                             * A refusal event carried the tool and the reason and
+                                             * nothing else, so the card in the room showed a name
+                                             * and a permission denial with an empty ARGUMENTS block.
+                                             * A person reading "permission denied" and no
+                                             * arguments cannot tell what it was trying to do or
+                                             * which field to change, which makes the refusal
+                                             * unactionable. The model's own proposal is what it
+                                             * asked to run, so it is recorded verbatim.
+                                             */
+                                            put("arguments", call.content)
                                         },
                                     )
                                 )
@@ -2697,7 +2768,13 @@ class AgentRuntime(
         } else {
             null
         }
-        val universal = listOfNotNull(ask, report, verify, remember)
+        /*
+         * AND THE DOOR FOR ITS OUTPUTS. Every agent produces work, and an output that exists only
+         * inside a chat message has no identity and cannot be found again. This costs one tool
+         * description and is what makes the outputs tab capable of containing anything at all.
+         */
+        val recordOutput = toolRegistry.getDefinition(RECORD_OUTPUT)
+        val universal = listOfNotNull(ask, report, verify, remember, recordOutput)
         return universal + declared.filter { candidate -> universal.none { it.name == candidate.name } }
     }
 
@@ -2727,7 +2804,8 @@ class AgentRuntime(
         } else {
             null
         }
-        val universal = listOfNotNull(ask, report, verify, remember)
+        val recordOutput = toolRegistry.getDefinition(RECORD_OUTPUT)
+        val universal = listOfNotNull(ask, report, verify, remember, recordOutput)
         return universal + resolved.filter { candidate -> universal.none { it.name == candidate.name } }
     }
 
@@ -2918,6 +2996,16 @@ class AgentRuntime(
                         "turned out to be wrong and should not be repeated. Write one sentence that " +
                         "would still make sense next week, standing alone. Do not record the job you " +
                         "were given, and nothing that will be stale tomorrow."
+                )
+            }
+            if (allowed.any { it.name == RECORD_OUTPUT }) {
+                appendLine(
+                    "REGISTER WHAT YOU PRODUCE. recordOutput files an output against this run so " +
+                        "the person can find it in the outputs, with a title they would search for, " +
+                        "the kind of thing it is, and either the path you wrote it to or the body " +
+                        "when it is short. A finding that exists only in your report has no identity " +
+                        "and cannot be found again. Anything long goes to a file first, because an " +
+                        "oversized body is refused rather than cut short."
                 )
             }
             if (allowed.any { it.name == RECORD_VERIFICATION }) {

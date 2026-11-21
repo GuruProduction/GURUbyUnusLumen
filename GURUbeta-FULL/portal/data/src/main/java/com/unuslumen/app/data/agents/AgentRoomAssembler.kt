@@ -82,13 +82,27 @@ class AgentRoomAssembler(
         val active = runs.firstOrNull { it.status in AgentRoomState.ACTIVE_STATUSES }
         val finished = runs.filter { it.status in AgentRunEntity.TERMINAL_STATUSES }
 
+        /*
+         * WHEN NOTHING IS ACTIVE, THE NEWEST RUN IS STILL THE CONVERSATION.
+         *
+         * This used to show a run only while it was live, so the moment it finished the room went
+         * blank: the chat emptied, the composer disappeared, and the only way to say anything else
+         * was to start over. A person sent one message, got one answer, and the conversation was
+         * gone. That is not a chat, it is a one-shot form.
+         *
+         * A finished run keeps its whole transcript, so it is what the room shows when nothing is
+         * running. The status band says which state it is in, and sending from here starts the next
+         * run rather than pretending this one is alive.
+         */
+        val displayed = active ?: runs.firstOrNull()
+
         return AgentRoomState(
             agentId = agent.id,
             agentName = agent.name,
             agentSlug = agent.slug,
             agentDescription = agent.description,
             agentEnabled = agent.enabled,
-            run = active?.let { assembleRun(it, agent) },
+            run = displayed?.let { assembleRun(it, agent) },
             history = finished.map { summarise(it) },
             // A VISIBILITY CHANGE HIDES, IT NEVER DESTROYS. The room reads the rule and decides what
             // to draw; it never deletes what was captured.
@@ -99,8 +113,22 @@ class AgentRoomAssembler(
         )
     }
 
-    /** Assemble one run in full, from its row plus its own history. */
-    private suspend fun assembleRun(run: AgentRunEntity, agent: GuruAgent): RunView {
+    /**
+     * Assemble one run in full, from its row plus its own history.
+     *
+     * THE ROW IS RE-READ THROUGH THE LEDGER, AND THAT IS THE WHOLE FIX FOR A ROOM THAT DREW
+     * CIPHERTEXT. `runDao` returns the row as stored, and the assignment and the system prompt are
+     * sealed on disk. The first version of this passed that row straight to the view, so "the job"
+     * on the overview was `PD1:1:Dbs1m2JU…` — the seal, not the words. The ledger's own
+     * [AgentRunLedger.run] opens the two protected columns and returns a row a surface can draw, and
+     * this asks it for that rather than reaching past it.
+     *
+     * Falling back to the stored row keeps a run whose column cannot be opened readable rather than
+     * blank; the ledger writes an explicit `[unavailable: …]` marker for those, which says more than
+     * an empty panel.
+     */
+    private suspend fun assembleRun(runStored: AgentRunEntity, agent: GuruAgent): RunView {
+        val run = runCatching { ledger.run(runStored.runId) }.getOrNull() ?: runStored
         val events = runCatching { ledger.events(run.runId) }.getOrDefault(emptyList())
         val messages = runCatching { broker.conversation(run.runId) }.getOrDefault(emptyList())
         val artefacts = runCatching { artefactDao.forRun(run.runId) }.getOrDefault(emptyList())
@@ -120,6 +148,7 @@ class AgentRoomAssembler(
 
         return RunView(
             runId = run.runId,
+            conversationId = run.conversationId,
             assignment = run.assignment,
             status = run.status,
             startedAt = run.startedAt,

@@ -495,10 +495,20 @@ class AgentRoomAssemblerTest {
         )
 
         val room = assembler.assemble(agent.id)!!
-        // A failed run is not active, so it moves into history and the room shows idle.
-        assertNull("a dead run is not the live run", room.run)
+        /*
+         * A FINISHED RUN STAYS ON SCREEN, AND THAT IS A DELIBERATE CHANGE.
+         *
+         * This asserted that a dead run moved into history and left the room idle. That was the
+         * behaviour, and it was the defect: the chat emptied the instant the agent answered, so a
+         * person got one exchange and then a dead screen with nowhere to reply. The run is still
+         * listed as not active, and it is still present with its transcript, which is what makes
+         * the conversation survive its own answer.
+         */
+        assertNotNull("the finished run stays so its conversation can be read", room.run)
+        assertFalse("and it is not reported as active", room.isRunning)
+        assertEquals(AgentRunStatuses.FAILED, room.run?.status)
         assertTrue(
-            "and the failure is in the history rather than vanished",
+            "and it is also in the history",
             room.history.any { it.status == AgentRunStatuses.FAILED },
         )
     }

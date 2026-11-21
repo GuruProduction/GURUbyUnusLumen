@@ -84,6 +84,15 @@ data class AgentRoomState(
 /** One run, as the room shows it. Assembled from the run row and its ledger. */
 data class RunView(
     val runId: String,
+    /**
+     * The conversation this run belongs to.
+     *
+     * A RUN CANNOT EXIST WITHOUT ONE — the foreign key says so — so this is always present on a run
+     * that was read from disk. It is carried so a room can continue the same conversation when a
+     * person says something after the run has finished, instead of opening a new record per
+     * message.
+     */
+    val conversationId: String,
     val assignment: String,
     val status: String,
     val startedAt: Long?,

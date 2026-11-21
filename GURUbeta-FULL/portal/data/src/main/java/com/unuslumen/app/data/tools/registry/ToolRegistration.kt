@@ -171,6 +171,9 @@ object GeneratedToolRegistrations {
         // Keeping what it learned, so its next job starts from it. The scope decides whether the
         // write lands, and the executor reports that honestly rather than claiming a save.
         com.unuslumen.app.data.tools.MemoryWriteToolDefinitions,
+        // Registering an output. Without it the outputs tab could never contain anything, because a
+        // report written into a chat message is not an artefact and has no provenance.
+        com.unuslumen.app.data.tools.ArtefactToolDefinitions,
         ApprovalToolDefinitions,
         KeyboardToolDefinitions,
         CameraToolDefinitions,

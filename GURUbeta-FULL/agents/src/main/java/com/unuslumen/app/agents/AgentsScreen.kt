@@ -46,6 +46,7 @@ import androidx.navigation.NavHostController
 import com.unuslumen.app.domain.model.GuruAgent
 import com.unuslumen.app.domain.repository.GrantableTool
 import com.unuslumen.app.ui.components.common.guruAppBar
+import com.unuslumen.app.ui.navigation.Screen
 import com.unuslumen.app.ui.theme.Memphis
 import com.unuslumen.app.ui.theme.MemphisSurface
 import com.unuslumen.app.ui.theme.captionStyle
@@ -118,6 +119,17 @@ fun AgentsScreen(
                         viewModel.onEvent(AgentsEvent.ToggleEnabled(agent.id, enabled))
                     },
                     onOpen = { agent -> viewModel.onEvent(AgentsEvent.StartEdit(agent)) },
+                    /*
+                     * THE ROOM IS ITS OWN DOOR, BESIDE THE EDITOR.
+                     *
+                     * Tapping a row opened the editor, which edits the agent's definition. The
+                     * Agent Room, where its work and its conversation live, had a navigation route
+                     * and nothing that ever navigated to it, so the only surface a person could
+                     * reach from this list was the one that changes the agent rather than the one
+                     * that shows it working. That is why the chat was never reachable: not a broken
+                     * control, a missing door.
+                     */
+                    onOpenRoom = { agent -> navController.navigate(Screen.AgentRoomScreen(agent.id)) },
                     onNew = { viewModel.onEvent(AgentsEvent.StartCreate) },
                     onClearNotice = { viewModel.onEvent(AgentsEvent.ClearNotice) },
                 )
@@ -166,6 +178,7 @@ private fun AgentList(
     onShowIntro: () -> Unit,
     onToggle: (GuruAgent, Boolean) -> Unit,
     onOpen: (GuruAgent) -> Unit,
+    onOpenRoom: (GuruAgent) -> Unit,
     onNew: () -> Unit,
     onClearNotice: () -> Unit,
 ) {
@@ -220,6 +233,7 @@ private fun AgentList(
                     ink = Memphis.inkFor(index),
                     onToggle = { onToggle(agent, it) },
                     onOpen = { onOpen(agent) },
+                    onOpenRoom = { onOpenRoom(agent) },
                 )
             }
         }
@@ -253,6 +267,7 @@ private fun AgentRow(
     ink: Color,
     onToggle: (Boolean) -> Unit,
     onOpen: () -> Unit,
+    onOpenRoom: () -> Unit,
 ) {
     MemphisSurface(
         modifier = Modifier
@@ -294,6 +309,23 @@ private fun AgentRow(
                     modifier = Modifier.padding(top = 4.dp),
                 )
             }
+
+            /*
+             * THE ROOM, IN THE ROW, WHERE THE WORK IS.
+             *
+             * "ROOM" goes to the dashboard: the run, its plan, its tools, its conversation and
+             * whatever it produced. The row itself still opens the editor, because tapping the name
+             * of something to change it is the older habit and both doors are worth having.
+             */
+            Box(
+                Modifier
+                    .border(2.5.dp, Memphis.Ink)
+                    .clickable { onOpenRoom() }
+                    .padding(horizontal = 9.dp, vertical = 5.dp),
+            ) {
+                Text("ROOM", style = captionStyle(8f))
+            }
+            Spacer(Modifier.width(9.dp))
 
             // The switch, flat and printed. No Material pill, no grey.
             FlatSwitch(checked = agent.enabled, onChange = onToggle)

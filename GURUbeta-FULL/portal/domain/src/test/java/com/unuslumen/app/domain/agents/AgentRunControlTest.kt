@@ -23,6 +23,9 @@ class AgentRunControlTest {
 
     private fun run(status: String) = RunView(
         runId = "run-1",
+        // A RUN ALWAYS BELONGS TO A CONVERSATION, so the fixture names one. The value is
+        // arbitrary here and is never read by what these tests assert.
+        conversationId = "conversation-1",
         assignment = "the job",
         status = status,
         startedAt = 1,

@@ -113,7 +113,7 @@ private fun RoomBody(
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 28.dp),
         ) {
             when (state.tab) {
-                AgentRoomViewModel.RoomTab.OVERVIEW -> overview(room, viewModel)
+                AgentRoomViewModel.RoomTab.OVERVIEW -> overview(room, state, viewModel)
                 AgentRoomViewModel.RoomTab.CHAT -> chat(room, state, viewModel)
                 AgentRoomViewModel.RoomTab.TOOLS -> tools(room)
                 AgentRoomViewModel.RoomTab.REASONING -> reasoning(room)
@@ -132,6 +132,7 @@ private fun RoomBody(
 
 private fun androidx.compose.foundation.lazy.LazyListScope.overview(
     room: AgentRoomState,
+    state: AgentRoomViewModel.UiState,
     viewModel: AgentRoomViewModel,
 ) {
     item("identity") {
@@ -157,9 +158,20 @@ private fun androidx.compose.foundation.lazy.LazyListScope.overview(
                 body = room.idleBecause,
             )
         }
+        /*
+         * A JOB BOX, BECAUSE A ROOM YOU CANNOT START WORK FROM IS A DEAD END.
+         *
+         * This used to draw a sentence and stop. An agent with no run therefore had no controls at
+         * all, and the only way to give it anything was to go back to the portal and ask GURU. That
+         * is why the chat looked broken: there was never a run to talk to, and nothing in the room
+         * could make one.
+         */
+        item("start") {
+            StartJobBox(state, viewModel)
+        }
         item("controls-idle") {
-            // NO CONTROLS WHEN THERE IS NO RUN. A Stop button with nothing to stop is the exact
-            // decorative control the specification forbids.
+            // No Stop, because there is nothing to stop. The spec forbids a control that is drawn
+            // for a capability that is not there.
             Spacer(Modifier.height(4.dp))
         }
         return
@@ -299,6 +311,15 @@ private fun androidx.compose.foundation.lazy.LazyListScope.overview(
     }
 }
 
+/**
+ * The one line that says what state the run is in.
+ *
+ * STOPPED IS NOT WORKING. The old rule put anything non-terminal that was not waiting into a teal
+ * "WORKING" band, so a run the platform had killed read as busy: the header said INTERRUPTED while
+ * the band said WORKING, and the two disagreed on the same screen. INTERRUPTED and PAUSED are both
+ * stopped with their state kept, which is a different thing from moving and is exactly what the
+ * Carry on button exists for.
+ */
 @Composable
 private fun StatusBand(room: AgentRoomState) {
     val run = room.run
@@ -308,6 +329,10 @@ private fun StatusBand(room: AgentRoomState) {
         run.isWaitingOnUser -> "WAITING ON YOU" to Memphis.Yellow
         run.status == com.unuslumen.app.domain.agents.AgentRunStatuses.WAITING_FOR_GURU ->
             "WAITING ON GURU" to Memphis.Yellow
+        run.status == com.unuslumen.app.domain.agents.AgentRunStatuses.INTERRUPTED ->
+            "STOPPED · INTERRUPTED" to Memphis.Coral
+        run.status == com.unuslumen.app.domain.agents.AgentRunStatuses.PAUSED ->
+            "PAUSED · CARRY ON TO CONTINUE" to Memphis.Yellow
         run.isTerminal -> run.status to Memphis.Ink
         else -> "WORKING · ${run.status}" to Memphis.Teal
     }
@@ -346,17 +371,34 @@ private fun androidx.compose.foundation.lazy.LazyListScope.chat(
     val run = room.run
     if (run == null) {
         item("no-run") {
-            Panel("NOT RUNNING", "There is no run to talk to. Start this agent by asking GURU to " +
-                "give it a job, and its conversation will appear here.")
+            Panel(
+                "NO CONVERSATION YET",
+                "This agent has never run, so there is nothing to read. Give it a job on the " +
+                    "overview and everything you both say will appear here.",
+            )
         }
         return
     }
 
     item("explain") {
         Text(
-            "Every kind below is a message, and a message is picked up at the agent's next safe " +
-                "boundary, so nothing arrives in the middle of a tool call. To end the work or hold " +
-                "it, use Stop or Pause on the overview, because those are actions rather than words.",
+            /*
+             * WHAT A STOPPED RUN MEANS FOR A MESSAGE, SAID BEFORE IT IS SENT.
+             *
+             * A queued message is only a promise if something is going to read it. This line used
+             * to promise a boundary unconditionally, which was false on a stopped run: the message
+             * went in, showed as QUEUED, and no boundary was ever coming. The chat now carries a
+             * stopped run on rather than leaving the message stranded, and the text says which of
+             * the two is about to happen so nobody has to infer it from a delivery state.
+             */
+            if (run.isTerminal) {
+                "This run has finished. What you send here starts the next one, so the " +
+                    "conversation carries on rather than ending at its first answer."
+            } else {
+                "A message is picked up at the agent's next safe boundary, so nothing arrives in " +
+                    "the middle of a tool call. If it has stopped, sending carries it on from where " +
+                    "it stopped rather than starting again."
+            },
             style = captionStyle(9f, Memphis.Ink.copy(alpha = 0.6f)),
         )
         Spacer(Modifier.height(10.dp))
@@ -436,6 +478,63 @@ private fun androidx.compose.foundation.lazy.LazyListScope.chat(
                 }
             }
         }
+    }
+}
+
+/**
+ * Give an idle agent a job, from inside its own room.
+ *
+ * THE JOB IS THE WHOLE BRIEF. A spawned agent starts cold, so whatever is typed here is all it
+ * knows: what to do, to what standard, and where to put the result. The hint says that rather
+ * than leaving a person to write "scan the network" and wonder why nothing came back.
+ */
+@Composable
+private fun StartJobBox(state: AgentRoomViewModel.UiState, viewModel: AgentRoomViewModel) {
+    var job by remember { mutableStateOf("") }
+
+    Column(Modifier.fillMaxWidth().padding(top = 14.dp)) {
+        Text("GIVE IT A JOB", style = captionStyle(9.5f, Memphis.Ink.copy(alpha = 0.7f)))
+        Spacer(Modifier.height(6.dp))
+        MemphisSurface(
+            modifier = Modifier.fillMaxWidth(),
+            color = Memphis.Paper,
+            borderWidth = 2.5.dp,
+            shadowOffset = 4.dp,
+        ) {
+            BasicTextField(
+                value = job,
+                onValueChange = { job = it },
+                textStyle = captionStyle(10.5f, Memphis.Ink),
+                modifier = Modifier.fillMaxWidth().padding(11.dp).height(120.dp),
+                decorationBox = { inner ->
+                    if (job.isEmpty()) {
+                        Text(
+                            "What should it do? It starts cold, so say the job, the standard and " +
+                                "where the result goes.",
+                            style = captionStyle(10.5f, Memphis.Ink.copy(alpha = 0.4f)),
+                        )
+                    }
+                    inner()
+                },
+            )
+        }
+        Spacer(Modifier.height(9.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+            PaperButton(
+                label = if (state.awaitingRun) "Starting…" else "Start",
+                modifier = Modifier.weight(1f),
+                filled = true,
+            ) {
+                viewModel.onEvent(AgentRoomViewModel.Event.StartJob(job))
+                job = ""
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "The work runs on its own from here, in this room and in the shade, and carries on if " +
+                "you leave. You can talk to it once it is running.",
+            style = captionStyle(8.5f, Memphis.Ink.copy(alpha = 0.55f)),
+        )
     }
 }
 
@@ -526,11 +625,16 @@ private fun ToolCard(call: ToolActivityView) {
             if (open) {
                 Spacer(Modifier.height(7.dp))
                 Text("ARGUMENTS", style = captionStyle(8f, Memphis.Ink.copy(alpha = 0.6f)))
+                /*
+                 * WHOLE, NEVER CUT. This capped both fields at twelve lines with an ellipsis,
+                 * which hid the end of every real payload: a device list, a JSON result or a
+                 * command's output all end past line twelve, and what was cut was exactly the part
+                 * somebody opened the card to read. A record that stops mid-sentence is worse than
+                 * a long one, so the card scrolls with the page and shows everything it holds.
+                 */
                 Text(
                     call.arguments,
                     style = captionStyle(9f, Memphis.Ink),
-                    maxLines = 12,
-                    overflow = TextOverflow.Ellipsis,
                 )
                 call.result?.let { result ->
                     Spacer(Modifier.height(6.dp))
@@ -538,8 +642,6 @@ private fun ToolCard(call: ToolActivityView) {
                     Text(
                         result,
                         style = captionStyle(9f, Memphis.Ink),
-                        maxLines = 12,
-                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             } else {

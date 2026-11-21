@@ -105,6 +105,7 @@ class AgentScheduleRulesTest {
         )
         val run = RunView(
             runId = "r",
+            conversationId = "c",
             assignment = "a",
             status = AgentRunStatuses.RUNNING,
             startedAt = 1,

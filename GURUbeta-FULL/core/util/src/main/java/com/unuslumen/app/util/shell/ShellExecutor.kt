@@ -101,50 +101,81 @@ class ShellExecutor(private val context: Context) {
 
     /**
      * Execute a shell command with the best available method.
-     * Root > ADB > Runtime fallback.
      *
-     * EVERY result now carries the tier that served it. Issue 40: the tool
-     * contract claimed "NO limits" while the executor silently ran at app UID,
-     * and a model reading that description reached for /proc/net/arp or dumpsys,
-     * got Permission denied, and retried against a permanent wall because
-     * nothing told it the tier was the problem.
+     * THE APP'S OWN UID FIRST, THEN ROOT, SHIZUKU, ADB.
      *
-     * The tier is stamped at the point of execution, so it cannot drift from
-     * what actually ran.
+     * THE OLD ORDER WAS THE DEFECT THAT MADE THE MAIN CHAT LOOK BROKEN. It ran root, then Shizuku,
+     * then ADB, then the app itself — so a `pwd` was handed to the ADB daemon. On a device whose
+     * key has not been accepted, the daemon raises a dialog and waits for a person to tap Allow,
+     * and the auth handshake had no read timeout, so the call blocked for ever. The model had
+     * called its tool correctly and the reply waiting on that tool never arrived, which reads
+     * exactly like a model that cannot call tools.
+     *
+     * Most commands need no privilege at all. The app runs those directly and never touches a
+     * privileged tier, so no dialog can appear in the way of them. A command that genuinely needs
+     * shell UID still fails at app UID with a permission refusal, and only then does the ladder
+     * run — which is the case a person is actually being asked about.
+     *
+     * EVERY result carries the tier that served it. Issue 40: the tool contract claimed "NO
+     * limits" while the executor silently ran at app UID, and a model reading that description
+     * reached for /proc/net/arp or dumpsys, got Permission denied, and retried against a permanent
+     * wall because nothing told it the tier was the problem.
      */
     suspend fun execute(command: String, forceRoot: Boolean = false): ShellResult = withContext(Dispatchers.IO) {
-        // Check root availability once
-        if (!rootChecked) {
-            rootAvailable = rootShell.isRootAvailable()
-            rootChecked = true
-            Log.d(TAG, "ShellExecutor: root available=$rootAvailable")
+        // A FORCED ROOT COMMAND NAMES ITS TIER, so it skips straight to it.
+        if (forceRoot) {
+            ensureRootChecked()
+            if (rootAvailable) {
+                val result = rootShell.execute(command)
+                if (result.success) return@withContext result.copy(tier = ShellTier.ROOT)
+            }
+            Log.w(TAG, "ShellExecutor: forced root was asked for and is not available")
+            return@withContext ShellResult(
+                stdout = "",
+                stderr = "This command asked for root and this device does not provide it. " +
+                    "Nothing was run. Try it without root, or through ADB if it needs shell UID.",
+                exitCode = 1,
+                success = false,
+                tier = ShellTier.APP_UID,
+            )
         }
 
-        // ROOT FIRST — always try root if available
+        /*
+         * THE DIRECT ATTEMPT, WHICH IS THE ANSWER FOR ALMOST EVERY COMMAND.
+         *
+         * A command that succeeds here is finished: no prompt, no daemon, no waiting. A command
+         * that fails for its own reasons — not found, no such file, a syntax error — is also
+         * finished, because escalating it would ask a person to approve a prompt to fix a typo.
+         */
+        val direct = executeViaRuntime(command)
+        if (direct.success) {
+            return@withContext direct.copy(tier = ShellTier.APP_UID)
+        }
+        if (!looksLikePrivilegeRefusal(direct)) {
+            return@withContext direct.copy(tier = ShellTier.APP_UID)
+        }
+
+        Log.d(TAG, "ShellExecutor: app UID was refused on privilege, trying the privileged tiers")
+
+        // ROOT
+        ensureRootChecked()
         if (rootAvailable) {
             val result = rootShell.execute(command)
             if (result.success) return@withContext result.copy(tier = ShellTier.ROOT)
-            Log.w(TAG, "ShellExecutor: root command failed, trying ADB")
+            Log.w(TAG, "ShellExecutor: root command failed, trying Shizuku")
         }
 
-        // SHIZUKU SECOND, and before ADB.
-        //
-        // Both are shell UID 2000, so neither is more powerful than the other. The
-        // order is about stability: Shizuku does not depend on wireless debugging
-        // staying enabled or on a pairing key staying valid, so when both are up it
-        // is the one less likely to fail between two calls. When Shizuku is absent
-        // this costs one cheap binder ping and changes nothing.
-        //
-        // A Shizuku failure falls through to ADB rather than returning, because a
-        // command that fails at one tier may succeed at another: a Shizuku bind can
-        // be stale while ADB is healthy, and vice versa.
+        /*
+         * SHIZUKU BEFORE ADB, because both are shell UID and Shizuku does not depend on a pairing
+         * key staying valid. When it is absent this costs one binder ping and changes nothing.
+         */
         if (shizuku.state().usable) {
             val result = shizuku.execute(command)
             if (result.success) return@withContext result.copy(tier = ShellTier.SHIZUKU)
             Log.w(TAG, "ShellExecutor: Shizuku command failed, trying ADB")
         }
 
-        // ADB third
+        // ADB LAST, because it is the tier that can raise a prompt.
         if (!adbChecked) {
             adbAvailable = adbClient.isAdbAvailable()
             adbChecked = true
@@ -159,9 +190,36 @@ class ShellExecutor(private val context: Context) {
             Log.d(TAG, "ShellExecutor: ADB not available")
         }
 
-        // Fall back to Runtime.exec
-        Log.d(TAG, "ShellExecutor: falling back to Runtime.exec for: $command")
-        return@withContext executeViaRuntime(command).copy(tier = ShellTier.APP_UID)
+        /*
+         * NOTHING HIGHER COULD RUN IT, SO THE APP UID'S OWN REFUSAL IS THE ANSWER — and it is a
+         * better answer than a bare failure because it names the tier that was reached.
+         */
+        return@withContext direct.copy(tier = ShellTier.APP_UID)
+    }
+
+    /** Check root once, so every tier decision in one process agrees about it. */
+    private fun ensureRootChecked() {
+        if (!rootChecked) {
+            rootAvailable = rootShell.isRootAvailable()
+            rootChecked = true
+            Log.d(TAG, "ShellExecutor: root available=$rootAvailable")
+        }
+    }
+
+    /**
+     * Whether a failed run failed for want of privilege rather than for any other reason.
+     *
+     * THE DISTINCTION DECIDES WHETHER A DIALOG CAN APPEAR. Anything else — a command that does not
+     * exist, a file that is not there, a syntax error — is the command's own answer, and escalating
+     * it would ask a person to approve a prompt to fix a typo.
+     */
+    private fun looksLikePrivilegeRefusal(result: ShellResult): Boolean {
+        val text = (result.stderr + " " + result.stdout).lowercase()
+        return text.contains("permission denied") ||
+            text.contains("operation not permitted") ||
+            text.contains("not permitted") ||
+            text.contains("eacces") ||
+            text.contains("eperm")
     }
 
     /**

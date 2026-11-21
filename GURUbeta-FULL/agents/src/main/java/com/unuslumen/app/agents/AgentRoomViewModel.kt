@@ -51,6 +51,15 @@ class AgentRoomViewModel(
      * stays true by construction instead of by care.
      */
     private val agents: com.unuslumen.app.domain.repository.GuruAgentRepository,
+    /**
+     * The store a run's conversation is created in.
+     *
+     * A RUN BELONGS TO A CONVERSATION AND A CONVERSATION IS NOT OPTIONAL. The foreign key on
+     * `agent_runs.conversation_id` is real, so an agent cannot be started from a screen that has
+     * no conversation in hand. Every run until now was started by GURU from the portal, which
+     * always has one; a room opened directly had none, so this is what lets the room start work.
+     */
+    private val conversations: com.unuslumen.app.domain.memory.MemoryRepository,
 ) : ViewModel() {
 
     data class UiState(
@@ -121,6 +130,7 @@ class AgentRoomViewModel(
             is Event.UpdateDraft -> _state.update { it.copy(draft = event.text) }
             is Event.SelectDraftType -> _state.update { it.copy(draftType = event.type) }
             Event.SendToAgent -> sendToAgent()
+            is Event.StartJob -> startJob(event.job)
             Event.StopRun -> stopRun()
             Event.PauseRun -> pauseRun()
             is Event.ResumeRun -> resumeRun(event.instruction)
@@ -147,6 +157,16 @@ class AgentRoomViewModel(
 
         /** Send the draft to the agent through the broker. */
         data object SendToAgent : Event
+
+        /**
+         * Give this agent a job, from inside its own room.
+         *
+         * THE DOOR THE ROOM WAS MISSING. Until this existed an agent could only be started by
+         * asking GURU in the portal, so a room opened from the agents list had nothing running and
+         * a chat box with nothing to talk to. That is the whole reason the chat read as broken:
+         * not a control wired wrong, but no way to get a run at all.
+         */
+        data class StartJob(val job: String) : Event
 
         /** Send an instruction that changes the work rather than asking a question. */
         data class Steer(val text: String, val messageType: String) : Event
@@ -242,6 +262,20 @@ class AgentRoomViewModel(
      * THE MESSAGE IS QUEUED, NOT INJECTED, and the room says so. The loop takes it at its next
      * round boundary, so nothing arrives in the middle of a tool call. Saying "sent" at the moment
      * of writing would be the defect that makes sent mean typed.
+     *
+     * SPEAKING TO A STOPPED RUN CARRIES IT ON, AND THAT IS THE WHOLE POINT OF A CHAT BOX.
+     *
+     * The first version recorded the message and returned. On a run that was still executing that
+     * is right: the loop reads it at its next boundary. On a run that had stopped it was a lie
+     * dressed as a queue — the message went in as QUEUED and no boundary was ever going to arrive,
+     * so a person typed something, saw it appear, and waited for an answer that could not come.
+     * That is exactly the "the chat does not work" report, and the database showed it plainly: one
+     * user message at QUEUED and a run at INTERRUPTED with nothing driving it.
+     *
+     * So a resumable run is resumed after the message is recorded, on the host, under the same run
+     * id. The loop then reads the queued message at its first boundary exactly as it would have
+     * done had it still been running. A run that is genuinely finished has nothing to carry on and
+     * is refused with a sentence rather than given a message it can never read.
      */
     private fun sendToAgent() {
         val text = _state.value.draft.trim()
@@ -276,6 +310,26 @@ class AgentRoomViewModel(
             com.unuslumen.app.domain.agents.AgentSpeakableTo.INSTRUCTION
         }
 
+        /*
+         * A FINISHED RUN IS CONTINUED AS A NEW ONE, NOT REFUSED.
+         *
+         * This used to record nothing and say the run was over, which made the chat a single
+         * exchange: one job, one answer, then a dead composer. A conversation has to survive its
+         * answer. So a finished run's history stays on screen, and a message sent from it starts the
+         * next run with that message as its job, in the same conversation.
+         *
+         * THE PRECEDING TRANSCRIPT IS NOT CARRIED AS CONTEXT, DELIBERATELY. A new run is a new brief
+         * with its own assignment row, and pretending it inherited an old run's conversation would
+         * report a continuity the record does not have. The person can read what came before on this
+         * screen; the new run starts from what they just said.
+         */
+        val finishedRun = room?.run?.takeIf { it.isTerminal }
+        if (finishedRun != null) {
+            _state.update { it.copy(draft = "", controlError = null) }
+            startJob(text)
+            return
+        }
+
         viewModelScope.launch {
             try {
                 val sent = runtime.steer(
@@ -287,13 +341,140 @@ class AgentRoomViewModel(
                     _state.update {
                         it.copy(controlError = "That message could not be recorded, so it was not sent.")
                     }
-                } else {
-                    _state.update { it.copy(draft = "", controlError = null) }
-                    refresh()
+                    return@launch
                 }
+                _state.update { it.copy(draft = "", controlError = null) }
+
+                /*
+                 * THEN CARRY IT ON, WHEN NOTHING IS DRIVING IT.
+                 *
+                 * "MOVING" IS A QUESTION FOR THE HOST, NOT FOR THE STATUS COLUMN. This first asked
+                 * whether the row said RUNNING, which is exactly the reading that failed in the
+                 * field: a process killed mid-tool leaves the row at RUNNING until the recovery
+                 * scan notices, so a person typed into a run that reported itself as working and
+                 * nothing was there to read it. The host is the only component that knows whether a
+                 * job is actually executing, so it is the one asked.
+                 *
+                 * A live loop takes the message at its next boundary by itself. Anything else has to
+                 * be started again before the queued message can mean anything, and the host admits
+                 * it because the previous job under this run id has finished.
+                 *
+                 * The instruction is passed with the resume as well as recorded as a message, so the
+                 * agent sees it in the turn it wakes up in rather than only at a boundary after it.
+                 */
+                val moving = runHost.isActive(runId)
+                if (!moving) {
+                    val deferred =
+                        kotlinx.coroutines.CompletableDeferred<AgentRuntime.SpawnResult>()
+                    val admission = runHost.start(runId, deferred) {
+                        runtime.resumeRun(runId, text).last()
+                    }
+                    _state.update {
+                        it.copy(
+                            awaitingRun = admission !is AgentRunHost.Admission.AlreadyRunning,
+                            controlError = if (admission is AgentRunHost.Admission.AlreadyRunning) {
+                                "That run was already executing, so the message will be read at its " +
+                                    "next boundary rather than starting it twice."
+                            } else null,
+                        )
+                    }
+                }
+                refresh()
             } catch (e: Exception) {
                 _state.update { it.copy(controlError = e.message ?: "Could not send that message.") }
             }
+        }
+    }
+
+    /**
+     * Give this agent a job, from its own room.
+     *
+     * THREE FACTS, IN THIS ORDER, AND EACH ONE IS REQUIRED.
+     *
+     * A run belongs to a conversation, so the conversation is created first. Its id is then used
+     * for the run, which is what makes a room opened directly able to start work at all: every
+     * run before this could only come from the portal, which always had a conversation in hand.
+     *
+     * THE JOB IS FROZEN ON THE RUN ROW. The runtime seals the assignment when it creates the run,
+     * so what is typed here is what the run did, and a later edit to the agent's definition cannot
+     * rewrite it.
+     *
+     * THE WORK GOES ON THE HOST, not this view model's scope. Leaving the room is not stopping the
+     * agent, and a job started here has to survive the screen it was started from.
+     */
+    private fun startJob(job: String) {
+        val trimmed = job.trim()
+        if (trimmed.isEmpty()) return
+        val room = _state.value.room ?: return
+
+        /*
+         * ONE START AT A TIME. Two taps on Start would create two conversations and two runs for
+         * one intention, and the second would be invisible because the room shows the newest. The
+         * waiting flag is cleared when the run appears or when the attempt fails.
+         */
+        if (_state.value.awaitingRun) return
+        _state.update { it.copy(awaitingRun = true, controlError = null) }
+
+        viewModelScope.launch {
+            /*
+             * THE CONVERSATION IS REUSED WHEN THIS AGENT ALREADY HAS ONE.
+             *
+             * A new conversation per message would give every exchange its own record, so the
+             * thread a person is reading would have no single identity behind it and the run rows
+             * could never be read as one history. The newest run's conversation is continued; a
+             * fresh one is only created when there is nothing to continue.
+             */
+            val conversationId = try {
+                val existing = state.value.room?.run?.conversationId?.takeIf { it.isNotBlank() }
+                if (existing != null) {
+                    existing
+                } else {
+                    val now = System.currentTimeMillis()
+                    val id = java.util.UUID.randomUUID().toString()
+                    conversations.createConversation(
+                        com.unuslumen.app.domain.memory.Conversation(
+                            id = id,
+                            title = "${room.agentName}: ${trimmed.take(60)}",
+                            createdDate = now,
+                            updatedDate = now,
+                        )
+                    )
+                    id
+                }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(
+                        awaitingRun = false,
+                        controlError = "This agent was not started because its conversation could not " +
+                            "be recorded: ${e.message ?: e.javaClass.simpleName}.",
+                    )
+                }
+                return@launch
+            }
+
+            val runId = java.util.UUID.randomUUID().toString()
+            val deferred = kotlinx.coroutines.CompletableDeferred<AgentRuntime.SpawnResult>()
+            val admission = runHost.start(runId, deferred) {
+                runtime.spawn(
+                    // BY SLUG OR NAME, WHICH IS WHAT THE RESOLVER TAKES. The room holds all three
+                    // identifiers and the id is not one of them.
+                    slugOrName = room.agentSlug.ifBlank { room.agentName },
+                    job = trimmed,
+                    conversationId = conversationId,
+                    runId = runId,
+                ).last()
+            }
+            if (admission is AgentRunHost.Admission.AlreadyRunning) {
+                _state.update {
+                    it.copy(
+                        awaitingRun = false,
+                        controlError = "That run was already executing, so it was not started twice.",
+                    )
+                }
+                return@launch
+            }
+            _state.update { it.copy(draft = "", awaitingRun = true) }
+            refresh()
         }
     }
 
