@@ -703,6 +703,48 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
 }
 
 // ============================================================================
+// build identity
+// ============================================================================
+
+/// The commit this cdylib was compiled from, as one searchable marker.
+///
+/// WHY THIS EXISTS. Until now the shipped `libcerebrum_android.so` was a
+/// hand-copied artefact, and nothing in any build could say which Cerebrum
+/// source it came from. Three merged fixes were missing from the released APK
+/// and no check caught it, because there was no way to ask the binary what it
+/// was. Gradle now compiles this crate, and this marker is how the packaged APK
+/// proves which revision landed inside it: the string is read back out of the
+/// shipped `.so` and compared with the revision being built.
+///
+/// A build with no revision available still compiles and reports "unknown",
+/// which is honest rather than plausible.
+///
+/// A bare 40-character hex string appears nowhere else in the library and is
+/// awkward to find in an extracted APK. The `cerebrum-build-rev=` prefix makes
+/// it greppable and unmistakable.
+///
+/// It is a single `concat!` constant rather than `format!` on purpose: a
+/// formatted string stores the prefix and the revision as two separate literals,
+/// so a scan for `cerebrum-build-rev=<rev>` finds the prefix and then nothing.
+/// Concatenation at compile time puts the whole marker in the binary as one run
+/// of bytes, which is what the APK provenance check reads.
+const BUILD_IDENTITY: &str = concat!("cerebrum-build-rev=", env!("CEREBRUM_BUILD_REV"));
+
+/// Report the Cerebrum source revision compiled into this library.
+///
+/// `CerebrumHost.buildIdentity()` calls this, and the native-provenance check
+/// compares it against the git revision the APK was built from.
+#[no_mangle]
+pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_cerebrumBuildIdentityJNI<
+    'local,
+>(
+    env_value: JNIEnv<'local>,
+    _class_value: JClass<'local>,
+) -> JString<'local> {
+    jni_string(env_value, BUILD_IDENTITY)
+}
+
+// ============================================================================
 // jstring helper
 // ============================================================================
 

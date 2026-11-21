@@ -51,6 +51,29 @@ object CerebrumHost {
     private external fun cerebrumStatusJNI(): String
     private external fun cerebrumLastErrorJNI(): String
 
+    /**
+     * The Cerebrum source revision compiled into the loaded library.
+     *
+     * The library carries `cerebrum-build-rev=<git revision>` as a compile-time
+     * constant, substituted by `cerebrum-android/build.rs` from the value Gradle
+     * passed when it ran Cargo. Reading it back is how any caller, test or release
+     * check proves which source is actually running rather than which source was
+     * intended.
+     */
+    private external fun cerebrumBuildIdentityJNI(): String
+
+    /**
+     * The build identity of the loaded brain.
+     *
+     * Returns the marker the library carries, or an explicit refusal naming why it
+     * could not be read. It never substitutes a plausible answer: an unknown
+     * revision is reported as unknown. The shipped brain used to be a hand-copied
+     * `.so` with no such marker, and three merged fixes went missing from a release
+     * because nothing could ask the binary what it was.
+     */
+    fun buildIdentity(): String = runCatching { cerebrumBuildIdentityJNI() }
+        .getOrElse { failure -> "cerebrum-build-rev=unreadable (${failure.message ?: "load failed"})" }
+
     // ---- frame type constants, wire-byte true -------------------------------
     const val FRAME_QUERY = 1             // 0x01
     const val FRAME_CURATE = 2            // 0x02

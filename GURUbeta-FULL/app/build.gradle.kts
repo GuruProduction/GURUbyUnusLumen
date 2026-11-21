@@ -11,6 +11,19 @@ plugins {
     alias(libs.plugins.kotlin.compose.compiler)
 }
 
+// THE RUST BRAIN IS BUILT BY THE ANDROID BUILD, NOT HAND-COPIED.
+//
+// `app/src/main/jniLibs/<abi>/libcerebrum_android.so` used to be a committed
+// binary that nothing compiled. Because of that, three merged Cerebrum fixes
+// (entity edges, merge retirement, update history) were absent from the released
+// APK while the source tree and every test said otherwise: the source and the
+// shipping artefact were two independent things.
+//
+// This applies the Cargo build for every shipped ABI, and registers its output
+// directory as a jniLibs source just below. The library inside the APK is then
+// always the one compiled from this revision.
+apply(from = rootProject.file("gradle/cerebrum-native.gradle.kts"))
+
 // Release signing credentials, read from the gitignored local.properties so the
 // password never enters the repository. Every GURU release before this was built
 // unsigned and signed afterwards by hand with apksigner, which meant the one
@@ -93,6 +106,43 @@ android {
     // hand-declared directory as well produced a duplicate-file failure in
     // mergeDebugNativeLibs, which is how that was established rather than
     // assumed.
+    //
+    // THE CEREBRUM BRAIN IS THE ONE HAND-DECLARED DIRECTORY, AND IT IS GENERATED.
+    //
+    // `app/src/main/jniLibs` keeps every other `.so` (the Termux tool payloads).
+    // The brain no longer lives there: Cargo compiles it into
+    // `app/build/rustJniLibs/<abi>/`, registered below. Because the checked-in
+    // brain has been deleted, `mergeDebugNativeLibs` has exactly one producer per
+    // file and cannot see two copies that disagree.
+    //
+    // Registered through the Variant API rather than `sourceSets`, because AGP
+    // refuses a Provider there: it cannot tell whether such a directory holds
+    // generated or hand-written files, and quietly treating output as source is
+    // how a stale artefact survives. `addGeneratedSourceDirectory` also carries
+    // the task dependency, so the merge cannot run before the compile.
+    //
+    // It is registered HERE rather than through the Variant API. AGP refuses a
+    // Provider in `sourceSets` (it cannot tell generated output from hand-written
+    // source), but it accepts a resolved File. The trade is that the task
+    // dependency is declared explicitly instead of being carried: without it, the
+    // native merge can run before the compile and package nothing.
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDir(layout.buildDirectory.dir("rustJniLibs").get().asFile)
+        }
+    }
+
+    // The merge that reads that directory is `merge<Variant>JniLibFolders`, not
+    // `merge<Variant>NativeLibs`: the folder merge runs first and hands its output
+    // to the native-lib merge, so the folder merge is what needs the dependency.
+    // Both are named here so a change in AGP's pipeline cannot silently leave the
+    // compile unordered against the merge that needs it.
+    tasks.matching { task ->
+        task.name.startsWith("merge") &&
+            (task.name.endsWith("JniLibFolders") || task.name.endsWith("NativeLibs"))
+    }.configureEach {
+        dependsOn(tasks.named("buildCerebrumNative"))
+    }
 
     // The keystore that every shipped GURU release was signed with. Installing a
     // build signed with any other key over an existing GURU is refused by
@@ -287,13 +337,16 @@ dependencies {
     implementation(libs.squircle.shape)
 }
 
-// KSP order fix: app's koin-ksp pass reads the classes.jar published by the
-// thoughts:presentation AAR (ThoughtsPresentationModule). That jar is built
-// by the module's bundleLibCompileToJarDebug task; without an explicit
-// dependency, Gradle can run app:kspDebugKotlin against a stale or missing
-// jar and KSP throws FileNotFoundException. Enforce the order.
+// The Variant API work for this module: the generated jniLibs directory that
+// carries the compiled brain, and the KSP ordering fix that has been here since
+// the thoughts module started publishing a jar KSP reads.
 androidComponents {
     onVariants { variant ->
+        // KSP ORDER FIX. app's koin-ksp pass reads the classes.jar published by the
+        // thoughts:presentation AAR (ThoughtsPresentationModule), built by that
+        // module's bundleLibCompileToJarDebug task. Without an explicit dependency,
+        // Gradle can run app:kspDebugKotlin against a stale or missing jar and KSP
+        // throws FileNotFoundException.
         tasks.matching { task ->
             task.name == "ksp${variant.name.replaceFirstChar { c -> c.uppercase() }}Kotlin"
         }.configureEach {
