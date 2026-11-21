@@ -186,6 +186,81 @@ class CerebrumFrameDispatchTest {
     }
 
     @Test
+    fun `a history request is dispatched on its own frame and parses every revision`() {
+        /*
+         * HISTORY HAD NO DOOR. `EventStore::history_for` and the superseded text in
+         * `memory.updated` were merged, tested and reachable by nothing, so mutation audit was
+         * stored and unusable. This proves the frame exists, that it carries the id, and that
+         * every field a person would ask for comes back.
+         */
+        reply = """
+            {"memory_id":${idJson(7)},"lifecycle":"Active","category":"work",
+             "ever_retired":false,
+             "revisions":[
+               {"kind":"Created","content":"the meeting is on monday","superseded":null,
+                "reason":"","actor":"guru.role=","recorded_at":"2026-11-21T10:00:00Z"},
+               {"kind":"Updated","content":"the meeting is on tuesday",
+                "superseded":"the meeting is on monday","reason":"the meeting moved a day",
+                "actor":"guru update|confidence=0.4200","recorded_at":"2026-11-21T11:00:00Z"}]}
+        """.trimIndent()
+
+        val history = CerebrumBrainApi.history("07".repeat(32))
+
+        assertEquals(
+            "it must travel on the HISTORY frame",
+            listOf(CerebrumBrainApi.FRAME_HISTORY),
+            sent.map { it.frameType },
+        )
+        assertTrue("the id must be in the request: ${sent.single().payload}", sent.single().payload.contains("memory_id"))
+        requireNotNull(history)
+        assertEquals(2, history.revisions.size)
+        assertEquals("Created", history.revisions[0].kind)
+        assertNull(
+            "a create replaced nothing; the string null must not become the word null",
+            history.revisions[0].superseded,
+        )
+        assertEquals(
+            "the superseded text is the whole point of the native Update",
+            "the meeting is on monday",
+            history.revisions[1].superseded,
+        )
+        assertEquals("the meeting moved a day", history.revisions[1].reason)
+        assertEquals("Active", history.lifecycle)
+        assertFalse(history.everRetired)
+    }
+
+    @Test
+    fun `a deleted memory still answers a history request and says it was retired`() {
+        /*
+         * THE QUESTION IS ASKED PRECISELY WHEN THE MEMORY IS GONE. Every other read refuses a
+         * retired row; this one must not, or a person can never find out what was deleted, by
+         * whom, or why.
+         */
+        reply = """
+            {"memory_id":${idJson(7)},"lifecycle":"Archived","category":"home",
+             "ever_retired":true,
+             "revisions":[{"kind":"Created","content":"the spare key is under the blue pot",
+               "superseded":null,"reason":"","actor":"","recorded_at":"2026-11-21T10:00:00Z"}]}
+        """.trimIndent()
+
+        val history = CerebrumBrainApi.history("07".repeat(32))
+        requireNotNull(history)
+        assertTrue("it must report the retirement", history.everRetired)
+        assertEquals("Archived", history.lifecycle)
+        assertEquals(
+            "and the text it held must still be readable from the trail",
+            "the spare key is under the blue pot",
+            history.revisions.single().content,
+        )
+    }
+
+    @Test
+    fun `a history request for a non brain id is refused without touching the brain`() {
+        assertNull(CerebrumBrainApi.history("not-a-brain-id"))
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test
     fun `a query response that is not an object is refused rather than read as zero results`() {
         reply = "not json at all"
         assertNull(CerebrumBrainApi.query("van keys"))

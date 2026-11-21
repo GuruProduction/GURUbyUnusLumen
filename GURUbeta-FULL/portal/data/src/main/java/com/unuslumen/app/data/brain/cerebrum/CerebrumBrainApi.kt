@@ -907,6 +907,87 @@ object CerebrumBrainApi {
     }
 
     // --------------------------------------------------------------------
+    // 9. HISTORY — the one read that survives retirement
+    // --------------------------------------------------------------------
+
+    /** One recorded revision of a memory, as the brain's trail reports it. */
+    data class HistoryRevision(
+        /** Created, Updated, Merged, Consolidated or Archived. */
+        val kind: String,
+        /** What the memory said during this revision. */
+        val content: String,
+        /** What this revision replaced, null for a create. */
+        val superseded: String?,
+        /** The caller's stated reason, empty when none was given. */
+        val reason: String,
+        /** The provenance label the write carried. */
+        val actor: String,
+        /** RFC 3339, when the brain recorded it. */
+        val recordedAt: String,
+    )
+
+    /**
+     * The recorded history of one memory.
+     *
+     * [everRetired] is read from the trail rather than inferred from the current state, so a
+     * memory that was deleted and later re-created under the same content hash still reports
+     * that it was once retired.
+     */
+    data class History(
+        val memoryId: String,
+        val lifecycle: String,
+        val category: String,
+        val revisions: List<HistoryRevision>,
+        val everRetired: Boolean,
+    )
+
+    /**
+     * Read every event the brain ever recorded about one memory.
+     *
+     * THE DOOR THAT DID NOT EXIST. `EventStore::history_for` and the superseded text in
+     * `memory.updated` were merged, tested and reachable by nothing: no frame carried the
+     * question, so the only caller was a unit test. A person asking "what did this memory say
+     * before, who changed it, and why" had no way to ask.
+     *
+     * A DELETED OR ARCHIVED MEMORY ANSWERS HERE. That is deliberate and is the one place it
+     * happens: the question is asked precisely when the memory is gone.
+     */
+    fun history(idHexLower: String): History? {
+        if (brainDown()) return null
+        if (idHexLower.length != 64) return null
+        val requestJson = "{\"memory_id\":[" + memoryIdArrayJson(idHexLower) + "]}"
+        val replyBody = dispatchOrNull(FRAME_HISTORY, requestJson) ?: return null
+        val root = runCatching { wire.parseToJsonElement(replyBody).jsonObject }.getOrNull()
+            ?: return null
+        val revisions = root["revisions"]?.jsonArray.orEmpty().mapNotNull { element ->
+            val row = runCatching { element.jsonObject }.getOrNull() ?: return@mapNotNull null
+            HistoryRevision(
+                kind = row["kind"]?.jsonPrimitive?.content ?: "",
+                content = row["content"]?.jsonPrimitive?.content ?: "",
+                // A JSON null superseded and a missing one mean the same thing here: nothing
+                // was replaced. Both become null rather than the string "null".
+                superseded = row["superseded"]?.let { value ->
+                    if (value.toString().equals("null", ignoreCase = true)) null
+                    else runCatching { value.jsonPrimitive.content }.getOrNull()
+                },
+                reason = row["reason"]?.jsonPrimitive?.content ?: "",
+                actor = row["actor"]?.jsonPrimitive?.content ?: "",
+                recordedAt = row["recorded_at"]?.jsonPrimitive?.content ?: "",
+            )
+        }
+        return History(
+            memoryId = hexFromByteArray(root["memory_id"] ?: return null) ?: idHexLower,
+            lifecycle = root["lifecycle"]?.jsonPrimitive?.content ?: "",
+            category = root["category"]?.jsonPrimitive?.content ?: "",
+            revisions = revisions,
+            everRetired = root["ever_retired"]?.jsonPrimitive?.content == "true",
+        )
+    }
+
+    /** The frame type for a history request. */
+    internal const val FRAME_HISTORY = 9
+
+    // --------------------------------------------------------------------
     // frame constants; identical bytes to the JNI exports contract
     // --------------------------------------------------------------------
     internal const val FRAME_QUERY = 1

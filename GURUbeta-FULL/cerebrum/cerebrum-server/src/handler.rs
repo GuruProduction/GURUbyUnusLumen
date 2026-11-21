@@ -95,6 +95,7 @@ pub async fn handle_frame(
         frame_types::CONSOLIDATE => handle_consolidate(state).await,
         frame_types::PREFETCH => handle_prefetch(&payload, state).await,
         frame_types::LIST => handle_list(&payload, state).await,
+        frame_types::HISTORY => handle_history(&payload, state).await,
         _ => Err(ErrorResponse::new(format!(
             "unknown frame type: 0x{:02x}",
             frame_type
@@ -2332,6 +2333,118 @@ async fn handle_list(
 }
 
 // ============================================================================
+// HISTORY
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct HistoryRequest {
+    memory_id: MemoryId,
+}
+
+/// One recorded revision of a memory, with everything an audit trail is asked for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HistoryRevision {
+    /// Which write produced it: Created, Updated, Merged, Consolidated or Archived.
+    pub kind: String,
+    /// What the memory said DURING this revision.
+    pub content: String,
+    /// What this revision replaced. Null for a create, and for an update written before
+    /// the payload carried the superseded text.
+    pub superseded: Option<String>,
+    /// The caller's stated reason, empty when none was given. Never invented.
+    pub reason: String,
+    /// Who produced it, from the provenance label the write carried.
+    pub actor: String,
+    /// When the brain recorded it, RFC 3339.
+    pub recorded_at: String,
+}
+
+/// The whole recorded history of one memory, oldest first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HistoryResponse {
+    pub memory_id: MemoryId,
+    /// The lifecycle NOW, which is not the same as the lifecycle at any revision.
+    pub lifecycle: String,
+    /// The category the row is filed under now.
+    pub category: String,
+    pub revisions: Vec<HistoryRevision>,
+    /// Whether this memory has ever been deleted or archived, read from the trail rather
+    /// than inferred from the current state.
+    pub ever_retired: bool,
+}
+
+/// Every event ever recorded about one memory, oldest first.
+///
+/// THE DEFECT THIS OPENS THE DOOR ON. `EventStore::history_for`, `previous_content` and the
+/// `superseded` field in `memory.updated` were merged, tested, and reachable by nothing: no
+/// frame existed, so the only caller was a unit test. Mutation audit was stored and
+/// unusable.
+///
+/// A DELETED OR ARCHIVED MEMORY ANSWERS. This is the one read that must survive retirement,
+/// because "what did this say, and who deleted it, and why" is a question asked precisely
+/// when the memory is gone. Every other surface refuses a retired row; this one reads its
+/// trail.
+async fn handle_history(
+    payload: &[u8],
+    state: Arc<Mutex<CerebrumState>>,
+) -> Result<Vec<u8>, ErrorResponse> {
+    let req: HistoryRequest =
+        serde_json::from_slice(payload).map_err(|e| ErrorResponse::new(e.to_string()))?;
+
+    let state = state.lock().await;
+
+    let entry = state.context_tree.find(req.memory_id).cloned();
+    let revisions = state.event_store.history_for(req.memory_id);
+    let ever_retired = state
+        .event_store
+        .get_by_memory_id(req.memory_id)
+        .iter()
+        .any(|event| event.event_type == "memory.deleted" || event.event_type == "memory.archived");
+
+    /*
+     * AN ID WITH NO ROW AND NO EVENTS IS NOT A MEMORY, so it is refused rather than answered
+     * with an empty history that looks like a memory nothing ever happened to.
+     */
+    if entry.is_none() && revisions.is_empty() && !ever_retired {
+        return Err(ErrorResponse::new(format!(
+            "no memory and no recorded history for {:?}",
+            req.memory_id
+        )));
+    }
+
+    let mapped: Vec<HistoryRevision> = revisions
+        .into_iter()
+        .map(|revision| HistoryRevision {
+            kind: format!("{:?}", revision.revision_kind),
+            content: revision.content,
+            superseded: revision.superseded,
+            reason: revision.reason,
+            actor: entry
+                .as_ref()
+                .map(|row| row.provenance.source.clone())
+                .unwrap_or_default(),
+            recorded_at: revision.recorded_at.to_rfc3339(),
+        })
+        .collect();
+
+    let response = HistoryResponse {
+        memory_id: req.memory_id,
+        lifecycle: entry
+            .as_ref()
+            .map(|row| format!("{:?}", row.lifecycle))
+            .unwrap_or_else(|| "Unknown".to_string()),
+        category: entry
+            .as_ref()
+            .map(|row| row.domain.clone())
+            .unwrap_or_default(),
+        revisions: mapped,
+        ever_retired,
+    };
+
+    serde_json::to_vec(&response).map_err(|e| ErrorResponse::new(e.to_string()))
+}
+
+// ============================================================================
 // PREFETCH
 // ============================================================================
 
@@ -2702,6 +2815,119 @@ mod tests {
             !archive_listing.memories.iter().any(|row| row.memory_id == live),
             "the archive listing is the archive, not a second live listing"
         );
+    }
+
+    /// Ask for a memory's history THROUGH THE FRAME DISPATCHER.
+    ///
+    /// Through `handle_frame`, not `handle_history` directly. A test that calls the handler
+    /// proves the function works and says nothing about whether anything can reach it, which
+    /// is exactly the defect being fixed: `history_for` had no caller because no frame
+    /// carried the question. Disabling the route must fail this test, and it only does if the
+    /// route is what is exercised.
+    async fn history_of(state: Arc<Mutex<CerebrumState>>, id: MemoryId) -> HistoryResponse {
+        let payload = serde_json::to_vec(&HistoryRequest { memory_id: id }).unwrap();
+        let reply = handle_frame(
+            Frame::new(frame_types::HISTORY, 1, payload),
+            state,
+        )
+        .await
+        .expect("the HISTORY frame must be routed and answered");
+        serde_json::from_slice(&reply).unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_history_of_a_memory_is_reachable_and_carries_what_each_revision_replaced() {
+        /*
+         * THE DOOR THIS PROVES EXISTS AT ALL. `EventStore::history_for` and
+         * `previous_content` were merged and tested and had no caller outside a unit test,
+         * because no frame reached them. Mutation audit was stored and unusable.
+         */
+        let state = Arc::new(Mutex::new(fresh_state()));
+        let id = add_one(state.clone(), "the meeting is on monday", "work").await;
+
+        let changes = cerebrum_core::PartialEntry {
+            content: Some("the meeting is on tuesday".to_string()),
+            ..Default::default()
+        };
+        let update_op = serde_json::to_vec(&vec![CurateOp::Update {
+            memory_id: id,
+            changes,
+            reason: "the meeting moved a day".to_string(),
+        }])
+        .unwrap();
+        handle_curate(&update_op, state.clone()).await.unwrap();
+
+        let history = history_of(state.clone(), id).await;
+        assert_eq!(
+            2,
+            history.revisions.len(),
+            "two revisions: the create and the update, got {:?}",
+            history.revisions
+        );
+        assert_eq!("Created", history.revisions[0].kind);
+        assert_eq!("the meeting is on monday", history.revisions[0].content);
+        assert_eq!(
+            None,
+            history.revisions[0].superseded,
+            "a create replaced nothing, and saying otherwise would invent a prior version"
+        );
+
+        assert_eq!("Updated", history.revisions[1].kind);
+        assert_eq!("the meeting is on tuesday", history.revisions[1].content);
+        assert_eq!(
+            Some("the meeting is on monday".to_string()),
+            history.revisions[1].superseded,
+            "the superseded text is the whole point of the native Update"
+        );
+        assert_eq!(
+            "the meeting moved a day",
+            history.revisions[1].reason,
+            "the caller's reason, never the operation name"
+        );
+        assert_eq!(
+            "Active",
+            history.lifecycle,
+            "and the lifecycle now, which is not the lifecycle at every revision"
+        );
+        assert!(!history.ever_retired);
+    }
+
+    #[tokio::test]
+    async fn the_history_of_a_deleted_memory_still_answers_and_says_it_was_retired() {
+        /*
+         * THE QUESTION IS ASKED PRECISELY WHEN THE MEMORY IS GONE. Every other read surface
+         * refuses a retired row; this one must not, because "what did this say and who
+         * deleted it" is the whole reason a trail exists.
+         */
+        let state = Arc::new(Mutex::new(fresh_state()));
+        let id = add_one(state.clone(), "the spare key is under the blue pot", "home").await;
+
+        let delete_op = serde_json::to_vec(&vec![CurateOp::Delete {
+            memory_id: id,
+            reason: "the owner asked for this to be forgotten".to_string(),
+        }])
+        .unwrap();
+        handle_curate(&delete_op, state.clone()).await.unwrap();
+
+        let history = history_of(state.clone(), id).await;
+        assert!(history.ever_retired, "the trail must say this memory was retired");
+        assert_eq!("Archived", history.lifecycle);
+        assert!(
+            history.revisions.iter().any(|r| r.content.contains("blue pot")),
+            "the text it held must still be readable from the trail: {:?}",
+            history.revisions
+        );
+    }
+
+    #[tokio::test]
+    async fn a_history_request_for_an_unknown_id_is_refused_rather_than_answered_empty() {
+        // An empty history and a memory that never existed are different facts, and only one
+        // of them is an answer.
+        let state = Arc::new(Mutex::new(fresh_state()));
+        let absent = MemoryId::new();
+        let payload = serde_json::to_vec(&HistoryRequest { memory_id: absent }).unwrap();
+        let refused = handle_frame(Frame::new(frame_types::HISTORY, 1, payload), state).await;
+        assert!(refused.is_err(), "an unknown id must be refused, not answered with nothing");
     }
 
     #[tokio::test]
