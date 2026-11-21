@@ -23,6 +23,7 @@ import com.unuslumen.app.data.tools.SettingsToolDefinitions
 import com.unuslumen.app.data.tools.IntentToolDefinitions
 import com.unuslumen.app.data.tools.SshToolDefinitions
 import com.unuslumen.app.data.tools.PlanningToolDefinitions
+import com.unuslumen.app.data.tools.DecisionToolDefinitions
 import com.unuslumen.app.data.tools.ApprovalToolDefinitions
 import com.unuslumen.app.data.tools.KeyboardToolDefinitions
 import com.unuslumen.app.data.tools.CameraToolDefinitions
@@ -155,6 +156,24 @@ object GeneratedToolRegistrations {
         IntentToolDefinitions,
         SshToolDefinitions,
         PlanningToolDefinitions,
+        // The agent's own account of what it decided and why. A different kind of information
+        // from the model's reasoning channel: reasoning is whatever the provider emits and is
+        // absent on a model that has none, while a decision is a fact the agent deliberately
+        // writes and therefore exists on every model (specification section 4.2).
+        DecisionToolDefinitions,
+        // The verb an agent uses to say something mid-run without stopping. Section 5.3 asks for
+        // findings, blockage, milestones, risks and review requests as well as clarification; before
+        // this, every one of them had to arrive as a question and halt the work.
+        com.unuslumen.app.data.tools.AgentReportToolDefinitions,
+        // The check behind a completion claim. Section 4.4 asks an attempt, an acceptance and a
+        // real-world confirmation to be three distinguishable facts rather than one word, "done".
+        com.unuslumen.app.data.tools.VerificationToolDefinitions,
+        // Keeping what it learned, so its next job starts from it. The scope decides whether the
+        // write lands, and the executor reports that honestly rather than claiming a save.
+        com.unuslumen.app.data.tools.MemoryWriteToolDefinitions,
+        // Registering an output. Without it the outputs tab could never contain anything, because a
+        // report written into a chat message is not an artefact and has no provenance.
+        com.unuslumen.app.data.tools.ArtefactToolDefinitions,
         ApprovalToolDefinitions,
         KeyboardToolDefinitions,
         CameraToolDefinitions,

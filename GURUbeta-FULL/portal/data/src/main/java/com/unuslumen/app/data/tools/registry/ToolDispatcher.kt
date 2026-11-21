@@ -41,7 +41,7 @@ class ToolDispatcher(
     private val securityPolicy: ToolSecurityPolicy,
     private val argumentRepair: ToolArgumentRepair,
     private val context: Context,
-    private val observationRecorder: ToolObservationRecorder? = null
+    private val observationRecorder: ToolObservationRecorder? = null,
 ) {
 
     /**
@@ -133,7 +133,33 @@ class ToolDispatcher(
      * receive. A caller that records anything else is recording a call that did not
      * happen.
      */
-    suspend fun prepare(toolName: String, rawArgs: JsonObject): Preparation {
+    suspend fun prepare(
+        toolName: String,
+        rawArgs: JsonObject,
+        /**
+         * Which run and which invocation this call belongs to, when it belongs to one.
+         *
+         * OPTIONAL BECAUSE MOST DISPATCHES ARE NOT IN A RUN. A tool call from the main chat
+         * has no run, and inventing one would attach a permission decision to an execution
+         * that never happened. Null means "this call is not inside an agent run", which is
+         * the honest value for the main conversation.
+         */
+        runId: String? = null,
+        invocationId: String? = null,
+        /**
+         * Where this call's permission decision is reported.
+         *
+         * A PARAMETER RATHER THAN A CONSTRUCTOR FIELD, BECAUSE IT IS PER RUN. The
+         * dispatcher is a singleton serving every conversation in the app; a telemetry sink
+         * that knew one run would write that run's decisions for every caller forever. The
+         * caller with a run constructs the sink, so the run is decided at the call site that
+         * actually has one.
+         *
+         * Defaulted to a sink that records nothing, so the main chat passes through
+         * unchanged and no dispatch ever waits on a write.
+         */
+        telemetry: ToolTelemetry = ToolTelemetry.NONE,
+    ): Preparation {
         val resolvedName = nameResolver.resolve(toolName, registry, rawArgs)
             ?: return Preparation.Refused("No tool called '$toolName'.", RefusalKind.UNKNOWN_TOOL)
 
@@ -157,6 +183,30 @@ class ToolDispatcher(
 
         if (registry.getExecutor(resolvedName) == null) {
             return Preparation.Refused("No executor exists for '$resolvedName'.", RefusalKind.NO_EXECUTOR, resolvedName)
+        }
+
+        /*
+         * A REAL DECISION, REPORTED FROM THE PLACE THAT MADE IT.
+         *
+         * THIS IS THE ONLY LINE IN THE CODEBASE THAT CAN SAY A PERMISSION WAS GRANTED,
+         * because it is the only place that has just checked every declared permission and
+         * found them all granted. `permissions` may be empty, and that is still a decision:
+         * the dispatcher looked, found nothing to check, and authorised the call.
+         *
+         * REPORTED BEFORE THE SECURITY POLICY RUNS AND BEFORE EXECUTION. The permission
+         * question is answered at this point; whether the arguments then pass the policy is
+         * a different question with a different event. Reporting it later would make a call
+         * that failed the policy look like it was never permitted, which is a different and
+         * false claim.
+         */
+        runCatching {
+            telemetry.permissionGranted(
+                toolName = toolName,
+                resolvedName = resolvedName,
+                permissions = definition.permissions,
+                runId = runId,
+                invocationId = invocationId,
+            )
         }
 
         /*
@@ -207,7 +257,40 @@ class ToolDispatcher(
         conversationId: String? = null,
         progress: ToolProgressSink = ToolProgressSink.NONE,
         agentRunId: String? = null,
+        /**
+         * The agent whose run is dispatching, when an agent is the caller.
+         *
+         * INSTALLED ON THE COROUTINE HERE, BECAUSE THIS IS WHERE THE AGENT PATH ACTUALLY RUNS. The
+         * agent loop calls this directly rather than going through [dispatchStreaming], so a scope
+         * set only there would never reach an agent's tool call. A tool that writes memory reads the
+         * agent from that scope, which is what stops a model naming an agent in its arguments and
+         * writing into somebody else's memory.
+         *
+         * NULL IS THE MAIN ASSISTANT, which is a real value rather than an unknown one: a memory write
+         * from the portal belongs to GURU's own memory, not to any agent's.
+         */
+        agentName: String? = null,
         agentInvocationId: String? = null,
+    ): ToolDispatchResult = com.unuslumen.app.data.agents.withDispatchScope(
+        conversationId = conversationId,
+        agentName = agentName,
+    ) {
+        executePreparedInScope(
+            invocation = invocation,
+            conversationId = conversationId,
+            progress = progress,
+            agentRunId = agentRunId,
+            agentInvocationId = agentInvocationId,
+        )
+    }
+
+    /** The execution itself, run inside the scope the entry point installed. */
+    private suspend fun executePreparedInScope(
+        invocation: PreparedInvocation,
+        conversationId: String?,
+        progress: ToolProgressSink,
+        agentRunId: String?,
+        agentInvocationId: String?,
     ): ToolDispatchResult {
         val repairedArgs = invocation.repairedArgs
         val resolvedName = invocation.resolvedName

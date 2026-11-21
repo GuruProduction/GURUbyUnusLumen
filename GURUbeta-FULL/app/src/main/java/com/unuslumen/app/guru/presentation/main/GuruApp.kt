@@ -501,6 +501,26 @@ fun guruApp(
                 ) {
                     OttioScreen(navController = navController)
                 }
+                /*
+                 * THE ROOM, REACHED FROM THE PORTAL'S GLOW.
+                 *
+                 * The room is keyed by agent rather than by run, so opening it shows what that agent
+                 * is doing now rather than pinning one execution. The view model is scoped to this
+                 * entry, so leaving the room cancels its poll and nothing else: the run lives on
+                 * AgentRunHost, which is the whole reason closing a room does not stop work.
+                 */
+                composable<Screen.AgentRoomScreen>(
+                    enterTransition = { slideInTransition() },
+                    exitTransition = { slideOutTransition() },
+                ) {
+                    val args = it.toRoute<Screen.AgentRoomScreen>()
+                    com.unuslumen.app.agents.AgentRoomScreen(
+                        viewModel = org.koin.androidx.compose.koinViewModel(
+                            key = args.agentId,
+                            parameters = { org.koin.core.parameter.parametersOf(args.agentId) },
+                        )
+                    )
+                }
                 composable<Screen.HeartbeatScreen>(
                     enterTransition = { slideInTransition() },
                     exitTransition = { slideOutTransition() },

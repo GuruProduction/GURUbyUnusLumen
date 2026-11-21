@@ -19,46 +19,37 @@ import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Finding the televisions on the local network, and working out which vendor each one
- * is.
+ * Finding the televisions on the local network, and working out which vendor each one is.
  *
- * THE TWO FAILURES THIS REPLACES, both mine.
+ * WHAT THIS DOES, and why it finishes in seconds.
  *
- * The first was a sweep of a hand-picked list of thirteen ports. Steven's network has a
- * Virgin Media box answering only on 9080 and a streaming box answering on 5555 and
- * 8009, and neither port was in the list, so discovery probed nothing that could answer
- * and reported "0 televisions… they are off or on another network" while `netHosts`, on
- * the same subnet at the same moment, listed both. His words when he saw it: "its every
- * single port it misses" and "i didnt mean scan 1m oprts i meant scan every port that
- * sonethign would usually use".
+ *  1. HOST DISCOVERY. Every address on the /24 is asked whether it serves any port a consumer
+ *     device actually runs. A host that answers one is a device worth identifying; a host that
+ *     answers none is switched off or absent.
  *
- * The second was a six-second ceiling on the whole pass. A cap is not thoroughness and it
- * cannot find a device it did not reach. His verdict: "it shouldnt rin 6 seconds it should
- * fund everythign on the network".
+ *  2. IDENTIFICATION. Each device is asked what it is: its UPnP description first, because a
+ *     device that names itself is authoritative, then its banner, then, only where no reply names
+ *     a make, the exclusive remote port it is listening on.
  *
- * WHAT RUNS NOW, and why it can do this without being as slow as his first complaint.
+ *  3. SSDP AND BONJOUR run alongside, because a set that announces itself needs no port probe at all.
  *
- *  1. HOST DISCOVERY. ARP where it is readable, then a probe of the ports a live host
- *     almost always has, across the /24. This finds which addresses exist at all, which
- *     is the step that makes everything after it tractable: a house has a handful of
- *     live hosts and 254 addresses, and probing all 65535 ports against the 240 that are
- *     switched off is what makes a full scan impossible.
+ * THE 65,535-PORT SWEEP WAS THE BUG, AND IT WAS MY MISREADING OF WHAT HE ASKED FOR.
  *
- *  2. A FULL 1..65535 PORT SWEEP, but only against the hosts step 1 found alive. That is
- *     the literal "every single port" he asked for, applied where it can actually return
- *     something. Every open port is reported, not just the ones on a list.
+ * An earlier version swept every port on every host, having read "it misses every single port" as
+ * a demand for all 65,535. He had already said what he meant: "i didnt mean scan 1m oprts i meant
+ * scan every port that sonethign would usually use". A full sweep is sixteen and a half million
+ * connections on a subnet whose gateway answers for every address, which is what an emulator's
+ * user-mode network and some home routers do. That is not thoroughness, it is a call that never
+ * returns: the run it was holding went INTERRUPTED, a tool stayed marked RUNNING, and a message the
+ * person had typed sat queued with nothing to deliver it.
  *
- *  3. SSDP and Bonjour run alongside, because a set that names itself is identified
- *     without a port guess at all.
+ * So [DEVICE_PORTS] is the list, it is deliberately generous — every remote, cast, display,
+ * discovery, media and admin port a television, speaker, console, set-top box, printer or NAS is
+ * known to use — and it is a list rather than a range because that is what was asked for and
+ * because a list finishes.
  *
- * NO CEILING on the whole pass. Each individual socket call is still bounded, because an
- * unbounded socket is how the phone gets OOM-killed, but there is no wall-clock cut that
- * can hide a device. The cost is controlled by concurrency and by only scanning hosts
- * that answered, not by giving up early.
- *
- * IT REPORTS AS IT GOES. [discover] takes a progress callback and calls it for every
- * device it identifies and at each stage, so a long pass shows its findings while it
- * runs rather than making a person wait for a single answer at the end.
+ * IT REPORTS AS IT GOES. [discover] takes a progress callback and calls it for every device it
+ * identifies and at each stage, so a pass shows its findings while it runs.
  */
 class TvDiscovery(
     private val connectTimeoutMillis: Int = 220,
@@ -100,6 +91,7 @@ class TvDiscovery(
         val found = ConcurrentHashMap<String, DiscoveredTv>()
         val ranks = ConcurrentHashMap<String, Int>()
         val problems = java.util.Collections.synchronizedList(mutableListOf<String>())
+
 
         // One entry per host, and the more informative answer wins. A port guess is worth
         // less than a set that named itself, because a shared port can be two vendors and
@@ -145,29 +137,27 @@ class TvDiscovery(
         val liveHosts = findLiveHosts(prefix)
         if (liveHosts.isEmpty()) {
             problems.add(
-                "Nothing answered on $prefix.0/24 at any of the ports a device normally has, so " +
-                    "no address on this subnet could be swept further. A device that answers " +
-                    "nothing is off, on another network, or behind its own firewall.",
+                "Nothing answered on $prefix.0/24 at any device port, so there is nothing to " +
+                    "identify. A device that answers nothing is off, on another network, or " +
+                    "behind its own firewall.",
             )
             return@withContext DiscoveryReport(found.values.sortedBy { it.name }, problems)
         }
 
         onProgress(
-            "${liveHosts.size} live host(s) on the network; scanning all ${FULL_PORT_RANGE} ports " +
-                "on each",
+            "${liveHosts.size} device(s) on the network; checking ${DEVICE_PORTS.size} ports on each",
         )
 
         // THE FULL SWEEP, against live hosts only.
         scanEveryPort(liveHosts, portHints, found, ranks, problems, onProgress) { candidate, rank ->
             record(candidate, rank)
         }
-
         if (found.isEmpty()) {
             problems.add(
-                "Every port was probed on all ${liveHosts.size} live host(s) and none of them is a " +
-                    "television this build can identify. A set that answers no identifying port, " +
-                    "or that needs its network remote feature switched on in its own settings, " +
-                    "looks exactly like this.",
+                "Every device port was probed on all ${liveHosts.size} device(s) and none of them " +
+                    "is a television this build can identify. A set that answers no identifying " +
+                    "port, or that needs its network remote feature switched on in its own " +
+                    "settings, looks exactly like this.",
             )
         }
 
@@ -183,24 +173,27 @@ class TvDiscovery(
     // ------------------------------------------------------------------
 
     /**
-     * The addresses on this subnet that exist.
+     * The addresses on this subnet that serve a port a consumer device actually runs.
      *
-     * ARP first because it is instant and free, then a probe of the ports a live host
-     * almost always has. A host that appears in neither is not worth 65535 connections.
+     * ARP gives the ones the phone has already spoken to, which is instant and free. Everything
+     * else is found by asking each address whether it serves any port in [DEVICE_PORTS]: a host
+     * that answers one is a device, and a host that answers none is switched off or absent.
      *
-     * The ARP table is often unreadable at app UID, which is why the port probe exists at
-     * all: it does not need permission, only a host that answers.
+     * NO GENERIC LIVENESS PROBE. This used to decide an address was alive if it answered any of a
+     * hand-picked list, and on a subnet whose gateway answers for every address that made all 254
+     * look alive. The port list is the question now, so an address is only carried forward if
+     * something on it answered that a device would.
      */
     private suspend fun findLiveHosts(prefix: String): List<String> {
-        val live = ConcurrentHashMap.newKeySet<String>()
+        val known = ConcurrentHashMap.newKeySet<String>()
 
         for (entry in readArpTable()) {
-            if (entry.startsWith("$prefix.")) live.add(entry)
+            if (entry.startsWith("$prefix.")) known.add(entry)
         }
 
         val gate = Semaphore(concurrency)
         val addresses = (1..254).map { "$prefix.$it" }
-        val discovered = coroutineScope {
+        val answering = coroutineScope {
             addresses.map { address ->
                 async {
                     gate.withPermit {
@@ -209,13 +202,34 @@ class TvDiscovery(
                 }
             }.awaitAll().filterNotNull()
         }
-        live.addAll(discovered)
-        return live.toList().sortedBy { it.substringAfterLast('.').toIntOrNull() ?: 999 }
+        known.addAll(answering)
+        return known.toList().sortedBy { it.substringAfterLast('.').toIntOrNull() ?: 999 }
     }
 
-    /** Whether a host answers on any port a device practically always has open. */
-    private fun isAlive(address: String): Boolean =
-        ALIVENESS_PORTS.any { isOpen(address, it) }
+    /** Whether a host serves any port a consumer device is known to run. */
+    private suspend fun isAlive(address: String): Boolean = coroutineScope {
+        /*
+         * ALL OF THE LIST AT ONCE, AND AN EARLY EXIT. Probing sixteen ports in sequence against a
+         * host that is switched off costs sixteen timeouts; asking them together costs one, and
+         * the first yes cancels the rest. That difference is the whole reason a /24 pass finishes
+         * in seconds rather than minutes.
+         */
+        val probes = DEVICE_PORTS.map { port ->
+            async {
+                if (isOpen(address, port)) port else null
+            }
+        }
+        var found: Int? = null
+        for (probe in probes) {
+            val hit = probe.await()
+            if (hit != null) {
+                found = hit
+                probes.forEach { it.cancel() }
+                break
+            }
+        }
+        found != null
+    }
 
     private fun readArpTable(): List<String> = runCatching {
         val file = java.io.File("/proc/net/arp")
@@ -230,15 +244,14 @@ class TvDiscovery(
     }.getOrDefault(emptyList())
 
     // ------------------------------------------------------------------
-    // The full port sweep
+    // Identification
     // ------------------------------------------------------------------
 
     /**
-     * Every port on every live host, with a banner read from each that opens.
+     * Ask every device port on every device host, and identify what answers.
      *
-     * This is the literal "every single port" pass. It is bounded by concurrency rather
-     * than by a port list or a wall clock, which is the difference between missing a set
-     * and finding one.
+     * NO CLOCK AND NO FULL RANGE. The work is bounded by [DEVICE_PORTS] and by how many addresses
+     * answered, which is a few thousand connections rather than sixteen million.
      */
     private suspend fun scanEveryPort(
         hosts: List<String>,
@@ -254,29 +267,23 @@ class TvDiscovery(
         for ((index, host) in hosts.withIndex()) {
             onProgress("scanning ${index + 1} of ${hosts.size}: $host")
 
-            // Every port on this host, in batches so the deferred list stays bounded
-            // without ever shortening the RANGE. Batching here is about memory, never
-            // about coverage: all 65535 are always attempted.
-            val openPorts = mutableListOf<Int>()
-            for (chunk in (1..FULL_PORT_RANGE).chunked(PORT_CHUNK)) {
-                openPorts += coroutineScope {
-                    chunk.map { port ->
-                        async {
-                            gate.withPermit {
-                                if (isOpen(host, port)) port else null
-                            }
+            val openPorts = coroutineScope {
+                DEVICE_PORTS.map { port ->
+                    async {
+                        gate.withPermit {
+                            if (isOpen(host, port)) port else null
                         }
-                    }.awaitAll().filterNotNull()
-                }
+                    }
+                }.awaitAll().filterNotNull()
             }
 
             if (openPorts.isEmpty()) {
-                onProgress("$host answered no port at all")
+                onProgress("$host answered no device port")
                 continue
             }
 
             onProgress(
-                "$host has ${openPorts.size} open port(s): " +
+                "$host has ${openPorts.size} device port(s) open: " +
                     openPorts.take(24).joinToString(", ") +
                     if (openPorts.size > 24) " and ${openPorts.size - 24} more" else "",
             )
@@ -692,11 +699,61 @@ class TvDiscovery(
         /** How long Bonjour listens, because an mDNS answer arrives in milliseconds. */
         private const val MDNS_WINDOW_MILLIS = 1500
 
-        /** The range a full sweep covers. All of it, which is the point. */
-        private const val FULL_PORT_RANGE = 65535
-
-        /** How many port probes are assembled per batch before they are awaited. */
-        private const val PORT_CHUNK = 2048
+        /**
+         * Every port a consumer device on a home network is known to run.
+         *
+         * A LIST, NOT A RANGE, AND THAT IS THE WHOLE POINT. His words were "i didnt mean scan 1m
+         * oprts i meant scan every port that sonethign would usually use". A 1..65535 sweep is
+         * sixteen and a half million connections across a /24, it cannot finish while holding an
+         * agent's run, and it finds nothing a list of real device ports misses.
+         *
+         * GENEROUS ON PURPOSE, because missing a port means missing a television. It covers the
+         * remote-control and app-launch ports for every major make, the cast and display protocols,
+         * the discovery services, the media servers and the admin interfaces a set-top box, speaker,
+         * console, printer or NAS exposes. A device that runs something outside this list is a
+         * device that would answer SSDP or Bonjour instead, and both of those run first.
+         */
+        private val DEVICE_PORTS: List<Int> = listOf(
+            // Television remote control and app launch, by make.
+            8060,                                   // Roku ECP
+            8001, 8002,                             // Samsung remote
+            3000, 3001,                             // LG webOS
+            1925, 1926, 9000,                       // Philips
+            7345,                                   // Vizio
+            6466, 6467,                             // Android TV remote
+            8009,                                   // DIAL, and Google Cast
+            8008, 8009,                             // Chromecast
+            9080,                                   // Virgin Media / Horizon
+            60000,                                  // Amazon Fire TV DIAL
+            // Casting and display.
+            7000,                                   // AirPlay / RAOP
+            7100,                                   // AirPlay video
+            7236, 7250,                             // Spotify Connect
+            1900,                                   // SSDP
+            5353,                                   // Bonjour
+            // Streaming, media servers and set-top boxes.
+            554, 8554,                              // RTSP
+            1935,                                   // RTMP
+            5000,                                   // UPnP media / Synology
+            8200, 8300,                             // DLNA servers
+            32400,                                  // Plex
+            8096,                                   // Jellyfin
+            8920,                                   // Emby
+            9197, 9198,                             // Sony
+            // Smart speakers and home hubs.
+            8009, 8443, 10000,                      // Google Home
+            4070,                                   // Amazon Echo
+            // Consoles.
+            3074, 3075,                             // Xbox Live
+            9295, 9296, 9297,                       // PlayStation Remote Play
+            // Printers and network storage, because they are devices on the network too.
+            515, 631, 9100,                         // printing
+            139, 445,                               // SMB
+            548,                                    // AFP
+            2049,                                   // NFS
+            // Administration, so a device is not missed for being headless.
+            22, 23, 80, 443, 8080, 8081, 8443, 8888, 49152,
+        ).distinct().sorted()
 
         /**
          * The ports worth asking to identify themselves, once a host has answered.
@@ -718,18 +775,6 @@ class TvDiscovery(
          * small enough that no single response can threaten the heap.
          */
         private const val MAX_LOCAL_DOCUMENT_BYTES = 64 * 1024
-
-        /**
-         * The ports probed to decide whether a host exists at all.
-         *
-         * These are not a substitute for the full sweep; they are the cheap filter that
-         * makes it possible. A host answering none of them gets no full sweep, because
-         * 65535 connections against a switched-off address returns nothing and costs the
-         * whole timeout.
-         */
-        private val ALIVENESS_PORTS = listOf(
-            80, 443, 22, 23, 53, 445, 554, 631, 1900, 5000, 5555, 8009, 8060, 8080, 9080, 49152,
-        )
 
         /** A set that named itself, or was confirmed by a document it served. */
         private const val RANK_NAMED = 2

@@ -23,6 +23,31 @@ import org.koin.dsl.module
  * things across a Gradle boundary, which is where it went wrong twice.
  */
 val agentsModule = module {
+    /*
+     * THE ROOM'S VIEW MODEL TAKES ITS AGENT ID FROM THE CALLER, because a room is always about one
+     * named agent. A factory with a parameter is what Koin needs for that, and it keeps the id a
+     * value rather than something the view model reaches for.
+     */
+    viewModel { params ->
+        AgentRoomViewModel(
+            agentId = params.get(),
+            assembler = get(),
+            broker = get(),
+            runtime = get(),
+            runHost = get(),
+            // The one write the room owns: what it shows. Everything else about an agent is the
+            // creator's, and a narrow binding is how that stays true.
+            agents = get<GuruAgentRepository>(),
+            /*
+             * A RUN NEEDS A CONVERSATION, AND A ROOM HAS NONE UNTIL IT MAKES ONE.
+             *
+             * The foreign key on `agent_runs.conversation_id` is real, so starting an agent from
+             * this screen means creating the conversation it will belong to. Without this the room
+             * could only ever display runs somebody else had started.
+             */
+            conversations = get(),
+        )
+    }
     viewModel {
         AgentsViewModel(
             agentRepository = get<GuruAgentRepository>(),

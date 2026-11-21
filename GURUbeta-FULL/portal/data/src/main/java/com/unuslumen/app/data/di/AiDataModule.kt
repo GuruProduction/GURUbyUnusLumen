@@ -352,7 +352,10 @@ val aiDataModule = module {
     // three, plus one: the registry is a dependency because listTools reports what
     // this phone actually holds, and because a grant is checked against a tool name
     // that exists rather than stored as one that would never fire.
-    factory { com.unuslumen.app.data.tools.AgentAuthoringToolExecutor(get(), get(), get()) }
+    // Four arguments since schedules landed: the executor now stands an agent up to run on its own,
+    // and the permission for that is checked at creation so a caller learns immediately rather than
+    // finding an empty history a week later.
+    factory { com.unuslumen.app.data.tools.AgentAuthoringToolExecutor(get(), get(), get(), get()) }
     /*
      * THE RUN LEDGER, AND WHY IT IS A SINGLETON.
      *
@@ -369,6 +372,82 @@ val aiDataModule = module {
         )
     }
     single { com.unuslumen.app.data.agents.AgentRecoveryCoordinator(get(), get()) }
+    /*
+     * THE INTERACTION BROKER, AND WHY IT IS A SINGLETON.
+     *
+     * The message sequence is a read-modify-write against one run's last row, exactly as the
+     * ledger's is. Two instances would be two writers racing the same counter, and the unique
+     * index on (run_id, sequence_number) would then refuse a legitimate write with an error
+     * nobody could explain from the code that caused it.
+     */
+    single {
+        com.unuslumen.app.data.agents.AgentInteractionBroker(
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+        )
+    }
+    /*
+     * THE ARTEFACT AND CONTEXT SERVICE.
+     *
+     * A singleton because it owns no state and every call is a database write: two instances would
+     * behave identically, and one keeps the dependency graph smaller.
+     */
+    single {
+        com.unuslumen.app.data.agents.AgentArtefactService(
+            get(),
+            get(),
+            get(),
+            get(),
+        )
+    }
+    /*
+     * THE DELEGATION SERVICE, A SINGLETON FOR THE SAME REASON AS THE BROKER.
+     *
+     * It resolves the parent's depth and child count from the rows and then starts a child. Two
+     * instances would be two objects asking the same questions of the same tables, which is harmless
+     * but pointless, and one keeps the graph honest about there being one route to delegation.
+     */
+    /*
+     * THE AGENT MEMORY LANE. A singleton because it holds no state and every call goes to the one
+     * brain, which is the point: agents read and write the same memory the main chat does rather
+     * than growing a second store.
+     */
+    single {
+        com.unuslumen.app.data.agents.AgentMemoryService(
+            get(),
+            get(),
+        )
+    }
+    single {
+        com.unuslumen.app.data.agents.AgentDelegationService(
+            get(),
+            get(),
+            get(),
+            get(),
+        )
+    }
+    /*
+     * THE ALERT SERVICE. What makes `AgentNotifications` a setting that fires rather than one that is
+     * stored and never read. A singleton because it holds only the context and posts through the
+     * platform, and every alert for one run must replace the previous one rather than stack.
+     */
+    single { com.unuslumen.app.data.agents.AgentAlertService(get<Context>()) }
+    // The schedule runner. A singleton because sweeping twice concurrently would be two runners
+    // racing the same due window, which is what the conditional advance exists to survive but does
+    // not need to be provoked.
+    single {
+        com.unuslumen.app.data.agents.AgentScheduleService(
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+        )
+    }
     factory {
         com.unuslumen.app.data.agents.AgentRuntime(
             get(),
@@ -376,6 +455,10 @@ val aiDataModule = module {
             get(),
             get(),
             get<Context>(),
+            get(),
+            get(),
+            get(),
+            // The alert service: how an agent that finishes or blocks reaches its owner.
             get(),
         )
     }

@@ -27,12 +27,28 @@ import kotlinx.coroutines.CoroutineScope
 data class DispatchScope(
     val conversationId: String?,
     val originMessageId: String? = null,
+    /**
+     * The agent whose run is dispatching this call, when an agent is the caller.
+     *
+     * CARRIED FOR THE SAME REASON THE CONVERSATION IS, AND WITH A SHARPER CONSEQUENCE. A tool that
+     * writes into memory must write into the memory of the agent that called it, and a tool argument
+     * naming an agent would let one agent write into another's memory with that other agent's
+     * provenance on the fact. The agent is therefore read from the coroutine, where it cannot be
+     * named by the model and cannot be raced by a second dispatch.
+     *
+     * NULL MEANS THE MAIN ASSISTANT IS CALLING, which is not the same as an unknown agent: a memory
+     * write from the main chat belongs to GURU's own memory rather than to any agent's.
+     */
+    val agentName: String? = null,
 ) : AbstractCoroutineContextElement(Key) {
 
     companion object Key : CoroutineContext.Key<DispatchScope>
 
     /** The conversation this coroutine is dispatching inside, if one was set. */
     fun conversationId(): String? = conversationId
+
+    /** The agent whose run is calling, or null when the main assistant is. */
+    fun agentName(): String? = agentName
 }
 
 /** The scope this coroutine is running in, or null when none was installed. */
@@ -43,8 +59,9 @@ suspend fun currentDispatchScope(): DispatchScope? =
 suspend fun <T> withDispatchScope(
     conversationId: String?,
     originMessageId: String? = null,
+    agentName: String? = null,
     block: suspend CoroutineScope.() -> T,
 ): T = kotlinx.coroutines.withContext(
-    DispatchScope(conversationId, originMessageId),
+    DispatchScope(conversationId, originMessageId, agentName),
     block,
 )

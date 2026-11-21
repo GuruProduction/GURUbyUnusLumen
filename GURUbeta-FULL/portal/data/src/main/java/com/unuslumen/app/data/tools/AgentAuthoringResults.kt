@@ -113,3 +113,50 @@ data class ListToolsResult(
     val tools: List<ToolCatalogueEntry> = emptyList(),
     val error: String? = null
 ) : ToolResultData
+
+/**
+ * One schedule, as a caller needs it rather than as the table stores it.
+ *
+ * THE MISSED COUNT AND THE LAST FAILURE ARE THE POINT. A schedule that has been failing silently for
+ * a week looks exactly like one that never ran, and both look like work that simply did not happen.
+ * Reporting what went wrong and how many windows went by is what turns an empty history into an
+ * answer.
+ */
+@Serializable
+data class ScheduleEntry(
+    val scheduleId: String,
+    val agentId: String,
+    val title: String,
+    /** The job as set up. It is frozen, so this is what will actually run next time. */
+    val job: String,
+    val enabled: Boolean,
+    val intervalMinutes: Long,
+    /** When it next runs, or absent when it is disarmed and therefore has no next time. */
+    val nextDueAt: Long? = null,
+    val lastStartedAt: Long? = null,
+    val lastRunId: String? = null,
+    /** How many due windows have gone by with no run started. */
+    val missedCount: Int = 0,
+    /** Why the most recent attempt did not start, when it did not. */
+    val lastFailure: String? = null,
+) : ToolResultData
+
+@Serializable
+data class SchedulesResult(
+    val success: Boolean,
+    val total: Int = 0,
+    val schedules: List<ScheduleEntry> = emptyList(),
+    val error: String? = null,
+) : ToolResultData
+
+/** What creating, arming or removing one schedule produced. */
+@Serializable
+data class ScheduleResult(
+    val success: Boolean,
+    val agent: String = "",
+    val scheduleId: String = "",
+    val title: String = "",
+    val intervalMinutes: Long = 0,
+    val nextDueAt: Long? = null,
+    val error: String? = null,
+) : ToolResultData

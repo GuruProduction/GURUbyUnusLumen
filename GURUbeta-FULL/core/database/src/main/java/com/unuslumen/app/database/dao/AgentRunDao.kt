@@ -46,6 +46,17 @@ interface AgentRunDao {
     suspend fun runsForAgent(agentId: String, limit: Int = 50): List<AgentRunEntity>
 
     /**
+     * Every run that named this one as its parent.
+     *
+     * THE CHAIN IS ONE INDEXED QUERY. A delegated run carries `parent_run_id`, so a parent finds its
+     * children without a second table. The fan-out ceiling is counted from these real rows rather
+     * than from a number the parent reported about itself, because a parent that could count its own
+     * children could under-report them.
+     */
+    @Query("SELECT * FROM agent_runs WHERE parent_run_id = :parentRunId ORDER BY created_at ASC")
+    suspend fun childrenOf(parentRunId: String): List<AgentRunEntity>
+
+    /**
      * Every run the recovery scan must consider.
      *
      * NON-TERMINAL ONLY. A finished run needs no recovery, and scanning thousands of
@@ -59,6 +70,23 @@ interface AgentRunDao {
         """
     )
     suspend fun nonTerminalRuns(): List<AgentRunEntity>
+
+    /**
+     * Every run that is still alive, as it changes.
+     *
+     * WHAT THE PORTAL'S GLOW READS. `nonTerminalRuns` is a one-shot query for the recovery scan; a
+     * glow must appear when work starts and disappear when it ends, which needs a stream. The status
+     * set is the same one recovery considers alive, so the indicator and the recovery scan cannot
+     * disagree about whether a run is still around.
+     */
+    @Query(
+        """
+        SELECT * FROM agent_runs
+        WHERE status IN ('CREATED','STARTING','RUNNING','WAITING_FOR_GURU','WAITING_FOR_USER','WAITING_FOR_TOOL','PAUSED','INTEGRATING','INTERRUPTED')
+        ORDER BY updated_at DESC
+        """
+    )
+    fun observeActiveRuns(): Flow<List<AgentRunEntity>>
 
     /** The runs whose owner may have died: not waiting, and holding a lease that has gone quiet. */
     @Query(

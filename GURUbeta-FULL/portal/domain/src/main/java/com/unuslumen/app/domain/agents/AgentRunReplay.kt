@@ -336,7 +336,40 @@ object AgentRunReplay {
                     }
                 }
 
-                else -> Unit
+                /*
+                 * NO SILENT FALLTHROUGH. THIS IS THE LINE THE WHOLE CLASSIFICATION EXISTS FOR.
+                 *
+                 * This used to be `else -> Unit`, so any event type the reducer had no branch
+                 * for was discarded without a trace. A ledger that has been faithfully written
+                 * for two years would rebuild a session quietly missing every fact added after
+                 * this file was last touched, and nothing anywhere would say so.
+                 *
+                 * The type's declared policy decides what happens now. A type classed as having
+                 * no session effect is ignored and that is correct. A type classed for a later
+                 * phase is reported as an inconsistency, because replaying it today means a
+                 * producer exists that the reducer was never taught to read. An undeclared type
+                 * is itself the problem: somebody wrote an event the vocabulary does not know.
+                 */
+                else -> when (val policy = AgentEventTypes.RESTORE_POLICY[event.type]) {
+                    is AgentEventTypes.RestorePolicy.Rebuilds -> {
+                        // Declared as changing the session, but this branch never ran: the
+                        // reducer is missing a case it promised to handle.
+                        problems += "event ${event.sequence} is '${event.type}', which is declared to " +
+                            "rebuild session state, but the reducer has no branch for it"
+                    }
+                    is AgentEventTypes.RestorePolicy.NoSessionEffect -> Unit
+                    is AgentEventTypes.RestorePolicy.LaterPhase -> {
+                        problems += "event ${event.sequence} is '${event.type}', which belongs to a later " +
+                            "phase (${policy.reason}) but was written by this run. The reducer cannot " +
+                            "honour it yet, so the rebuild is reported as inconsistent rather than " +
+                            "quietly missing it."
+                    }
+                    null -> {
+                        problems += "event ${event.sequence} has type '${event.type}', which is not in " +
+                            "AgentEventTypes.ALL at all. It was written by something that does not share " +
+                            "this vocabulary."
+                    }
+                }
             }
         }
 

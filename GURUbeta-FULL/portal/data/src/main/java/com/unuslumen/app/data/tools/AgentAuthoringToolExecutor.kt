@@ -35,6 +35,15 @@ class AgentAuthoringToolExecutor(
     private val agentRepository: GuruAgentRepository,
     private val agentCatalogue: AgentCatalogue,
     private val toolRegistry: ToolRegistry,
+    /**
+     * The schedule store, for the four verbs that stand an agent up to work on its own.
+     *
+     * HERE RATHER THAN IN ITS OWN SET BECAUSE SCHEDULING IS AUTHORING. The claims and the behaviour
+     * for one area belong in one pair of files, which is the rule this codebase already follows for
+     * every tool family; a separate set for four verbs that edit an agent's operating arrangement
+     * would be a second place to look for the same thing.
+     */
+    private val schedules: com.unuslumen.app.data.agents.AgentScheduleService,
 ) : ToolExecutor {
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -57,6 +66,15 @@ class AgentAuthoringToolExecutor(
         AgentAuthoringToolDefinitions.SET_AGENT_ENABLED,
         AgentAuthoringToolDefinitions.PUBLISH_AGENT,
         AgentAuthoringToolDefinitions.SEARCH_AGENTS,
+        /*
+         * THE SCHEDULE VERBS TOO, AND FOR A SHARPER REASON THAN THE REST. An agent that could create
+         * a schedule could arrange to run itself again later, without anybody asking, for ever. That
+         * is the recursion the whole reserve list exists to stop, with a timer attached.
+         */
+        AgentAuthoringToolDefinitions.SCHEDULE_AGENT,
+        AgentAuthoringToolDefinitions.LIST_SCHEDULES,
+        AgentAuthoringToolDefinitions.SET_SCHEDULE_ENABLED,
+        AgentAuthoringToolDefinitions.DELETE_SCHEDULE,
     )
 
     override suspend fun execute(toolName: String, args: Map<String, Any?>): ToolExecutionResult {
@@ -68,6 +86,10 @@ class AgentAuthoringToolExecutor(
             AgentAuthoringToolDefinitions.PUBLISH_AGENT -> publishAgent(args)
             AgentAuthoringToolDefinitions.SEARCH_AGENTS -> searchAgents(args)
             AgentAuthoringToolDefinitions.LIST_TOOLS -> listTools(args)
+            AgentAuthoringToolDefinitions.SCHEDULE_AGENT -> scheduleAgent(args)
+            AgentAuthoringToolDefinitions.LIST_SCHEDULES -> listSchedules(args)
+            AgentAuthoringToolDefinitions.SET_SCHEDULE_ENABLED -> setScheduleEnabled(args)
+            AgentAuthoringToolDefinitions.DELETE_SCHEDULE -> deleteSchedule(args)
             else -> ToolExecutionResult.error("Unknown tool: $toolName")
         }
     }
@@ -376,6 +398,234 @@ class AgentAuthoringToolExecutor(
             ),
             SaveAgentToolResult.serializer(),
         )
+    }
+
+    // ------------------------------------------------------------------
+    // Schedules
+    // ------------------------------------------------------------------
+
+    /**
+     * Stand an agent up to work on its own.
+     *
+     * THE THREE REFUSALS ARE THE FEATURE. An agent that does not exist, one that has not been granted
+     * scheduled operation, and an interval below the floor are all refused with the reason, because
+     * a schedule that is created and then silently never fires is worse than one that was never
+     * created. The permission check in particular is the whole gate on unattended work, so it is
+     * checked here as well as in the runner: a caller should learn at creation that it will never
+     * run, not by discovering an empty history a week later.
+     */
+    private suspend fun scheduleAgent(args: Map<String, Any?>): ToolExecutionResult {
+        val key = (args["agent"] as? String)?.trim().orEmpty()
+        if (key.isEmpty()) return ToolExecutionResult.error("Missing 'agent' parameter")
+
+        val title = (args["title"] as? String)?.trim().orEmpty()
+        if (title.isEmpty()) return ToolExecutionResult.error("Missing 'title' parameter")
+
+        val job = (args["job"] as? String)?.trim().orEmpty()
+        if (job.isEmpty()) {
+            return ToolExecutionResult.error(
+                "'job' was empty. A scheduled run starts cold every time, so the job has to carry the " +
+                    "whole instruction rather than referring to anything said here."
+            )
+        }
+
+        val intervalMinutes = (args["intervalMinutes"] as? Number)?.toLong()
+            ?: return ToolExecutionResult.error("Missing 'intervalMinutes' parameter")
+
+        val agent = agentRepository.resolveAgent(key)
+            ?: return success(
+                ScheduleResult(
+                    success = false,
+                    error = "No agent called '$key' on this phone, so nothing was scheduled.",
+                ),
+                ScheduleResult.serializer(),
+            )
+
+        if (!agent.enabled) {
+            return success(
+                ScheduleResult(
+                    success = false,
+                    agent = agent.name,
+                    error = "${agent.name} is switched off, so a schedule would never start it. " +
+                        "Switch it on first.",
+                ),
+                ScheduleResult.serializer(),
+            )
+        }
+
+        if (!agent.autonomy.operateOnSchedules) {
+            return success(
+                ScheduleResult(
+                    success = false,
+                    agent = agent.name,
+                    error = "${agent.name} is not permitted to work on a schedule. Allow scheduled " +
+                        "operation in its autonomy settings first, because unattended work is a " +
+                        "permission rather than a convenience.",
+                ),
+                ScheduleResult.serializer(),
+            )
+        }
+
+        val intervalMillis = intervalMinutes * 60_000L
+        if (intervalMillis < com.unuslumen.app.domain.agents.AgentScheduleRules.MIN_INTERVAL_MILLIS) {
+            return success(
+                ScheduleResult(
+                    success = false,
+                    agent = agent.name,
+                    error = "An interval of $intervalMinutes minute(s) is below the floor of " +
+                        "${com.unuslumen.app.domain.agents.AgentScheduleRules.MIN_INTERVAL_MILLIS / 60_000}. " +
+                        "Work due faster than a model answers would queue faster than it drains.",
+                ),
+                ScheduleResult.serializer(),
+            )
+        }
+
+        val firstInMinutes = (args["firstRunInMinutes"] as? Number)?.toLong() ?: 0L
+        val now = System.currentTimeMillis()
+
+        return try {
+            val created = schedules.create(
+                agentId = agent.id,
+                title = title,
+                assignment = job,
+                intervalMillis = intervalMillis,
+                firstDueAt = now + (firstInMinutes.coerceAtLeast(0) * 60_000L),
+                now = now,
+            )
+            success(
+                ScheduleResult(
+                    success = true,
+                    agent = agent.name,
+                    scheduleId = created.scheduleId,
+                    title = created.title,
+                    intervalMinutes = created.intervalMillis / 60_000,
+                    nextDueAt = created.nextDueAt,
+                ),
+                ScheduleResult.serializer(),
+            )
+        } catch (e: Exception) {
+            success(
+                ScheduleResult(
+                    success = false,
+                    agent = agent.name,
+                    error = "The schedule could not be saved: ${e.message ?: e.javaClass.simpleName}.",
+                ),
+                ScheduleResult.serializer(),
+            )
+        }
+    }
+
+    private suspend fun listSchedules(args: Map<String, Any?>): ToolExecutionResult {
+        val key = (args["agent"] as? String)?.trim().orEmpty()
+        val rows = if (key.isEmpty()) {
+            schedules.all()
+        } else {
+            val agent = agentRepository.resolveAgent(key)
+                ?: return success(
+                    SchedulesResult(
+                        success = false,
+                        error = "No agent called '$key' on this phone.",
+                    ),
+                    SchedulesResult.serializer(),
+                )
+            schedules.forAgent(agent.id)
+        }
+
+        val entries = rows.map { row ->
+            ScheduleEntry(
+                scheduleId = row.scheduleId,
+                agentId = row.agentId,
+                title = row.title,
+                job = row.assignment,
+                enabled = row.enabled,
+                intervalMinutes = row.intervalMillis / 60_000,
+                nextDueAt = row.nextDueAt,
+                lastStartedAt = row.lastStartedAt,
+                lastRunId = row.lastRunId,
+                missedCount = row.missedCount,
+                lastFailure = row.lastFailure,
+            )
+        }
+        return success(
+            SchedulesResult(
+                success = true,
+                total = entries.size,
+                schedules = entries,
+                error = if (entries.isEmpty()) {
+                    "Nothing is scheduled on this phone. scheduleAgent stands an agent up to run on its own."
+                } else null,
+            ),
+            SchedulesResult.serializer(),
+        )
+    }
+
+    private suspend fun setScheduleEnabled(args: Map<String, Any?>): ToolExecutionResult {
+        val scheduleId = (args["scheduleId"] as? String)?.trim().orEmpty()
+        if (scheduleId.isEmpty()) return ToolExecutionResult.error("Missing 'scheduleId' parameter")
+        val enabled = args["enabled"] as? Boolean
+            ?: return ToolExecutionResult.error("Missing 'enabled' parameter, true or false")
+
+        return try {
+            schedules.setEnabled(scheduleId, enabled)
+            val stored = schedules.all().firstOrNull { it.scheduleId == scheduleId }
+            success(
+                ScheduleResult(
+                    success = stored != null,
+                    scheduleId = scheduleId,
+                    title = stored?.title.orEmpty(),
+                    intervalMinutes = (stored?.intervalMillis ?: 0L) / 60_000,
+                    nextDueAt = stored?.nextDueAt,
+                    error = if (stored == null) "No schedule with that id exists." else null,
+                ),
+                ScheduleResult.serializer(),
+            )
+        } catch (e: Exception) {
+            success(
+                ScheduleResult(
+                    success = false,
+                    scheduleId = scheduleId,
+                    error = "The schedule could not be changed: ${e.message ?: e.javaClass.simpleName}.",
+                ),
+                ScheduleResult.serializer(),
+            )
+        }
+    }
+
+    private suspend fun deleteSchedule(args: Map<String, Any?>): ToolExecutionResult {
+        val scheduleId = (args["scheduleId"] as? String)?.trim().orEmpty()
+        if (scheduleId.isEmpty()) return ToolExecutionResult.error("Missing 'scheduleId' parameter")
+
+        val existing = schedules.all().firstOrNull { it.scheduleId == scheduleId }
+            ?: return success(
+                ScheduleResult(
+                    success = false,
+                    scheduleId = scheduleId,
+                    error = "No schedule with that id exists, so nothing was deleted.",
+                ),
+                ScheduleResult.serializer(),
+            )
+
+        return try {
+            schedules.delete(scheduleId)
+            success(
+                ScheduleResult(
+                    success = true,
+                    scheduleId = scheduleId,
+                    title = existing.title,
+                ),
+                ScheduleResult.serializer(),
+            )
+        } catch (e: Exception) {
+            success(
+                ScheduleResult(
+                    success = false,
+                    scheduleId = scheduleId,
+                    title = existing.title,
+                    error = "The schedule could not be removed: ${e.message ?: e.javaClass.simpleName}.",
+                ),
+                ScheduleResult.serializer(),
+            )
+        }
     }
 
     // ------------------------------------------------------------------

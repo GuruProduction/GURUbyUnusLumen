@@ -231,9 +231,26 @@ private fun PortalScreenScoped(
         }
     }
 
+    /*
+     * WHAT IS ALIVE, FOR THE GLOW AND NOTHING ELSE.
+     *
+     * Read from the run rows rather than from the host, so a paused or interrupted run is still in
+     * front of the person: those are states they can act on, and a glow that vanished because the job
+     * ended would hide work waiting on them. Empty means nothing is drawn at all.
+     */
+    val presence by koinInject<com.unuslumen.app.domain.agents.AgentPresenceSource>()
+        .livePresence()
+        .collectAsStateWithLifecycle(initialValue = emptyList())
+
     PortalScreenContent(
         uiState = uiState,
         messages = messages,
+        liveAgent = com.unuslumen.app.domain.agents.LivePresence.mostUrgent(presence),
+        onOpenAgent = { live ->
+            navController.navigate(Screen.AgentRoomScreen(agentId = live.agentId)) {
+                launchSingleTop = true
+            }
+        },
         attachments = attachments,
         aiEnabled = aiEnabled,
         onEvent = viewModel::onEvent,
@@ -272,6 +289,15 @@ fun PortalScreenContent(
     messages: List<AiMessage>,
     attachments: List<AiMessageAttachment>,
     aiEnabled: Boolean,
+    /**
+     * The one live agent, when there is one, for the edge glow.
+     *
+     * ONE, NOT A LIST. The runtime admits one concurrent run, so a second glow would draw work that
+     * is not happening; and the ruling on this surface is that the Portal carries a coloured edge and
+     * one tap target and nothing else about an agent.
+     */
+    liveAgent: com.unuslumen.app.domain.agents.LivePresence? = null,
+    onOpenAgent: (com.unuslumen.app.domain.agents.LivePresence) -> Unit = {},
     onEvent: (PortalEvent) -> Unit,
     onSlashCommand: (GuruSlashCommand, CommandArgs?, com.unuslumen.app.domain.slashcommands.SlashCommandHost?) -> Unit,
     navController: NavHostController,
@@ -735,6 +761,31 @@ fun PortalScreenContent(
                 guruTheme = guruTheme,
                 chatTextConfig = chatTextConfig,
                 modifier = Modifier.fillMaxSize().padding(paddingValues)
+            )
+
+            /*
+             * THE AGENT'S PRESENCE, AND NOTHING ELSE ABOUT IT.
+             *
+             * A coloured edge and one tap target while a run exists, gone when nothing is running.
+             * Drawn AFTER the canvas so it sits over the conversation, and it takes no touch except
+             * on the mark itself, because the Portal underneath is the person's conversation with
+             * GURU and must stay usable while an agent works.
+             *
+             * This is the whole of the specification's section 9.1 in this screen. Every fact about
+             * the agent is one tap away in its room.
+             */
+            com.unuslumen.app.presentation.components.AgentPortalGlow(
+                node = liveAgent?.let {
+                    com.unuslumen.app.presentation.components.AgentPresenceNode(
+                        runId = it.runId,
+                        agentId = it.agentId,
+                        agentName = it.agentName,
+                        colourIndex = it.colourIndex,
+                        status = it.status,
+                    )
+                },
+                onOpen = { onOpenAgent(liveAgent!!) },
+                modifier = Modifier.fillMaxSize(),
             )
         }
 

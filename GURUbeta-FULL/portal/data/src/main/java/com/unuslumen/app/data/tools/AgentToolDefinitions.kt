@@ -61,7 +61,7 @@ object AgentToolDefinitions : ToolSetRegistration {
         ),
         ToolDefinition(
             name = SPAWN_AGENT,
-            description = "Start a job with a saved agent. The agent runs with its own instructions and only the tools it declares. It can PAUSE and ask you a question, so this call has three possible outcomes and you must read which one you got. FINISHED means the report is in hand. ANSWERED means the agent asked you something and is now waiting: read the question, decide the answer, and call resumeAgent with the sessionId and your reply, and it carries on from where it stopped. FAILED means it could not run and the error says why. A session survives between calls, so one job can take as many exchanges as it needs.",
+            description = "Start a job with a saved agent. The agent runs with its own instructions and only the tools it declares. It can PAUSE and ask you a question, and a person can stop it part way through, so this call has four possible outcomes and you must read which one you got. FINISHED means the report is in hand. ANSWERED means the agent asked you something and is now waiting: read the question, decide the answer, and call resumeAgent with the sessionId and your reply, and it carries on from where it stopped. PAUSED means a person stopped it with its working state kept: report what it had produced and do not start the job again, because the run can be carried on. FAILED means it could not run and the error says why. A session survives between calls, so one job can take as many exchanges as it needs.",
             category = "agents",
             parameters = listOf(
                 ToolParameter(

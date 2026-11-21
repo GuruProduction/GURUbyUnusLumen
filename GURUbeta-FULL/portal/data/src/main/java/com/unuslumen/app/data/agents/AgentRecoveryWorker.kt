@@ -35,7 +35,22 @@ class AgentRecoveryWorker(
 
     private val coordinator: AgentRecoveryCoordinator by inject()
 
+    /**
+     * The schedule sweep, which rides this worker rather than owning a second one.
+     *
+     * WHY THE SAME WAKE-UP. A schedule is due at a time, not on a cadence of its own, and WorkManager's
+     * minimum periodic interval is fifteen minutes, which is exactly what this worker already asks
+     * for. A second worker would double the wake-ups on every phone to do the same amount of work at
+     * the same frequency. One pass, two questions.
+     *
+     * THE TWO JOBS ARE INDEPENDENT IN FAILURE. A sweep that cannot read the schedule table must not
+     * stop a dead run being marked interrupted, and a recovery scan that throws must not leave due
+     * schedules unrun, so each is caught on its own.
+     */
+    private val schedules: AgentScheduleService by inject()
+
     override suspend fun doWork(): Result {
+        runSchedules()
         return try {
             val report = coordinator.scan(AgentRecoveryCoordinator.newOwnerId())
             android.util.Log.d(
@@ -51,6 +66,29 @@ class AgentRecoveryWorker(
             android.util.Log.w("guru_agents", "Recovery scan failed: ${e.message}")
             Result.retry()
         }
+    }
+
+    /**
+     * Run everything due, and report what happened.
+     *
+     * A FAILURE HERE DOES NOT FAIL THE WORKER. A schedule that could not start records its own reason
+     * on its own row, so the next pass and any surface can see it. Failing the whole worker would
+     * retry the recovery scan too, which had nothing to do with it.
+     */
+    private suspend fun runSchedules() {
+        runCatching { schedules.sweep() }
+            .onSuccess { report ->
+                if (report.due > 0) {
+                    android.util.Log.d(
+                        "guru_agents",
+                        "Schedule sweep: ${report.due} due, ${report.started} started, " +
+                            "${report.refused.size} refused.",
+                    )
+                }
+            }
+            .onFailure {
+                android.util.Log.w("guru_agents", "Schedule sweep failed: ${it.message}")
+            }
     }
 
     companion object {

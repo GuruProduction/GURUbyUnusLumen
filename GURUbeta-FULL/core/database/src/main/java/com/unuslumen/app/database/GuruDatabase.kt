@@ -96,16 +96,28 @@ import com.unuslumen.app.database.entity.HeartbeatPromptEntity
 import com.unuslumen.app.database.entity.NetworkDeviceEntity
 import com.unuslumen.app.database.entity.NetworkScanEntity
 import com.unuslumen.app.database.entity.NetworkSightingEntity
+import com.unuslumen.app.database.dao.AgentApprovalDao
+import com.unuslumen.app.database.dao.AgentArtefactDao
+import com.unuslumen.app.database.dao.AgentContextReferenceDao
+import com.unuslumen.app.database.dao.AgentDefinitionVersionDao
+import com.unuslumen.app.database.dao.AgentMessageDao
 import com.unuslumen.app.database.dao.AgentRunCheckpointDao
 import com.unuslumen.app.database.dao.AgentRunDao
 import com.unuslumen.app.database.dao.AgentRunEventDao
+import com.unuslumen.app.database.dao.AgentScheduleDao
 import com.unuslumen.app.database.dao.FabricDao
 import com.unuslumen.app.database.dao.HeartbeatBookingDao
 import com.unuslumen.app.database.dao.HeartbeatPromptDao
 import com.unuslumen.app.database.dao.NetworkVisionDao
+import com.unuslumen.app.database.entity.AgentApprovalEntity
+import com.unuslumen.app.database.entity.AgentArtefactEntity
+import com.unuslumen.app.database.entity.AgentContextReferenceEntity
+import com.unuslumen.app.database.entity.AgentDefinitionVersionEntity
+import com.unuslumen.app.database.entity.AgentMessageEntity
 import com.unuslumen.app.database.entity.AgentRunCheckpointEntity
 import com.unuslumen.app.database.entity.AgentRunEntity
 import com.unuslumen.app.database.entity.AgentRunEventEntity
+import com.unuslumen.app.database.entity.AgentScheduleEntity
 
 @Database(
     entities = [
@@ -171,8 +183,23 @@ import com.unuslumen.app.database.entity.AgentRunEventEntity
         AgentRunEntity::class,
         AgentRunEventEntity::class,
         AgentRunCheckpointEntity::class,
+        // The definition history. An edit to an agent stops destroying the instructions that
+        // were there before it, so a past run's configuration is reproducible rather than
+        // merely numbered.
+        AgentDefinitionVersionEntity::class,
+        // The conversation: who said what to whom, in order, with how far it got.
+        AgentMessageEntity::class,
+        // What a run had to ask before it was allowed to act, and what it was told.
+        AgentApprovalEntity::class,
+        // What a run produced, and what it was given. The two ends of "why does this exist".
+        AgentArtefactEntity::class,
+        AgentContextReferenceEntity::class,
+        // A standing instruction: which agent, what job, and when it should next run on its own.
+        // A table rather than an alarm, because the heartbeat fires the assistant and a schedule
+        // starts an agent, and one alarm cannot mean both.
+        AgentScheduleEntity::class,
     ],
-    version = 36
+    version = 41
 )
 @TypeConverters(DBConverters::class)
 abstract class guruDatabase: RoomDatabase() {
@@ -224,27 +251,39 @@ abstract class guruDatabase: RoomDatabase() {
     abstract fun agentRunDao(): AgentRunDao
     abstract fun agentRunEventDao(): AgentRunEventDao
     abstract fun agentRunCheckpointDao(): AgentRunCheckpointDao
+    abstract fun agentDefinitionVersionDao(): AgentDefinitionVersionDao
+    abstract fun agentMessageDao(): AgentMessageDao
+    abstract fun agentApprovalDao(): AgentApprovalDao
+    abstract fun agentArtefactDao(): AgentArtefactDao
+    abstract fun agentContextReferenceDao(): AgentContextReferenceDao
+    abstract fun agentScheduleDao(): AgentScheduleDao
 
     companion object {
         const val DATABASE_NAME = "guru_db"
 
         /**
-         * The schema version this build writes, read back from the @Database annotation
-         * itself rather than restated.
+         * The schema version this build writes, as a literal.
          *
-         * WHY IT IS DERIVED. Room's version argument must be a literal, so a second
-         * hand-written copy is one bump away from being wrong, and a wrong value here
-         * decides whether a restore is allowed. Reading the annotation makes drift
-         * impossible: bump the version and this answers the new number with no edit.
+         * IT USED TO BE READ OFF THE @Database ANNOTATION BY REFLECTION, AND THAT ALWAYS
+         * RETURNED ZERO. The annotation is CLASS-retained, which means it is present in the
+         * compiled bytecode and invisible at runtime, so `getAnnotation(...)` answered null
+         * on every build and the `?: 0` produced 0. Two things then failed silently:
          *
-         * A restore compares a snapshot's version against this, and refuses one that is
-         * newer, because installing a newer schema into an older build drops every
-         * column added since. That is silent loss rather than a failed restore.
+         *  - `AgentConfigurationValidator` compares an agent's declared `minimumRuntimeSchemaVersion`
+         *    against this value, so every agent whose manifest asked for schema 1 was refused with
+         *    "this agent needs runtime schema 1 and this build is 0, so it was made for a newer
+         *    app". Nothing could run at all, and the refusal blamed the agent rather than the
+         *    reading.
+         *  - the snapshot restore gate compares a snapshot's version against this one to refuse a
+         *    newer schema, so with 0 every snapshot looked newer than the build and restore was
+         *    blocked in the opposite direction from the one the comment describes.
+         *
+         * WHY A LITERAL RATHER THAN A DIFFERENT REFLECTION TRICK. Kotlin cannot read its own
+         * annotation at compile time either, and any second mechanism would be another thing to
+         * get wrong. So this is the number, and `guruDatabaseSchemaVersionMatchesTheDatabase`
+         * fails the build if it drifts from the @Database annotation beside it. A test is the
+         * guard that reflection was pretending to be.
          */
-        val SCHEMA_VERSION: Int
-            get() = guruDatabase::class.java
-                .getAnnotation(androidx.room.Database::class.java)
-                ?.version
-                ?: 0
+        const val SCHEMA_VERSION: Int = 41
     }
 }

@@ -264,6 +264,22 @@ class AgentRunLedger(
      * nobody can explain; an event without the row is a claim the current state
      * contradicts. Neither is allowed to happen alone.
      */
+    /**
+     * Put the run's report on its own row.
+     *
+     * THE COLUMN EXISTED AND NOTHING WROTE IT. `result_summary` has been on `agent_runs` since the
+     * schema was written, the room reads it for its REPORT panel, and no code path ever called the
+     * DAO method that sets it. So every completed run carried an empty report: the work was done,
+     * the model's answer was in the ledger, and the surface a person opens showed nothing.
+     *
+     * IT IS WRITTEN WITH THE COMPLETION, NOT AFTER IT. A run that finishes and dies before the
+     * summary lands is a run whose answer is lost from its row, which is the same defect again with
+     * a smaller window.
+     */
+    suspend fun recordResultSummary(runId: String, summary: String?) {
+        runDao.setResultSummary(runId, summary?.take(8_000), System.currentTimeMillis())
+    }
+
     suspend fun appendStateChange(
         runId: String,
         fromStatus: String,
