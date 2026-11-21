@@ -305,7 +305,15 @@ val aiDataModule = module {
     factory { PromptToolExecutor(get()) }
     factory { FileProcessingToolExecutor(get<Context>()) }
     factory { LuxifyToolExecutor(get()) }
-    factory { ToolResultToolExecutor(get()) }
+    /*
+     * FOUR DEPENDENCIES, BECAUSE THE TOOL NOW ANSWERS FOR TWO TABLES.
+     *
+     * The chat's history is `tool_results`. A spawned agent's calls are `agent_run_events` plus
+     * `tool_observations`, and the ledger is what opens their sealed payloads. A one-argument binding
+     * here could only ever answer the first question, which is exactly why this tool reported an
+     * agent's calls as absent.
+     */
+    factory { ToolResultToolExecutor(get(), get(), get(), get()) }
     factory { ObservationToolExecutor(get()) }
     factory { LuxifyToolResultExtractor() }
     factory { ToolResultToolResultExtractor() }

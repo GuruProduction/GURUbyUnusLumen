@@ -22,9 +22,37 @@ object ToolResultToolDefinitions : ToolSetRegistration {
             description = "Retrieve past tool results by tool name without re-calling the tool. Every tool result is permanently stored in your brain. Use this when a result has been cleared from your context and you need it back. Saves compute by avoiding re-calling tools you already ran. Volatile tools (weather, notifications) have TTLs. Expired results return with isStale=true and a note suggesting you re-call for fresh data. Stable tools (notes, tasks, device info) can be retrieved safely hours or days later.",
             category = "tool_result",
             parameters = listOf(
-                ToolParameter("toolName", ToolParameterType.String, required = true, description = "The name of the tool whose results you want to retrieve, e.g. 'getAllTasks' or 'weatherCurrent'"),
+                ToolParameter(
+                    "toolName",
+                    ToolParameterType.String,
+                    required = false,
+                    /*
+                     * NOT REQUIRED ANY MORE, AND THAT IS THE FIX. A run's calls are not keyed by tool
+                     * name from the caller's side; they are keyed by the run. Requiring a name meant
+                     * the only way to read a spawned agent's calls was to guess which tool it used,
+                     * which is exactly why this returned nothing for a spawn.
+                     */
+                    description = "The tool's name, e.g. 'getAllTasks' or 'weatherCurrent'. " +
+                        "Omit it when you are passing a runId: a run's calls are read as a set.",
+                ),
                 ToolParameter("limit", ToolParameterType.Integer, required = false, description = "Maximum number of results to return, default 5"),
-                ToolParameter("conversationId", ToolParameterType.String, required = false, description = "Optional conversation ID to scope results to a specific conversation. If omitted, searches across all conversations.")
+                ToolParameter("conversationId", ToolParameterType.String, required = false, description = "Optional conversation ID to scope results to a specific conversation. If omitted, searches across all conversations."),
+                ToolParameter(
+                    "runId",
+                    ToolParameterType.String,
+                    required = false,
+                    /*
+                     * THE PARAMETER THAT MAKES THIS WORK FOR SPAWNED AGENTS.
+                     *
+                     * A run's tool calls are recorded in `agent_run_events` and `tool_observations`,
+                     * never in `tool_results` — that table is the main chat's. Without a runId this
+                     * tool searched the wrong table and honestly reported nothing, which read as an
+                     * agent that called no tools.
+                     */
+                    description = "A run id from spawnAgent or listAgentRuns. When given, this " +
+                        "reads that run's own tool calls with the output each one actually " +
+                        "returned, rather than the main chat's history.",
+                ),
             ),
             permissions = emptyList()
         ),
