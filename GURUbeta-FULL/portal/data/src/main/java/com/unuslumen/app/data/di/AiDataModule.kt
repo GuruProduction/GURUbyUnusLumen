@@ -556,4 +556,26 @@ val aiDataModule = module {
         )
     }
     single { com.unuslumen.app.data.notestoself.NotesToSelfEngine(get()) }
+    /*
+     * THE SUPERVISOR, A SINGLETON BECAUSE THERE IS ONE PROCESS AND ONE WATCHER.
+     *
+     * It takes the application scope rather than creating its own: a supervisor with a private scope
+     * would keep running after the process's other work stopped, and it would be the only component
+     * nobody could shut down. Its claims are durable, so a restart resumes rather than re-claims.
+     *
+     * It is created here and started from GuruApplication, not started by its own construction: a
+     * constructor with a side effect would begin supervising the moment anything asked for it, which
+     * in a test means a background loop nobody asked for.
+     */
+    single {
+        com.unuslumen.app.data.agents.AgentSupervisor(
+            get<CoroutineScope>(named("applicationScope")),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+        )
+    }
 }

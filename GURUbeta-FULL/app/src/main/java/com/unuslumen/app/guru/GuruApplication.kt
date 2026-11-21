@@ -246,6 +246,31 @@ class GuruApplication : Application() {
         com.unuslumen.app.data.agents.AgentRecoveryWorker.schedule(this)
         com.unuslumen.app.data.agents.AgentRecoveryWorker.runNow(this)
 
+        /*
+         * THE SUPERVISOR, AT PROCESS START.
+         *
+         * THIS IS WHAT MAKES GURU ACT ON ITS OWN AGENTS WITHOUT BEING SPOKEN TO. Recovery above
+         * resolves runs whose owner died; this is the part that notices an agent has stopped to ask
+         * a question, or finished, or failed, and starts a turn about it. Without a host component
+         * doing that, "supervise your agents" in a system prompt is a sentence nothing ever runs.
+         *
+         * STARTED HERE RATHER THAN IN ITS OWN CONSTRUCTOR, so resolving it anywhere else in the graph
+         * (which tests do) never begins a background loop as a side effect.
+         *
+         * WHAT IT DOES NOT DO, STATED HERE BECAUSE THE OPPOSITE WOULD BE A LIE: it does not reason
+         * while the process is dead. Android has no mechanism for that. What survives a kill is the
+         * knowledge in the rows and a durable claim, and the first pass after the process returns
+         * resumes any claim left open.
+         */
+        applicationScope.launch {
+            runCatching {
+                val supervisor: com.unuslumen.app.data.agents.AgentSupervisor by inject()
+                supervisor.start()
+            }.onFailure {
+                android.util.Log.w("guru_supervisor", "Supervisor did not start: ${it.message}")
+            }
+        }
+
         // Cerebrum brain (Phase F): boot the real encrypted brain in-process
         // inside the appScope; one-shot first-boot migration from Room's
         // memory tables runs once the brain is up (deterministic ids
