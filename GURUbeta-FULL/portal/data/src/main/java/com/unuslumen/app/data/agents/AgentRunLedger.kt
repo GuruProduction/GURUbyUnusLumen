@@ -288,7 +288,33 @@ class AgentRunLedger(
         now: Long = System.currentTimeMillis(),
         finishedAt: Long? = null,
     ): AgentRunEventEntity? = database.withTransaction {
-        val event = append(
+        /*
+         * CONDITIONAL, SO A LATE WRITE CANNOT UNDO A DECISION.
+         *
+         * `fromStatus` is now a claim the caller has to prove: the update only lands while the row
+         * still holds that status. A coroutine that was cancelled and is still unwinding will call
+         * this with the status it believed it was in, the condition will match nothing, and the
+         * cancelled row keeps its terminal state. Before this, the write was unconditional and the
+         * last coroutine to wake up decided what the history said.
+         */
+        val changed = runDao.transitionStatus(
+            runId = runId,
+            fromStatus = fromStatus,
+            status = toStatus,
+            now = now,
+            startedAt = if (toStatus == AgentRunEntity.STATUS_RUNNING) now else null,
+            finishedAt = finishedAt,
+            clearLease = if (toStatus in AgentRunEntity.TERMINAL_STATUSES) 1 else 0,
+        )
+        if (changed == 0) {
+            android.util.Log.i(
+                "guru_agents",
+                "Run '$runId': transition $fromStatus -> $toStatus refused; the run is no longer " +
+                    "in $fromStatus, so another writer already decided.",
+            )
+            return@withTransaction null
+        }
+        append(
             runId,
             EventDraft(
                 eventType = AgentRunEventEntity.RUN_STATE_CHANGED,
@@ -304,14 +330,198 @@ class AgentRunLedger(
                 occurredAt = now,
             )
         )
-        runDao.setStatus(
+    }
+
+    /**
+     * Move a run to a terminal state, exactly once, from whatever state it is actually in.
+     *
+     * THE ONE DOOR EVERY TERMINAL PATH USES. Completion, failure, cancellation and the recovery
+     * interrupt each used to write their own status; two of them could both land, and the row then
+     * agreed with whichever came last. That is how a cancelled run is resurrected and how two
+     * contradictory state changes end up in one history.
+     *
+     * WHAT IT GUARANTEES:
+     *
+     *  - It reads the run's current status *inside the transaction* and refuses if that status is
+     *    already terminal, returning [Outcome.AlreadyTerminal]. A second cancel is therefore a
+     *    no-op that reports the truth rather than a second contradictory event.
+     *  - The update is conditional on the status it just read, so a concurrent writer that slips in
+     *    between the read and the write still cannot both succeed.
+     *  - An in-flight tool call whose outcome was never recorded is marked
+     *    `TOOL_CALL_OUTCOME_UNKNOWN` in the same transaction, before the state change, so the run
+     *    says "stopped, and this one is not known" instead of implying it was undone.
+     *  - The lease is cleared in the same statement, so a stopped run cannot look alive.
+     *  - `result_summary` is written in the same statement when one is supplied, so a completed run
+     *    can never be read as finished-with-no-report when the report existed.
+     */
+    suspend fun terminate(
+        runId: String,
+        toStatus: String,
+        reason: String,
+        resultSummary: String? = null,
+        now: Long = System.currentTimeMillis(),
+    ): Outcome = database.withTransaction {
+        val run = runDao.run(runId)
+            ?: return@withTransaction Outcome.NoSuchRun
+
+        if (run.status in AgentRunEntity.TERMINAL_STATUSES) {
+            return@withTransaction Outcome.AlreadyTerminal(run.status)
+        }
+
+        /*
+         * ANY TOOL CALL LEFT OPEN IS RECORDED AS UNKNOWN, NOT AS CANCELLED.
+         *
+         * A `TOOL_CALL_STARTED` with no completion is a call whose outcome nobody observed: it may
+         * have run, it may have died mid-flight. Writing "cancelled" against it would claim a
+         * rollback that did not happen. This is the same event the dispatcher uses when a call
+         * throws, and it is written here so that process death and cancellation leave the same
+         * evidence.
+         */
+        markOpenToolCallsUnknown(runId, reason, now)
+
+        val changed = runDao.transitionStatus(
             runId = runId,
+            fromStatus = run.status,
             status = toStatus,
             now = now,
-            startedAt = if (toStatus == AgentRunEntity.STATUS_RUNNING) now else null,
-            finishedAt = finishedAt,
+            startedAt = null,
+            finishedAt = now,
+            resultSummary = resultSummary?.take(MAX_RESULT_SUMMARY_CHARS),
+            clearLease = 1,
         )
-        event
+        if (changed == 0) {
+            // Somebody else moved it between the read and the write. Their decision stands.
+            val current = runDao.run(runId)?.status
+            return@withTransaction if (current != null && current in AgentRunEntity.TERMINAL_STATUSES) {
+                Outcome.AlreadyTerminal(current)
+            } else {
+                Outcome.Refused("the run changed state while this transition was being written")
+            }
+        }
+
+        if (toStatus == AgentRunEntity.STATUS_CANCELLED) {
+            append(
+                runId,
+                EventDraft(
+                    eventType = com.unuslumen.app.domain.agents.AgentEventTypes.RUN_CANCEL_REQUESTED,
+                    actorType = AgentRunEventEntity.ACTOR_USER,
+                    payload = json.encodeToString(
+                        kotlinx.serialization.json.JsonObject.serializer(),
+                        kotlinx.serialization.json.buildJsonObject {
+                            put("reason", kotlinx.serialization.json.JsonPrimitive(reason))
+                        }
+                    ),
+                    occurredAt = now,
+                ),
+            )
+        }
+
+        append(
+            runId,
+            EventDraft(
+                eventType = AgentRunEventEntity.RUN_STATE_CHANGED,
+                actorType = AgentRunEventEntity.ACTOR_RUNTIME,
+                payload = json.encodeToString(
+                    kotlinx.serialization.json.JsonObject.serializer(),
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("from", kotlinx.serialization.json.JsonPrimitive(run.status))
+                        put("to", kotlinx.serialization.json.JsonPrimitive(toStatus))
+                        put("reason", kotlinx.serialization.json.JsonPrimitive(reason))
+                    }
+                ),
+                occurredAt = now,
+            ),
+        )
+        Outcome.Terminated(run.status, toStatus)
+    }
+
+    /**
+     * Write `TOOL_CALL_OUTCOME_UNKNOWN` for every started call that never finished.
+     *
+     * MUST RUN INSIDE THE CALLER'S TRANSACTION. It is called from [terminate], which already holds
+     * one, so a refusal rolls the whole thing back rather than leaving a half-marked run.
+     *
+     * Only starts without a completion of any kind are marked: a call that failed, was refused or
+     * timed out already has its outcome recorded and repeating it would be a second claim about one
+     * invocation.
+     */
+    private suspend fun markOpenToolCallsUnknown(runId: String, reason: String, now: Long) {
+        val events = eventDao.eventsForRun(runId)
+        val started = linkedSetOf<String>()
+        val finished = linkedSetOf<String>()
+
+        for (event in events) {
+            val invocationId = invocationIdOf(event) ?: continue
+            when (event.eventType) {
+                AgentRunEventEntity.TOOL_CALL_STARTED -> started.add(invocationId)
+                AgentRunEventEntity.TOOL_CALL_COMPLETED,
+                AgentRunEventEntity.TOOL_CALL_FAILED,
+                AgentRunEventEntity.TOOL_CALL_REFUSED,
+                AgentRunEventEntity.TOOL_CALL_OUTCOME_UNKNOWN,
+                -> finished.add(invocationId)
+                else -> Unit
+            }
+        }
+
+        for (open in started - finished) {
+            runCatching {
+                append(
+                    runId,
+                    EventDraft(
+                        eventType = AgentRunEventEntity.TOOL_CALL_OUTCOME_UNKNOWN,
+                        actorType = AgentRunEventEntity.ACTOR_RUNTIME,
+                        payload = json.encodeToString(
+                            kotlinx.serialization.json.JsonObject.serializer(),
+                            kotlinx.serialization.json.buildJsonObject {
+                                put("invocationId", kotlinx.serialization.json.JsonPrimitive(open))
+                                put("reason", kotlinx.serialization.json.JsonPrimitive(reason))
+                            }
+                        ),
+                        occurredAt = now,
+                        // One marking per invocation per run, whatever calls terminate twice.
+                        idempotencyKey = "unknown:$open",
+                    ),
+                )
+            }
+        }
+    }
+
+    /**
+     * The invocation id inside an event payload.
+     *
+     * The payload is sealed on disk, so this unseals it through the same policy the rest of the
+     * class uses. A payload that will not open is skipped rather than guessed at: marking an
+     * unknown outcome against an id we could not read would attach evidence to the wrong call.
+     */
+    private fun invocationIdOf(event: AgentRunEventEntity): String? {
+        val opened = when (val read = openEventPayload(event)) {
+            is com.unuslumen.app.domain.security.ProtectedRead.Value -> read.plaintext
+            else -> return null
+        }
+        return runCatching {
+            val obj = Json.parseToJsonElement(opened) as kotlinx.serialization.json.JsonObject
+            (obj["invocationId"] as? kotlinx.serialization.json.JsonPrimitive)
+                ?.content
+                ?.takeIf { it.isNotBlank() }
+        }.getOrNull()
+    }
+
+    /** What [terminate] did, so a caller can tell a refusal from a decision. */
+    sealed interface Outcome {
+        /** The run moved. [from] is what it was, [to] is what it now is. */
+        data class Terminated(val from: String, val to: String) : Outcome
+
+        /**
+         * The run was already finished and nothing was written.
+         *
+         * THIS IS AN ANSWER, NOT AN ERROR. A second cancellation attempt, or a completion arriving
+         * after a cancellation, is an ordinary race and the caller needs to know the run is settled
+         * without being told the write failed.
+         */
+        data class AlreadyTerminal(val status: String) : Outcome
+
+        data object NoSuchRun : Outcome
+        data class Refused(val reason: String) : Outcome
     }
 
     // ------------------------------------------------------------------
@@ -639,6 +849,16 @@ class AgentRunLedger(
 
     companion object {
         const val CURRENT_CHECKPOINT_SCHEMA_VERSION = 1
+
+        /**
+         * How much of a report is kept on the run row.
+         *
+         * THE ROW IS A SUMMARY, THE LEDGER IS THE RECORD. The full text of anything long is already
+         * in `MODEL_REQUEST_COMPLETED`; this column exists so a surface can show the answer without
+         * replaying the run. Eight thousand characters is several pages of prose and small enough
+         * that a row stays cheap to read.
+         */
+        const val MAX_RESULT_SUMMARY_CHARS = 8_000
 
         fun sha256(value: String): String {
             val digest = MessageDigest.getInstance("SHA-256")

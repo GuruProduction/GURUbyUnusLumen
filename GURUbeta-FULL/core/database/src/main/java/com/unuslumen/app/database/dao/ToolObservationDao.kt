@@ -60,6 +60,18 @@ interface ToolObservationDao {
     @Query("SELECT * FROM tool_observations WHERE package_name LIKE '%' || :query || '%' OR tool_name LIKE '%' || :query || '%' ORDER BY timestamp DESC LIMIT :limit")
     suspend fun search(query: String, limit: Int): List<ToolObservationEntity>
 
+    /**
+     * Every observation belonging to one agent run.
+     *
+     * WHAT A RUN'S TOOL OUTPUTS ACTUALLY ARE. The ledger records that a call started and that it
+     * completed; this table records what it returned and what the screen looked like. Reading them
+     * together by run id is what lets an inspection say "this call returned this", instead of
+     * showing an event that only proves a call happened. Carried on `agent_run_id`, which has its
+     * own index, so it is one indexed read rather than a scan.
+     */
+    @Query("SELECT * FROM tool_observations WHERE agent_run_id = :runId ORDER BY timestamp ASC")
+    suspend fun forRun(runId: String): List<ToolObservationEntity>
+
     @Query("DELETE FROM tool_observations WHERE timestamp < :cutoffMillis")
     suspend fun deleteOlderThan(cutoffMillis: Long)
 

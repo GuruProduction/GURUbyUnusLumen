@@ -347,7 +347,9 @@ val aiDataModule = module {
     // install an agent rather than only call one already on the phone.
     // Four arguments now: the executor reaches the run host so agent work lives on
     // an application-lifetime scope rather than inside the caller's coroutine.
-    factory { com.unuslumen.app.data.tools.AgentToolExecutor(get(), get(), get(), get()) }
+    // Five arguments since spawn stopped waiting: the executor now writes the end of a run itself,
+    // because a spawn that returns immediately owes the run a record whether or not anybody listens.
+    factory { com.unuslumen.app.data.tools.AgentToolExecutor(get(), get(), get(), get(), get()) }
     // The authoring lane. Three arguments for the same reason the lane above takes
     // three, plus one: the registry is a dependency because listTools reports what
     // this phone actually holds, and because a grant is checked against a tool name
@@ -371,7 +373,40 @@ val aiDataModule = module {
             get(),
         )
     }
-    single { com.unuslumen.app.data.agents.AgentRecoveryCoordinator(get(), get()) }
+    /*
+     * RECOVERY ASKS THE HOST, SO IT TAKES THREE ARGUMENTS.
+     *
+     * The third is the job registry. The lease set is populated by the foreground service, which can
+     * be torn down and restarted while a run is still executing on the host; the host's own map is
+     * the authority on whether a job exists. Without it, a service restart makes live work look dead
+     * and a scan interrupts work that is running perfectly well.
+     */
+    single { com.unuslumen.app.data.agents.AgentRecoveryCoordinator(get(), get(), get()) }
+    /*
+     * CANCELLATION IS ONE OBJECT BECAUSE IT IS ONE DECISION.
+     *
+     * Stopping a run means terminalising the row AND cancelling its job, in that order, and a caller
+     * that had to remember both would eventually remember one. This is the only place that knows the
+     * order, so it is the only place a cancellation can be made. A database-only cancellation that
+     * leaves the job running is the exact defect the person reported.
+     */
+    single { com.unuslumen.app.data.agents.AgentCancellationService(get(), get(), get()) }
+    /*
+     * THE RUN VERBS. Seven dependencies because they genuinely read seven things: the run rows, the
+     * opened ledger, the tool observations, the messages, the broker, the runtime and the
+     * cancellation path.
+     */
+    factory {
+        com.unuslumen.app.data.tools.AgentRunToolExecutor(
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+            get(),
+        )
+    }
     /*
      * THE INTERACTION BROKER, AND WHY IT IS A SINGLETON.
      *
