@@ -160,6 +160,12 @@ class SensesDomainHonestyTest {
                 "permissions_management",
                 "phone",
                 "privileged_capture",
+                // The prompt stack as rows, added for work order 02. The device held a
+                // five-column prompt_sections table that nothing wrote to and nothing read,
+                // while the app received one assembled string, so every question about the
+                // stack was answered with silence that looked like an empty stack. Its five
+                // verbs address a row by its stable slug and keep a version history.
+                "prompt_rows",
                 "sensors",
                 // Settings and device control: the settings tables, the clock, density, floating
                 // overlays, the status bar, the wallpaper, biometric availability, vibration and

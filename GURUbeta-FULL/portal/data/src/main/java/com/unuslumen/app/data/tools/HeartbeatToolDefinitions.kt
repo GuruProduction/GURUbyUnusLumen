@@ -33,8 +33,71 @@ object HeartbeatToolDefinitions : ToolSetRegistration {
     const val SET_HEARTBEAT_ENABLED = "setHeartbeatEnabled"
     const val READ_HEARTBEAT_DAY = "readHeartbeatDay"
     const val REMOVE_HEARTBEAT = "removeHeartbeatBooking"
+    const val GET_HEARTBEAT_PROMPT = "getHeartbeatPrompt"
+    const val SAVE_HEARTBEAT_PROMPT = "saveHeartbeatPrompt"
+    const val FIRE_HEARTBEAT_NOW = "fireHeartbeatNow"
 
     override val definitions = listOf(
+        /*
+         * THE MASTER PROMPT, AND WHY ITS ABSENCE IS ITS OWN ANSWER.
+         *
+         * Every half hour that has no booking sends the master prompt, and a fresh
+         * install has none: the owner writes it. Reporting that as an empty string
+         * would be indistinguishable from a prompt that was saved and then cleared,
+         * and a caller reading "" cannot tell whether to ask the owner for one or to
+         * accept that the diary is deliberately silent. So the reply carries
+         * `written`, and the sentence differs in each case.
+         */
+        ToolDefinition(
+            name = GET_HEARTBEAT_PROMPT,
+            description = "Read the master prompt: the standing instruction GURU gives itself in every " +
+                "half hour that no booking claims. A fresh install has none, because the owner writes " +
+                "it and the app ships no default, so 'written' is false and the reply says a prompt " +
+                "still needs writing rather than reporting an empty string as though it were the answer.",
+            category = "heartbeat",
+            parameters = emptyList(),
+            permissions = emptyList(),
+        ),
+        ToolDefinition(
+            name = SAVE_HEARTBEAT_PROMPT,
+            description = "Write the master prompt, replacing whatever was there. This is the text " +
+                "injected on every half hour that no booking claims, so it is the owner's standing " +
+                "instruction to GURU and never a message to a person. An empty prompt is refused " +
+                "rather than stored, because a beat with an empty prompt would inject nothing and " +
+                "look exactly like a beat that failed.",
+            category = "heartbeat",
+            parameters = listOf(
+                ToolParameter(
+                    "content", ToolParameterType.String, required = true,
+                    "The full prompt text. This replaces the previous prompt rather than appending to it.",
+                ),
+            ),
+            permissions = emptyList(),
+        ),
+        /*
+         * A MANUAL FIRE IS A DIAGNOSTIC, NOT SCHEDULING.
+         *
+         * The alarm chain can be healthy and the beat still broken, or the other way
+         * round, and from the outside both look like silence. Firing by hand answers
+         * which: it starts the beat directly rather than waiting for an alarm, and the
+         * outcome is recorded either way, including a refusal by Android.
+         *
+         * IT DOES NOT FIRE ONE BOOKING. A beat resolves whichever booking owns the half
+         * hour it wakes in; this wakes the same chain at the current half hour. Saying
+         * so is the difference between a tool that tells the truth and one whose name
+         * promises something the mechanism does not do.
+         */
+        ToolDefinition(
+            name = FIRE_HEARTBEAT_NOW,
+            description = "Run a heartbeat beat immediately instead of waiting for the next half-hour " +
+                "alarm. It resolves whatever the diary says about the half hour it fires in, so this " +
+                "tests the beat itself rather than one booking. It answers whether Android accepted " +
+                "the request; the beat's own result is recorded in the diary, so read the day " +
+                "afterwards to see what it actually did.",
+            category = "heartbeat",
+            parameters = emptyList(),
+            permissions = emptyList(),
+        ),
         ToolDefinition(
             name = LIST_BOOKINGS,
             description = "List the heartbeat bookings that govern when GURU wakes on its own: each one's name, instruction, repeat rule, half-hour slot and whether it is enabled. Read this before booking anything, so you extend the diary rather than colliding with a half hour that is already owned.",

@@ -51,6 +51,40 @@ data class HeartbeatWriteResult(
     val error: String? = null,
 ) : ToolResultData
 
+/**
+ * The master prompt, and whether one has been written at all.
+ *
+ * `written` EXISTS BECAUSE AN EMPTY STRING IS NOT AN ANSWER. A fresh install has no
+ * prompt, because the app ships no default and the owner writes it. A prompt that was
+ * saved and then cleared also reads as empty. Both are honest states and they lead to
+ * different things for a caller to do, so the boolean carries the distinction and the
+ * message says which one this is.
+ */
+@Serializable
+data class HeartbeatPromptResult(
+    val success: Boolean,
+    val written: Boolean,
+    val content: String,
+    val updatedAtMillis: Long? = null,
+    val message: String,
+) : ToolResultData
+
+/**
+ * The answer to a manual fire.
+ *
+ * `accepted` IS NOT "THE BEAT RAN". It says Android took the request to start the run
+ * service. Whether the beat then reached a model, ended on an empty prompt, or was cut
+ * short is recorded in the diary, and the message says to read the day rather than
+ * implying this call proves anything about the work itself.
+ */
+@Serializable
+data class HeartbeatFireResult(
+    val success: Boolean,
+    val accepted: Boolean,
+    val message: String,
+    val error: String? = null,
+) : ToolResultData
+
 /** One occurrence in a day, with what actually happened in it. */
 @Serializable
 data class HeartbeatDayEntry(
