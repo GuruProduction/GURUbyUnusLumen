@@ -174,7 +174,24 @@ class PortalViewModel(
         viewModelScope.launch {
             try {
                 val conversations = memoryRepository.getAllConversations()
-                val lastConversation = conversations.maxByOrNull { it.updatedDate }
+                /*
+                 * INTERNAL APPARATUS IS NOT THE PERSON'S CHAT.
+                 *
+                 * This took the newest conversation unconditionally. The supervisor writes its own
+                 * turns into a titled thread, and a supervisory turn makes that thread the newest, so
+                 * the Portal adopted it and the person's chat became a supervision transcript full of
+                 * tool calls they never made. Observed on a device on 2026-11-21: a "hello" and a
+                 * supervision prompt shared one conversation.
+                 *
+                 * The exclusion is expressed once, next to the title that creates the condition, so
+                 * the Assistant does the same thing without a second copy of the rule.
+                 */
+                val lastConversation = conversations
+                    .filterNot {
+                        com.unuslumen.app.domain.agents.AgentInternalConversations
+                            .isInternal(it.title)
+                    }
+                    .maxByOrNull { it.updatedDate }
                 if (lastConversation != null) {
                     _currentConversationId.value = lastConversation.id
                     val persistedMessages = memoryRepository.getMessagesByConversation(lastConversation.id)

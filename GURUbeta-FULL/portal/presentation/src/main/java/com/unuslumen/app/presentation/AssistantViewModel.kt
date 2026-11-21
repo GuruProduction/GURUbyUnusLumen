@@ -169,7 +169,19 @@ class AssistantViewModel(
         viewModelScope.launch {
             try {
                 val conversations = memoryRepository.getAllConversations()
-                val lastConversation = conversations.maxByOrNull { it.updatedDate }
+                /*
+                 * INTERNAL APPARATUS IS NOT THE PERSON'S CHAT, here as in the Portal.
+                 *
+                 * The supervisor's own turns make its titled thread the newest conversation, so taking
+                 * the newest unconditionally adopted a supervision transcript as the person's chat.
+                 * The rule is expressed once in the domain and both surfaces use it.
+                 */
+                val lastConversation = conversations
+                    .filterNot {
+                        com.unuslumen.app.domain.agents.AgentInternalConversations
+                            .isInternal(it.title)
+                    }
+                    .maxByOrNull { it.updatedDate }
                 if (lastConversation != null) {
                     currentConversationId = lastConversation.id
                     val persistedMessages = memoryRepository.getMessagesByConversation(lastConversation.id)
