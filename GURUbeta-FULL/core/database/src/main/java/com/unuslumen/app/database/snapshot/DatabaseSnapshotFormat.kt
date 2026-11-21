@@ -49,8 +49,18 @@ object SnapshotFormat {
      *
      * A reader refuses a version it does not know rather than guessing: reading a
      * newer file with an older parser is how a restore silently loses columns.
+     *
+     * VERSION 2 CARRIES THE CEREBRUM VAULT. Version 1 sealed one payload, the Room
+     * database, because that was believed to be the whole brain. A restore therefore
+     * brought back the transcript and left every memory behind. Version 2's archive is a
+     * counted list of named entries, so a snapshot can carry both stores and a future
+     * version can add a third without another format change.
+     *
+     * A VERSION 1 FILE STILL OPENS, and its single payload is read as the database entry.
+     * A person who took a backup before this change keeps a backup they can restore; that
+     * is the only reason the older branch exists.
      */
-    const val VERSION: Int = 1
+    const val VERSION: Int = 2
 
     /** 16 bytes. Random per snapshot, stored in the header, never reused. */
     const val SALT_BYTES: Int = 16
@@ -91,6 +101,24 @@ object SnapshotFormat {
 
     /** The name of the database inside the sealed archive. Matches guruDatabase.DATABASE_NAME. */
     const val DATABASE_ENTRY: String = "guru_db"
+
+    /**
+     * The Cerebrum vault inside the sealed archive.
+     *
+     * WHY THE SNAPSHOT CARRIES THIS AT ALL. The snapshot used to back up Room and nothing
+     * else, so a restore brought back the chat history and left every memory behind. The
+     * two stores are separate files: Room's database is `guru_db`, and the brain is one
+     * encrypted vault named `cerebrum.vault` under the app's `cerebrum/state` directory. A
+     * backup that carried only the first was not a backup of the application's memory, it
+     * was a backup of its transcript.
+     *
+     * IT TRAVELS AS ITS OWN SEALED BYTES, with its own hash in the manifest, so the outer
+     * seal and the vault's own Argon2id/XChaCha20 seal are independent. Nothing is
+     * decrypted on the way in and no key is added to the archive: the vault is already
+     * unreadable without the passphrase, and the outer seal is a second door rather than a
+     * replacement for it.
+     */
+    const val CEREBRUM_VAULT_ENTRY: String = "cerebrum.vault"
 
     /** The manifest inside the sealed archive. */
     const val MANIFEST_ENTRY: String = "manifest.json"
@@ -271,6 +299,17 @@ data class SnapshotManifest(
     val totalRows: Long,
     /** The main database file's byte length before packaging. */
     val sourceDatabaseBytes: Long,
+    /**
+     * Whether this snapshot carries the Cerebrum vault.
+     *
+     * STATED RATHER THAN INFERRED FROM THE FILE LIST, because a person reading a restore
+     * screen needs to know what they are about to get back. "Restored 400 messages and no
+     * memories" and "restored 400 messages and 1,200 facts" are different outcomes, and
+     * only the manifest can say which before anything is installed.
+     *
+     * A version 1 snapshot defaults to false, which is the truth about it.
+     */
+    val cerebrumVaultIncluded: Boolean = false,
 )
 
 /**
