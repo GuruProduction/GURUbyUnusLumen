@@ -373,6 +373,80 @@ class BrainService(
     )
 
     /**
+     * One result of the tiered QUERY pipeline, with its rows already resolved.
+     *
+     * A QUERY frame answers with ids and the tier that produced them, and an id alone is
+     * not usable by a caller: it names a row without its text. So each id is resolved to
+     * its body here, and an id the brain cannot retrieve is dropped rather than reported
+     * as an empty fact. That is the same rule the graph walk follows, for the same
+     * reason: a hit with no text is not a result.
+     */
+    data class QueryResultPage(
+        /** The rows the answering tier produced, in the engine's order. */
+        val facts: List<MemoryFact>,
+        /** The engine's own confidence, 0..1. */
+        val confidence: Float,
+        /** Which tier answered: HOT_CACHE, DWM_SEARCH, GRAPH_TRAVERSAL, or similar. */
+        val tierUsed: String,
+        /** How long the engine reported spending. */
+        val latencyMs: Long,
+        /** False when the brain did not answer, so a caller can tell it apart from empty. */
+        val brainReachable: Boolean,
+    )
+
+    /**
+     * Run the tiered retrieval pipeline and hand back usable rows.
+     *
+     * USE THIS WHEN THE QUESTION IS "WHAT IS MOST LIKELY TO BE RELEVANT", not "which rows
+     * share these words". SEARCH is a lexical match over an inverted index; this walks a
+     * hot cache, then the DWM, then the graph, and stops at the first tier that answers,
+     * reporting which one it was. The brain has always supported it and no Kotlin code
+     * ever sent the frame, so the pipeline was dead weight in the shipped library.
+     */
+    suspend fun tieredQuery(query: String, maxTokens: Int = 2048): QueryResultPage =
+        withContext(Dispatchers.Default) {
+            val outcome = brainApi.query(query, maxTokens)
+                ?: return@withContext QueryResultPage(
+                    facts = emptyList(),
+                    confidence = 0f,
+                    tierUsed = "",
+                    latencyMs = 0L,
+                    brainReachable = false,
+                )
+            val rows = outcome.memoryIds.mapNotNull { idHex ->
+                brainApi.retrieveDeepOrShallow(idHex, wantDeep = true)?.let { body ->
+                    buildDomainFactFrom(body)
+                }
+            }
+            QueryResultPage(
+                facts = rows,
+                confidence = outcome.confidence,
+                tierUsed = outcome.tierUsed,
+                latencyMs = outcome.latencyMs,
+                brainReachable = true,
+            )
+        }
+
+    /**
+     * Ask the engine to surface what a named specialist, topic or event is about to need.
+     *
+     * A prefetch is a prediction, so an empty answer is not a failure: `hit` distinguishes
+     * "the engine holds nothing for this trigger" from "the engine is not running", and a
+     * caller that treated the first as the second would warm a cache with nothing every
+     * time.
+     */
+    suspend fun prefetchFor(kind: String, value: String): List<MemoryFact> =
+        withContext(Dispatchers.Default) {
+            val outcome = brainApi.prefetch(kind, value) ?: return@withContext emptyList()
+            if (!outcome.hit) return@withContext emptyList()
+            outcome.memoryIds.mapNotNull { idHex ->
+                brainApi.retrieveDeepOrShallow(idHex, wantDeep = true)?.let { body ->
+                    buildDomainFactFrom(body)
+                }
+            }
+        }
+
+    /**
      * Past-conversation search (preamble's message tier): one real brain
      * SEARCH scoped to the chat-message marker content. Hits convert to the
      * domain message shape for the preamble body.

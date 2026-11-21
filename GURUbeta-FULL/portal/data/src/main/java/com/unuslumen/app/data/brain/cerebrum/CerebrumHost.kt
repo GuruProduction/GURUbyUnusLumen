@@ -35,14 +35,48 @@ object CerebrumHost {
     private const val TAG = "guru_cerebrum"
 
     // ---- JNI declarations; symbol surface lives in libcerebrum_android.so ---
+
+    /**
+     * Whether the native library actually loaded in this process.
+     *
+     * A LOAD FAILURE IS RECORDED, NOT THROWN FROM `init`. Two reasons, and the second is
+     * the important one.
+     *
+     * A static initialiser that throws poisons the whole object for the life of the JVM:
+     * every later touch raises `NoClassDefFoundError` with the original cause buried, so a
+     * caller sees "could not initialize class" instead of "the library is missing". That is
+     * a worse diagnostic than the truth.
+     *
+     * And on a JVM unit test there is no `.so` and no Android, so a throwing initialiser
+     * makes the class untouchable from any JVM test at all. That is why frame dispatch had
+     * no test: the object could not be constructed off-device. The failure is now a state
+     * the class reports, so a test can drive the production encoder and the production
+     * parser with only the last hop replaced.
+     */
+    @Volatile
+    private var nativeLoaded: Boolean = false
+
+    @Volatile
+    private var nativeLoadFailure: String? = null
+
     init {
         // cdylib load fires exactly once per app process; the host object is
         // the only entry point into libcerebrum_android.so by convention.
         runCatching {
             System.loadLibrary("cerebrum_android")
+            nativeLoaded = true
             Log.i(TAG, "cerebrum_android.so loaded")
-        }.onFailure { throw IllegalStateException("libcerebrum_android.so missing; Cerebrum cannot start", it) }
+        }.onFailure { failure ->
+            nativeLoadFailure = failure.message ?: failure::class.java.simpleName
+            Log.e(TAG, "cerebrum_android.so could not be loaded: $nativeLoadFailure")
+        }
     }
+
+    /** Whether the brain's native library is present in this process. */
+    fun isNativeLoaded(): Boolean = nativeLoaded
+
+    /** Why the library did not load, or null when it did. */
+    fun nativeLoadError(): String? = nativeLoadFailure
 
     private external fun cerebrumStartJNI(dataDir: String, socketPath: String, passphrase: String): Long
     private external fun cerebrumStopJNI()
@@ -356,6 +390,37 @@ object CerebrumHost {
         bootStamp = 0
         Log.d(TAG, "Cerebrum brain stopped (SIGTERM path completed)")
     }
+
+    /**
+     * A replaceable frame transport, for proving dispatch without a device.
+     *
+     * THE PROBLEM IT SOLVES. `FRAME_QUERY` and `FRAME_PREFETCH` were declared and never
+     * sent, and no test could catch that because reaching the real JNI needs a loaded
+     * `.so` and a booted brain. A test that re-implements the payload builder proves the
+     * test, not the app.
+     *
+     * With this, a test installs a transport that records the frame type and the decoded
+     * payload, and then calls the production methods. What is asserted is what production
+     * would have sent, through the same encoder and the same parser, with only the last
+     * hop replaced. It is null in every real run: the JNI is used unless something
+     * explicitly substitutes a transport.
+     */
+    internal var frameTransportForTest: ((frameType: Int, payloadHex: String) -> String?)? = null
+
+    internal fun dispatchFrame(frameType: Int, payloadHex: String): String? {
+        frameTransportForTest?.let { transport -> return transport(frameType, payloadHex) }
+        return executeFrame(frameType, payloadHex)
+    }
+
+    /**
+     * Whether the brain should be treated as running.
+     *
+     * The same seam as [frameTransportForTest], for the same reason: a dispatch test needs
+     * the production guard to pass without booting a brain.
+     */
+    internal var runningOverrideForTest: Boolean? = null
+
+    internal fun isRunningForDispatch(): Boolean = runningOverrideForTest ?: isRunning()
 
     fun saveNow(): Int = if (isBooted.get()) cerebrumSaveNowJNI() else 0
 

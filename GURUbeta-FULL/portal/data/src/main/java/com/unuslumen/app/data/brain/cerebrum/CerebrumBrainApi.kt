@@ -236,12 +236,14 @@ object CerebrumBrainApi {
     private fun dispatchOrNull(frameType: Int, jsonPayloadText: String): String? {
         val payloadBytes = jsonPayloadText.toByteArray(StandardCharsets.UTF_8)
         val hexIn = bytesToHex(payloadBytes)
-        val responseHex = CerebrumHost.executeFrame(frameType, hexIn) ?: return null
+        // The host owns the last hop so a test can substitute it and prove what this object
+        // would actually have sent. Every byte before that hop is the production encoder.
+        val responseHex = CerebrumHost.dispatchFrame(frameType, hexIn) ?: return null
         if (responseHex.isEmpty()) return null
         return String(hexToBytes(responseHex), StandardCharsets.UTF_8)
     }
 
-    private fun brainDown(): Boolean = !CerebrumHost.isRunning()
+    private fun brainDown(): Boolean = !CerebrumHost.isRunningForDispatch()
 
     // --------------------------------------------------------------------
     // 1. store/curate (real CURATE frame; upsert semantics inside)
@@ -737,6 +739,131 @@ object CerebrumBrainApi {
     }
 
     // --------------------------------------------------------------------
+    // 6. QUERY — the tiered pipeline, dispatched rather than merely declared
+    // --------------------------------------------------------------------
+
+    /**
+     * One result of a QUERY frame: what the tiered retrieval produced.
+     *
+     * QUERY IS NOT SEARCH, AND THAT IS WHY IT IS A SEPARATE FRAME. SEARCH is two lexical
+     * lanes fused by reciprocal rank, which answers "which stored words match these
+     * words". QUERY runs the tiered pipeline: a hot-cache hit, then a DWM pass, then a
+     * graph traversal, then a vector fallback, stopping at the first tier that returns
+     * anything, and it reports WHICH TIER answered. That is a different question with a
+     * different cost profile, and the brain has always been able to answer it.
+     *
+     * IT WAS DEFINED AND NEVER DISPATCHED. `FRAME_QUERY` existed as a constant and no
+     * Kotlin code ever sent it, so the whole tiered pipeline was dead weight inside the
+     * shipped library: reachable over the unix socket by the CLI, unreachable by the app.
+     */
+    data class QueryOutcome(
+        /** The ids the chosen tier produced, in the engine's order. */
+        val memoryIds: List<String>,
+        /** The engine's own confidence in the result, 0..1. */
+        val confidence: Float,
+        /** Which retrieval tier answered: HOT_CACHE, DWM_SEARCH, GRAPH_TRAVERSAL, etc. */
+        val tierUsed: String,
+        /** How long the engine spent, as it measured it. */
+        val latencyMs: Long,
+    )
+
+    /**
+     * Run one QUERY frame through the tiered pipeline.
+     *
+     * Returns null when the brain is down, so a caller can report an unreachable brain
+     * rather than an empty memory: the two are different facts about the machine.
+     *
+     * An invalid or empty query is refused here rather than sent, because the engine
+     * would answer a blank query with whatever its tiers happen to hold and that answer
+     * would be indistinguishable from a real one.
+     */
+    fun query(queryText: String, maxTokens: Int = 2048): QueryOutcome? {
+        if (brainDown()) return null
+        if (queryText.isBlank()) return null
+        val askJson = "{\"query_type\":\"Semantic\",\"text\":\"" + jsonEscape(queryText) +
+            "\",\"budget\":{\"max_tokens\":" + maxTokens + "}}"
+        val replyBody = dispatchOrNull(FRAME_QUERY, askJson) ?: return null
+        val root = runCatching { wire.parseToJsonElement(replyBody).jsonObject }.getOrNull()
+            ?: return null
+
+        val resultIds = root["results"]?.jsonArray.orEmpty().mapNotNull { element ->
+            hexFromByteArray(element)
+        }
+        return QueryOutcome(
+            memoryIds = resultIds,
+            confidence = root["confidence"]?.jsonPrimitive?.content?.toFloatOrNull() ?: 0f,
+            tierUsed = root["tier_used"]?.jsonPrimitive?.content ?: "",
+            latencyMs = root["latency_ms"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
+        )
+    }
+
+    // --------------------------------------------------------------------
+    // 7. PREFETCH — registered memories made available before they are asked for
+    // --------------------------------------------------------------------
+
+    /**
+     * What a PREFETCH frame produced: the ids it believes are about to be needed.
+     *
+     * [hit] is the engine's own verdict on whether the trigger matched anything it holds,
+     * which is different from an empty list because the engine distinguishes "nothing
+     * matched" from "nothing registered".
+     */
+    data class PrefetchOutcome(
+        val memoryIds: List<String>,
+        val hit: Boolean,
+    )
+
+    /**
+     * Ask the engine to surface what a named specialist, topic or event will need.
+     *
+     * THE TRIGGER SHAPE IS THE ENGINE'S. `PrefetchTrigger` is an externally tagged enum,
+     * so the wire is `{"SpecialistActivated":"doctor"}` and not a `{kind, value}` pair.
+     * Sending a shape it does not parse is how a frame appears to succeed while
+     * answering nothing.
+     *
+     * `kind` is one of specialist, topic or event; anything else is refused here rather
+     * than sent as a variant the engine will reject.
+     */
+    fun prefetch(kind: String, value: String): PrefetchOutcome? {
+        if (brainDown()) return null
+        if (value.isBlank()) return null
+        val variant = when (kind.trim().lowercase()) {
+            "specialist" -> "SpecialistActivated"
+            "topic" -> "TopicShift"
+            "event" -> "ScheduledEvent"
+            else -> return null
+        }
+        val askJson = "{\"" + variant + "\":\"" + jsonEscape(value) + "\"}"
+        val replyBody = dispatchOrNull(FRAME_PREFETCH, askJson) ?: return null
+        val root = runCatching { wire.parseToJsonElement(replyBody).jsonObject }.getOrNull()
+            ?: return null
+        return PrefetchOutcome(
+            memoryIds = root["prefetched"]?.jsonArray.orEmpty().mapNotNull { element ->
+                hexFromByteArray(element)
+            },
+            hit = root["hit"]?.jsonPrimitive?.content == "true",
+        )
+    }
+
+    /**
+     * The 64-hex form of one serialised MemoryId, or null when the element is not one.
+     *
+     * The engine serialises a `MemoryId` as its 32-byte array, so an id arrives as a JSON
+     * array of numbers. Reading it as a string yields a number and every id comes back
+     * wrong, which is the bug the graph parser already had to fix once.
+     */
+    private fun hexFromByteArray(element: kotlinx.serialization.json.JsonElement): String? {
+        val bytes = runCatching { element.jsonArray }.getOrNull() ?: return null
+        if (bytes.size != 32) return null
+        val builder = StringBuilder(64)
+        for (byteElement in bytes) {
+            val value = byteElement.jsonPrimitive.content.toIntOrNull() ?: return null
+            builder.append("%02x".format(value and 0xFF))
+        }
+        return builder.toString()
+    }
+
+    // --------------------------------------------------------------------
     // frame constants; identical bytes to the JNI exports contract
     // --------------------------------------------------------------------
     internal const val FRAME_QUERY = 1
@@ -745,6 +872,7 @@ object CerebrumBrainApi {
     internal const val FRAME_SEARCH = 4
     internal const val FRAME_GRAPH_TRAVERSE = 5
     internal const val FRAME_CONSOLIDATE = 6
+    internal const val FRAME_PREFETCH = 7
     internal const val FRAME_LIST = 8
 
     fun lastErrorOrNull(): String? = runCatching { CerebrumHost.lastError() }.getOrNull()?.let { text ->
