@@ -12,10 +12,15 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -82,6 +87,21 @@ fun AgentRoomScreen(
                 stamp = room?.run?.status,
             )
         },
+        /*
+         * THE KEYBOARD IS THIS SCREEN'S PROBLEM, SO IT IS HANDLED HERE.
+         *
+         * Scaffold consumes the window insets it is given, and by default that includes the IME.
+         * Consuming them means the content is told the keyboard is already accounted for, so nothing
+         * inside can lift for it either: the composer sat under the keyboard and the only way to see
+         * what you were typing on the chat tab was to close it.
+         *
+         * Declaring the inset set explicitly leaves the IME out of what the Scaffold pads for, which
+         * is what lets the composer below apply `imePadding()` itself and sit above the keyboard.
+         * The system bars are still handled here, so the app bar and the tab strip are unaffected.
+         */
+        contentWindowInsets = WindowInsets.safeDrawing.only(
+            WindowInsetsSides.Horizontal + WindowInsetsSides.Top
+        ),
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             when {
@@ -99,7 +119,17 @@ private fun RoomBody(
     room: AgentRoomState,
     viewModel: AgentRoomViewModel,
 ) {
-    Column(Modifier.fillMaxSize()) {
+    Column(
+        /*
+         * THE KEYBOARD LIFT IS ON THE BODY, ABOVE THE LIST.
+         *
+         * The composer lives at the bottom of the list, so the whole column has to move when the
+         * keyboard opens or the composer is under it. Applying it here rather than inside the chat
+         * tab means the overview and every other tab are unaffected by a keyboard that is not open,
+         * and the tab strip does not slide away from the top bar.
+         */
+        Modifier.fillMaxSize().imePadding()
+    ) {
         TabStrip(current = state.tab, onSelect = { viewModel.onEvent(AgentRoomViewModel.Event.SelectTab(it)) })
 
         state.controlError?.let { problem ->

@@ -61,7 +61,10 @@ object AgentToolDefinitions : ToolSetRegistration {
         ),
         ToolDefinition(
             name = SPAWN_AGENT,
-            description = "Start a job with a saved agent. The agent runs with its own instructions and only the tools it declares. It can PAUSE and ask you a question, and a person can stop it part way through, so this call has four possible outcomes and you must read which one you got. FINISHED means the report is in hand. ANSWERED means the agent asked you something and is now waiting: read the question, decide the answer, and call resumeAgent with the sessionId and your reply, and it carries on from where it stopped. PAUSED means a person stopped it with its working state kept: report what it had produced and do not start the job again, because the run can be carried on. FAILED means it could not run and the error says why. A session survives between calls, so one job can take as many exchanges as it needs.",
+            description = "Start a job with a saved agent. THIS RETURNS IMMEDIATELY: it gives you the run id and STARTED, and the agent carries on in the background. It does NOT wait for the job to finish and it does NOT return the report. The agent runs with its own instructions and only the tools it declares. " +
+                "THE OUTCOME ARRIVES LATER, and there are three ways to learn it. listAgentRuns shows the state of everything running; getAgentRun with the run id returns what it did and what it produced; and if the agent needs a decision it becomes WAITING_FOR_GURU and the person is told. " +
+                "NEVER ASSUME A SPAWNED JOB FINISHED BECAUSE THIS CALL RETURNED SUCCESS. Returning STARTED means it was accepted, nothing more. If someone asks what an agent produced, read the run rather than reporting what you asked for. " +
+                "If the agent stops to ask you something, answer it with resumeAgent using the run id. If it needs stopping, cancelAgentRun. A job can take as many exchanges as it needs and none of them happen inside this call.",
             category = "agents",
             parameters = listOf(
                 ToolParameter(

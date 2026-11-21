@@ -36,6 +36,7 @@ import com.unuslumen.app.data.tools.NoteToSelfToolDefinitions
 import com.unuslumen.app.data.tools.TaskToolDefinitions
 import com.unuslumen.app.data.tools.MemoryToolDefinitions
 import com.unuslumen.app.data.tools.AgentToolDefinitions
+import com.unuslumen.app.data.tools.AgentRunToolDefinitions
 import com.unuslumen.app.data.tools.AgentAuthoringToolDefinitions
 import com.unuslumen.app.data.tools.MetaToolDefinitions
 import com.unuslumen.app.data.tools.EmailToolDefinitions
@@ -186,6 +187,15 @@ object GeneratedToolRegistrations {
         MemoryToolDefinitions,
         MetaToolDefinitions,
         AgentToolDefinitions,
+        /*
+         * THE RUNS, AS OPPOSED TO THE DEFINITIONS.
+         *
+         * `AgentToolDefinitions` above answers "which agents exist and what may they do". It cannot
+         * answer "what is running, what did it find, and stop it", because none of that is in the
+         * agent table. Before this set existed the model had no verb at all that read `agent_runs`,
+         * so a spawned run was invisible the moment it started and there was no way to stop one.
+         */
+        AgentRunToolDefinitions,
         // The authoring half: create, edit, delete, enable, publish, search by
         // capability, and listTools, which is the only way to ask what this phone
         // actually holds rather than what the model defined for itself.

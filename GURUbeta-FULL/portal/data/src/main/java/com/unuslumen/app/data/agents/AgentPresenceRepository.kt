@@ -34,6 +34,13 @@ import org.koin.core.annotation.Single
 class AgentPresenceRepository(
     private val runDao: AgentRunDao,
     private val agents: GuruAgentRepository,
+    /**
+     * The unread state, so the Portal's dot is answered from rows rather than from the glow.
+     *
+     * REQUIRED, NOT NULLABLE. A dot that silently stops working because nobody wired it is the
+     * defect the dot exists to report, one level up.
+     */
+    private val unread: AgentUnreadStore,
 ) : AgentPresenceSource {
 
     override fun livePresence(): Flow<List<LivePresence>> =
@@ -42,9 +49,24 @@ class AgentPresenceRepository(
             agents.getAllAgentsFlow(),
         ) { runs, all ->
             val byId = all.associateBy { it.id }
-            runs.mapNotNull { run ->
+            val mapped = runs.mapNotNull { run ->
                 val agent = byId[run.agentId] ?: return@mapNotNull null
                 run.toPresence(agent.visual.colourIndex)
+            }
+            /*
+             * THE UNREAD FLAG IS RESOLVED PER EMISSION, HERE AND NOT IN THE SCREEN.
+             *
+             * It has to be part of this flow rather than a second subscription on the Portal, because
+             * a dot and a glow that are read separately can disagree for a frame: the glow clears on
+             * completion while the dot keeps saying there is something to read, which is the whole
+             * point of the dot. One emission carries both.
+             *
+             * A READ FAILURE MEANS NO DOT, NOT A CRASH. A glow is ambient; failing the Portal because
+             * a SharedPreferences read failed would be trading a missing dot for a broken screen.
+             */
+            mapped.map { node ->
+                node.copy(hasUnread = runCatching { unread.hasUnread(node.conversationId) }
+                    .getOrDefault(false))
             }
         }
 
@@ -55,5 +77,6 @@ class AgentPresenceRepository(
         agentName = agentName,
         colourIndex = colourIndex,
         status = status,
+        conversationId = conversationId,
     )
 }

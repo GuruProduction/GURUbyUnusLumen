@@ -124,6 +124,31 @@ object AgentEventTypes {
     // ---- checkpoints ----
     const val CHECKPOINT_CREATED = "CHECKPOINT_CREATED"
 
+    // ---- supervision ----
+    /**
+     * A supervisory turn was claimed for an event on a run.
+     *
+     * THIS IS A DURABLE CLAIM AND THAT IS ITS WHOLE PURPOSE. Exactly-once model calls are
+     * impossible, so the contract is at-least-once with a duplicate-suppressing claim: appending this
+     * with an idempotency key derived from the run and the event that prompted it either succeeds
+     * once or returns null because it already exists. Two supervisors cannot both act on the same
+     * fact, and a crash after the model answered but before the completion is written costs one
+     * repeated turn rather than a lost one.
+     *
+     * IT LIVES ON THE RUN IT CONCERNS, not on the supervisor's own run, so the claim is found by
+     * asking a run for its own history rather than by scanning the ledger.
+     */
+    const val SUPERVISOR_DISPATCH_STARTED = "SUPERVISOR_DISPATCH_STARTED"
+
+    /**
+     * The supervisory turn for that claim finished.
+     *
+     * A `STARTED` with no `COMPLETED` is an unfinished claim and is resumed on the next pass rather
+     * than being re-claimed, which is what makes a restart mid-decision safe. The pair is keyed the
+     * same way, with the completion's key derived from the start's, so the two can never drift.
+     */
+    const val SUPERVISOR_DISPATCH_COMPLETED = "SUPERVISOR_DISPATCH_COMPLETED"
+
     /** Every name, so a test can prove the writer and the reducer have not drifted. */
     val ALL: List<String> = listOf(
         RUN_CREATED, RUN_STATE_CHANGED, RUN_CONFIGURATION_CHANGED, ASSIGNMENT_AMENDED,
@@ -137,6 +162,7 @@ object AgentEventTypes {
         MESSAGE_CREATED, MESSAGE_DELIVERED, MESSAGE_DELIVERY_FAILED, QUESTION_OPENED,
         QUESTION_ANSWERED, PLAN_REVISED, ARTEFACT_CREATED, DECISION_RECORDED,
         VERIFICATION_RECORDED, CHECKPOINT_CREATED,
+        SUPERVISOR_DISPATCH_STARTED, SUPERVISOR_DISPATCH_COMPLETED,
     )
 
     /**
@@ -329,6 +355,18 @@ object AgentEventTypes {
         CHECKPOINT_CREATED to RestorePolicy.NoSessionEffect(
             "The checkpoint's own contents are what recovery restores. The event that announces " +
                 "it is the ledger's record that one was taken, not session content."
+        ),
+
+        // ---- supervision ----
+        SUPERVISOR_DISPATCH_STARTED to RestorePolicy.NoSessionEffect(
+            "A supervisory claim is a fact about the supervisor, not about the run's working " +
+                "context. Replaying it would tell the agent it had already been supervised on this " +
+                "turn, which after a resume may not be true."
+        ),
+        SUPERVISOR_DISPATCH_COMPLETED to RestorePolicy.NoSessionEffect(
+            "The completion closes a claim. It says the supervisor finished acting, not that the " +
+                "run's own state changed, and its effect on the run is recorded by whatever the " +
+                "supervisor actually did."
         ),
     )
 }

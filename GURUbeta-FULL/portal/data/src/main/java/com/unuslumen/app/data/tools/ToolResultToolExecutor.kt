@@ -10,8 +10,26 @@ import com.unuslumen.app.database.entity.ToolResultEntity
 import com.unuslumen.app.domain.memory.ToolResultQuery
 import kotlinx.serialization.json.Json
 
+/**
+ * Reading back what tools returned.
+ *
+ * TWO SOURCES, AND THEY ARE NOT INTERCHANGEABLE.
+ *
+ * The main chat's calls live in `tool_results`, written by `AiRepositoryImpl` inside its own tool
+ * loop. A spawned agent's calls never reach that table: they are recorded in `agent_run_events` as
+ * lifecycle facts and in `tool_observations` as what the tool actually returned. So a request that
+ * names a run must be answered from the run's own tables, and a request that does not is the chat's
+ * history exactly as it was before.
+ *
+ * THAT SPLIT IS THE WHOLE FIX FOR "getToolResult returns empty for spawned agents". The tool searched
+ * the chat's table for the agent's calls, found none, and reported the absence as an answer. It was
+ * not wrong about the table; it was asked the wrong question.
+ */
 class ToolResultToolExecutor(
-    private val toolResultDao: ToolResultDao
+    private val toolResultDao: ToolResultDao,
+    private val runDao: com.unuslumen.app.database.dao.AgentRunDao,
+    private val observations: com.unuslumen.app.database.dao.ToolObservationDao,
+    private val ledger: com.unuslumen.app.data.agents.AgentRunLedger,
 ) : ToolExecutor {
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -25,10 +43,28 @@ class ToolResultToolExecutor(
     }
 
     private suspend fun getToolResult(args: Map<String, Any?>): ToolExecutionResult {
-        val toolName = args["toolName"] as? String
-            ?: return ToolExecutionResult.error("Missing 'toolName' parameter")
-        val limit = (args["limit"] as? Number)?.toInt() ?: 5
+        val runId = (args["runId"] as? String)?.trim()?.takeIf { it.isNotBlank() }
+        val toolName = (args["toolName"] as? String)?.trim()?.takeIf { it.isNotBlank() }
+        val limit = (args["limit"] as? Number)?.toInt()?.coerceIn(1, 100) ?: 5
         val conversationId = args["conversationId"] as? String
+
+        /*
+         * A RUN IS ANSWERED FROM THE RUN'S OWN RECORD, first and completely.
+         *
+         * No fallback to the chat table afterwards: a run that genuinely called nothing must say so
+         * rather than being padded with an unrelated conversation's history, which is the confusion
+         * this split exists to remove.
+         */
+        if (runId != null) {
+            return runOwnedResult(runId, toolName, limit)
+        }
+
+        if (toolName == null) {
+            return ToolExecutionResult.error(
+                "Missing 'toolName'. Pass one to read the main chat's history, or pass a 'runId' " +
+                    "to read a spawned agent's own tool calls.",
+            )
+        }
 
         val entities = if (conversationId != null) {
             toolResultDao.getRecentByToolNameAndConversation(toolName, conversationId, limit)
@@ -37,6 +73,70 @@ class ToolResultToolExecutor(
         }
 
         val result = buildResult(entities)
+        return ToolExecutionResult.success(result, json.encodeToString(ToolResultRetrievalResult.serializer(), result))
+    }
+
+    /**
+     * A run's tool calls, with the output each one actually returned.
+     *
+     * THE OBSERVATION IS THE OUTPUT AND THE EVENT IS THE HISTORY. A call with a start and no
+     * observation is reported as having no recorded output rather than as a call that returned
+     * nothing, because those are different facts and only one of them is true.
+     */
+    private suspend fun runOwnedResult(
+        runId: String,
+        toolName: String?,
+        limit: Int,
+    ): ToolExecutionResult {
+        val run = runCatching { runDao.run(runId) }.getOrNull()
+            ?: return ToolExecutionResult.error(
+                "There is no run with the id '$runId'. Use listAgentRuns to find a real one.",
+            )
+
+        val events = runCatching { ledger.events(runId) }.getOrDefault(emptyList())
+        val observed = runCatching { observations.forRun(runId) }
+            .getOrDefault(emptyList())
+            .associateBy { it.agentInvocationId ?: "" }
+
+        val entries = events
+            .filter { it.eventType == com.unuslumen.app.database.entity.AgentRunEventEntity.TOOL_CALL_STARTED }
+            .mapNotNull { event ->
+                val payload = runCatching {
+                    json.parseToJsonElement(event.payloadJson) as kotlinx.serialization.json.JsonObject
+                }.getOrNull() ?: return@mapNotNull null
+                val invocationId = (payload["invocationId"] as? kotlinx.serialization.json.JsonPrimitive)
+                    ?.content?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val tool = (payload["tool"] as? kotlinx.serialization.json.JsonPrimitive)
+                    ?.content.orEmpty()
+                if (toolName != null && !tool.equals(toolName, ignoreCase = true)) return@mapNotNull null
+
+                val record = observed[invocationId]
+                ToolResultEntry(
+                    toolName = tool,
+                    parameters = (payload["arguments"] as? kotlinx.serialization.json.JsonPrimitive)
+                        ?.content.orEmpty(),
+                    result = record?.resultSummary?.takeIf { it.isNotBlank() }
+                        ?: "[no output was recorded for this call. It may have run and its result " +
+                            "may have been lost, or it may never have finished; that is not the " +
+                            "same as a call that returned nothing.]",
+                    timestamp = event.occurredAt,
+                    ageMinutes = (System.currentTimeMillis() - event.occurredAt) / 60_000,
+                    isStale = false,
+                )
+            }
+            .takeLast(limit)
+
+        if (entries.isEmpty()) {
+            return ToolExecutionResult.success(
+                ToolResultRetrievalResult(results = emptyList()),
+                json.encodeToString(
+                    ToolResultRetrievalResult.serializer(),
+                    ToolResultRetrievalResult(results = emptyList()),
+                ),
+            )
+        }
+
+        val result = ToolResultRetrievalResult(results = entries)
         return ToolExecutionResult.success(result, json.encodeToString(ToolResultRetrievalResult.serializer(), result))
     }
 

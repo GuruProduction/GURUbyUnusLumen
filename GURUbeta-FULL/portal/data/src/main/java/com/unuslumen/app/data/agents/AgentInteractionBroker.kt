@@ -191,9 +191,32 @@ class AgentInteractionBroker(
     suspend fun pendingFor(runId: String, recipientType: String): List<AgentMessageEntity> =
         messageDao.pendingFor(runId, recipientType)
 
-    /** The whole conversation for one run, in order. */
+    /**
+     * The whole conversation for one run, in order.
+     *
+     * USE THIS WHEN THE QUESTION IS ABOUT A RUN. For what a person is reading on the room's chat tab,
+     * use [transcript] instead: a conversation outlives the run that started it, and this answer ends
+     * where the run does.
+     */
     suspend fun conversation(runId: String): List<AgentMessageEntity> =
         messageDao.messagesForRun(runId)
+
+    /**
+     * Everything said in a conversation, across every run in it.
+     *
+     * THE CHAT TAB'S READ, AND WHY IT IS SEPARATE FROM [conversation]. A person sends a message, the
+     * run finishes, they send another, and a second run starts in the same conversation. Reading one
+     * run's messages made the transcript empty at exactly that moment, so the conversation appeared
+     * to have been thrown away and a person re-typed what they could still see on their own screen.
+     *
+     * THE ORDER IS THE CONVERSATION'S, NOT THE RUN'S. Two runs in one conversation can overlap, so
+     * the true order is by time with the message id as a tie-breaker. Ordering by run and then
+     * sequence would group each run's messages together and show the second run's opening before the
+     * first run's reply, which is a transcript that contradicts itself.
+     */
+    suspend fun transcript(conversationId: String): List<AgentMessageEntity> =
+        if (conversationId.isBlank()) emptyList()
+        else messageDao.messagesForConversation(conversationId)
 
     /** The same as a stream, so a live room updates as messages arrive. */
     fun conversationFlow(runId: String): Flow<List<AgentMessageEntity>> =

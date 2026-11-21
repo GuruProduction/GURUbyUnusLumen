@@ -326,7 +326,12 @@ class AgentRuntime(
         val error: String? = null
     ) {
         /**
-         * Four outcomes, because there are four facts.
+         * Five outcomes, because there are five facts.
+         *
+         * [STARTED] IS THE ONE A SPAWN ACTUALLY RETURNS, and it was missing. A spawn hands back a
+         * run id and the work continues, so the value that describes what happened is "accepted",
+         * not any of the four endings. Without it, a caller had to claim one of four results it did
+         * not have, and the honest thing — "it is running" — had no name.
          *
          * [PAUSED] IS NOT [FAILED] AND NOT [FINISHED]. A person stopped the work part way through
          * and everything it had decided is on disk, waiting to be picked up. Reporting that as a
@@ -334,7 +339,7 @@ class AgentRuntime(
          * back a partial report as though it were an answer. Neither is true, so it gets its own
          * name and the caller is told to continue it rather than replace it.
          */
-        enum class Status { FINISHED, ASKING, PAUSED, FAILED }
+        enum class Status { STARTED, FINISHED, ASKING, PAUSED, FAILED }
     }
 
     /**
@@ -1356,7 +1361,10 @@ class AgentRuntime(
              */
             val paused = session.pauseRequested
             runCatching {
+                sessions.remove(session.id)
                 if (paused) {
+                    // A PAUSE KEEPS THE RUN. It is not a terminal state, so it does not go through
+                    // `terminate`; the lease is released because nothing is driving it any more.
                     ledger.appendStateChange(
                         session.id,
                         com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
@@ -1368,16 +1376,24 @@ class AgentRuntime(
                         reason = com.unuslumen.app.database.entity.AgentRunCheckpointEntity.REASON_DELIBERATE_PAUSE,
                         stateJson = checkpointState(session),
                     )
+                    ledger.releaseLease(session.id, leaseOwner(), "paused")
                 } else {
-                    ledger.appendStateChange(
-                        session.id,
-                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
-                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_CANCELLED,
-                        "cancelled by the caller",
-                        finishedAt = System.currentTimeMillis(),
+                    /*
+                     * A CANCELLATION TERMINALISES THROUGH THE ONE DOOR.
+                     *
+                     * The job being cancelled is not the same fact as the run being cancelled: the
+                     * coroutine can be cancelled while a tool call is still in flight, in which case
+                     * this handler is the only writer that will ever run. `terminate` refuses if the
+                     * run already reached a terminal state, so a cancellation racing a completion
+                     * produces one outcome instead of two contradictory ones, and an in-flight call
+                     * is recorded as unknown rather than as rolled back.
+                     */
+                    ledger.terminate(
+                        runId = session.id,
+                        toStatus = com.unuslumen.app.database.entity.AgentRunEntity.STATUS_CANCELLED,
+                        reason = "cancelled by the caller",
                     )
                 }
-                ledger.releaseLease(session.id, leaseOwner(), if (paused) "paused" else "cancelled")
             }
             throw e
         } catch (e: Exception) {
@@ -1387,14 +1403,11 @@ class AgentRuntime(
             // row still says RUNNING is a run the recovery scan will keep revisiting and a
             // person will keep seeing as alive.
             runCatching {
-                ledger.appendStateChange(
-                    session.id,
-                    com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
-                    com.unuslumen.app.database.entity.AgentRunEntity.STATUS_FAILED,
-                    "${session.agent.name} failed: $reason",
-                    finishedAt = System.currentTimeMillis(),
+                ledger.terminate(
+                    runId = session.id,
+                    toStatus = com.unuslumen.app.database.entity.AgentRunEntity.STATUS_FAILED,
+                    reason = "${session.agent.name} failed: $reason",
                 )
-                ledger.releaseLease(session.id, leaseOwner(), "failed")
             }
             failed(session.agent.name, "${session.agent.name} failed: $reason")
         }
@@ -1437,6 +1450,36 @@ class AgentRuntime(
             session.rounds = rounds
 
             /*
+             * THE ROUND IS ADMITTED AGAINST THE ROW, NOT AGAINST THE COROUTINE.
+             *
+             * Cancellation of the job and the terminal state of the run are two different facts,
+             * and they arrive in that order at best. A person taps Stop while the loop is between
+             * rounds; `AgentRunHost.cancel` cancels the job, but the coroutine does not observe its
+             * own cancellation until its next suspension point, and a model call is not a
+             * suspension point it can abandon. So without this check the loop can start a whole
+             * further round — model call, tool dispatch and all — after somebody stopped it.
+             *
+             * Reading the row is the only authority: the terminal write is what a cancellation
+             * actually is, whether it came from a person, from the recovery scan, or from another
+             * writer winning the race. If the row is terminal, no further work is admitted and the
+             * loop ends without appending a second, contradictory state change.
+             */
+            val admitted = runCatching { ledger.run(session.id)?.status }.getOrNull()
+            if (admitted != null && admitted in com.unuslumen.app.database.entity.AgentRunEntity.TERMINAL_STATUSES) {
+                sessions.remove(session.id)
+                return SpawnResult(
+                    success = false,
+                    agentName = agent.name,
+                    report = lastText.take(MAX_REPORT_CHARS),
+                    toolRounds = rounds - 1,
+                    sessionId = session.id,
+                    status = SpawnResult.Status.PAUSED,
+                    error = "This run is ${admitted.lowercase().replace('_', ' ')} and was not " +
+                        "continued: no further round was admitted after it stopped.",
+                )
+            }
+
+            /*
              * THE WALL-CLOCK CEILING, CHECKED BEFORE A ROUND RATHER THAN DURING ONE.
              *
              * A limit that interrupts a model call would leave a request in flight with no result
@@ -1464,14 +1507,12 @@ class AgentRuntime(
                             },
                         )
                     )
-                    ledger.appendStateChange(
-                        session.id,
-                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
-                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_LIMIT_REACHED,
-                        "the run reached its time limit of ${ceiling}ms after $elapsed",
-                        finishedAt = System.currentTimeMillis(),
+                    ledger.terminate(
+                        runId = session.id,
+                        toStatus = com.unuslumen.app.database.entity.AgentRunEntity.STATUS_LIMIT_REACHED,
+                        reason = "the run reached its time limit of ${ceiling}ms after $elapsed",
+                        resultSummary = lastText.take(MAX_REPORT_CHARS),
                     )
-                    ledger.releaseLease(session.id, leaseOwner(), "limit reached")
                 }
                 return SpawnResult(
                     success = false,
@@ -1556,14 +1597,12 @@ class AgentRuntime(
             if (callCeiling != null && toolCallsUsed >= callCeiling) {
                 sessions.remove(session.id)
                 runCatching {
-                    ledger.appendStateChange(
-                        session.id,
-                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
-                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_LIMIT_REACHED,
-                        "the run reached its limit of $callCeiling tool calls",
-                        finishedAt = System.currentTimeMillis(),
+                    ledger.terminate(
+                        runId = session.id,
+                        toStatus = com.unuslumen.app.database.entity.AgentRunEntity.STATUS_LIMIT_REACHED,
+                        reason = "the run reached its limit of $callCeiling tool calls",
+                        resultSummary = lastText.take(MAX_REPORT_CHARS),
                     )
-                    ledger.releaseLease(session.id, leaseOwner(), "limit reached")
                 }
                 return SpawnResult(
                     success = false,
@@ -2112,22 +2151,20 @@ class AgentRuntime(
                         )
                     )
                     /*
-                     * THE REPORT GOES ON THE ROW, IN THE SAME BREATH AS THE COMPLETION.
+                     * THE REPORT AND THE COMPLETION ARE ONE WRITE, AND ONE WRITER DECIDES.
                      *
-                     * The column existed and nothing wrote it, so every finished run in the room
-                     * showed an empty REPORT panel while its answer sat in the ledger. Writing it
-                     * here means a completed run always carries what it said, and a failure between
-                     * these two lines loses the summary rather than the whole record.
+                     * `terminate` sets the status, stores the report, clears the lease and records
+                     * the in-flight-tool sweep in a single transaction, refused if the run has
+                     * already reached a terminal state. A completion arriving after somebody
+                     * cancelled the run therefore changes nothing, and a completed run can never be
+                     * read as finished-with-no-report when the report existed.
                      */
-                    ledger.recordResultSummary(session.id, lastText.take(MAX_REPORT_CHARS))
-                    ledger.appendStateChange(
-                        session.id,
-                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_RUNNING,
-                        com.unuslumen.app.database.entity.AgentRunEntity.STATUS_COMPLETED,
-                        "the agent finished its assignment",
-                        finishedAt = System.currentTimeMillis(),
+                    ledger.terminate(
+                        runId = session.id,
+                        toStatus = com.unuslumen.app.database.entity.AgentRunEntity.STATUS_COMPLETED,
+                        reason = "the agent finished its assignment",
+                        resultSummary = lastText.take(MAX_REPORT_CHARS),
                     )
-                    ledger.releaseLease(session.id, leaseOwner(), "completed")
                 }
                 /*
                  * A FINISHED RUN TELLS THE OWNER, WHEN THAT AGENT MAY. Normal urgency, so an agent

@@ -72,6 +72,33 @@ interface AgentRunDao {
     suspend fun nonTerminalRuns(): List<AgentRunEntity>
 
     /**
+     * The most recent runs whose time is over, newest first.
+     *
+     * A LISTING NEEDS FINISHED RUNS, NOT ONLY LIVE ONES. `nonTerminalRuns` answers "what is
+     * happening" and this answers "what happened", and a caller that can only see the first cannot
+     * tell a completed run from one that never existed once it stops.
+     */
+    @Query(
+        """
+        SELECT * FROM agent_runs
+        WHERE status IN ('COMPLETED','LIMIT_REACHED','FAILED','CANCELLED')
+        ORDER BY updated_at DESC LIMIT :limit
+        """
+    )
+    suspend fun recentTerminalRuns(limit: Int): List<AgentRunEntity>
+
+    /** The same, narrowed to one agent, so a listing about one agent does not read every run. */
+    @Query(
+        """
+        SELECT * FROM agent_runs
+        WHERE status IN ('COMPLETED','LIMIT_REACHED','FAILED','CANCELLED')
+          AND (agent_id = :agent OR agent_slug = :agent)
+        ORDER BY updated_at DESC LIMIT :limit
+        """
+    )
+    suspend fun recentTerminalRunsForAgent(agent: String, limit: Int): List<AgentRunEntity>
+
+    /**
      * Every run that is still alive, as it changes.
      *
      * WHAT THE PORTAL'S GLOW READS. `nonTerminalRuns` is a one-shot query for the recovery scan; a
@@ -87,18 +114,6 @@ interface AgentRunDao {
         """
     )
     fun observeActiveRuns(): Flow<List<AgentRunEntity>>
-
-    /** The runs whose owner may have died: not waiting, and holding a lease that has gone quiet. */
-    @Query(
-        """
-        SELECT * FROM agent_runs
-        WHERE status NOT IN ('COMPLETED','LIMIT_REACHED','FAILED','CANCELLED','WAITING_FOR_GURU','WAITING_FOR_USER')
-          AND lease_owner IS NOT NULL
-          AND (lease_heartbeat_at IS NULL OR lease_heartbeat_at < :staleBefore)
-        ORDER BY updated_at ASC
-        """
-    )
-    suspend fun leaseSuspects(staleBefore: Long): List<AgentRunEntity>
 
     /** Advance the event allocation counter. Always called inside the inserting transaction. */
     @Query("UPDATE agent_runs SET last_event_sequence = :sequence, updated_at = :now WHERE run_id = :runId")
@@ -126,6 +141,75 @@ interface AgentRunDao {
 
     @Query("UPDATE agent_runs SET result_summary = :summary, updated_at = :now WHERE run_id = :runId")
     suspend fun setResultSummary(runId: String, summary: String?, now: Long)
+
+    /**
+     * Move the run to a new state, but ONLY from a state it is allowed to leave.
+     *
+     * THIS IS THE RACE THAT `setStatus` LOST. The unconditional version could not tell a legitimate
+     * transition from a late write by a dying coroutine, so a cancellation and a completion could
+     * both write and the last one won. The ledger then held two contradictory state changes and the
+     * row agreed with whichever arrived second, which is how a cancelled run comes back to life.
+     *
+     * The condition is in SQL, not in Kotlin, because a read-then-write has a window between the two
+     * where another writer slips in. `0` rows changed means the run is no longer in a state this
+     * transition is allowed from, and the caller must treat that as "somebody else already decided".
+     *
+     * THE LEASE IS RELEASED IN THE SAME STATEMENT for a terminal move. A terminal run holds no lease:
+     * leaving one behind makes a dead run look alive to the recovery scan, and a separate release is
+     * another write that can be skipped by a crash.
+     */
+    @Query(
+        """
+        UPDATE agent_runs
+        SET status = :status,
+            updated_at = :now,
+            started_at = COALESCE(started_at, :startedAt),
+            finished_at = :finishedAt,
+            result_summary = COALESCE(:resultSummary, result_summary),
+            lease_owner = CASE WHEN :clearLease = 1 THEN NULL ELSE lease_owner END,
+            lease_heartbeat_at = CASE WHEN :clearLease = 1 THEN NULL ELSE lease_heartbeat_at END
+        WHERE run_id = :runId AND status = :fromStatus
+        """
+    )
+    suspend fun transitionStatus(
+        runId: String,
+        fromStatus: String,
+        status: String,
+        now: Long,
+        startedAt: Long? = null,
+        finishedAt: Long? = null,
+        resultSummary: String? = null,
+        clearLease: Int = 0,
+    ): Int
+
+    /**
+     * Every run that looks like it should be executing and may not be.
+     *
+     * WHAT BELONGS HERE, AND WHAT DELIBERATELY DOES NOT. The set is "states in which something is
+     * supposed to be driving this run", because those are the only ones where its absence is a
+     * fault. Four states are excluded, each for its own reason:
+     *
+     *  - `WAITING_FOR_GURU` and `WAITING_FOR_USER` are waiting on a person. Nothing should be
+     *    driving them and their lease was released on purpose.
+     *  - `PAUSED` is a deliberate stop that keeps its state. Interrupting it would destroy work a
+     *    person chose to keep, and it is resumable exactly as it stands.
+     *  - `INTERRUPTED` is already the outcome this query exists to produce, so re-deriving it every
+     *    scan would append the same fact for ever.
+     *
+     * IT INCLUDES RUNS THAT NEVER GOT A LEASE, which is the orphan this closes: a run created and
+     * then lost before the host ever claimed it has no owner to go stale, so the older query (which
+     * required `lease_owner IS NOT NULL`) never saw it and it sat at CREATED for ever.
+     */
+    @Query(
+        """
+        SELECT * FROM agent_runs
+        WHERE status IN ('CREATED','STARTING','RUNNING','WAITING_FOR_TOOL','INTEGRATING')
+          AND (lease_heartbeat_at IS NULL OR lease_heartbeat_at < :staleBefore)
+          AND updated_at < :staleBefore
+        ORDER BY updated_at ASC
+        """
+    )
+    suspend fun leaseSuspects(staleBefore: Long): List<AgentRunEntity>
 
     @Query("UPDATE agent_runs SET failure_code = :code, failure_message = :message, updated_at = :now WHERE run_id = :runId")
     suspend fun setFailure(runId: String, code: String?, message: String?, now: Long)

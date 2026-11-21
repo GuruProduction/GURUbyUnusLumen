@@ -36,7 +36,19 @@ import kotlinx.serialization.json.Json
 class AgentRecoveryCoordinator(
     private val runDao: AgentRunDao,
     private val ledger: AgentRunLedger,
+    /**
+     * The in-process job registry.
+     *
+     * THE SECOND PIECE OF EVIDENCE THAT BEATS A TIMESTAMP. `liveLeases` is populated by the
+     * foreground service, which can be torn down and restarted while a run is still executing on
+     * the host. The host's own map is the authority on whether a job exists, so a run the host is
+     * driving is skipped even if the service's bookkeeping has been reset.
+     */
+    private val host: AgentRunHost,
 ) {
+
+    /** Whether a live job exists for this run, asked of the registry that owns jobs. */
+    private fun hostHolds(runId: String): Boolean = host.isActive(runId)
 
     companion object {
         /**
@@ -90,24 +102,48 @@ class AgentRecoveryCoordinator(
         var skipped = 0
 
         for (run in suspects) {
-            // BOTH conditions. A run whose owner is in this process's registry is alive
-            // whatever its heartbeat says.
+            /*
+             * A RUN THIS PROCESS IS DRIVING IS ALIVE WHATEVER ITS ROW SAYS.
+             *
+             * The registry is read the same way it always was, and it is checked first because it
+             * is the only evidence that beats the timestamps: a long model call can miss a
+             * heartbeat without anything being wrong.
+             */
             if (isLocallyHeld(run.runId)) { skipped++; continue }
-            // A run already interrupted has been dealt with; re-marking it would duplicate
-            // the event on every scan.
-            if (run.status == AgentRunEntity.STATUS_INTERRUPTED) { skipped++; continue }
+            if (hostHolds(run.runId)) { skipped++; continue }
 
-            val deadOwner = run.leaseOwner ?: continue
+            /*
+             * A RUN WITH NO OWNER IS STILL A RUN THAT HAS TO END.
+             *
+             * THE ORPHAN THIS CLOSES (W1). The old query required `lease_owner IS NOT NULL`, so a
+             * run created and then lost before the host ever claimed it had no owner to go stale
+             * and nothing ever looked at it. It sat at CREATED for ever: invisible to recovery, no
+             * glow, no lease, and impossible to cancel through the host because there was no job to
+             * cancel. It is precisely the "stuck run" a person sees.
+             *
+             * There is exactly one honest reading of a non-terminal run that is older than the
+             * lease window, holds no lease, and is not in this process's registry: nothing is
+             * driving it. So it is interrupted, and `terminate` writes the unknown-outcome sweep
+             * for any tool call it left open.
+             */
+            val neverLeased = run.leaseOwner == null
+            val reason = if (neverLeased) {
+                "this run was never picked up by an execution host and nothing has driven it since " +
+                    "it was created, so it is interrupted rather than left looking alive"
+            } else {
+                "the process that owned this run is gone and its lease went stale"
+            }
+
             val evidence = runCatching {
-                ledger.appendStateChange(
-                    runId = run.runId,
-                    fromStatus = run.status,
-                    toStatus = AgentRunEntity.STATUS_INTERRUPTED,
-                    reason = "the process that owned this run is gone and its lease went stale",
-                )
-                runDao.releaseDeadLease(run.runId, deadOwner)
+                ledger.terminate(run.runId, AgentRunEntity.STATUS_INTERRUPTED, reason)
             }
             if (evidence.isSuccess) {
+                // The dead owner's lease is dropped in a second write only when there was one; the
+                // terminalisation already cleared it, and a conditional release against a null
+                // owner would silently do nothing and read as a failure.
+                run.leaseOwner?.let { dead ->
+                    runCatching { runDao.releaseDeadLease(run.runId, dead) }
+                }
                 interrupted++
             } else {
                 android.util.Log.w(

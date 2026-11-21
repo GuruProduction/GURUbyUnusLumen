@@ -32,6 +32,15 @@ class AgentToolExecutor(
      * remember when they change how spawn is called.
      */
     private val host: com.unuslumen.app.data.agents.AgentRunHost,
+    /**
+     * The ledger, for the one thing this executor writes: the end of a run.
+     *
+     * A SPAWN THAT RETURNS IMMEDIATELY OWES THE RUN A RECORD. The runtime writes its own terminal
+     * state on the paths it controls, but the outcome also has to land when the caller is long gone,
+     * and the ledger's conditional `terminate` is the only door that can do that without a late
+     * completion overwriting a cancellation.
+     */
+    private val ledger: com.unuslumen.app.data.agents.AgentRunLedger,
 ) : ToolExecutor {
 
     /**
@@ -124,37 +133,123 @@ class AgentToolExecutor(
         }
 
         /*
-         * THE WORK RUNS ON THE HOST, AND THIS CALL ONLY WAITS.
+         * THE CALL RETURNS AS SOON AS THE RUN IS ACCEPTED. IT DOES NOT WAIT FOR THE JOB.
          *
-         * Collecting the runtime's flow here would put the agent's lifetime inside the
-         * dispatcher's coroutine, so a cancelled tool call or a destroyed screen would kill
-         * an agent the person had been told was running. The host runs it on an
-         * application-lifetime scope and this awaits the result, which means cancelling
-         * this call cancels the wait and nothing else.
+         * THE DEFECT THIS FIXES, WHICH IS THE ONE THE OWNER REPORTED FIRST. This used to await a
+         * deferred that only completed when the whole run finished. A job that takes many rounds —
+         * which is every real job — therefore left the tool call suspended for its entire duration.
+         * The model never got a result, the run's outcome was never reported, and what a person saw
+         * was an echo of the job they had sent. `FINISHED`, `ANSWERED`, `PAUSED` and `FAILED` were
+         * all unreachable, not because they were unimplemented but because nothing ever returned to
+         * say them.
          *
-         * A FRESH RUN ID, SO ADMISSION CANNOT BE REFUSED HERE. Every spawn is a new
-         * execution and therefore a new id, so the id is always free. Admission is still
-         * checked rather than assumed, because a refusal that was swallowed would await a
-         * deferred nothing completes.
+         * SO THIS RETURNS THE HANDLE. `runId`, the agent, `STARTED`, and confirmation that the work
+         * continues. The outcome arrives later through `getAgentRun` and through the supervisor,
+         * and the completion is written to the run row by the host block below whatever else
+         * happens. Nothing about the work is tied to this coroutine: it lives on the host's
+         * application-lifetime scope, so cancelling this call cancels the wait and not the agent.
+         *
+         * `sessionId` IS NULL AND THAT IS HONEST. The runtime mints no session identity separate
+         * from the run — `Session.id` *is* the run id — so returning the run id in that field would
+         * be inventing an identifier to fill a slot. Null means "there is no separate session yet",
+         * which is true.
          */
         val runId = java.util.UUID.randomUUID().toString()
         val deferred = kotlinx.coroutines.CompletableDeferred<AgentRuntime.SpawnResult>()
+
         val admission = host.start(runId, deferred) {
-            agentRuntime.spawn(
-                slugOrName = agentName,
-                job = job,
-                conversationId = conversationId,
-                runId = runId,
-            ).last()
+            /*
+             * THE HOST BLOCK OWNS THE END OF THE RUN, NOT THE CALLER.
+             *
+             * Whatever the run ends as — finished, failed, cancelled, paused, asking — this records
+             * it on the run row independently of whether anybody is listening. A result that only
+             * exists when a caller happens to be waiting is a result that disappears exactly when
+             * the person has walked away, which is when they most need to find it later.
+             */
+            val outcome = try {
+                agentRuntime.spawn(
+                    slugOrName = agentName,
+                    job = job,
+                    conversationId = conversationId,
+                    runId = runId,
+                ).last()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                com.unuslumen.app.data.agents.AgentRuntime.SpawnResult(
+                    success = false,
+                    agentName = agentName,
+                    report = "",
+                    toolRounds = 0,
+                    sessionId = runId,
+                    status = com.unuslumen.app.data.agents.AgentRuntime.SpawnResult.Status.FAILED,
+                    error = e.message ?: e.javaClass.simpleName,
+                )
+            }
+            recordOutcomeOnTheRun(runId, agentName, outcome)
+            outcome
         }
+
         if (admission is com.unuslumen.app.data.agents.AgentRunHost.Admission.AlreadyRunning) {
             return ToolExecutionResult.error(
                 "A run with the id '$runId' was already executing, so nothing was started. " +
                     "That should be impossible for a new spawn and means the id was reused."
             )
         }
-        val outcome = deferred.await()
-        return asSpawnResult(outcome)
+
+        val result = SpawnAgentResult(
+            success = true,
+            agent = agentName,
+            status = AgentRuntime.SpawnResult.Status.STARTED.name,
+            report = "",
+            toolRounds = 0,
+            runId = runId,
+            // No separate session exists yet, so the field says so rather than echoing the run id.
+            sessionId = null,
+            continuesAsynchronously = true,
+            error = null,
+        )
+        return success(result, SpawnAgentResult.serializer())
+    }
+
+    /**
+     * Put the end of a run on its row, whoever is or is not listening.
+     *
+     * THE COMPLETION IS A FACT ABOUT THE RUN, NOT ABOUT THE CALL. Every terminal state the runtime
+     * reports is written here so that a run which finished while the app was in the background, or
+     * after the caller's tool call had long since returned, still reads correctly when somebody
+     * opens it later. The write goes through the ledger's one conditional door, so a run somebody
+     * already cancelled is not overwritten by a late completion.
+     *
+     * A QUESTION IS NOT TERMINAL AND IS NOT WRITTEN HERE. `ASKING` leaves the run at
+     * WAITING_FOR_GURU, which the runtime already recorded and which the supervisor is what reacts
+     * to.
+     */
+    private suspend fun recordOutcomeOnTheRun(
+        runId: String,
+        agentName: String,
+        outcome: AgentRuntime.SpawnResult,
+    ) {
+        val terminal = when (outcome.status) {
+            AgentRuntime.SpawnResult.Status.FINISHED -> com.unuslumen.app.database.entity.AgentRunEntity.STATUS_COMPLETED
+            AgentRuntime.SpawnResult.Status.FAILED -> com.unuslumen.app.database.entity.AgentRunEntity.STATUS_FAILED
+            AgentRuntime.SpawnResult.Status.PAUSED -> com.unuslumen.app.database.entity.AgentRunEntity.STATUS_PAUSED
+            // ASKING and STARTED are not endings. The runtime has already recorded the waiting state.
+            else -> null
+        } ?: return
+
+        runCatching {
+            ledger.terminate(
+                runId = runId,
+                toStatus = terminal,
+                reason = when (outcome.status) {
+                    AgentRuntime.SpawnResult.Status.FINISHED -> "$agentName finished its assignment"
+                    AgentRuntime.SpawnResult.Status.PAUSED -> "$agentName was paused with its state kept"
+                    else -> "$agentName failed: ${outcome.error ?: "no reason given"}"
+                },
+                resultSummary = outcome.report.takeIf { it.isNotBlank() },
+            )
+        }
     }
 
     /**

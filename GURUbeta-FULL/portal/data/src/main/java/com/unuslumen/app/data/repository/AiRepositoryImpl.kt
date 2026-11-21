@@ -242,6 +242,15 @@ class AiRepositoryImpl(
      * a complete learning loop with no signal reaching it.
      */
     private val injectionLedger: com.unuslumen.app.data.memory.InjectionLedger,
+    /**
+     * The live picture of what the agents are doing.
+     *
+     * REQUIRED, NOT NULLABLE, AND THAT IS THE WHOLE POINT OF D2. An optional collaborator with a
+     * default is a feature flag that is off by default, and this codebase has shipped that mistake
+     * before: a nullable dependency whose default silently disables the feature. GURU's operational
+     * awareness cannot be something a caller forgets to wire.
+     */
+    private val agentOperations: com.unuslumen.app.data.agents.AgentOperationsService,
 ) : AiRepository {
 
     companion object {
@@ -1185,8 +1194,44 @@ class AiRepositoryImpl(
                     enrichedSystemMessage
                 }
 
+                /*
+                 * WHAT THE AGENTS ARE DOING, IN GURU'S OWN CONTEXT, WITHOUT IT ASKING.
+                 *
+                 * THIS IS D2 AND IT IS THE POINT OF THE WHOLE REMEDIATION. Before this, GURU's only
+                 * route to knowing about its own agents was a tool it had to think to call, so it
+                 * would answer "nothing is running" while three were, and a run that had stopped to
+                 * ask it a question sat unanswered until the person noticed.
+                 *
+                 * REBUILT EVERY ITERATION, like the metadata block, because a snapshot from the start
+                 * of the turn is exactly the stale picture this exists to replace: a tool call in
+                 * this same turn can start or finish a run, and the next round must see that.
+                 *
+                 * INSIDE THE LOOP AND NOT ONCE. Placed after the compaction so the block is not
+                 * something the summariser folds away, and outside the metadata condition so it is
+                 * present whatever the superadmin has the metadata block set to. An installation
+                 * with metadata disabled is not an installation where GURU stops needing to know what
+                 * its agents are doing.
+                 *
+                 * A FAILURE IS LOGGED AND THE TURN CONTINUES. Awareness is not worth failing a reply
+                 * over, and an empty block is honest: it says nothing rather than claiming quiet.
+                 */
+                val agentsBlock = try {
+                    agentOperations.awarenessBlock(agentOperations.snapshot())
+                } catch (e: Exception) {
+                    android.util.Log.w("guru_agents", "Operational picture unavailable this turn: ${e.message}")
+                    ""
+                }
+                val systemMessageThisRound = if (agentsBlock.isBlank()) {
+                    iterationSystemMessage
+                } else {
+                    "$iterationSystemMessage\n\n$agentsBlock"
+                }
+
                 if (metadataConfig?.enabled == true) {
                     android.util.Log.d("guru", "Metadata block: enabled, iterationSystemMessage length now ${iterationSystemMessage.length} (base ${enrichedSystemMessage.length})")
+                }
+                if (agentsBlock.isNotBlank()) {
+                    android.util.Log.d("guru_agents", "Awareness block present (${agentsBlock.length} chars)")
                 }
 
                 var lastError: LLMClientException? = null
@@ -1238,7 +1283,11 @@ class AiRepositoryImpl(
                             }
 
                             val chatPromptBase = messagesForLLM.buildChatPrompt(
-                                systemMessage = iterationSystemMessage,
+                                // THE ROUND'S MESSAGE, NOT THE ITERATION'S. The variables differ by
+                                // exactly one thing, the agents block, and that block is rebuilt
+                                // inside this loop so a tool call made in this same turn is visible
+                                // to the next round rather than only to the next message.
+                                systemMessage = systemMessageThisRound,
                                 tools = currentToolDescriptors
                             )
 

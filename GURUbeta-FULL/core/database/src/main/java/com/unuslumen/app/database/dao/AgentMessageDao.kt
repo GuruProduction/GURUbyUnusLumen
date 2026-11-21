@@ -79,6 +79,30 @@ interface AgentMessageDao {
     )
     suspend fun markFailed(messageId: String, reason: String)
 
+    /**
+     * A whole conversation's transcript, across every run in it.
+     *
+     * WHY THIS IS NOT `messagesForRun`. A conversation outlives the run that started it: a person
+     * sends, the run finishes, they send again, and a second run begins in the same conversation. The
+     * room showed one run's messages, so the transcript emptied the moment a new run started, which
+     * is the "old messages disappear" defect. Joining through `agent_runs` gives the conversation,
+     * which is what the person is actually having.
+     *
+     * ORDERED BY TIME WITH A DETERMINISTIC TIE-BREAKER. Two runs in one conversation can interleave,
+     * and ordering by run-then-sequence would put all of one run's messages before all of the
+     * other's regardless of when they were said. `created_at` is the true order; `message_id` breaks
+     * a tie so the list cannot reorder itself between two reads of the same rows.
+     */
+    @Query(
+        """
+        SELECT m.* FROM agent_messages m
+        INNER JOIN agent_runs r ON r.run_id = m.run_id
+        WHERE r.conversation_id = :conversationId
+        ORDER BY m.created_at ASC, m.message_id ASC
+        """
+    )
+    suspend fun messagesForConversation(conversationId: String): List<AgentMessageEntity>
+
     /** How many messages a run has, for a counter without loading the rows. */
     @Query("SELECT COUNT(*) FROM agent_messages WHERE run_id = :runId")
     suspend fun countForRun(runId: String): Int

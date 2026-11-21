@@ -157,9 +157,19 @@ class AgentRunHost {
      */
     fun isActive(runId: String): Boolean = jobs[runId]?.isActive == true
 
-    /** Stop a run's work. Used by the notification's stop action and by cancellation. */
-    fun cancel(runId: String) {
-        jobs.remove(runId)?.cancel()
+    /**
+     * Stop a run's work, and say whether there was any to stop.
+     *
+     * THE RETURN VALUE IS LOAD-BEARING. A cancellation that reports only "I cancelled it" cannot
+     * distinguish a live job that was stopped from a run that had no job at all, and those are
+     * different facts for the caller: the first is a cancellation taking effect, the second is a
+     * row being terminalised with nothing behind it. Both are legitimate outcomes and the caller
+     * has to be able to say which happened.
+     */
+    fun cancel(runId: String): Boolean {
+        val removed = jobs.remove(runId) ?: return false
+        removed.cancel()
+        return true
     }
 
     /**

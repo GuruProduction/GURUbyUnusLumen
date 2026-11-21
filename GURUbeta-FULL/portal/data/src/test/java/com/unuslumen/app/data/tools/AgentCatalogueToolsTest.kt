@@ -130,6 +130,11 @@ class AgentCatalogueToolsTest {
         // A real host, because it holds no state this test cares about and a mock would
         // only prove that a mock answers.
         com.unuslumen.app.data.agents.AgentRunHost(),
+        // The ledger is only reached by spawn, and none of these tests spawn: they are about
+        // browsing, fetching and installing from the catalogue. A relaxed mock is honest here
+        // because the fake catalogue already stands in for the network and there is no run to
+        // record. Spawn's own behaviour is proved against a real ledger in AgentRunToolExecutorTest.
+        mockk<com.unuslumen.app.data.agents.AgentRunLedger>(relaxed = true),
     )
 
     /**

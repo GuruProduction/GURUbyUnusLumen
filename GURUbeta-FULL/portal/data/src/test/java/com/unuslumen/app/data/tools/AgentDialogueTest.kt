@@ -18,15 +18,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The agent conversation: the question, the answer, and the four outcomes.
+ * The agent conversation: the question, the answer, and the outcomes a caller can read.
  *
- * WHY THIS EXISTS. `spawnAgent` used to be fire-and-forget. The agent got a job, ran to
- * completion, and returned a report, so it could not ask what it did not know; and
- * because the caller took `.last()` from the flow, a question emitted mid-run would
- * have been discarded even if the runtime had produced one.
+ * WHY THIS EXISTS. `spawnAgent` has been through two shapes. First it was fire-and-forget: the
+ * agent got a job, ran to completion and returned a report, so it could not ask what it did not
+ * know. Then it blocked for the whole job, which meant a spawn that took four minutes held the
+ * caller's turn open for four minutes and the phone read as frozen.
  *
- * These tests pin the shape that replaces it: four distinct outcomes rather than two, a session
- * that survives between calls, and a resumed agent that keeps everything it had already found.
+ * The shape these tests pin is the third one: a spawn that returns a run id and STARTED, and a
+ * separate set of verbs that read the outcome afterwards. That makes the outcome verbs load
+ * bearing rather than decoration, because nothing else will ever tell the caller what happened.
  * They are written against the published descriptions and the result contract rather than the
  * internals, because the internals are free to change and the contract is what the model reads.
  */
@@ -86,24 +87,57 @@ class AgentDialogueTest {
     }
 
     /**
-     * spawnAgent must say there are three outcomes.
+     * spawnAgent must say that it returns before the work does, and where the outcome comes from.
      *
-     * The old description promised a report and nothing else, so a model reading it had
-     * no reason to expect a question and would treat a waiting agent as a finished one.
+     * TWO SEPARATE FAILURES ARE PINNED HERE. The first is the old one: a description that promised
+     * a report and nothing else gave a model no reason to expect a question, so it treated a
+     * waiting agent as a finished one. The second is the newer and worse one: a description that
+     * implies the call blocks means a model reads an immediate return as a finished job, reports
+     * work it never saw, and never asks the run what actually happened.
+     *
+     * So the assertion is not "names some outcomes". It is that the text names STARTED as what this
+     * call returns, and names the three verbs that carry the real answer afterwards. A description
+     * missing any of those leaves the model with a call it cannot interpret correctly.
      */
     @Test
-    fun spawnAgentTeachesTheThreeOutcomes() {
+    fun spawnAgentSaysTheAnswerArrivesAfterItReturns() {
         val spawn = AgentToolDefinitions.definitions.first { it.name == AgentToolDefinitions.SPAWN_AGENT }
-        for (outcome in listOf("FINISHED", "ANSWERED", "FAILED")) {
+        assertTrue(
+            "spawnAgent must say what it returns: ${spawn.description}",
+            spawn.description.contains("STARTED"),
+        )
+        assertTrue(
+            "and it must say the work is still going after it returned",
+            spawn.description.contains("background"),
+        )
+        for (verb in listOf(
+            AgentRunToolDefinitions.LIST_AGENT_RUNS,
+            AgentRunToolDefinitions.GET_AGENT_RUN,
+            AgentToolDefinitions.RESUME_AGENT,
+        )) {
             assertTrue(
-                "spawnAgent must name the $outcome outcome: ${spawn.description}",
-                spawn.description.contains(outcome),
+                "spawnAgent must point at $verb, or the outcome has no route back: ${spawn.description}",
+                spawn.description.contains(verb),
             )
         }
         assertTrue(
-            "and it must point at resumeAgent for the waiting case",
-            spawn.description.contains(AgentToolDefinitions.RESUME_AGENT),
+            "and it must forbid assuming the job finished: ${spawn.description}",
+            spawn.description.contains("NEVER ASSUME"),
         )
+    }
+
+    /** The verbs a spawn's outcome is read through have to exist, or the description lies. */
+    @Test
+    fun theRunVerbsTheSpawnDescriptionNamesAreAllDeclared() {
+        val declared = AgentToolDefinitions.definitions.map { it.name } +
+            AgentRunToolDefinitions.definitions.map { it.name }
+        for (verb in listOf(
+            AgentRunToolDefinitions.LIST_AGENT_RUNS,
+            AgentRunToolDefinitions.GET_AGENT_RUN,
+            AgentRunToolDefinitions.CANCEL_AGENT_RUN,
+        )) {
+            assertTrue("'$verb' is named but not declared", declared.contains(verb))
+        }
     }
 
     /** A question tool that does not say when not to use it invites a stream of them. */
@@ -183,7 +217,7 @@ class AgentDialogueTest {
     }
 
     /**
-     * Every outcome is a distinct value, and there are now four.
+     * Every outcome is a distinct value, and there are now five.
      *
      * IF TWO OF THEM EVER COLLAPSED into one name, a caller reading the status could no longer tell
      * a waiting agent from a dead one, which is the whole reason the field exists rather than being
@@ -194,14 +228,20 @@ class AgentDialogueTest {
      * failure says the work was no good, and reporting it as finished hands back a partial report as
      * an answer. A caller that cannot tell the three apart cannot decide whether to carry on, ask a
      * question or start again.
+     *
+     * [STARTED] IS THE NEWEST AND IT IS NOT A SYNONYM FOR FINISHED. It means the job was accepted
+     * and is running, which is the only thing a spawn can honestly report, because a spawn now
+     * returns in under a second and a real job does not. Without it a caller has two choices on an
+     * immediate return, success or failure, and both are lies about what happened.
      */
     @Test
     fun theOutcomesAreDistinct() {
         val statuses = AgentRuntime.SpawnResult.Status.values().map { it.name }.toSet()
-        assertEquals(4, statuses.size)
+        assertEquals(5, statuses.size)
         assertTrue(
-            "a pause is its own outcome, not a failure and not a finish",
-            statuses.containsAll(setOf("FINISHED", "ASKING", "PAUSED", "FAILED")),
+            "a pause is its own outcome, not a failure and not a finish, and an accepted job is " +
+                "neither of those either",
+            statuses.containsAll(setOf("STARTED", "FINISHED", "ASKING", "PAUSED", "FAILED")),
         )
     }
 
