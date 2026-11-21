@@ -502,6 +502,18 @@ fn curate_entry_from_core(entry: &cerebrum_core::ContextEntry) -> ContextEntry {
         timestamp: entry.created_at,
     };
     curated.rationale = entry.rationale.clone();
+    /*
+     * OWNERSHIP AND VISIBILITY CROSS AS THEIR OWN FIELDS, and are mapped here rather than
+     * parsed out of the provenance label. An unknown or absent value is `Shared`, which is the
+     * conservative reading: a fact with no stated owner belongs to the person, never to
+     * whichever agent happens to be asking.
+     */
+    curated.owner_agent_id = entry.owner_agent_id.clone();
+    curated.visibility = match entry.visibility.trim() {
+        "Owned" => cerebrum_curate::EntryVisibility::Owned,
+        "OwnedAndShared" => cerebrum_curate::EntryVisibility::OwnedAndShared,
+        _ => cerebrum_curate::EntryVisibility::Shared,
+    };
     curated.created_at = entry.created_at;
     curated.updated_at = entry.modified_at;
     curated
@@ -1567,6 +1579,10 @@ struct SearchResult {
     layer: String,
     /// The decay strength, so a caller can see why a hit ranked where it did.
     strength: f32,
+    /// The stable id of the agent that wrote this row, empty when none did.
+    owner_agent_id: String,
+    /// Shared, Owned or OwnedAndShared.
+    visibility: String,
 }
 
 async fn handle_search(
@@ -1724,6 +1740,8 @@ async fn handle_search(
             lifecycle: format!("{:?}", entry.lifecycle),
             layer: RetrievalPolicy::layer_name(decay_row.layer).to_string(),
             strength: decay_row.strength,
+            owner_agent_id: entry.owner_agent_id.clone(),
+            visibility: format!("{:?}", entry.visibility),
         });
     }
 
@@ -1781,6 +1799,8 @@ async fn handle_search(
                         .map(|row| RetrievalPolicy::layer_name(row.layer).to_string())
                         .unwrap_or_default(),
                     strength: decay_row.map(|row| row.strength).unwrap_or(0.0),
+                    owner_agent_id: entry.owner_agent_id.clone(),
+                    visibility: format!("{:?}", entry.visibility),
                 });
                 if results.len() >= limit {
                     break;
@@ -2201,6 +2221,14 @@ pub struct ListedMemory {
     pub lifecycle: String,
     /// The decay layer: BUFFER, EPISODIC or SEMANTIC, empty when unrecorded.
     pub layer: String,
+    /// The stable id of the agent that wrote this row, empty when none did.
+    ///
+    /// TYPED, NOT PARSED FROM PROSE. A permission decision keyed on a substring of a label is
+    /// a decision about a convention, and any writer composing a label by hand can produce
+    /// it. This is a field the store holds.
+    pub owner_agent_id: String,
+    /// Shared, Owned or OwnedAndShared.
+    pub visibility: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2301,6 +2329,8 @@ async fn handle_list(
             updated_at: entry.updated_at.to_rfc3339(),
             lifecycle: format!("{:?}", entry.lifecycle),
             layer: layer_label_for(&state, &entry.id),
+            owner_agent_id: entry.owner_agent_id.clone(),
+            visibility: format!("{:?}", entry.visibility),
         })
         .collect();
 
@@ -2497,6 +2527,8 @@ mod tests {
             relations: vec![],
             provenance: "test-suite".into(),
             rationale: "test-suite reasoning".into(),
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: Utc::now(),
             modified_at: Utc::now(),
         };
@@ -2548,6 +2580,8 @@ mod tests {
             relations: vec![],
             provenance: "test-suite".into(),
             rationale: "test".into(),
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: Utc::now(),
             modified_at: Utc::now(),
         };

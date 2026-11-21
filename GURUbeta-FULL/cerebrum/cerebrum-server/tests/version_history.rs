@@ -50,6 +50,8 @@ fn entry_with_id(id: MemoryId, content: &str) -> ContextEntry {
         relations: vec![],
         provenance: "version-history-test".into(),
         rationale: "the reason for the write".into(),
+        owner_agent_id: String::new(),
+        visibility: String::new(),
         created_at: Utc::now(),
         modified_at: Utc::now(),
     }

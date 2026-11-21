@@ -127,9 +127,10 @@ class AgentMemoryService(
             val inCategoryScope = scope.categories.isEmpty() ||
                 scope.categories.any { wanted -> wanted.equals(hit.fact.category, ignoreCase = true) }
             if (!inCategoryScope) return@filter false
-            val provenance = MemoryOwnership.parse(hit.fact.source)
-            MemoryOwnership.mayRead(
-                provenance = provenance,
+            MemoryOwnership.mayReadStored(
+                storedOwnerAgentId = hit.fact.ownerAgentId,
+                storedVisibility = hit.fact.visibility,
+                provenanceLabel = hit.fact.source,
                 requestingAgentId = agentIdOf(agent),
                 readOwn = scope.readOwn,
                 readShared = scope.readShared,

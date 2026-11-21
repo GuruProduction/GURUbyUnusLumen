@@ -51,7 +51,17 @@ data class MemoryFact(
     val domain: String = "",
     val topic: String = "",
     val subtopic: String = "",
-    val signature: String = ""
+    val signature: String = "",
+    /**
+     * The stable id of the agent that wrote this fact, empty when none did.
+     *
+     * TYPED, FROM THE STORE. Ownership used to exist only as a marker inside [source], which
+     * meant every permission decision parsed prose and depended on a convention rather than on
+     * data. The brain now holds it as a field and this carries it through.
+     */
+    val ownerAgentId: String = "",
+    /** Shared, Owned or OwnedAndShared, from the store. */
+    val visibility: String = ""
 )
 
 data class ConversationThread(

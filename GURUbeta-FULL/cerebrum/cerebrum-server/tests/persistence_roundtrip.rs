@@ -30,6 +30,8 @@ fn add_op(content: &str) -> CurateOp {
             relations: vec![],
             provenance: "persist-battery".into(),
             rationale: "phase c roundtrip".into(),
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: Utc::now(),
             modified_at: Utc::now(),
         },
@@ -249,4 +251,94 @@ async fn test_vault_file_carries_no_plaintext() {
     // be the only thing here.
     let stray_files = std::fs::read_dir(&dir).unwrap().count();
     assert_eq!(stray_files, 1, "only the vault file must remain in the data dir");
+}
+/// OWNERSHIP AND VISIBILITY SURVIVE THE VAULT.
+///
+/// They are stored as their own fields rather than parsed out of a provenance label, so the
+/// claim that an agent's private fact stays private must hold across a save and a restore. A
+/// permission decision that only survives in RAM is a decision that silently changes when the
+/// phone restarts.
+#[tokio::test]
+async fn ownership_and_visibility_survive_a_save_and_restore() {
+    let dir = std::env::temp_dir().join(format!(
+        "cerebrum-persist-ownership-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let state = state_in(dir.clone()).await;
+    let owned_id = MemoryId::new();
+    let shared_id = MemoryId::new();
+
+    let owned = CurateOp::Add {
+        entry: ContextEntry {
+            memory_id: owned_id,
+            domain: "knowledge".into(),
+            topic: "general".into(),
+            subtopic: "general".into(),
+            content: "an agent's private note".into(),
+            relations: vec![],
+            provenance: "agent run".into(),
+            rationale: "written by an agent".into(),
+            owner_agent_id: "11111111-1111-1111-1111-111111111111".into(),
+            visibility: "Owned".into(),
+            created_at: Utc::now(),
+            modified_at: Utc::now(),
+        },
+        reason: "agent write".into(),
+    };
+    let shared = CurateOp::Add {
+        entry: ContextEntry {
+            memory_id: shared_id,
+            domain: "knowledge".into(),
+            topic: "general".into(),
+            subtopic: "general".into(),
+            content: "a fact the person stated".into(),
+            relations: vec![],
+            provenance: "hive extraction".into(),
+            rationale: "written by an automatic lane".into(),
+            owner_agent_id: String::new(),
+            visibility: "Shared".into(),
+            created_at: Utc::now(),
+            modified_at: Utc::now(),
+        },
+        reason: "hive write".into(),
+    };
+
+    curate_through_frame(&state, vec![owned, shared]).await;
+
+    // One save, through the session, exactly as the app does it at boot.
+    {
+        let mut locked = state.lock().await;
+        let session = cerebrum_server::persistence::VaultSession::open(dir.clone(), PASSPHRASE).unwrap();
+        session.save_all(&mut locked).unwrap();
+    }
+
+    let restored_state = state_in(dir.clone()).await;
+    {
+        let mut locked = restored_state.lock().await;
+        restore_state(&mut locked, dir.clone(), PASSPHRASE).unwrap();
+    }
+    let locked = restored_state.lock().await;
+
+    let owned_row = locked.context_tree.find(owned_id).expect("the owned row must restore");
+    assert_eq!(
+        "11111111-1111-1111-1111-111111111111",
+        owned_row.owner_agent_id,
+        "the owner is a stored field, so a restart must not lose it"
+    );
+    assert!(
+        matches!(owned_row.visibility, cerebrum_curate::EntryVisibility::Owned),
+        "and the visibility with it, or an agent's private fact becomes readable after a restart"
+    );
+
+    let shared_row = locked.context_tree.find(shared_id).expect("the shared row must restore");
+    assert_eq!("", shared_row.owner_agent_id, "an unattributed fact is owned by nobody");
+    assert!(
+        matches!(shared_row.visibility, cerebrum_curate::EntryVisibility::Shared),
+        "and belongs to the shared scope"
+    );
 }

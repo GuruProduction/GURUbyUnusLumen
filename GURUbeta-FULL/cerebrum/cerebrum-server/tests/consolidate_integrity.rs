@@ -59,6 +59,8 @@ fn add_op_with_id(id: MemoryId, content: &str, domain: &str, topic: &str) -> Cur
             relations: vec![],
             provenance: "consolidate-integrity".into(),
             rationale: "integrity test".into(),
+                owner_agent_id: String::new(),
+                visibility: String::new(),
             created_at: Utc::now(),
             modified_at: Utc::now(),
         },

@@ -207,6 +207,23 @@ pub struct ContextEntry {
     pub relations: Vec<MemoryId>,
     pub provenance: String,
     pub rationale: String,
+    /// The stable id of the agent that wrote this entry, empty when no agent did.
+    ///
+    /// ITS OWN SLOT, NOT A MARKER INSIDE PROVENANCE. A permission decision keyed on a
+    /// substring of a prose label is a decision about a convention, and any writer that
+    /// composes the label by hand can produce it. A field cannot be typed into by accident.
+    ///
+    /// `#[serde(default)]` so every existing writer, and every row already stored, still
+    /// decodes: an entry that says nothing about its owner belongs to the person.
+    #[serde(default)]
+    pub owner_agent_id: String,
+    /// Whether the owner offered this to the shared scope, when it has an owner.
+    ///
+    /// A string rather than the curate crate's enum because this is the WIRE shape, and the
+    /// wire is deliberately plain: "Shared", "Owned" or "OwnedAndShared", matching the enum's
+    /// variant names exactly. The conversion to the typed enum happens at the handler.
+    #[serde(default)]
+    pub visibility: String,
     pub created_at: DateTime<Utc>,
     pub modified_at: DateTime<Utc>,
 }
@@ -223,6 +240,9 @@ impl Default for ContextEntry {
             relations: Vec::new(),
             provenance: String::new(),
             rationale: String::new(),
+            // Nobody owns an entry that says nothing about ownership: it is the person's.
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: now,
             modified_at: now,
         }
@@ -266,6 +286,9 @@ impl ContextEntry {
             relations: Vec::new(),
             provenance: String::new(),
             rationale: String::new(),
+            // Nobody owns an entry that says nothing about ownership: it is the person's.
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: now,
             modified_at: now,
         }
@@ -1174,6 +1197,8 @@ mod tests {
             relations: vec![MemoryId([2u8; 32])],
             provenance: "test".into(),
             rationale: "because".into(),
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: Utc::now(),
             modified_at: Utc::now(),
         };
@@ -1213,6 +1238,8 @@ mod tests {
             relations: vec![],
             provenance: "upsert".into(),
             rationale: "upsert reason".into(),
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: Utc::now(),
             modified_at: Utc::now(),
         };
@@ -1236,6 +1263,8 @@ mod tests {
             relations: vec![],
             provenance: "merge".into(),
             rationale: "merge reason".into(),
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: Utc::now(),
             modified_at: Utc::now(),
         };
@@ -1308,6 +1337,8 @@ mod tests {
             relations: vec![MemoryId([21u8; 32])],
             provenance: "test".into(),
             rationale: "testing".into(),
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: Utc::now(),
             modified_at: Utc::now(),
         };

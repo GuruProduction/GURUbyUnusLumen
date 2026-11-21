@@ -375,6 +375,10 @@ fn build_curate_ops(params: &serde_json::Value) -> Result<serde_json::Value, Str
                 relations: Vec::new(),
                 provenance: "mcp".to_string(),
                 rationale: reason.to_string(),
+                // The MCP bridge writes as an automatic lane, so these facts belong to the
+                // person's shared memory rather than to any agent.
+                owner_agent_id: String::new(),
+                visibility: String::new(),
                 created_at: now,
                 modified_at: now,
             },

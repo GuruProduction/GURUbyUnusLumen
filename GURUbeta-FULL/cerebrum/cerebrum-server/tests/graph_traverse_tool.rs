@@ -49,6 +49,8 @@ fn add_op(domain: &str, content: &str) -> CurateOp {
             relations: vec![],
             provenance: "graph-tool-test".into(),
             rationale: "graph tool contract".into(),
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: Utc::now(),
             modified_at: Utc::now(),
         },

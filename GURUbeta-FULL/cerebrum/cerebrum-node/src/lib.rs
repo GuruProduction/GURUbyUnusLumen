@@ -298,6 +298,9 @@ pub mod bridged_wirings {
                 relations: vec![],
                 provenance: "node-bridge".to_string(),
                 rationale: "node upsert".to_string(),
+                // An automatic lane, so no agent owns these facts.
+                owner_agent_id: String::new(),
+                visibility: String::new(),
                 created_at:chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
             },

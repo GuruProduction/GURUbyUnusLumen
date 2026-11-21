@@ -222,9 +222,16 @@ class AgentExecutionOwnershipTest {
             secondAdmission is AgentRunHost.Admission.AlreadyRunning,
         )
 
+        /*
+         * AWAIT BEFORE COUNTING. The block runs on a launched coroutine, so asserting its count
+         * immediately after `start` is a race in this test rather than a fact about the host.
+         * It passed for months and failed intermittently under a loaded suite, which is the
+         * signature of testing the scheduler instead of the behaviour. The claim is unchanged:
+         * the first block runs exactly once and the refused one never runs.
+         */
+        assertEquals("the winner still completes", "first", first.await())
         assertEquals("the first block ran exactly once", 1, firstRan.get())
         assertEquals("the refused block must never run", 0, secondRan.get())
-        assertEquals("the winner still completes", "first", first.await())
     }
 
     /** A refused start completes its deferred exceptionally rather than leaving a caller hanging. */

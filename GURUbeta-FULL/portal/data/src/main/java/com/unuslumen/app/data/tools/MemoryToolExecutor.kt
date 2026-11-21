@@ -81,9 +81,12 @@ class MemoryToolExecutor(
             val inCategory = scope.categories.isEmpty() ||
                 scope.categories.any { wanted -> wanted.equals(fact.category, ignoreCase = true) }
             if (!inCategory) return@filter false
-            val provenance = MemoryOwnership.parse(fact.source)
-            MemoryOwnership.mayRead(
-                provenance = provenance,
+            // The TYPED ownership the store holds, with the label grammar as the fallback for
+            // rows written before those fields existed. A decision over data, not over prose.
+            MemoryOwnership.mayReadStored(
+                storedOwnerAgentId = fact.ownerAgentId,
+                storedVisibility = fact.visibility,
+                provenanceLabel = fact.source,
                 requestingAgentId = callerId,
                 readOwn = scope.readOwn,
                 readShared = scope.readShared,

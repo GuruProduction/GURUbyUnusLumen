@@ -89,10 +89,40 @@ impl Default for Provenance {
     }
 }
 
+/// Who may read a memory that an agent wrote.
+///
+/// WHY THIS IS A FIELD AND NOT A STRING INSIDE PROVENANCE. Ownership and visibility used to
+/// live only in the provenance label, parsed back out with a marker grammar. That works, and
+/// it is how the app does it today, but it means the store cannot answer "give me agent X's
+/// private facts" without reading every row and parsing its prose. A filter that depends on
+/// parsing a string is a filter over a convention, not over data, and the convention can be
+/// typed into by any writer that composes a label by hand.
+///
+/// These are the two facts a permission decision needs, so they get their own slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EntryVisibility {
+    /// Written by the person or by an automatic lane: the shared scope, owned by nobody.
+    Shared,
+    /// Written by an agent for itself. Only that agent reads it through an own-only scope.
+    Owned,
+    /// Written by an agent and explicitly offered to the shared scope.
+    OwnedAndShared,
+}
+
+impl Default for EntryVisibility {
+    fn default() -> Self {
+        // An entry that says nothing about visibility is the person's, which is the
+        // conservative reading: it is never another agent's private fact.
+        EntryVisibility::Shared
+    }
+}
+
 /// A single curated memory entry in the Context Tree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextEntry {
     pub id: MemoryId,
+    /// The category. The brain's hierarchy calls it a domain, and it is the slot a category
+    /// filter partitions on.
     pub domain: String,
     pub topic: String,
     pub subtopic: String,
@@ -101,6 +131,18 @@ pub struct ContextEntry {
     pub provenance: Provenance,
     pub rationale: String,
     pub lifecycle: EntryLifecycle,
+    /// The stable id of the agent that wrote this entry, empty when no agent did.
+    ///
+    /// TYPED AND SEPARATE FROM PROVENANCE, because it is what a permission decision keys on.
+    /// A slug is derived and a name is editable, so neither can be an identity, and a label
+    /// that carries an id inside prose cannot be filtered without parsing prose.
+    #[serde(default)]
+    pub owner_agent_id: String,
+    /// Whether the owner offered this to the shared scope. Meaningless when the owner is
+    /// empty, and `#[serde(default)]` so a row written before this field existed still loads
+    /// as a shared, unowned fact rather than failing to deserialize.
+    #[serde(default)]
+    pub visibility: EntryVisibility,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -125,6 +167,10 @@ impl ContextEntry {
             provenance: Provenance::default(),
             rationale: String::new(),
             lifecycle: EntryLifecycle::Active,
+            // An entry created without saying who owns it belongs to nobody, which is the
+            // person's shared memory. A caller that means an agent's private fact says so.
+            owner_agent_id: String::new(),
+            visibility: EntryVisibility::Shared,
             created_at: now,
             updated_at: now,
         }

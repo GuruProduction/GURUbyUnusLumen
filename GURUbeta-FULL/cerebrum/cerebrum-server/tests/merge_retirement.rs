@@ -57,6 +57,8 @@ fn entry_with_id(id: MemoryId, content: &str, domain: &str, topic: &str) -> Cont
         relations: vec![],
         provenance: "merge-retirement-test".into(),
         rationale: "merge retirement contract".into(),
+        owner_agent_id: String::new(),
+        visibility: String::new(),
         created_at: Utc::now(),
         modified_at: Utc::now(),
     }

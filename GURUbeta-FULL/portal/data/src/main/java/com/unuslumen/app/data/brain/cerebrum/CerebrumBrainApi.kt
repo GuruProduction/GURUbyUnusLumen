@@ -170,6 +170,8 @@ object CerebrumBrainApi {
         val lifecycle: String = "",
         val layer: String = "",
         val strength: Float = 0f,
+        val ownerAgentId: String = "",
+        val visibility: String = "",
     )
 
     /**
@@ -213,6 +215,10 @@ object CerebrumBrainApi {
         val lifecycle: String = "",
         /** BUFFER, EPISODIC or SEMANTIC, empty when decay has no row. */
         val layer: String = "",
+        /** The stable id of the agent that wrote this row, empty when none did. */
+        val ownerAgentId: String = "",
+        /** Shared, Owned or OwnedAndShared, from the store rather than parsed from prose. */
+        val visibility: String = "",
     )
 
     /**
@@ -559,6 +565,8 @@ object CerebrumBrainApi {
                     lifecycle = hitObject["lifecycle"]?.jsonPrimitive?.content ?: "",
                     layer = hitObject["layer"]?.jsonPrimitive?.content ?: "",
                     strength = hitObject["strength"]?.jsonPrimitive?.content?.toFloatOrNull() ?: 0f,
+                    ownerAgentId = hitObject["owner_agent_id"]?.jsonPrimitive?.content ?: "",
+                    visibility = hitObject["visibility"]?.jsonPrimitive?.content ?: "",
                 )
             )
         }
@@ -697,6 +705,8 @@ object CerebrumBrainApi {
                     updatedAt = rowObject["updated_at"]?.jsonPrimitive?.content ?: "",
                     lifecycle = rowObject["lifecycle"]?.jsonPrimitive?.content ?: "",
                     layer = rowObject["layer"]?.jsonPrimitive?.content ?: "",
+                    ownerAgentId = rowObject["owner_agent_id"]?.jsonPrimitive?.content ?: "",
+                    visibility = rowObject["visibility"]?.jsonPrimitive?.content ?: "",
                 )
             )
         }

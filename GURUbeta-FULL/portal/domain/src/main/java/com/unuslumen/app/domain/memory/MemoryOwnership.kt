@@ -137,4 +137,36 @@ object MemoryOwnership {
         // Unattributed: the shared scope by construction.
         return readShared
     }
+
+    /**
+     * Whether one agent may read a stored row, given its TYPED ownership.
+     *
+     * THIS IS THE PREFERRED ENTRY POINT AND [mayRead] IS ITS FALLBACK. The brain now stores the
+     * owner and the visibility as fields, so a decision can be made over data rather than over
+     * a parsed label. A row written before those fields existed reports an empty owner, and
+     * that is where the label grammar is still read.
+     *
+     * The rule is unchanged, which is deliberate: an ownership model that means one thing when
+     * it reads a field and another when it reads a label is worse than either.
+     */
+    fun mayReadStored(
+        storedOwnerAgentId: String,
+        storedVisibility: String,
+        provenanceLabel: String,
+        requestingAgentId: String,
+        readOwn: Boolean,
+        readShared: Boolean,
+    ): Boolean {
+        if (storedOwnerAgentId.isNotBlank()) {
+            val isMine = storedOwnerAgentId == requestingAgentId
+            if (isMine) return readOwn
+            val offered = storedVisibility.equals("OwnedAndShared", ignoreCase = true) ||
+                storedVisibility.equals("Shared", ignoreCase = true)
+            return readShared && offered
+        }
+        // No typed owner: an older row, or one written by a lane that does not name an agent.
+        // The label grammar is the only evidence left, and it is read rather than guessed.
+        return mayRead(parse(provenanceLabel), requestingAgentId, readOwn, readShared)
+    }
+
 }

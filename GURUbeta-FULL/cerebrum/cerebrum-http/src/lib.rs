@@ -330,6 +330,9 @@ fn store_to_curate_ops(store_req: StoreMemoryRequest) -> Vec<CurateOp> {
         relations: Vec::new(),
         provenance: "http".to_string(),
         rationale: store_reason_text(),
+        // The HTTP front door is an automatic lane, so no agent owns these facts.
+        owner_agent_id: String::new(),
+        visibility: String::new(),
         created_at: rfc3339_now(),
         modified_at: rfc3339_now(),
     };

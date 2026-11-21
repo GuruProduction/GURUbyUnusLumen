@@ -82,7 +82,9 @@ class BrainService(
             domain = hit.domain,
             topic = hit.topic,
             subtopic = hit.subtopic,
-            signature = ""
+            signature = "",
+            ownerAgentId = hit.ownerAgentId,
+            visibility = hit.visibility,
         )
 
     /**
@@ -290,7 +292,9 @@ class BrainService(
             domain = row.domain,
             topic = row.topic,
             subtopic = row.subtopic,
-            signature = ""
+            signature = "",
+            ownerAgentId = row.ownerAgentId,
+            visibility = row.visibility,
         )
 
     /**

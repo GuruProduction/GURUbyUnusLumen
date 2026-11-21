@@ -688,6 +688,10 @@ fn context_tree_records(tree: &cerebrum_curate::ContextTree) -> serde_json::Valu
             },
             "rationale": entry.rationale,
             "lifecycle": format!("{:?}", entry.lifecycle),
+            // Typed ownership and visibility travel as their own fields, so a restore keeps
+            // them and a filter can partition on them rather than on parsed prose.
+            "owner_agent_id": entry.owner_agent_id,
+            "visibility": format!("{:?}", entry.visibility),
             "created_at": entry.created_at.to_rfc3339(),
             "updated_at": entry.updated_at.to_rfc3339(),
         }))
@@ -1120,6 +1124,30 @@ fn restore_context_tree_state(
         if let Some(lifecycle_from) = deserialize_lifecycle(&entry) {
             rebuilt_entry.lifecycle = lifecycle_from;
         }
+        /*
+         * OWNERSHIP AND VISIBILITY ARE READ BACK, and leaving them out was a real defect the
+         * roundtrip test caught: the writer stored them and the loader ignored them, so an
+         * agent's private fact became an unowned, shared fact after a restart. A permission
+         * decision that only holds in RAM is one that silently changes when the phone
+         * reboots.
+         *
+         * An older row that predates these fields falls back to the defaults, which is
+         * unowned and shared: a fact with no stated owner belongs to the person.
+         */
+        rebuilt_entry.owner_agent_id = entry
+            .get("owner_agent_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        rebuilt_entry.visibility = match entry
+            .get("visibility")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+        {
+            "Owned" => cerebrum_curate::EntryVisibility::Owned,
+            "OwnedAndShared" => cerebrum_curate::EntryVisibility::OwnedAndShared,
+            _ => cerebrum_curate::EntryVisibility::Shared,
+        };
         if let Some(bound_created) = deserialize_bound(&entry, "created_at") {
             rebuilt_entry.created_at = bound_created;
         }

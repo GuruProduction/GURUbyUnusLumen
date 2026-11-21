@@ -56,6 +56,83 @@ class MemoryOwnershipTest {
     }
 
     @Test
+    fun `the typed owner is read in preference to the label`() {
+        /*
+         * THE STORE NOW HOLDS THE OWNER AS A FIELD, and a decision over data beats a decision
+         * over parsed prose. This is the case that proves the field wins: the label says one
+         * thing and the field says another, and the field is the store's answer.
+         */
+        val decided = MemoryOwnership.mayReadStored(
+            storedOwnerAgentId = "agent-b",
+            storedVisibility = "Owned",
+            // A label that claims agent-a, which must NOT override the stored owner.
+            provenanceLabel = MemoryOwnership.labelFor("note", agentId = "agent-a", shared = true),
+            requestingAgentId = "agent-a",
+            readOwn = true,
+            readShared = true,
+        )
+        assertFalse(
+            "the stored owner decides, so agent-a cannot read agent-b's private fact by way of a label",
+            decided,
+        )
+    }
+
+    @Test
+    fun `a typed shared visibility makes an agent fact readable by a shared reader`() {
+        assertTrue(
+            MemoryOwnership.mayReadStored(
+                storedOwnerAgentId = "agent-b",
+                storedVisibility = "OwnedAndShared",
+                provenanceLabel = "",
+                requestingAgentId = "agent-a",
+                readOwn = false,
+                readShared = true,
+            ),
+        )
+        assertFalse(
+            "and not by an own-only reader, because it is not that agent's fact",
+            MemoryOwnership.mayReadStored(
+                storedOwnerAgentId = "agent-b",
+                storedVisibility = "OwnedAndShared",
+                provenanceLabel = "",
+                requestingAgentId = "agent-a",
+                readOwn = true,
+                readShared = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `a row with no typed owner falls back to the label`() {
+        /*
+         * ROWS WRITTEN BEFORE THE FIELDS EXISTED still have to be partitioned, and their only
+         * evidence is the label. The fallback is the same rule, not a looser one.
+         */
+        val oldStyleOwn = MemoryOwnership.mayReadStored(
+            storedOwnerAgentId = "",
+            storedVisibility = "",
+            provenanceLabel = MemoryOwnership.labelFor("note", agentId = "agent-a", shared = false),
+            requestingAgentId = "agent-a",
+            readOwn = true,
+            readShared = false,
+        )
+        assertTrue("the label still identifies an own fact", oldStyleOwn)
+
+        val oldStyleStolen = MemoryOwnership.mayReadStored(
+            storedOwnerAgentId = "",
+            storedVisibility = "",
+            provenanceLabel = MemoryOwnership.labelFor("note", agentId = "agent-b", shared = false),
+            requestingAgentId = "agent-a",
+            readOwn = true,
+            readShared = true,
+        )
+        assertFalse(
+            "and a private fact of another agent stays private through the fallback too",
+            oldStyleStolen,
+        )
+    }
+
+    @Test
     fun `an own-only agent reads its own facts`() {
         val mine = MemoryOwnership.parse(
             MemoryOwnership.labelFor("note", agentId = "agent-a", shared = false),

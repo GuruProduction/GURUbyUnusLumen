@@ -105,6 +105,8 @@ async fn paraphrase_recall_is_currently_zero() {
                 relations: vec![],
                 provenance: "semantic-gap-test".into(),
                 rationale: "gap corpus".into(),
+                owner_agent_id: String::new(),
+                visibility: String::new(),
                 created_at: Utc::now(),
                 modified_at: Utc::now(),
             },
