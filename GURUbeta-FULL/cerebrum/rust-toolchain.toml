@@ -1,0 +1,27 @@
+# The Rust toolchain the Cerebrum brain is compiled with.
+#
+# WHY THIS FILE EXISTS AT ALL. Nothing pinned the compiler before it. The brain is a
+# cdylib linked into an Android app, so a toolchain bump can change the generated code, the
+# link flags and the ABI of the artefact while every source file stays identical. A release
+# built from the same commit on a different machine could then contain a different binary,
+# and the provenance marker would name the same revision for both. Pinning the toolchain is
+# what makes "reproducibly compiled from this source" true rather than approximately true.
+#
+# Rust 1.96.0 is the version measured on the development machine when the native build was
+# wired in, so this records reality rather than a guess. `rustup` reads this file inside
+# `cerebrum/` and installs exactly this toolchain, which is why CI and a laptop cannot
+# silently disagree.
+#
+# THE TARGETS ARE LISTED BECAUSE A MISSING ONE FAILS LATE AND CONFUSINGLY. Without them, a
+# fresh clone builds arm64 and then dies at the link step of the second ABI with "can't find
+# crate for `core`", which reads as a source problem rather than a missing std.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+targets = [
+    "aarch64-linux-android",
+    "armv7-linux-androideabi",
+    "x86_64-linux-android",
+    "i686-linux-android",
+]
+profile = "minimal"

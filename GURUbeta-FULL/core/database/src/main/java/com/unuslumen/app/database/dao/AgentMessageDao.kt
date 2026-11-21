@@ -88,17 +88,26 @@ interface AgentMessageDao {
      * is the "old messages disappear" defect. Joining through `agent_runs` gives the conversation,
      * which is what the person is actually having.
      *
-     * ORDERED BY TIME WITH A DETERMINISTIC TIE-BREAKER. Two runs in one conversation can interleave,
-     * and ordering by run-then-sequence would put all of one run's messages before all of the
-     * other's regardless of when they were said. `created_at` is the true order; `message_id` breaks
-     * a tie so the list cannot reorder itself between two reads of the same rows.
+     * ORDERED BY TIME WITH A TIE-BREAKER THAT ACTUALLY ORDERS. Two runs in one conversation can
+     * interleave, and ordering by run-then-sequence would put all of one run's messages before all
+     * of the other's regardless of when they were said. `created_at` is the true order.
+     *
+     * THE TIE-BREAKER WAS `message_id`, WHICH IS A RANDOM UUID. Messages written inside the same
+     * millisecond therefore had no order at all: the rows came back in whatever sequence the uuid
+     * comparison happened to produce, and two reads of the same rows could differ. That is a
+     * shuffle with a comment on it, and it made the transcript contradict itself exactly when two
+     * participants spoke quickly, which is the ordinary case in a busy room.
+     *
+     * `rowid` is the honest tie-break. SQLite assigns it in insertion order and it is monotonic for
+     * an append-only table, so two messages written in the same millisecond come back in the order
+     * they were written. It needs no schema change, because `rowid` already exists.
      */
     @Query(
         """
         SELECT m.* FROM agent_messages m
         INNER JOIN agent_runs r ON r.run_id = m.run_id
         WHERE r.conversation_id = :conversationId
-        ORDER BY m.created_at ASC, m.message_id ASC
+        ORDER BY m.created_at ASC, m.rowid ASC
         """
     )
     suspend fun messagesForConversation(conversationId: String): List<AgentMessageEntity>

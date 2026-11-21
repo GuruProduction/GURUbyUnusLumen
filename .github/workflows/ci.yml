@@ -1,0 +1,241 @@
+# CI for GURU's Rust brain and its Android integration.
+#
+# WHY THIS EXISTS. There was no pipeline. `.github` held only FUNDING.yml, so nothing
+# checked a pull request, and every defect the Cerebrum remediation fixed had shipped
+# through that silence:
+#
+#   * the native library was a hand-copied binary and nothing compiled it, so three merged
+#     Rust fixes were absent from the released APK while every test passed;
+#   * decay, strength, layer and confidence were computed and never read;
+#   * a deleted fact could be resurrected by the ordinary write path;
+#   * QUERY and PREFETCH were declared and never dispatched;
+#   * the backup carried the transcript and not the memory.
+#
+# Each of those is now caught by a test. The pipeline's job is to make sure the tests run
+# on a machine that has none of a developer's local state: no pre-existing `.so`, no warm
+# Gradle cache, no `local.properties`.
+#
+# WHAT IT DELIBERATELY DOES NOT DO. It does not publish, tag, bump the version or touch a
+# release. A pipeline that can ship is a pipeline that can ship by accident.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A force-push supersedes the run it replaced; cancelling the stale one keeps the queue
+# honest without ever cancelling a run against the current head.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned, because an unpinned Rust or NDK turns a green build into a coincidence. The
+  # toolchain is also pinned in cerebrum/rust-toolchain.toml; this is the installer's copy
+  # so the action installs the same version the file asks for.
+  RUST_TOOLCHAIN: "1.96.0"
+  NDK_VERSION: "27.0.12077973"
+  CARGO_TERM_COLOR: always
+  # Cargo and Gradle caches both key on the lockfiles, so a dependency change is the only
+  # thing that invalidates them.
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  rust:
+    name: Rust brain
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: GURUbeta-FULL/cerebrum -> target
+
+      - name: Formatting
+        working-directory: GURUbeta-FULL/cerebrum
+        # The workspace is formatted; a pull request that is not is refused. This is a gate
+        # rather than a suggestion because an unformatted diff hides the real change.
+        run: cargo fmt --all -- --check
+
+      - name: Build the whole workspace
+        working-directory: GURUbeta-FULL/cerebrum
+        run: cargo build --workspace --locked
+
+      - name: Clippy
+        working-directory: GURUbeta-FULL/cerebrum
+        # Warnings are refused, not tolerated. A warning here has always been a defect
+        # waiting for a caller: an unused import hiding a dead branch, a must-use dropped.
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: cargo clippy --workspace --all-targets --locked -- -D clippy::all
+
+      - name: Tests
+        working-directory: GURUbeta-FULL/cerebrum
+        run: cargo test --workspace --locked
+
+  android-native:
+    name: Android native builds for every ABI
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Add the four Android targets
+        working-directory: GURUbeta-FULL/cerebrum
+        # rust-toolchain.toml already lists these, and this makes the requirement explicit
+        # in the log so a missing target is obvious rather than a downstream link error.
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+
+      - name: Install the pinned NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK ${{ env.NDK_VERSION }}
+        run: sdkmanager --install "ndk;${{ env.NDK_VERSION }}"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: GURUbeta-FULL/cerebrum -> target
+          key: android-native
+
+      - name: Build every ABI and check the provenance marker in each
+        working-directory: GURUbeta-FULL/cerebrum
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+        run: |
+          set -euo pipefail
+          TOOLCHAIN_BIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          REVISION="$(git rev-parse HEAD)"
+          echo "Embedding revision ${REVISION}"
+
+          build_one() {
+            local abi="$1" triple="$2" clang="$3"
+            echo "::group::${abi} (${triple})"
+            CARGO_TARGET_$(echo "$triple" | tr 'a-z-' 'A-Z_')_LINKER="${TOOLCHAIN_BIN}/${clang}" \
+              CC_$(echo "$triple" | tr '-' '_')="${TOOLCHAIN_BIN}/${clang}" \
+              AR_$(echo "$triple" | tr '-' '_')="${TOOLCHAIN_BIN}/llvm-ar" \
+              CEREBRUM_BUILD_REV="${REVISION}" \
+              cargo build --release --locked -p cerebrum-android --target "$triple"
+
+            local so="target/${triple}/release/libcerebrum_android.so"
+            test -f "$so" || { echo "::error::no library produced for ${abi}"; exit 1; }
+
+            # THE PROVENANCE ASSERTION, and the reason this job exists. A binary that does
+            # not carry this revision is a stale artefact, which is exactly how three merged
+            # fixes shipped absent from a release.
+            if ! grep -qaF "cerebrum-build-rev=${REVISION}" "$so"; then
+              echo "::error::${abi} does not carry the build marker for ${REVISION}; it is a stale artefact"
+              exit 1
+            fi
+            echo "::endgroup::"
+          }
+
+          build_one arm64-v8a aarch64-linux-android aarch64-linux-android29-clang
+          build_one armeabi-v7a armv7-linux-androideabi armv7a-linux-androideabi29-clang
+          build_one x86_64 x86_64-linux-android x86_64-linux-android29-clang
+          build_one x86 i686-linux-android i686-linux-android29-clang
+
+  android-app:
+    name: Android app, unit tests and APK provenance
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install Rust and the Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+
+      - name: Install the pinned NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK ${{ env.NDK_VERSION }}
+        run: sdkmanager --install "ndk;${{ env.NDK_VERSION }}"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: GURUbeta-FULL/cerebrum -> target
+          key: android-app
+
+      - name: Point the build at the SDK on this runner
+        working-directory: GURUbeta-FULL
+        # local.properties is gitignored and carries the release keystore on a developer's
+        # machine, so CI writes its own with nothing but the SDK path. Release signing stays
+        # absent, which is correct: this pipeline must not be able to publish.
+        run: echo "sdk.dir=${ANDROID_HOME}" > local.properties
+
+      - name: Debug APK, which compiles Rust and Kotlin together
+        working-directory: GURUbeta-FULL
+        run: ./gradlew :app:assembleDebug --console=plain --no-daemon
+
+      - name: Unit tests
+        working-directory: GURUbeta-FULL
+        run: ./gradlew testDebugUnitTest --console=plain --no-daemon
+
+      - name: The APK contains the brain built from this revision
+        working-directory: GURUbeta-FULL
+        # THE END-TO-END ASSERTION. Everything above could be green while the APK shipped a
+        # stale library: that is precisely what happened before. This reads the packaged
+        # artefact, not the build directory, and compares the marker against the commit.
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$APK" || { echo "::error::no debug APK was produced"; exit 1; }
+          REVISION="$(git rev-parse HEAD)"
+          echo "Expecting cerebrum-build-rev=${REVISION}"
+
+          python3 - "$APK" "$REVISION" <<'PY'
+          import re, sys, zipfile
+          apk, revision = sys.argv[1], sys.argv[2]
+          expected = {"arm64-v8a", "armeabi-v7a", "x86_64", "x86"}
+          with zipfile.ZipFile(apk) as archive:
+              found = {}
+              for name in archive.namelist():
+                  if not name.endswith("/libcerebrum_android.so"):
+                      continue
+                  abi = name.split("/")[1]
+                  payload = archive.read(name)
+                  marker = re.findall(rb"cerebrum-build-rev=[A-Za-z0-9._-]+", payload)
+                  found[abi] = sorted({m.decode() for m in marker})
+              missing = expected - set(found)
+              if missing:
+                  sys.exit(f"::error::the APK carries no brain for {sorted(missing)}")
+              for abi, markers in sorted(found.items()):
+                  if not markers:
+                      sys.exit(f"::error::{abi} brain carries no provenance marker at all")
+                  if f"cerebrum-build-rev={revision}" not in markers:
+                      sys.exit(f"::error::{abi} brain is not from {revision}: {markers}")
+                  print(f"{abi}: {markers[0]}")
+          PY
+
+      - name: Upload the APK for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: GURUbeta-FULL/app/build/outputs/apk/debug/app-debug.apk
+          # Long enough to download and install, short enough not to hoard artefacts.
+          retention-days: 7

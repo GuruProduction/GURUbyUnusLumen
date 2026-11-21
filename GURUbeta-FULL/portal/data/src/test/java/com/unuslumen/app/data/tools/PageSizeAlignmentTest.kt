@@ -214,15 +214,55 @@ class PageSizeAlignmentTest {
         )
     }
 
+    /**
+     * Where the compiled brain lands, now that the Android build compiles it.
+     *
+     * IT IS NO LONGER IN jniLibs, AND THAT IS THE POINT. The brain used to be a committed
+     * binary under `app/src/main/jniLibs`, which is why nothing built it and why three
+     * merged Rust fixes were absent from a release. `gradle/cerebrum-native.gradle.kts`
+     * runs Cargo now and registers its output directory as a generated jniLibs source, so
+     * the artefact lives under `app/build/rustJniLibs/<abi>/`.
+     *
+     * A test still looking in jniLibs would find nothing, and could then either fail
+     * forever or pass on an empty set. It reads the generated tree instead and says so
+     * loudly when that tree is absent.
+     */
+    private val generatedNativeLibs: File by lazy {
+        val candidates = listOf(
+            File("build/rustJniLibs"),
+            File("../../app/build/rustJniLibs"),
+            File("app/build/rustJniLibs"),
+        )
+        candidates.firstOrNull { it.isDirectory }
+            ?: error(
+                "Could not locate app build/rustJniLibs from working dir " +
+                    File(".").absolutePath + "; tried " +
+                    candidates.joinToString { it.absolutePath } +
+                    ". Run the buildCerebrumNative task before this test.",
+            )
+    }
+
     @Test
     fun ourOwnCerebrumLibraryIsSixteenKilobyteAligned() {
-        // The one library whose alignment this repo decides, because the Rust
-        // workspace builds it. If this fails, cerebrum/.cargo/config.toml has lost
-        // its -Wl,-z,max-page-size=16384 flag for the target being built.
-        val candidates = allLibraries().filter { it.second.name == "libcerebrum_android.so" }
+        // The one library whose alignment this repo decides, because the Rust workspace
+        // builds it. If this fails, cerebrum/.cargo/config.toml has lost its
+        // -Wl,-z,max-page-size=16384 flag for the target being built, or the Gradle task's
+        // linker environment stopped honouring it.
+        //
+        // ABSENT IS NOT A PASS. A missing brain means the native build did not run, and a
+        // test that treated that as nothing to check would be silent about the exact
+        // regression it exists for.
+        val candidates = generatedNativeLibs.listFiles().orEmpty()
+            .filter { it.isDirectory }
+            .flatMap { abiDir ->
+                abiDir.listFiles().orEmpty()
+                    .filter { it.isFile && it.name == "libcerebrum_android.so" }
+                    .map { abiDir.name to it }
+            }
         assertTrue(
-            "libcerebrum_android.so is not present under ${jniLibs.absolutePath}; it is the " +
-                "JNI host for the brain and cannot be optional.",
+            "No libcerebrum_android.so under ${generatedNativeLibs.absolutePath}. The brain is " +
+                "built by the buildCerebrumNative task, so a missing artefact means the native " +
+                "build did not run rather than that the library is optional.",
             candidates.isNotEmpty(),
         )
         for ((abi, file) in candidates) {
