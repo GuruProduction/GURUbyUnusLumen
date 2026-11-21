@@ -185,6 +185,10 @@ object CerebrumBrainApi {
         val confidence: Float,
         val rationale: String,
         val updatedAt: String,
+        /** Active, Hibernated or Archived, as the tree holds it. */
+        val lifecycle: String = "",
+        /** BUFFER, EPISODIC or SEMANTIC, empty when decay has no row. */
+        val layer: String = "",
     )
 
     /**
@@ -560,18 +564,30 @@ object CerebrumBrainApi {
     }
 
     /**
-     * Enumerate live memories from the brain, newest first.
+     * Enumerate memories from the brain, newest first.
      *
      * `domainFilter` blank means everything. `limit` of zero means the brain's
      * own unbounded listing, which the tool lane uses because a caller asking
      * what it remembers must be shown all of it.
      *
+     * `includeArchived` selects the RETIRED rows instead of the live ones, and there
+     * is one caller that needs it: the deduplication pass. The brain's id for a
+     * memory is the hash of its content, so writing a sentence a second time resolves
+     * to the row a delete archived. A pass that can only see live rows cannot tell
+     * that a fact is already known, and the write it proposes lands on that retired
+     * row. Seeing the archive lets it conclude "already known, do not write".
+     *
      * Returns null when the brain is down, so a caller can report "the brain is
      * not running" rather than an empty memory that looks like a real zero.
      */
-    fun listFacts(domainFilter: String = "", limit: Int = 0): ListResult? {
+    fun listFacts(
+        domainFilter: String = "",
+        limit: Int = 0,
+        includeArchived: Boolean = false,
+    ): ListResult? {
         if (brainDown()) return null
-        val requestJson = "{\"domain\":\"" + jsonEscape(domainFilter) + "\",\"limit\":" + limit + "}"
+        val requestJson = "{\"domain\":\"" + jsonEscape(domainFilter) + "\",\"limit\":" + limit +
+            ",\"include_archived\":" + includeArchived + "}"
         val responseText = dispatchOrNull(FRAME_LIST, requestJson) ?: return null
         val responseRoot = runCatching { wire.parseToJsonElement(responseText).jsonObject }
             .getOrNull() ?: return null
@@ -596,6 +612,8 @@ object CerebrumBrainApi {
                     confidence = rowObject["confidence"]?.jsonPrimitive?.content?.toFloatOrNull() ?: 1.0f,
                     rationale = rowObject["rationale"]?.jsonPrimitive?.content ?: "",
                     updatedAt = rowObject["updated_at"]?.jsonPrimitive?.content ?: "",
+                    lifecycle = rowObject["lifecycle"]?.jsonPrimitive?.content ?: "",
+                    layer = rowObject["layer"]?.jsonPrimitive?.content ?: "",
                 )
             )
         }

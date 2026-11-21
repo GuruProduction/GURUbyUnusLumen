@@ -219,6 +219,21 @@ class MemoryRepositoryImpl(
     override suspend fun getFactsByCategory(category: String): List<MemoryFact> =
         brainService.getFactsByCategory(category)
 
+    /**
+     * The retired facts, read from the brain's archive listing.
+     *
+     * The one caller is the hive's deduplication pass, and the reason is on the
+     * interface: an id is the hash of its content, so a repeat write resolves to a
+     * retired row and the pass must know that before it proposes the write.
+     *
+     * A brain that is not running returns nothing rather than failing, because this is a
+     * comparison set for a background pass. The pass reads an empty archive as "nothing
+     * retired", which on a fresh install is exactly right, and its own store call still
+     * refuses a resurrection if a retired row turns out to exist.
+     */
+    override suspend fun getArchivedFactsForDeduplication(): List<MemoryFact> =
+        brainService.getArchivedFactsForDeduplication()
+
     override suspend fun searchFacts(query: String, category: String?): List<MemoryFact> =
         brainService.search(query)
             .map { hit -> hit.fact }

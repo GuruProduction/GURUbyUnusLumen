@@ -2164,6 +2164,18 @@ struct ListRequest {
     domain: String,
     #[serde(default)]
     limit: usize,
+    /// Whether to enumerate RETIRED memories instead of live ones.
+    ///
+    /// THE DEDUPLICATION PASS NEEDS THIS. The brain's id for a memory is the hash of
+    /// its content, so writing a sentence a second time resolves to the row a delete
+    /// archived. A pass that can only see live rows therefore cannot tell that a fact
+    /// is already known, and the write it proposes would either resurrect the row or
+    /// be refused. Seeing the archive lets it conclude "already known, do not write".
+    ///
+    /// Defaults to false, so every existing caller keeps the live listing it expects
+    /// and this cannot accidentally widen an ordinary read.
+    #[serde(default)]
+    include_archived: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2195,9 +2207,17 @@ async fn handle_list(
     // An empty payload is a legitimate "list everything" request, so a decode
     // failure falls back to the unfiltered shape rather than refusing.
     let req: ListRequest = if payload.is_empty() {
-        ListRequest { domain: String::new(), limit: 0 }
+        ListRequest {
+            domain: String::new(),
+            limit: 0,
+            include_archived: false,
+        }
     } else {
-        serde_json::from_slice(payload).unwrap_or(ListRequest { domain: String::new(), limit: 0 })
+        serde_json::from_slice(payload).unwrap_or(ListRequest {
+            domain: String::new(),
+            limit: 0,
+            include_archived: false,
+        })
     };
 
     let state = state.lock().await;
@@ -2210,10 +2230,15 @@ async fn handle_list(
     // every listing, and the listing is what the deduplication pass reads. That is
     // one half of the resurrection defect: a deleted fact never looked deleted to
     // the pass deciding whether to write it again.
-    let mut live: Vec<ListedMemory> = state
+    //
+    // `include_archived` is the other half. The deduplication pass is the one caller
+    // that must see retired rows, because it is deciding whether a fact it is about
+    // to write is already known. Every other caller keeps the live listing.
+    let want_archived = req.include_archived;
+    let mut rows: Vec<ListedMemory> = state
         .context_tree
         .entries()
-        .filter(|entry| !is_retired(&state, &entry.id))
+        .filter(|entry| is_retired(&state, &entry.id) == want_archived)
         .filter(|entry| {
             domain_filter.is_empty() || entry.domain.eq_ignore_ascii_case(domain_filter)
         })
@@ -2235,17 +2260,18 @@ async fn handle_list(
 
     // Newest first. The tie-break on the id keeps the order total, so two rows
     // written in the same millisecond never swap between calls.
-    live.sort_by(|a, b| {
+    rows.sort_by(|a, b| {
         b.updated_at
             .cmp(&a.updated_at)
             .then_with(|| a.memory_id.0.cmp(&b.memory_id.0))
     });
 
-    let total_matching = live.len();
-    live.truncate(limit);
+    let total_matching = rows.len();
+    rows.truncate(limit);
 
     // The total obeys the same rule, or a listing would report a live count that
-    // disagrees with the rows it is willing to show.
+    // disagrees with the rows it is willing to show. It always counts LIVE rows: it
+    // describes the brain's ordinary contents, not the page that was asked for.
     let total_live = state
         .context_tree
         .entries()
@@ -2253,7 +2279,7 @@ async fn handle_list(
         .count();
 
     let response = ListResponse {
-        memories: live,
+        memories: rows,
         total_matching,
         total_live,
     };
@@ -2592,6 +2618,44 @@ mod tests {
         assert_eq!(
             latest.reason, "the meeting moved a day",
             "the caller's reason must be recorded, not the literal string update"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_archive_listing_shows_retired_rows_and_the_live_listing_does_not() {
+        let state = Arc::new(Mutex::new(fresh_state()));
+        let retired = add_one(state.clone(), "a fact the owner wanted forgotten", "home").await;
+        let live = add_one(state.clone(), "a fact that is still in use", "home").await;
+
+        let delete_op = serde_json::to_vec(&vec![CurateOp::Delete {
+            memory_id: retired,
+            reason: "owner asked".to_string(),
+        }])
+        .unwrap();
+        handle_curate(&delete_op, state.clone()).await.unwrap();
+
+        let live_bytes = serde_json::to_vec(&serde_json::json!({})).unwrap();
+        let live_listing: ListResponse =
+            serde_json::from_slice(&handle_list(&live_bytes, state.clone()).await.unwrap()).unwrap();
+        assert!(
+            !live_listing.memories.iter().any(|row| row.memory_id == retired),
+            "an ordinary listing must not show a retired row"
+        );
+        assert!(live_listing.memories.iter().any(|row| row.memory_id == live));
+
+        let archived_bytes =
+            serde_json::to_vec(&serde_json::json!({ "include_archived": true })).unwrap();
+        let archive_listing: ListResponse =
+            serde_json::from_slice(&handle_list(&archived_bytes, state.clone()).await.unwrap())
+                .unwrap();
+        assert!(
+            archive_listing.memories.iter().any(|row| row.memory_id == retired),
+            "the deduplication pass must be able to see retired rows, or it will propose a write \
+             that resolves to one"
+        );
+        assert!(
+            !archive_listing.memories.iter().any(|row| row.memory_id == live),
+            "the archive listing is the archive, not a second live listing"
         );
     }
 

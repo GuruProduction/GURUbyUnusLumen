@@ -522,7 +522,39 @@ impl<'a> CurateExecutor<'a> {
                     }
                 }
             }
-            CurateOperation::Upsert { .. } => {}
+            /*
+             * AN ORDINARY UPSERT MAY NOT RESURRECT A RETIRED MEMORY.
+             *
+             * This is the defect that let a deleted fact come back. The brain's id
+             * for a memory is the hash of its content, so "write this sentence"
+             * resolves to the SAME id as the row a deletion archived. Upsert then
+             * replaced that archived row wholesale, and a replaced row carries the
+             * lifecycle the caller supplied, which is Active. So deleting a fact and
+             * later writing the same fact again silently undid the deletion, with
+             * nothing reported at any layer.
+             *
+             * The deduplication pass made that likely rather than merely possible: it
+             * read the live listing, which excludes archived rows, so a deleted fact
+             * looked novel, and the write that followed landed on its own tombstone.
+             *
+             * REFUSED, not reactivated. Deliberate restoration is not a capability
+             * this brain offers, and inventing one here would claim something nobody
+             * asked for. The refusal names the reason, so a caller that genuinely
+             * wants the content back knows it must be written under a new identity
+             * rather than pretending the old one never retired.
+             */
+            CurateOperation::Upsert { entry, .. } => {
+                if let Some(existing) = self.tree.find(entry.id) {
+                    if existing.lifecycle == EntryLifecycle::Archived {
+                        return Err(CurationError::Invalid(format!(
+                            "memory {} is archived and an upsert will not bring it back: the id is the \
+                             hash of the content, so writing the same words again resolves to the \
+                             retired row, and this path does not reactivate a retired memory",
+                            hex_id(&entry.id)
+                        )));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -1026,6 +1058,73 @@ mod tests {
             executor.execute(vec![CurateOperation::update(id, archived, "archive")]);
         }
         assert_eq!(tree.find(id).unwrap().lifecycle, EntryLifecycle::Archived);
+    }
+
+    #[test]
+    fn an_upsert_cannot_resurrect_an_archived_memory() {
+        let mut tree = ContextTree::new();
+        // The same content twice means the same id twice, which is exactly how a
+        // deleted fact comes back: the write resolves to the retired row.
+        let entry = make_entry("home", "security", "keys", "the spare key is under the blue pot");
+        let id = entry.id;
+
+        {
+            let mut executor = CurateExecutor::new(&mut tree);
+            let added = executor.execute(vec![CurateOperation::add(entry, "first write")]);
+            assert!(added.success);
+        }
+
+        // Retire it the way a delete does.
+        {
+            let mut executor = CurateExecutor::new(&mut tree);
+            let deleted = executor.execute(vec![CurateOperation::delete(id, "owner asked")]);
+            assert!(deleted.success);
+        }
+        assert_eq!(
+            tree.find(id).unwrap().lifecycle,
+            EntryLifecycle::Archived,
+            "the delete must have archived the row, or the resurrection test tests nothing"
+        );
+
+        // Now write the same words again, under the id the brain derives from the
+        // content. Production derives that id from a content hash, so a repeat write
+        // resolves to this exact row; the id is reconstructed here rather than
+        // generated, because `MemoryId::new()` is random and would hide the collision
+        // this test exists to exercise.
+        let same_content_again = ContextEntry::new(
+            id,
+            "home",
+            "security",
+            "keys",
+            "the spare key is under the blue pot",
+        );
+        assert_eq!(same_content_again.id, id, "the repeat write must land on the retired id");
+        let mut executor = CurateExecutor::new(&mut tree);
+        let resurrected = executor.execute(vec![CurateOperation::upsert(
+            same_content_again,
+            "extraction wrote the fact again",
+        )]);
+
+        assert!(
+            !resurrected.success,
+            "an ordinary upsert must refuse a retired id, not quietly bring it back"
+        );
+        assert_eq!(
+            tree.find(id).unwrap().lifecycle,
+            EntryLifecycle::Archived,
+            "the retired row must still be retired after the refused write"
+        );
+    }
+
+    #[test]
+    fn a_plain_upsert_of_live_content_still_works() {
+        // The refusal must be about ARCHIVED rows only, or the write path that creates
+        // new memories would break.
+        let mut tree = ContextTree::new();
+        let entry = make_entry("home", "security", "keys", "a different sentence entirely");
+        let mut executor = CurateExecutor::new(&mut tree);
+        let result = executor.execute(vec![CurateOperation::upsert(entry, "ordinary write")]);
+        assert!(result.success, "an upsert of live content is the normal path");
     }
 
     #[test]

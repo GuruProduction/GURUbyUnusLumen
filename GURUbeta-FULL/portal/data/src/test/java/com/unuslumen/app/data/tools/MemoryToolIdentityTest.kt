@@ -60,6 +60,8 @@ class MemoryToolIdentityTest {
      */
     private class BrainLikeRepository : MemoryRepository {
         val stored = LinkedHashMap<String, MemoryFact>()
+        /** Retired rows, which a live listing cannot show and dedup must still see. */
+        val archived = LinkedHashMap<String, MemoryFact>()
         var brainReachable = true
 
         override suspend fun persistFacts(facts: List<MemoryFact>): List<MemoryFact> {
@@ -126,11 +128,29 @@ class MemoryToolIdentityTest {
         override suspend fun getFactsByCategory(category: String): List<MemoryFact> =
             stored.values.filter { it.category.equals(category, ignoreCase = true) }
 
+        /**
+         * The retired rows, which this fake keeps separate from the live ones.
+         *
+         * `getArchivedFactsForDeduplication` was added to MemoryRepository for the
+         * anti-resurrection fix, and a fake that does not implement it stops the whole
+         * unit suite compiling. Answering it with the live rows would be worse than
+         * answering with nothing: the method exists precisely because the live rows are
+         * the wrong comparison set.
+         */
+        override suspend fun getArchivedFactsForDeduplication(): List<MemoryFact> =
+            archived.values.toList()
+
         override suspend fun searchFacts(query: String, category: String?): List<MemoryFact> =
             stored.values.filter { it.fact.contains(query, ignoreCase = true) }
 
+        /**
+         * Retire a row rather than erasing it, exactly as the brain's No-Delete
+         * doctrine does. That is what makes the retired set meaningful, and it is what
+         * the anti-resurrection rule is about: the row still exists, so a repeat write
+         * of the same content resolves to it.
+         */
         override suspend fun deleteFact(factId: String) {
-            stored.remove(factId)
+            stored.remove(factId)?.let { retired -> archived[factId] = retired }
         }
 
         override suspend fun markFactRecalled(factId: String) = Unit

@@ -202,10 +202,24 @@ class HiveMindWorker(
     }
 
     /**
-     * Dedup pass: signature-space exactness FIRST (cheap, deterministic), then
-     * one LLM judgement over the whole batch when 2+ candidates share shape.
-     * Any model-side ambiguity (broken JSON, empty reply, no verdict) keeps
-     * all candidates: an uncertain judge never deletes a fresh memory.
+     * Dedup pass: exactness FIRST (cheap, deterministic), then one LLM judgement
+     * over the whole batch when 2+ candidates look novel.
+     * Any model-side ambiguity (broken JSON, empty reply, no verdict) keeps all
+     * candidates: an uncertain judge never drops a fresh memory.
+     *
+     * IT COMPARES AGAINST THE RETIRED ROWS TOO, AND THAT IS THE ANTI-RESURRECTION
+     * FIX ON THIS SIDE.
+     *
+     * The comparison set used to be the live listing only. A deleted fact is absent
+     * from a live listing, so the same sentence looked novel, and the write that
+     * followed resolved to the id the brain derives from that content: the row the
+     * deletion had archived. The brain now refuses to reactivate a retired id, so
+     * the outcome improved from "silently undeleted" to "the pass reports a store
+     * failure", which is still wrong.
+     *
+     * Seeing the archive means a deleted fact is recognised as already known and is
+     * never written again. The refusal remains a backstop for a caller that reaches
+     * the store another way, rather than the mechanism this pass depends on.
      */
     private suspend fun deduplicateAgainstExisting(
         appContext: Context,
@@ -213,13 +227,22 @@ class HiveMindWorker(
     ): List<MemoryFact> {
         if (candidates.isEmpty()) return candidates
 
-        // Tier 1: literal-duplicate kill without any model spend.
-        val existingFactsForCategory = candidates
+        // Tier 1: exact-duplicate kill without any model spend, over the live rows
+        // and the retired ones. An empty archive is the ordinary case on a fresh
+        // install and costs one call.
+        val liveFacts = candidates
             .map { it.category }
             .distinct()
             .flatMap { memoryRepository.getFactsByCategory(it) }
             .map { it.fact.trim().lowercase() }
             .toSet()
+        val retiredFacts = runCatching {
+            memoryRepository.getArchivedFactsForDeduplication()
+                .map { archived -> archived.fact.trim().lowercase() }
+                .toSet()
+        }.getOrDefault(emptySet())
+        val existingFactsForCategory = liveFacts + retiredFacts
+
         val literalNovel = candidates.filter { it.fact.trim().lowercase() !in existingFactsForCategory }
         if (existingFactsForCategory.isEmpty() || literalNovel.size <= 1) return literalNovel
 

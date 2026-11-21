@@ -497,6 +497,23 @@ class BrainService(
         listing.memories.map { row -> buildDomainFactFromListed(row) }
     }
 
+    /**
+     * The RETIRED facts, for the deduplication pass only.
+     *
+     * The brain's id for a memory is the hash of its content, so a sentence written a
+     * second time resolves to the row a deletion archived. A pass that sees only live
+     * rows cannot tell a fact is already known, and the write it proposes lands on its
+     * own retired row. This is the read that lets it conclude "already known".
+     *
+     * Scoped deliberately: an ordinary listing must never show a retired row, and no
+     * tool surfaces this.
+     */
+    suspend fun getArchivedFactsForDeduplication(): List<MemoryFact> = withContext(Dispatchers.Default) {
+        val listing = brainApi.listFacts(domainFilter = "", limit = 0, includeArchived = true)
+            ?: return@withContext emptyList()
+        listing.memories.map { row -> buildDomainFactFromListed(row) }
+    }
+
     suspend fun getFactsByDomain(domain: String, topic: String? = null): List<MemoryFact> = withContext(Dispatchers.Default) {
         val listing = brainApi.listFacts(domainFilter = domain, limit = 0) ?: return@withContext emptyList()
         val rows = listing.memories

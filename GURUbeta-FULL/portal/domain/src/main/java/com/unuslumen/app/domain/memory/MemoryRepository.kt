@@ -71,6 +71,22 @@ interface MemoryRepository {
      */
     suspend fun listFacts(category: String? = null): FactListing
 
+    /**
+     * The RETIRED facts, for the deduplication pass only.
+     *
+     * The brain's id for a memory is the hash of its content, so a sentence written a
+     * second time resolves to the row a deletion archived. A dedup pass that could
+     * see only live rows therefore treated a deleted fact as novel, and the write it
+     * proposed landed on its own retired row. The brain now refuses to reactivate a
+     * retired id, so the outcome changed from "silently undeleted" to "the pass
+     * fails", which is still wrong.
+     *
+     * This read lets the pass conclude "already known, do not write". It exists for
+     * that one caller: an ordinary listing must never show a retired row, and no tool
+     * surfaces it.
+     */
+    suspend fun getArchivedFactsForDeduplication(): List<MemoryFact>
+
     suspend fun getFactsByCategory(category: String): List<MemoryFact>
     suspend fun searchFacts(query: String, category: String? = null): List<MemoryFact>
     suspend fun markFactRecalled(factId: String)
