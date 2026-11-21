@@ -219,6 +219,20 @@ class MemoryRepositoryImpl(
     override suspend fun getFactsByCategory(category: String): List<MemoryFact> =
         brainService.getFactsByCategory(category)
 
+    override suspend fun updateFact(
+        factId: String,
+        newContent: String,
+        category: String,
+        confidence: Float,
+        reason: String,
+    ): MemoryFact = brainService.updateFact(
+        factId = factId,
+        newContent = newContent,
+        category = category,
+        confidence = confidence,
+        reason = reason,
+    )
+
     /**
      * The retired facts, read from the brain's archive listing.
      *

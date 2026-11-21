@@ -315,14 +315,25 @@ class MemoryToolExecutor(
                 lastRecalledDate = now,
             )
             try {
-                val stored = persistedFactRoundTrip(memoryRepository, replacement)
-                // Content-addressed identity: an edit produces a new content id,
-                // so the row holding the OLD content is archived. Best effort
-                // because the new row is already live and correct; a failure
-                // here leaves a stale copy, not a lost edit.
-                if (existing.id != stored.id) {
-                    runCatching { memoryRepository.deleteFact(existing.id) }
-                }
+                /*
+                 * THE NATIVE UPDATE, NOT A DELETE PLUS A WRITE.
+                 *
+                 * This used to write the new text as a fresh fact and then delete the old
+                 * id. An id is the hash of the content, so that produced a DIFFERENT row and
+                 * archived the old one with no record of what it said. The merged
+                 * update-history work exists precisely so "what did this memory say before"
+                 * has an answer, and this path never produced the event that makes the answer
+                 * possible.
+                 *
+                 * The row keeps its identity, so every id a caller holds still resolves.
+                 */
+                val stored = memoryRepository.updateFact(
+                    factId = existing.id,
+                    newContent = updatedContent,
+                    category = updatedCategory,
+                    confidence = updatedConfidence.coerceIn(0f, 1f),
+                    reason = "guru updateMemoryFact: the owner edited this memory",
+                )
                 val result = MemoryFactResult(stored.toInfo())
                 ToolExecutionResult.success(result, json.encodeToString(MemoryFactResult.serializer(), result))
             } catch (e: Exception) {

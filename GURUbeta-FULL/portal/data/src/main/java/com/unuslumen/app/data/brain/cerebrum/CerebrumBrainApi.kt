@@ -427,6 +427,49 @@ object CerebrumBrainApi {
         "{\"Delete\":{\"memory_id\":[" + memoryIdArrayJson(idHexLower) + "],\"reason\":\"" +
             jsonEscape(reasonText) + "\"}}"
 
+    /**
+     * CurateOp::Update wire shape: the ONLY operation that records the text it replaced.
+     *
+     * WHY THIS EXISTS AT ALL. Production updates did not use it. `updateMemoryFact` wrote the
+     * new text as an Upsert and then deleted the old id, which is a delete plus a create
+     * wearing an update's name. Because the brain derives an id from the content, that left
+     * the OLD row archived with no record of what it said, and the superseded text was gone.
+     * The update-history mechanism was merged, shipped and unreachable: `handle_search`,
+     * `history_for` and `previous_content` could all answer "what did this say before", and
+     * nothing in the app ever produced the event that makes the answer possible.
+     *
+     * `changes` is a PartialEntry, so only the fields the caller actually set are sent. An
+     * absent field keeps the row's existing value, which is what makes this an update rather
+     * than a replacement.
+     */
+    fun updateJsonOpByHex(
+        idHexLower: String,
+        newContent: String,
+        category: String,
+        confidence: Float,
+        reasonText: String,
+    ): String = buildString {
+        append("{\"Update\":{\"memory_id\":[").append(memoryIdArrayJson(idHexLower)).append("],")
+        append("\"changes\":{")
+        append("\"content\":\"").append(jsonEscape(newContent)).append("\",")
+        /*
+         * THE CATEGORY RIDES IN THE DOMAIN, because that is where a category lives: the
+         * brain's hierarchy is domain/topic/subtopic and the domain is the category. Sending
+         * the domain here is what lets an update that changes the category be found by the
+         * new one, rather than staying filed where it was.
+         */
+        append("\"domain\":\"").append(jsonEscape(category.trim().lowercase().ifBlank { "knowledge" })).append("\",")
+        /*
+         * THE CONFIDENCE RIDES INSIDE PROVENANCE, because the core wire entry has no
+         * confidence field. Leaving it out would silently preserve the old confidence on an
+         * update whose whole point was to change it.
+         */
+        append("\"provenance\":\"").append(jsonEscape(provenanceLabelFor("guru update", confidence))).append("\",")
+        append("\"rationale\":\"").append(jsonEscape("guru updateMemoryFact: $category")).append("\"")
+        append("},")
+        append("\"reason\":\"").append(jsonEscape(reasonText)).append("\"}}")
+    }
+
     fun curateJsonOps(oneOpsJson: List<String>): CurateAck = run {
         if (brainDown()) {
             return CurateAck(success = false, createdInEngine = 0, rawCounts = zeroCounts, perItem = emptyList(), raw = "brain down")

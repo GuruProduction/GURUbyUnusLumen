@@ -558,6 +558,50 @@ class BrainService(
         }
     }
 
+    /**
+     * Update a memory IN PLACE, through the one operation that records what it replaced.
+     *
+     * THE DEFECT THIS REPLACES. `updateMemoryFact` wrote the new text as an Upsert and then
+     * deleted the old id. Because an id is the hash of the content, that is a create plus a
+     * delete, and the old row was archived with no record of what it said. The merged
+     * update-history work, `EventStore::history_for` and `previous_content`, could all answer
+     * "what did this say before"; nothing in the app ever produced the event that makes the
+     * answer possible.
+     *
+     * The row keeps its identity, so every id a caller was given still resolves, and the
+     * superseded text is recorded by the brain rather than lost.
+     */
+    suspend fun updateFact(
+        factId: String,
+        newContent: String,
+        category: String,
+        confidence: Float,
+        reason: String,
+    ): MemoryFact = withContext(Dispatchers.Default) {
+        if (!isBrainId(factId)) {
+            error("not a brain id, nothing was updated: $factId")
+        }
+        val ack = brainApi.curateJsonOps(
+            listOf(
+                brainApi.updateJsonOpByHex(
+                    idHexLower = factId.lowercase(),
+                    newContent = newContent,
+                    category = category,
+                    confidence = confidence,
+                    reasonText = reason,
+                )
+            )
+        )
+        if (!ack.success) {
+            Log.e(TAG, "brain update rejected: ${ack.raw.take(300)}")
+            error("brain update rejected: ${ack.raw.take(200)}")
+        }
+        // Read the row back so the caller is handed what the brain holds, not what it sent.
+        val body = brainApi.retrieveDeepOrShallow(factId, wantDeep = true)
+            ?: error("the update was accepted but the row could not be read back")
+        buildDomainFactFrom(body)
+    }
+
     /** Dream = one CONSOLIDATE frame: real decay refresh + dream merges inside the brain. */
     suspend fun dream(): DreamReport = withContext(Dispatchers.Default) {
         val dispatchedFrame = brainApi.runDreamConsolidation()

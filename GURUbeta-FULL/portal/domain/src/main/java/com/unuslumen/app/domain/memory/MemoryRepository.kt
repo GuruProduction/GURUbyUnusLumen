@@ -87,6 +87,22 @@ interface MemoryRepository {
      */
     suspend fun getArchivedFactsForDeduplication(): List<MemoryFact>
 
+    /**
+     * Update a fact IN PLACE, keeping its id, and record what it replaced.
+     *
+     * Separate from a delete-plus-write because that is not an update: an id is the hash of
+     * the content, so writing new text creates a DIFFERENT row and deleting the old one
+     * archives it silently. The brain's own Update op is the only path that keeps the
+     * identity and records the superseded text, and this is it.
+     */
+    suspend fun updateFact(
+        factId: String,
+        newContent: String,
+        category: String,
+        confidence: Float,
+        reason: String,
+    ): MemoryFact
+
     suspend fun getFactsByCategory(category: String): List<MemoryFact>
     suspend fun searchFacts(query: String, category: String? = null): List<MemoryFact>
     suspend fun markFactRecalled(factId: String)

@@ -140,6 +140,30 @@ class MemoryToolIdentityTest {
         override suspend fun getArchivedFactsForDeduplication(): List<MemoryFact> =
             archived.values.toList()
 
+        /**
+         * Update IN PLACE, keeping the id, exactly as the brain's Update op does.
+         *
+         * A fake that implemented this as a delete plus a write would hide the very defect
+         * the production change exists to remove, so it overwrites the stored row under the
+         * same key and leaves the identity alone.
+         */
+        override suspend fun updateFact(
+            factId: String,
+            newContent: String,
+            category: String,
+            confidence: Float,
+            reason: String,
+        ): MemoryFact {
+            val existing = stored[factId] ?: error("no such fact: $factId")
+            val updated = existing.copy(
+                fact = newContent,
+                category = category,
+                confidence = confidence,
+            )
+            stored[factId] = updated
+            return updated
+        }
+
         override suspend fun searchFacts(query: String, category: String?): List<MemoryFact> =
             stored.values.filter { it.fact.contains(query, ignoreCase = true) }
 
@@ -353,7 +377,20 @@ class MemoryToolIdentityTest {
     }
 
     @Test
-    fun `update resolves the same ids as delete and reports the new id`() = runBlocking {
+    fun `update keeps the identity and rewrites the row in place`() = runBlocking {
+        /*
+         * THE CONTRACT THIS ASSERTS USED TO BE THE OPPOSITE, AND THE OLD VERSION WAS THE BUG.
+         *
+         * It used to require that an update produced a NEW id and archived the old row. That
+         * is not an update: an id is the hash of the content, so writing new text creates a
+         * different row and the old one is archived with no record of what it said. The
+         * update-history mechanism exists so "what did this memory say before" has an answer,
+         * and the old path never produced the event that makes the answer possible.
+         *
+         * The identity now survives, so every id a caller was given still resolves, and the
+         * superseded text is the brain's business rather than something lost between two
+         * writes.
+         */
         val repository = BrainLikeRepository()
         val executor = MemoryToolExecutor(repository)
         val originalContent = "the landlord has not fixed the boiler"
@@ -373,15 +410,24 @@ class MemoryToolIdentityTest {
         )
 
         assertTrue("update must accept a search id: ${payloadOf(updateResult)}", updateResult.success)
-        val newId = brainIdFor(updatedContent)
         assertTrue(
-            "update must report the stored id for the new content: ${payloadOf(updateResult)}",
-            payloadOf(updateResult).contains(newId),
+            "the row must keep its id, so every id the caller holds still resolves: ${payloadOf(updateResult)}",
+            payloadOf(updateResult).contains(originalId),
         )
-        assertTrue("the new row must be stored", repository.stored.containsKey(newId))
+        assertEquals(
+            "the text is rewritten in place",
+            updatedContent,
+            repository.stored.getValue(originalId).fact,
+        )
+        assertEquals(
+            "and the confidence the caller asked for is the one stored",
+            0.95f,
+            repository.stored.getValue(originalId).confidence,
+            0.0001f,
+        )
         assertFalse(
-            "the old row must be archived, not left live beside the new one",
-            repository.stored.containsKey(originalId),
+            "no second row is created for the same memory: that is what made an update a delete plus a write",
+            repository.stored.containsKey(brainIdFor(updatedContent)),
         )
     }
 
