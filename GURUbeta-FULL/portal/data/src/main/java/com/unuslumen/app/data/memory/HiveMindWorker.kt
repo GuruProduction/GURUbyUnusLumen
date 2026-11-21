@@ -253,9 +253,14 @@ class HiveMindWorker(
         val candidatesList = literalNovel
             .mapIndexed { index, fact -> "$index. ${fact.fact}" }
             .joinToString("\n")
+        // The schema comes from the SAME constant the fallback prompt states, so the system
+        // prompt and this instruction cannot describe two different reply shapes. They used
+        // to: the fallback asked for `merge_map`, this asked for `duplicates_of_existing`, and
+        // `DedupJudgement` parses the second, so a server-configured prompt produced a reply
+        // the parser could not read and every pass concluded "all novel".
         val judgementBody = (
             "EXISTING FACTS:\n$existingList\n\nNEW FACTS (index numbers matter):\n$candidatesList\n\n" +
-                "Reply STRICT JSON ONLY: {\"duplicates_of_existing\":[<new-fact index>],\"internal_duplicates\":[<index>,<index>]}. " +
+                "Reply STRICT JSON ONLY: " + HiveStructuredFallback.FACT_DEDUPLICATION_SCHEMA + ". " +
                 "Use [] for both lists when everything is novel. No prose outside the JSON."
             )
 

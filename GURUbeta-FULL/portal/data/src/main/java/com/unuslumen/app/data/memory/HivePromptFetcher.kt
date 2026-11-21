@@ -128,28 +128,68 @@ object HivePromptFetcher {
  * shape instead of a dead one.
  */
 object HiveStructuredFallback {
-    const val FACT_EXTRACTION: String =
+
+    /**
+     * Every category a fact may be filed under, read from the one vocabulary.
+     *
+     * THE FALLBACK LISTED SEVEN AND THE APP PERMITS SEVENTEEN. `MemoryCategories` is what the
+     * write path enforces, so a model told to emit seven names could never produce
+     * `tool_defect`, `workaround`, `lesson`, `correction`, `capability` or `commitment`: the
+     * six added for the self-correction loop. That made them unreachable exactly when the
+     * server was unreachable, which is when a phone most needs its own memory working.
+     *
+     * It is read from `MemoryCategories.ALL` rather than typed out again, so the prompt and
+     * the filter cannot drift.
+     */
+    private val CATEGORY_LIST: String =
+        com.unuslumen.app.domain.memory.MemoryCategories.ALL.joinToString("|")
+
+    /** The extraction reply shape, stated once so a prompt and its parser cannot diverge. */
+    const val FACT_EXTRACTION_SCHEMA: String =
+        "{\"facts\":[{\"category\":\"<CATEGORIES>\",\"fact\":\"<concise literal sentence>\"," +
+            "\"confidence\":<0.0-1.0>}]}"
+
+    /**
+     * The dedup reply shape, stated once.
+     *
+     * THIS WAS THE CONTRACT MISMATCH. The fallback asked for
+     * `{"merge_map":[{"keepFactIndex":0,"mergeFactIndices":[1]}]}`, while `HiveMindWorker`
+     * parses a `DedupJudgement` with `duplicates_of_existing` and `internal_duplicates`, and
+     * sends that instruction in the same request. The system prompt contradicted the user
+     * prompt, the model answered one of them, parsing found the other absent, and the pass
+     * concluded everything was novel.
+     *
+     * That is the silent half of the resurrection defect: a dedup pass that always says
+     * "novel" re-proposes facts the brain already holds, and the write that follows lands on
+     * the id derived from that content.
+     */
+    const val FACT_DEDUPLICATION_SCHEMA: String =
+        "{\"duplicates_of_existing\":[<new-fact index in the EXISTING list>]," +
+            "\"internal_duplicates\":[<index in the EXISTING list>,<index in the EXISTING list>]}"
+
+    val FACT_EXTRACTION: String =
         "You are the memory extraction mind of a phone AI.\n" +
             "Study the conversation transcript inside the USER block.\n" +
-            "Extract ZERO OR MORE facts worth durable recall (identity; stable likes/dislikes; plans and commitments people made; important relationships; recurring routines).\n" +
+            "Extract ZERO OR MORE facts worth durable recall (identity; stable likes and dislikes; plans and commitments people made; important relationships; recurring routines; and, when a tool was broken or a way round it was found, the defect and the workaround).\n" +
             "Output STRICT JSON ONLY, byte-one, no prose outside the object:\n" +
-            "{\"facts\":[{\"category\":\"<user|personal_info|project_info|decision|pattern|relationship|knowledge>\",\"fact\":\"<concise literal sentence>\",\"confidence\":<0.0-1.0>}]}\n" +
-            "Rules: empty transcript or nothing worth remembering produces {\"facts\":[]}. Never wrap in code fences or reasoning."
+            FACT_EXTRACTION_SCHEMA.replace("<CATEGORIES>", CATEGORY_LIST) + "\n" +
+            "Rules: an empty transcript or nothing worth remembering produces {\"facts\":[]}. Never wrap in code fences or reasoning."
 
     const val THREAD_DISCOVERY: String =
         "You are the thread discovery mind of a phone AI.\n" +
             "Study the conversation fragments inside the USER block.\n" +
             "Discover ZERO OR MORE recurring themes connecting them.\n" +
-            "Output STRICT JSON ONLY, byte-one:\n" +
+            "Output STRICT JSON ONLY, byte-one, no prose outside the object:\n" +
             "{\"threads\":[{\"title\":\"<max 6 words>\",\"summary\":\"<one sentence>\",\"conversationIds\":[\"<ids referenced>\"]}]}\n" +
             "Rules: no real theme produces {\"threads\":[]}. Never wrap in code fences or reasoning."
 
-    const val FACT_DEDUPLICATION: String =
-        "You are the memory dedup mind of a phone AI. Two fact groups arrive in the USER block. " +
-            "Detect which NEW facts duplicate EXISTING ones or duplicate each other. " +
+    val FACT_DEDUPLICATION: String =
+        "You are the memory dedup mind of a phone AI. Two fact groups arrive in the USER block: " +
+            "EXISTING FACTS, then NEW FACTS with index numbers. " +
+            "Report which NEW facts duplicate an EXISTING one, and which NEW facts duplicate each other. " +
             "Output STRICT JSON ONLY, byte-one, no prose outside the object: " +
-            "{\"merge_map\":[{\"keepFactIndex\":0,\"mergeFactIndices\":[1]}]}. " +
-            "Rules: everything distinct produces {\"merge_map\":[]}. Never wrap in code fences."
+            FACT_DEDUPLICATION_SCHEMA + ". " +
+            "Rules: everything distinct produces [] in both lists. Never wrap in code fences."
 
     const val CONVERSATION_TITLING: String =
         "Title the conversation in the USER block: max six words, no quotes, no punctuation. " +
