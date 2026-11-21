@@ -239,3 +239,65 @@ jobs:
           path: GURUbeta-FULL/app/build/outputs/apk/debug/app-debug.apk
           # Long enough to download and install, short enough not to hoard artefacts.
           retention-days: 7
+
+  android-device:
+    name: The shipped brain, proved on an emulator
+    runs-on: ubuntu-24.04
+    # The only job that proves the packaged library EXECUTES. Every other check reads
+    # files; this one boots a real vault in the app's own uid and drives create, search,
+    # update, history, delete, the resurrection refusal, QUERY and PREFETCH through the
+    # shipped .so. It is what three merged-but-absent fixes would have failed.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install Rust and the Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+
+      - name: Install the pinned NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK ${{ env.NDK_VERSION }}
+        run: sdkmanager --install "ndk;${{ env.NDK_VERSION }}"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: GURUbeta-FULL/cerebrum -> target
+          key: android-device
+
+      - name: Point the build at the SDK on this runner
+        working-directory: GURUbeta-FULL
+        run: echo "sdk.dir=${ANDROID_HOME}" > local.properties
+
+      - name: Enable KVM so the emulator is usable
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run the memory test on an emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          # x86_64 because the runner is x86_64; the app packages that ABI from source, so
+          # the binary under test is the one this build compiled rather than a shipped copy.
+          script: |
+            cd GURUbeta-FULL
+            ./gradlew :app:connectedDebugAndroidTest \
+              -Pandroid.testInstrumentationRunnerArguments.class=com.unuslumen.app.guru.CerebrumMemoryOnDeviceTest \
+              --console=plain --no-daemon
