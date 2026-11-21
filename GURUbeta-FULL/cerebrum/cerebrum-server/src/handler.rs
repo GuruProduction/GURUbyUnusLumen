@@ -1530,11 +1530,42 @@ struct SearchRequest {
     limit: usize,
 }
 
+/// One search hit, carrying the row's real metadata rather than its body alone.
+///
+/// WHY THIS IS NOT JUST `{id, score, content}` ANY MORE. Search used to return the
+/// body and nothing else, so the Kotlin boundary had to invent the rest. It invented
+/// a constant `category = "memory"` and a constant `source = "cerebrum"`, and both
+/// were wrong in a way no test caught:
+///
+///  * `memory` is not in the category vocabulary, so a category-filtered search
+///    returned nothing for every real category.
+///  * `cerebrum` is the STORAGE BACKEND, not the origin. An agent's ownership marker
+///    rides in provenance, so a caller looking for `agent=<slug>` in `source` found
+///    nothing and an own-only agent was handed an empty memory every time.
+///
+/// A read surface that returns the content and discards the metadata it just read is
+/// the reason the two other read paths (listing and retrieve) disagreed with search
+/// about what a category was. So the metadata travels here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct SearchResult {
     memory_id: MemoryId,
     score: f32,
     content: String,
+    /// The real category, which is the tree's domain.
+    domain: String,
+    topic: String,
+    subtopic: String,
+    /// The caller's confidence, as stored.
+    confidence: f32,
+    /// The provenance label exactly as it was written, so ownership and visibility
+    /// markers survive to a caller that knows how to read them.
+    provenance: String,
+    /// The memory's lifecycle: Active, Hibernated or Archived.
+    lifecycle: String,
+    /// The decay layer, or empty when decay holds no row.
+    layer: String,
+    /// The decay strength, so a caller can see why a hit ranked where it did.
+    strength: f32,
 }
 
 async fn handle_search(
@@ -1657,7 +1688,7 @@ async fn handle_search(
     // consolidated and how recently reinforced it is.
     let policy = RetrievalPolicy::default();
     let top_fused = ordered.first().map(|(_, s)| *s).unwrap_or(1.0).max(f32::EPSILON);
-    let mut scored: Vec<(MemoryId, f32, String)> = Vec::new();
+    let mut scored: Vec<SearchResult> = Vec::new();
     for (memory_id, fused_score) in ordered.iter() {
         if is_retired(&state, memory_id) {
             continue;
@@ -1665,8 +1696,6 @@ async fn handle_search(
         let Some(entry) = state.context_tree.find(*memory_id) else {
             continue;
         };
-        let content = entry.content.clone();
-        let confidence = entry.provenance.confidence;
 
         // Eligibility is asked BEFORE the access pass below, on the state as it
         // stands. Otherwise a faint memory would strengthen itself by being
@@ -1676,39 +1705,45 @@ async fn handle_search(
             continue;
         }
         let Some(decay_row) = decay_row else { continue };
-        let multiplier = policy.score_multiplier(decay_row, confidence);
+        let multiplier = policy.score_multiplier(decay_row, entry.provenance.confidence);
 
         // Ranking is over the weighted score, never raw lexical agreement: a faint
         // memory matching a word must not outrank a fresh one matching the same
         // word.
         let weighted = (fused_score / top_fused) * multiplier;
-        scored.push((*memory_id, weighted, content));
+        scored.push(SearchResult {
+            memory_id: *memory_id,
+            score: weighted,
+            content: entry.content.clone(),
+            domain: entry.domain.clone(),
+            topic: entry.topic.clone(),
+            subtopic: entry.subtopic.clone(),
+            confidence: entry.provenance.confidence,
+            provenance: entry.provenance.source.clone(),
+            lifecycle: format!("{:?}", entry.lifecycle),
+            layer: RetrievalPolicy::layer_name(decay_row.layer).to_string(),
+            strength: decay_row.strength,
+        });
     }
 
     // Highest weighted score first. The id breaks ties so two equal memories cannot
     // swap order between identical calls.
     scored.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
+        b.score
+            .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0 .0.cmp(&b.0 .0))
+            .then_with(|| a.memory_id.0.cmp(&b.memory_id.0))
     });
     scored.truncate(limit);
 
     // Only what is actually RETURNED is strengthened, and only once the ordering is
     // settled. Marking every candidate as accessed would reward memories the caller
     // never saw, which reinforces the retrieval pass rather than the use of it.
-    for (memory_id, _, _) in &scored {
-        state.decay_engine.access(*memory_id);
+    for hit in &scored {
+        state.decay_engine.access(hit.memory_id);
     }
 
-    let mut results: Vec<SearchResult> = scored
-        .into_iter()
-        .map(|(memory_id, score, content)| SearchResult {
-            memory_id,
-            score,
-            content,
-        })
-        .collect();
+    let mut results: Vec<SearchResult> = scored;
 
     // Last resort: exact phrase present but no shared indexed term (for example a
     // two-character query, which tokenisation drops).
@@ -1735,6 +1770,16 @@ async fn handle_search(
                     memory_id: entry.id,
                     score: 0.5 * multiplier,
                     content: entry.content.clone(),
+                    domain: entry.domain.clone(),
+                    topic: entry.topic.clone(),
+                    subtopic: entry.subtopic.clone(),
+                    confidence: entry.provenance.confidence,
+                    provenance: entry.provenance.source.clone(),
+                    lifecycle: format!("{:?}", entry.lifecycle),
+                    layer: decay_row
+                        .map(|row| RetrievalPolicy::layer_name(row.layer).to_string())
+                        .unwrap_or_default(),
+                    strength: decay_row.map(|row| row.strength).unwrap_or(0.0),
                 });
                 if results.len() >= limit {
                     break;

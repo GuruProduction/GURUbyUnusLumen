@@ -9,6 +9,7 @@ import com.unuslumen.app.data.brain.cerebrum.CerebrumBrainApi
 import com.unuslumen.app.data.brain.cerebrum.CerebrumHost
 import com.unuslumen.app.data.memory.LocalEmbeddingService
 import com.unuslumen.app.domain.memory.MemoryFact
+import com.unuslumen.app.domain.memory.MemoryOwnership
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -40,27 +41,47 @@ class BrainService(
     // Wire conversions (brain reply bytes -> domain types), boundary-only.
     // =====================================================================
 
-    private fun buildDomainFact(entityId: String, text: String, score: Float): MemoryFact =
+    /**
+     * Build a domain fact from a SEARCH hit, with the metadata the hit now carries.
+     *
+     * THE TWO CONSTANTS THAT WERE HERE WERE THE DEFECT. This used to set
+     * `category = "memory"` and `source = "cerebrum"`, and both were wrong:
+     *
+     *  - `memory` is not in the category vocabulary, so a category-filtered search
+     *    returned nothing for every real category, while listing and retrieve answered
+     *    correctly from the same rows. Three read paths, two answers.
+     *  - `cerebrum` is the storage BACKEND. The agent memory service looked in `source`
+     *    for `agent=<slug>` to decide ownership, so an own-only agent was handed an
+     *    empty memory every time and a shared reader was handed the whole vault.
+     *
+     * The category is now the row's real domain and the provenance is the label the
+     * write actually carried, which is where ownership and visibility live.
+     */
+    private fun buildDomainFactFromHit(hit: CerebrumBrainApi.BrainHit): MemoryFact =
         MemoryFact(
-            id = entityId,
-            category = "memory",      // the brain holds it; the room category field no longer decides identity
-            fact = text,
+            id = hit.idHex,
+            // The stored category IS the tree's domain. Reading it beats inventing it.
+            category = categoryOf(hit.provenance, hit.domain),
+            fact = hit.content,
             embedding = emptyList(),
-            confidence = score,
+            confidence = hit.confidence.coerceIn(0f, 1f),
             sourceConversationIds = emptyList(),
             extractedDate = System.currentTimeMillis(),
             lastRecalledDate = System.currentTimeMillis(),
-            layer = "BUFFER",         // real layer lives inside the brain's decay engine
-            strength = score.coerceIn(0f, 1f),
+            layer = hit.layer.ifBlank { "BUFFER" },
+            strength = hit.strength.coerceIn(0f, 1f),
             accessCount = 0,
-            source = "cerebrum",
+            // The provenance label, verbatim. It is not the backend and it is not
+            // invented here: MemoryOwnership.parse reads the owner and visibility out
+            // of it.
+            source = hit.provenance,
             trigger = "",
             beforeContext = "",
             afterContext = "",
             emotionalValence = 0f,
-            domain = "",
-            topic = "",
-            subtopic = "",
+            domain = hit.domain,
+            topic = hit.topic,
+            subtopic = hit.subtopic,
             signature = ""
         )
 
@@ -192,19 +213,24 @@ class BrainService(
     }
 
     /**
-     * The category a stored row was filed under: read back from the rationale
-     * the write recorded, falling back to the row's own domain, which is the
-     * same value. A row written by any older path still reports a real
-     * category rather than a blank.
+     * The category a stored row was filed under.
+     *
+     * THE DOMAIN IS THE CATEGORY. `domainForCategory` files every write under the
+     * caller's category, so reading the domain back is exact and needs no marker. This
+     * used to prefer a `guru storeFact: <category>` marker inside the rationale and
+     * fall back to the domain, which meant two writers disagreed about where the truth
+     * was: `storeFact` wrote that marker, `storeRecord` did not. The marker is still
+     * honoured as a fallback for rows written before the domain carried the category.
      */
-    private fun categoryOf(rationale: String, domain: String): String {
+    private fun categoryOf(provenanceLabel: String, domain: String): String {
+        if (domain.isNotBlank()) return domain
         val markerText = "guru storeFact: "
-        val markerAt = rationale.indexOf(markerText)
+        val markerAt = provenanceLabel.indexOf(markerText)
         if (markerAt >= 0) {
-            val tail = rationale.substring(markerAt + markerText.length).trim()
+            val tail = provenanceLabel.substring(markerAt + markerText.length).trim()
             if (tail.isNotEmpty()) return tail
         }
-        return domain.ifBlank { "knowledge" }
+        return ""
     }
 
     /**
@@ -326,9 +352,11 @@ class BrainService(
     ) {
         brainApi.searchFacts(query, topK).map { hit ->
             DomainSearchResult(
-                fact = buildDomainFact(hit.idHex, hit.content, hit.score),
+                fact = buildDomainFactFromHit(hit),
                 score = hit.score,
-                source = "CEREBRUM",
+                // The backend label belongs here, on the RESULT TIER, not on the fact's
+                // provenance. Provenance is who wrote it; this is which engine answered.
+                source = MemoryOwnership.BACKEND_CEREBRUM.uppercase(),
             )
         }
     }

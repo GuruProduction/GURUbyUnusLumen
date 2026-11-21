@@ -145,8 +145,32 @@ object CerebrumBrainApi {
         val cross_references: Int = 0,
     )
 
-    /** one search hit from the SEARCH frame; id is 64-hex lower, score 0..1f real. */
-    data class BrainHit(val idHex: String, val score: Float, val content: String)
+    /**
+     * One search hit from the SEARCH frame: id, score, body, and the row's metadata.
+     *
+     * THE METADATA IS ON THE WIRE NOW, AND THAT WAS THE DEFECT. A hit used to carry
+     * only `{memory_id, score, content}`, so the Kotlin boundary had to invent a
+     * category and an origin, and it invented constants that were wrong in a way no
+     * test caught: the category `memory` matched no real category, and the origin
+     * `cerebrum` was the storage backend rather than the writer. Listing and retrieve
+     * read the real values from the same rows, so the three read paths disagreed.
+     *
+     * The defaults are empty rather than a plausible stand-in, so a brain that predates
+     * these fields produces an obviously absent value rather than a confident wrong one.
+     */
+    data class BrainHit(
+        val idHex: String,
+        val score: Float,
+        val content: String,
+        val domain: String = "",
+        val topic: String = "",
+        val subtopic: String = "",
+        val confidence: Float = 1.0f,
+        val provenance: String = "",
+        val lifecycle: String = "",
+        val layer: String = "",
+        val strength: Float = 0f,
+    )
 
     /**
      * One retrieved memory's real shape from the RETRIEVE wire.
@@ -477,7 +501,21 @@ object CerebrumBrainApi {
             val hexId = hexBuilder.toString()
             val hitScore = hitObject["score"]?.jsonPrimitive?.content?.toFloatOrNull() ?: continue
             val hitContent = hitObject["content"]?.jsonPrimitive?.content ?: continue
-            hits.add(BrainHit(hexId, hitScore, hitContent))
+            hits.add(
+                BrainHit(
+                    idHex = hexId,
+                    score = hitScore,
+                    content = hitContent,
+                    domain = hitObject["domain"]?.jsonPrimitive?.content ?: "",
+                    topic = hitObject["topic"]?.jsonPrimitive?.content ?: "",
+                    subtopic = hitObject["subtopic"]?.jsonPrimitive?.content ?: "",
+                    confidence = hitObject["confidence"]?.jsonPrimitive?.content?.toFloatOrNull() ?: 1.0f,
+                    provenance = hitObject["provenance"]?.jsonPrimitive?.content ?: "",
+                    lifecycle = hitObject["lifecycle"]?.jsonPrimitive?.content ?: "",
+                    layer = hitObject["layer"]?.jsonPrimitive?.content ?: "",
+                    strength = hitObject["strength"]?.jsonPrimitive?.content?.toFloatOrNull() ?: 0f,
+                )
+            )
         }
         return hits
     }
