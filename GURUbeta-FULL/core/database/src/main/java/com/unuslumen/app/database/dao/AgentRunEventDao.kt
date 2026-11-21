@@ -79,4 +79,17 @@ interface AgentRunEventDao {
 
     @Query("SELECT COUNT(*) FROM agent_run_events WHERE run_id = :runId")
     suspend fun countForRun(runId: String): Int
+
+    /**
+     * How many events of one type a run has.
+     *
+     * A COUNT RATHER THAN A LOAD. The history list shows a tool-call count per finished run, and it
+     * used to get it by reading every event of all twenty listed runs and counting in Kotlin. That is
+     * twenty full table scans per refresh of a screen that changes nothing about those runs, which is
+     * the whole cost with none of the information.
+     */
+    @Query(
+        "SELECT COUNT(*) FROM agent_run_events WHERE run_id = :runId AND event_type = :eventType"
+    )
+    suspend fun countOfType(runId: String, eventType: String): Int
 }

@@ -22,14 +22,22 @@ import com.unuslumen.app.domain.agents.ReasoningView
 import com.unuslumen.app.domain.agents.RunSummaryView
 import com.unuslumen.app.domain.agents.RunView
 import com.unuslumen.app.domain.agents.ToolActivityView
+import com.unuslumen.app.domain.agents.VerificationView
 import com.unuslumen.app.domain.model.AgentAutonomy
 import com.unuslumen.app.domain.model.AgentVisibility
 import com.unuslumen.app.domain.model.GuruAgent
 import com.unuslumen.app.domain.repository.GuruAgentRepository
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import org.koin.core.annotation.Single
 
@@ -50,6 +58,25 @@ import org.koin.core.annotation.Single
  * THE LEDGER IS READ THROUGH THE LEDGER, NOT THE DAO, so payloads arrive decrypted. Reaching past it
  * to the DAO would hand the assembler sealed envelopes and every tool argument would render as
  * ciphertext, which is a failure that looks like a data problem rather than a call-site one.
+ *
+ * WHY THERE IS A FOLD CACHE, AND WHAT IT COSTS IF IT GOES.
+ *
+ * Every event payload is sealed on disk, so reading a run's history means one Keystore decryption per
+ * event. This class is called on every change to a live run and it used to read the WHOLE ledger each
+ * time: measured on a device, one assemble was 77 decrypts totalling 181,661 bytes, and at a
+ * two-second poll that is 2,310 decrypts and 5.4 MB per minute, growing with the run because the
+ * whole history was re-read every tick.
+ *
+ * So the derived state is folded once and kept. [RunDerived] holds everything the events contribute
+ * (tool activity, plan, reasoning, decisions, verifications) plus the last sequence it has consumed,
+ * and [foldFor] reads only `eventsAfter(lastSequence)`. The steady-state cost of an unchanged run is
+ * therefore zero decrypts, and the cost of a change is one per NEW event rather than one per event
+ * ever written.
+ *
+ * THE CACHE IS BOUNDED AND LOSING IT IS SAFE. Eight runs are kept, least recently used first out. An
+ * evicted run is rebuilt from its ledger on the next assemble at the old price, which is correct and
+ * merely slower. Nothing is derived from the cache that is not also derivable from the rows, so a
+ * stale or missing entry can only ever cost time.
  */
 @Single
 class AgentRoomAssembler(
@@ -64,9 +91,133 @@ class AgentRoomAssembler(
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
-    /** How many previous runs the history list keeps. Enough to scroll, not the whole archive. */
     private companion object {
+        /** How many previous runs the history list keeps. Enough to scroll, not the whole archive. */
         const val HISTORY_LIMIT = 20
+
+        /**
+         * How many runs keep a folded event cache.
+         *
+         * A PERSON WATCHES ONE ROOM AT A TIME, so a handful covers the open room plus whatever it was
+         * opened from. Larger values buy nothing and hold megabytes of strings to buy it with.
+         */
+        const val MAX_CACHED_RUNS = 8
+
+        /**
+         * How often a room with no run looks for one.
+         *
+         * ONLY WHEN THERE IS NOTHING TO OBSERVE. Once a run exists the row flow drives everything,
+         * so this is a safety net for a room that was opened before its agent was ever given a job.
+         */
+        const val IDLE_RECHECK_MS = 5_000L
+    }
+
+    /**
+     * Per-run derived state, folded from the ledger once.
+     *
+     * MUTABLE ON PURPOSE, AND THAT IS THE POINT. This is an accumulation, not a snapshot: new events
+     * are applied to it and the answer grows. Everything in it is derivable from the events it has
+     * consumed, so it can be thrown away at any moment and rebuilt.
+     */
+    private class RunDerived {
+        /** The highest sequence consumed. The boundary the next fold reads after. */
+        var lastSequence: Long = 0L
+
+        /**
+         * The run row's two sealed fields, opened once.
+         *
+         * BOTH ARE FROZEN AT CREATION. `assignment` is the original brief and `resolvedSystemPrompt`
+         * is what the model was given; neither is ever edited, so opening them again on every
+         * assemble would be paying a Keystore call for a string that cannot have changed.
+         */
+        var openedAssignment: String? = null
+        var openedSystemPrompt: String? = null
+
+        val toolActivity = LinkedHashMap<String, ToolActivityView>()
+        val reasoning = StringBuilder()
+
+        /** The newest plan revision seen, and its payload. Revisions only ever move forward. */
+        var planRevision: Int = Int.MIN_VALUE
+        var planPayload: JsonObject? = null
+
+        val decisions = ArrayList<DecisionView>()
+        val verifications = ArrayList<VerificationView>()
+    }
+
+    /**
+     * The fold cache, access-ordered so the room being looked at is the last evicted.
+     *
+     * INSERTION ORDER WOULD EVICT THE WRONG RUN. A person opens one room, so that run must survive
+     * eight other runs being read in the background; insertion order would throw it out first
+     * because it is usually the oldest entry.
+     */
+    private val folds = java.util.LinkedHashMap<String, RunDerived>(16, 0.75f, true)
+
+    /** Fold for one run, evicting the least recently used when the cache is full. */
+    private fun foldSlot(runId: String): RunDerived {
+        folds[runId]?.let { return it }
+        val created = RunDerived()
+        folds[runId] = created
+        while (folds.size > MAX_CACHED_RUNS) {
+            val oldest = folds.keys.firstOrNull() ?: break
+            folds.remove(oldest)
+        }
+        return created
+    }
+
+    /**
+     * One folder at a time.
+     *
+     * THE READ AND THE FOLD ARE ONE OPERATION. Two assembles that both read `eventsAfter(10)` would
+     * both fold those events, and every tool call after the boundary would appear twice. Holding the
+     * lock across the read is what makes the boundary honest; the read is a Room query on a
+     * background dispatcher, so nothing is blocked that a person can see.
+     */
+    private val foldLock = Mutex()
+
+    /**
+     * The room, and then the room again every time the displayed run changes.
+     *
+     * THIS REPLACES A TWO-SECOND POLL AND IS THE WHOLE OF THE FIX FOR THE SLOW APP.
+     *
+     * The poll re-assembled everything whether anything had changed or not. Every assemble reads the
+     * run's event ledger and every payload is sealed on disk, so a poll was a Keystore decryption per
+     * event per tick: measured on a device, 77 decrypts and 181,661 bytes per assemble, 2,310
+     * decrypts a minute, and it grew with the run because the whole history was re-read each time.
+     *
+     * TWO THINGS FIX IT AND BOTH ARE HERE. The run row is observed rather than polled, so an
+     * unchanged room costs nothing and a changed one costs one assemble. And [foldFor] reads only
+     * events committed since the last fold, so the assemble a change costs is proportional to the
+     * NEW events rather than to everything the run has ever done.
+     *
+     * WHY THE TIMESTAMP IS READ BEFORE SUBSCRIBING. A write landing between the query and the
+     * subscription has already moved `updatedAt`, so the first emission carries a value this loop has
+     * not seen and is not dropped. A `drop(1)` would discard precisely that write, which is the one
+     * somebody is most likely waiting for.
+     *
+     * A MESSAGE MOVES THE ROW TOO. The broker appends a ledger event in the same transaction, and
+     * appending advances `updated_at`, so an exchange appears with no timer anywhere.
+     */
+    fun roomFlow(agentId: String): Flow<AgentRoomState?> = flow {
+        while (currentCoroutineContext().isActive) {
+            val room = runCatching { assemble(agentId) }.getOrNull()
+            emit(room)
+            val runId = room?.run?.runId
+            if (runId == null) {
+                /*
+                 * NOTHING TO WATCH, SO LOOK AGAIN SHORTLY. A room with no run can gain one started
+                 * from elsewhere in the app, and a flow that waited for ever would never notice. This
+                 * is the only timer left in the room and it runs only while nothing is happening,
+                 * which is exactly when the cost is affordable.
+                 */
+                delay(IDLE_RECHECK_MS)
+                continue
+            }
+            val seen = runCatching { runDao.run(runId)?.updatedAt }.getOrNull() ?: Long.MIN_VALUE
+            runCatching {
+                runDao.observeRun(runId).first { row -> row == null || row.updatedAt != seen }
+            }
+        }
     }
 
     /**
@@ -128,8 +279,13 @@ class AgentRoomAssembler(
      * an empty panel.
      */
     private suspend fun assembleRun(runStored: AgentRunEntity, agent: GuruAgent): RunView {
-        val run = runCatching { ledger.run(runStored.runId) }.getOrNull() ?: runStored
-        val events = runCatching { ledger.events(run.runId) }.getOrDefault(emptyList())
+        /*
+         * FOLD FIRST, THEN THE ROW. The fold is what caches the two opened columns, so reading the
+         * row before it would pay for the decryption the cache exists to avoid.
+         */
+        val derived = foldFor(runStored.runId)
+        val run = openedRun(runStored, derived)
+
         val messages = runCatching { broker.conversation(run.runId) }.getOrDefault(emptyList())
         val artefacts = runCatching { artefactDao.forRun(run.runId) }.getOrDefault(emptyList())
         val approvals = runCatching { broker.approvalsFor(run.runId) }
@@ -155,13 +311,13 @@ class AgentRoomAssembler(
             finishedAt = run.finishedAt,
             failureMessage = run.failureMessage,
             resultSummary = run.resultSummary,
-            planSteps = planStepsFrom(events),
-            plan = planFrom(events),
-            toolActivity = toolActivityFrom(events),
+            planSteps = planStepsFrom(derived),
+            plan = planFrom(derived),
+            toolActivity = derived.toolActivity.values.toList(),
             messages = messages.map { it.toView(run.agentName) },
-            reasoning = reasoningFrom(events, effective, run.reasoningCaptureEnabledAtStart),
-            decisions = decisionsFrom(events),
-            verifications = verificationsFrom(events),
+            reasoning = reasoningFrom(derived, effective, run.reasoningCaptureEnabledAtStart),
+            decisions = derived.decisions.sortedBy { it.sequence },
+            verifications = derived.verifications.sortedBy { it.sequence },
             contextSupplied = contextSources.count { it.suppliedToModel },
             contextOffered = contextSources.size,
             contextSources = contextSources,
@@ -194,13 +350,213 @@ class AgentRoomAssembler(
         )
     }
 
+    /**
+     * The run row with its two sealed columns opened, paying for the decryption once per run.
+     *
+     * THE OPENING IS THE LEDGER'S JOB, NOT THIS CLASS'S. `ledger.run` is where the sealing policy
+     * lives, including the explicit `[unavailable: …]` and `[altered: …]` markers for a column that
+     * will not open. This calls it the first time and then reuses what it returned, because both
+     * values are frozen at creation and re-opening them cannot produce a different answer.
+     *
+     * A row that has gone since the fold was built returns null, which the caller treats as the agent
+     * having been deleted.
+     */
+    private suspend fun openedRun(stored: AgentRunEntity, derived: RunDerived): AgentRunEntity {
+        val cachedAssignment = derived.openedAssignment
+        val cachedPrompt = derived.openedSystemPrompt
+        if (cachedAssignment != null && cachedPrompt != null) {
+            return stored.copy(
+                assignment = cachedAssignment,
+                resolvedSystemPrompt = cachedPrompt,
+            )
+        }
+        val opened = runCatching { ledger.run(stored.runId) }.getOrNull() ?: stored
+        derived.openedAssignment = opened.assignment
+        derived.openedSystemPrompt = opened.resolvedSystemPrompt
+        return opened
+    }
+
+    /**
+     * Fold everything committed since this run was last folded.
+     *
+     * THE STEADY-STATE COST IS ZERO. A run whose ledger has not moved reads nothing and decrypts
+     * nothing, which is the whole fix: the old code read every payload on every tick and grew with
+     * the run, so a long run made the room slower the more it had already done.
+     */
+    private suspend fun foldFor(runId: String): RunDerived = foldLock.withLock {
+        val derived = foldSlot(runId)
+        val pending: List<AgentRunEventEntity> = if (derived.lastSequence == 0L) {
+            // Never folded, or the cache was evicted. One full read, then only deltas.
+            runCatching { ledger.events(runId) }.getOrDefault(emptyList())
+        } else {
+            runCatching { ledger.eventsAfter(runId, derived.lastSequence) }.getOrDefault(emptyList())
+        }
+        for (event in pending) {
+            foldEvent(derived, event)
+            if (event.sequenceNumber > derived.lastSequence) derived.lastSequence = event.sequenceNumber
+        }
+        derived
+    }
+
+    /**
+     * Apply one event to the running state.
+     *
+     * DISPATCHED ON THE EVENT TYPE BEFORE ANY PARSING. The previous version parsed the payload of
+     * every event in the run to look for an invocation id, including the ones that could never have
+     * one, so a run with a thousand model calls paid a thousand JSON parses to learn nothing. Here a
+     * type that contributes nothing costs a string comparison.
+     */
+    private fun foldEvent(derived: RunDerived, event: AgentRunEventEntity) {
+        when (event.eventType) {
+            AgentRunEventEntity.TOOL_CALL_STARTED,
+            AgentRunEventEntity.TOOL_PERMISSION_GRANTED,
+            AgentRunEventEntity.TOOL_PERMISSION_DENIED,
+            AgentRunEventEntity.TOOL_CALL_COMPLETED,
+            AgentRunEventEntity.TOOL_CALL_FAILED,
+            AgentRunEventEntity.TOOL_CALL_REFUSED,
+            AgentRunEventEntity.TOOL_CALL_OUTCOME_UNKNOWN,
+            -> foldToolEvent(derived, event)
+
+            AgentRunEventEntity.MODEL_REASONING_COMPLETED -> {
+                val text = stringOf(readObject(event.payloadJson), "reasoning") ?: return
+                if (derived.reasoning.isNotEmpty()) derived.reasoning.append("\n\n")
+                derived.reasoning.append(text)
+            }
+
+            com.unuslumen.app.domain.agents.AgentEventTypes.PLAN_REVISED -> {
+                val payload = readObject(event.payloadJson) ?: return
+                val revision = stringOf(payload, "revision")?.toIntOrNull() ?: return
+                if (revision >= derived.planRevision) {
+                    derived.planRevision = revision
+                    derived.planPayload = payload
+                }
+            }
+
+            com.unuslumen.app.domain.agents.AgentEventTypes.DECISION_RECORDED -> {
+                val payload = readObject(event.payloadJson) ?: return
+                val decision = stringOf(payload, "decision") ?: return
+                derived.decisions.add(
+                    DecisionView(
+                        sequence = stringOf(payload, "sequence")?.toIntOrNull() ?: 0,
+                        decision = decision,
+                        problem = stringOf(payload, "problem").orEmpty(),
+                        approach = stringOf(payload, "approach").orEmpty(),
+                        alternatives = stringOf(payload, "alternatives")
+                            .orEmpty()
+                            .split('|')
+                            .map { it.trim() }
+                            .filter { it.isNotEmpty() },
+                        reason = stringOf(payload, "reason").orEmpty(),
+                        evidence = stringOf(payload, "evidence").orEmpty(),
+                        uncertainty = stringOf(payload, "uncertainty").orEmpty(),
+                        next = stringOf(payload, "next").orEmpty(),
+                        at = event.occurredAt,
+                    )
+                )
+            }
+
+            com.unuslumen.app.domain.agents.AgentEventTypes.VERIFICATION_RECORDED -> {
+                val payload = readObject(event.payloadJson) ?: return
+                val claim = stringOf(payload, "claim") ?: return
+                derived.verifications.add(
+                    VerificationView(
+                        sequence = stringOf(payload, "sequence")?.toIntOrNull() ?: 0,
+                        claim = claim,
+                        level = stringOf(payload, "level").orEmpty(),
+                        evidence = stringOf(payload, "evidence").orEmpty(),
+                        check = stringOf(payload, "check").orEmpty(),
+                        uncertainty = stringOf(payload, "uncertainty").orEmpty(),
+                        at = event.occurredAt,
+                    )
+                )
+            }
+        }
+    }
+
+    /**
+     * Tool activity, paired by invocation id, one event at a time.
+     *
+     * PAIRED BY INVOCATION ID, WHICH IS WHAT MAKES IT HONEST. A start with no completion is an
+     * invocation still running or one whose outcome was never recorded, and those are different from
+     * a failure. The pairing is what lets the room say which.
+     *
+     * A CALL THAT NEVER STARTED IS STILL DRAWN. A completion can arrive for an invocation whose start
+     * event predates this run's fold boundary, so the map is created from whichever event arrives
+     * first rather than assuming the start is always seen.
+     */
+    private fun foldToolEvent(derived: RunDerived, event: AgentRunEventEntity) {
+        val payload = readObject(event.payloadJson) ?: return
+        val invocationId = stringOf(payload, "invocationId") ?: return
+        val existing = derived.toolActivity[invocationId]
+        val tool = stringOf(payload, "tool") ?: existing?.toolName ?: return
+
+        derived.toolActivity[invocationId] = when (event.eventType) {
+            AgentRunEventEntity.TOOL_CALL_STARTED -> ToolActivityView(
+                invocationId = invocationId,
+                toolName = tool,
+                arguments = stringOf(payload, "arguments") ?: "{}",
+                result = null,
+                failed = false,
+                refused = false,
+                outcomeUnknown = false,
+                durationMillis = null,
+                permissionOutcome = null,
+                at = event.occurredAt,
+            )
+
+            AgentRunEventEntity.TOOL_PERMISSION_GRANTED ->
+                (existing ?: base(invocationId, tool, event)).copy(permissionOutcome = "granted")
+
+            AgentRunEventEntity.TOOL_PERMISSION_DENIED ->
+                (existing ?: base(invocationId, tool, event)).copy(
+                    permissionOutcome = "denied",
+                    refused = true,
+                )
+
+            AgentRunEventEntity.TOOL_CALL_COMPLETED -> {
+                val view = existing ?: base(invocationId, tool, event)
+                view.copy(
+                    result = stringOf(payload, "result"),
+                    durationMillis = (event.occurredAt - view.at).coerceAtLeast(0),
+                )
+            }
+
+            AgentRunEventEntity.TOOL_CALL_FAILED -> {
+                val view = existing ?: base(invocationId, tool, event)
+                view.copy(
+                    result = stringOf(payload, "error"),
+                    failed = true,
+                    durationMillis = (event.occurredAt - view.at).coerceAtLeast(0),
+                )
+            }
+
+            AgentRunEventEntity.TOOL_CALL_REFUSED ->
+                (existing ?: base(invocationId, tool, event)).copy(
+                    result = stringOf(payload, "reason"),
+                    refused = true,
+                )
+
+            AgentRunEventEntity.TOOL_CALL_OUTCOME_UNKNOWN ->
+                (existing ?: base(invocationId, tool, event)).copy(
+                    result = stringOf(payload, "reason"),
+                    outcomeUnknown = true,
+                )
+
+            else -> existing ?: base(invocationId, tool, event)
+        }
+    }
+
     /** A finished run, as one line of history. */
     private suspend fun summarise(run: AgentRunEntity): RunSummaryView {
         val artefactCount = runCatching { artefactDao.countForRun(run.runId) }.getOrDefault(0)
+        /*
+         * A COUNT QUERY, NOT A READ OF EVERY EVENT. This is the history list: twenty finished runs,
+         * none of which is changing, and the only fact wanted from their ledgers is how many tool
+         * calls there were. Reading each run's events to count them was twenty full scans per
+         * refresh, and the count is the only thing any of them produced.
+         */
         val toolCalls = runCatching {
-            eventDao.eventsForRun(run.runId).count {
-                it.eventType == AgentRunEventEntity.TOOL_CALL_STARTED
-            }
+            eventDao.countOfType(run.runId, AgentRunEventEntity.TOOL_CALL_STARTED)
         }.getOrDefault(0)
         return RunSummaryView(
             runId = run.runId,
@@ -214,100 +570,19 @@ class AgentRoomAssembler(
     }
 
     /**
-     * Tool activity, reconstructed from the ledger's own events.
-     *
-     * PAIRED BY INVOCATION ID, WHICH IS WHAT MAKES IT HONEST. A start with no completion is an
-     * invocation still running or one whose outcome was never recorded, and those are different
-     * from a failure. The pairing is what lets the room say which.
-     */
-    private fun toolActivityFrom(events: List<AgentRunEventEntity>): List<ToolActivityView> {
-        val byInvocation = linkedMapOf<String, ToolActivityView>()
-
-        for (event in events) {
-            val payload = readObject(event.payloadJson)
-            val invocationId = stringOf(payload, "invocationId") ?: continue
-            val tool = stringOf(payload, "tool") ?: byInvocation[invocationId]?.toolName ?: continue
-
-            when (event.eventType) {
-                AgentRunEventEntity.TOOL_CALL_STARTED -> {
-                    byInvocation[invocationId] = ToolActivityView(
-                        invocationId = invocationId,
-                        toolName = tool,
-                        arguments = stringOf(payload, "arguments") ?: "{}",
-                        result = null,
-                        failed = false,
-                        refused = false,
-                        outcomeUnknown = false,
-                        durationMillis = null,
-                        permissionOutcome = null,
-                        at = event.occurredAt,
-                    )
-                }
-                AgentRunEventEntity.TOOL_PERMISSION_GRANTED -> {
-                    byInvocation[invocationId] = (byInvocation[invocationId] ?: base(invocationId, tool, event))
-                        .copy(permissionOutcome = "granted")
-                }
-                AgentRunEventEntity.TOOL_PERMISSION_DENIED -> {
-                    byInvocation[invocationId] = (byInvocation[invocationId] ?: base(invocationId, tool, event))
-                        .copy(permissionOutcome = "denied", refused = true)
-                }
-                AgentRunEventEntity.TOOL_CALL_COMPLETED -> {
-                    val existing = byInvocation[invocationId] ?: base(invocationId, tool, event)
-                    byInvocation[invocationId] = existing.copy(
-                        result = stringOf(payload, "result"),
-                        durationMillis = (event.occurredAt - existing.at).coerceAtLeast(0),
-                    )
-                }
-                AgentRunEventEntity.TOOL_CALL_FAILED -> {
-                    val existing = byInvocation[invocationId] ?: base(invocationId, tool, event)
-                    byInvocation[invocationId] = existing.copy(
-                        result = stringOf(payload, "error"),
-                        failed = true,
-                        durationMillis = (event.occurredAt - existing.at).coerceAtLeast(0),
-                    )
-                }
-                AgentRunEventEntity.TOOL_CALL_REFUSED -> {
-                    val existing = byInvocation[invocationId] ?: base(invocationId, tool, event)
-                    byInvocation[invocationId] = existing.copy(
-                        result = stringOf(payload, "reason"),
-                        refused = true,
-                    )
-                }
-                AgentRunEventEntity.TOOL_CALL_OUTCOME_UNKNOWN -> {
-                    val existing = byInvocation[invocationId] ?: base(invocationId, tool, event)
-                    byInvocation[invocationId] = existing.copy(
-                        result = stringOf(payload, "reason"),
-                        outcomeUnknown = true,
-                    )
-                }
-            }
-        }
-        return byInvocation.values.toList()
-    }
-
-
-    /**
      * The newest plan revision's steps, as the room shows them.
      *
      * A PLAN IS A LINE OF REVISIONS, AND THE ROOM SHOWS THE LATEST. Each revision is an appended
      * event, so the history is intact and a person can see the current intent without reading every
-     * version. Revisions are numbered per run and this takes the highest.
+     * version. The fold keeps only the highest, which is why this reads one payload rather than
+     * sorting every revision on every assemble.
      *
      * STEP STATE COMES FROM THE REVISION KIND. A create produces proposed steps; a step update
      * records that one moved. Until a step has been marked done by an update, it is proposed, and the
      * room draws the two differently because a proposal is not an action.
      */
-    private fun planStepsFrom(events: List<AgentRunEventEntity>): List<PlanStepView> {
-        val revisions = events
-            .filter { it.eventType == com.unuslumen.app.domain.agents.AgentEventTypes.PLAN_REVISED }
-            .mapNotNull { event ->
-                val payload = readObject(event.payloadJson) ?: return@mapNotNull null
-                val revision = stringOf(payload, "revision")?.toIntOrNull() ?: return@mapNotNull null
-                revision to payload
-            }
-            .sortedBy { it.first }
-
-        val latest = revisions.lastOrNull()?.second ?: return emptyList()
+    private fun planStepsFrom(derived: RunDerived): List<PlanStepView> {
+        val latest = derived.planPayload ?: return emptyList()
         val raw = stringOf(latest, "steps").orEmpty()
         if (raw.isBlank()) return emptyList()
 
@@ -336,96 +611,21 @@ class AgentRoomAssembler(
      * them cannot come from different versions. Null when the run recorded no plan, which the room
      * draws differently from a plan whose optional fields were left blank.
      */
-    private fun planFrom(events: List<AgentRunEventEntity>): PlanView? {
-        val latest = events
-            .filter { it.eventType == com.unuslumen.app.domain.agents.AgentEventTypes.PLAN_REVISED }
-            .mapNotNull { event ->
-                val payload = readObject(event.payloadJson) ?: return@mapNotNull null
-                val revision = stringOf(payload, "revision")?.toIntOrNull() ?: return@mapNotNull null
-                Triple(revision, payload, event.occurredAt)
-            }
-            .maxByOrNull { it.first } ?: return null
-
-        val plan = latest.second
+    private fun planFrom(derived: RunDerived): PlanView? {
+        val latest = derived.planPayload ?: return null
+        val revision = derived.planRevision.takeIf { it != Int.MIN_VALUE } ?: return null
         return PlanView(
-            revision = latest.first,
-            title = stringOf(plan, "title").orEmpty(),
-            objective = stringOf(plan, "objective").orEmpty(),
-            dependencies = stringOf(plan, "dependencies").orEmpty(),
-            expectedOutputs = stringOf(plan, "expectedOutputs").orEmpty(),
-            verification = stringOf(plan, "verification").orEmpty(),
-            tools = stringOf(plan, "tools").orEmpty(),
-            reason = stringOf(plan, "reason").orEmpty(),
-            at = latest.third,
+            revision = revision,
+            title = stringOf(latest, "title").orEmpty(),
+            objective = stringOf(latest, "objective").orEmpty(),
+            dependencies = stringOf(latest, "dependencies").orEmpty(),
+            expectedOutputs = stringOf(latest, "expectedOutputs").orEmpty(),
+            verification = stringOf(latest, "verification").orEmpty(),
+            tools = stringOf(latest, "tools").orEmpty(),
+            reason = stringOf(latest, "reason").orEmpty(),
+            at = 0,
         )
     }
-
-    /**
-     * What the agent said it decided, in the order it said it.
-     *
-     * READ FROM THE LEDGER, NOT FROM THE CONVERSATION AND NOT FROM THE REASONING. A decision is an
-     * event the agent deliberately wrote; reconstructing one out of a message or out of reasoning
-     * prose would be inventing a record from text that was never meant to be one, which the
-     * specification forbids in the same breath as it requires the record.
-     *
-     * ORDERED BY THE RUN'S OWN SEQUENCE, not by when the row was written. The two are almost always
-     * the same and the sequence is the field that actually means "the third decision", so it is the
-     * one used.
-     */
-    private fun decisionsFrom(events: List<AgentRunEventEntity>): List<DecisionView> =
-        events
-            .filter { it.eventType == com.unuslumen.app.domain.agents.AgentEventTypes.DECISION_RECORDED }
-            .mapNotNull { event ->
-                val payload = readObject(event.payloadJson) ?: return@mapNotNull null
-                val decision = stringOf(payload, "decision") ?: return@mapNotNull null
-                DecisionView(
-                    sequence = stringOf(payload, "sequence")?.toIntOrNull() ?: 0,
-                    decision = decision,
-                    problem = stringOf(payload, "problem").orEmpty(),
-                    approach = stringOf(payload, "approach").orEmpty(),
-                    alternatives = stringOf(payload, "alternatives")
-                        .orEmpty()
-                        .split('|')
-                        .map { it.trim() }
-                        .filter { it.isNotEmpty() },
-                    reason = stringOf(payload, "reason").orEmpty(),
-                    evidence = stringOf(payload, "evidence").orEmpty(),
-                    uncertainty = stringOf(payload, "uncertainty").orEmpty(),
-                    next = stringOf(payload, "next").orEmpty(),
-                    at = event.occurredAt,
-                )
-            }
-            .sortedBy { it.sequence }
-
-    /**
-     * What the agent recorded checking, in the order it recorded it.
-     *
-     * READ FROM THE LEDGER, THE SAME WAY DECISIONS ARE. A check is a fact the agent deliberately
-     * wrote, so reconstructing one from its report would be inventing evidence out of prose. Ordered
-     * by the run's own sequence so "the second thing it checked" means something.
-     *
-     * A RECORD WITH NO CLAIM IS SKIPPED rather than drawn with a blank heading, because the runtime
-     * already refuses to write one.
-     */
-    private fun verificationsFrom(events: List<AgentRunEventEntity>): List<com.unuslumen.app.domain.agents.VerificationView> =
-        events
-            .filter {
-                it.eventType == com.unuslumen.app.domain.agents.AgentEventTypes.VERIFICATION_RECORDED
-            }
-            .mapNotNull { event ->
-                val payload = readObject(event.payloadJson) ?: return@mapNotNull null
-                val claim = stringOf(payload, "claim") ?: return@mapNotNull null
-                com.unuslumen.app.domain.agents.VerificationView(
-                    sequence = stringOf(payload, "sequence")?.toIntOrNull() ?: 0,
-                    claim = claim,
-                    level = stringOf(payload, "level").orEmpty(),
-                    evidence = stringOf(payload, "evidence").orEmpty(),
-                    check = stringOf(payload, "check").orEmpty(),
-                    uncertainty = stringOf(payload, "uncertainty").orEmpty(),
-                    at = event.occurredAt,
-                )
-            }
-            .sortedBy { it.sequence }
 
     private fun base(invocationId: String, tool: String, event: AgentRunEventEntity) =
         ToolActivityView(
@@ -449,21 +649,16 @@ class AgentRoomAssembler(
      * even after the device is switched to one that has it.
      */
     private fun reasoningFrom(
-        events: List<AgentRunEventEntity>,
+        derived: RunDerived,
         effective: JsonObject?,
         capturedAtStart: Boolean,
     ): ReasoningView {
-        val text = events
-            .filter { it.eventType == AgentRunEventEntity.MODEL_REASONING_COMPLETED }
-            .mapNotNull { stringOf(readObject(it.payloadJson), "reasoning") }
-            .joinToString("\n\n")
-
         val providerSupports = effective?.get("reasoningCaptureEnabled")
             ?.let { (it as? JsonPrimitive)?.content?.toBooleanStrictOrNull() }
             ?: true
 
         return ReasoningView(
-            text = text,
+            text = derived.reasoning.toString(),
             providerSupportsReasoning = providerSupports,
             capturedAtStart = capturedAtStart,
         )
@@ -529,7 +724,7 @@ class AgentRoomAssembler(
         val model = stringOf(effective, "model") ?: return "Configuration recorded, without a model name."
         val tools = stringOf(effective, "toolsOffered").orEmpty()
         val toolCount = if (tools.isBlank()) 0 else tools.split(",").count { it.isNotBlank() }
-        return "$model · $toolCount tool${if (toolCount == 1) "" else "s"} offered"
+        return "$model · $toolCount tool${if (toolCount == 1) "" else "s"}"
     }
 
     private fun readObject(raw: String): JsonObject? = runCatching {
