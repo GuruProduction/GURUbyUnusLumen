@@ -32,17 +32,41 @@
 # dotted key outside the table are both rejected by cargo with "expected a string, but found
 # a table", because the triple itself must hold a table of settings rather than a mixture of
 # shapes.
+# WHAT THE FLAGS ARE, AND WHAT THEY ARE NOT.
+#
+# -z max-page-size=16384 aligns every PT_LOAD segment, and that is the check the loader
+# refuses below. The packaged library measures 0x4000 on all four PT_LOAD segments for all
+# four ABIs.
+#
+# GNU_RELRO carries p_align 1 in this library, and that is NOT a defect: the ELF spec gives
+# that segment no page alignment, and every NDK-built library in this APK measures the same
+# (libquickjs, libpathshim, libjnidispatch). -z common-page-size=16384 was added while
+# chasing Android's "Unknown error" for this library and changed nothing at all, which is
+# what proved the RELRO alignment was never the problem. It is kept because it is correct
+# and costs nothing; it is NOT the cause of, nor the fix for, that warning.
 [target.aarch64-linux-android]
-rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+rustflags = [
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+    "-C", "link-arg=-Wl,-z,common-page-size=16384",
+]
 
 [target.armv7-linux-androideabi]
-rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+rustflags = [
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+    "-C", "link-arg=-Wl,-z,common-page-size=16384",
+]
 
 [target.x86_64-linux-android]
-rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+rustflags = [
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+    "-C", "link-arg=-Wl,-z,common-page-size=16384",
+]
 
 [target.i686-linux-android]
-rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+rustflags = [
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+    "-C", "link-arg=-Wl,-z,common-page-size=16384",
+]
 
 [net]
 retry = 3
