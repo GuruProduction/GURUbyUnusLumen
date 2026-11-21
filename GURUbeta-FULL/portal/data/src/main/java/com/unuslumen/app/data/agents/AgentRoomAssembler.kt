@@ -286,7 +286,21 @@ class AgentRoomAssembler(
         val derived = foldFor(runStored.runId)
         val run = openedRun(runStored, derived)
 
-        val messages = runCatching { broker.conversation(run.runId) }.getOrDefault(emptyList())
+        /*
+         * THE CONVERSATION, NOT THE RUN. A run's messages end when the run does, and a room showing
+         * one run's messages emptied the moment a new run started in the same conversation. A person
+         * watched their own transcript vanish and re-typed it.
+         *
+         * FALLING BACK TO THE RUN'S OWN MESSAGES when there is no conversation id keeps a run whose
+         * column is somehow blank readable rather than silent.
+         */
+        val messages = runCatching {
+            if (run.conversationId.isBlank()) {
+                broker.conversation(run.runId)
+            } else {
+                broker.transcript(run.conversationId)
+            }
+        }.getOrDefault(emptyList())
         val artefacts = runCatching { artefactDao.forRun(run.runId) }.getOrDefault(emptyList())
         val approvals = runCatching { broker.approvalsFor(run.runId) }
             .getOrDefault(emptyList())
