@@ -82,3 +82,25 @@ interface AgentPresenceSource {
     /** Every non-terminal run, as it changes. Empty when nothing is running, which draws nothing. */
     fun livePresence(): Flow<List<LivePresence>>
 }
+
+/**
+ * Which conversations a person may open, decided in one place.
+ *
+ * WHY THIS IS IN THE DOMAIN AND NOT ON THE SUPERVISOR. The supervisor lives in the data module and the
+ * Portal and the Assistant live in the presentation module, which cannot see data at all. A rule the
+ * surface cannot reach is no rule, and two copies of it drift.
+ *
+ * THE CONDITION IT EXISTS FOR. The supervisor writes its turns into a titled thread. The Portal opens
+ * the newest conversation, so a supervisory turn made its own thread the person's chat: on a device on
+ * 2026-11-21 a person's "hello" and a supervision prompt shared one conversation, and the screen
+ * filled with tool calls they never made.
+ */
+object AgentInternalConversations {
+
+    /** The title prefix every internal conversation carries. */
+    const val TITLE_PREFIX = "Agent supervision (internal)"
+
+    /** Whether a conversation is internal apparatus rather than something a person made. */
+    fun isInternal(title: String?): Boolean =
+        title != null && title.startsWith(TITLE_PREFIX)
+}

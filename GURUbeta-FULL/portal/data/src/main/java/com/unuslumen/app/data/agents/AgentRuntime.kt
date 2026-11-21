@@ -2137,6 +2137,22 @@ class AgentRuntime(
                 // reopened Agent Room shows what the work produced without having to
                 // replay the whole ledger, and the row stops being non-terminal so the
                 // recovery scan leaves it alone.
+                /*
+                 * THE TERMINAL WRITE IS NOT ALLOWED TO FAIL IN SILENCE.
+                 *
+                 * On a device on 2026-11-21 a run answered its turn, wrote MODEL_REQUEST_COMPLETED
+                 * and then never moved to COMPLETED. Its row sat at RUNNING with a live-looking
+                 * lease for the rest of the process, so the Portal drew it as work in progress for
+                 * ever and the recovery scan would have had to interrupt a run that had in fact
+                 * finished. The cause was invisible because the whole completion block sat inside a
+                 * bare `runCatching`, which turned a failed write into no evidence at all.
+                 *
+                 * SO BOTH HALVES ARE REPORTED. A throw names its cause, and a refusal — the run was
+                 * cancelled by somebody else first, which is legitimate — is recorded as the answer
+                 * it is rather than being dropped. The append stays inside its own guard because a
+                 * missing completion event must not cost the state change: the row is the truth
+                 * about what the run is, and the event is the explanation of it.
+                 */
                 runCatching {
                     ledger.append(
                         session.id,
@@ -2150,20 +2166,55 @@ class AgentRuntime(
                             },
                         )
                     )
-                    /*
-                     * THE REPORT AND THE COMPLETION ARE ONE WRITE, AND ONE WRITER DECIDES.
-                     *
-                     * `terminate` sets the status, stores the report, clears the lease and records
-                     * the in-flight-tool sweep in a single transaction, refused if the run has
-                     * already reached a terminal state. A completion arriving after somebody
-                     * cancelled the run therefore changes nothing, and a completed run can never be
-                     * read as finished-with-no-report when the report existed.
-                     */
+                }.onFailure {
+                    android.util.Log.w(
+                        "guru_agents",
+                        "Run '${session.id}' finished but its completion event was not written: " +
+                            "${it.getRootCause().message ?: it.message}",
+                    )
+                }
+                /*
+                 * THE REPORT AND THE COMPLETION ARE ONE WRITE, AND ONE WRITER DECIDES.
+                 *
+                 * `terminate` sets the status, stores the report, clears the lease and records
+                 * the in-flight-tool sweep in a single transaction, refused if the run has
+                 * already reached a terminal state. A completion arriving after somebody
+                 * cancelled the run therefore changes nothing, and a completed run can never be
+                 * read as finished-with-no-report when the report existed.
+                 */
+                val settled = runCatching {
                     ledger.terminate(
                         runId = session.id,
                         toStatus = com.unuslumen.app.database.entity.AgentRunEntity.STATUS_COMPLETED,
                         reason = "the agent finished its assignment",
                         resultSummary = lastText.take(MAX_REPORT_CHARS),
+                    )
+                }
+                settled.onFailure {
+                    android.util.Log.e(
+                        "guru_agents",
+                        "Run '${session.id}' could not be marked COMPLETED, so it is still " +
+                            "non-terminal on disk: ${it.getRootCause().message ?: it.message}",
+                        it,
+                    )
+                }
+                when (val outcome = settled.getOrNull()) {
+                    is AgentRunLedger.Outcome.Terminated, null -> Unit
+                    is AgentRunLedger.Outcome.AlreadyTerminal -> android.util.Log.i(
+                        "guru_agents",
+                        "Run '${session.id}' finished and was already ${outcome.status}; " +
+                            "another writer settled it first, which stands.",
+                    )
+                    is AgentRunLedger.Outcome.Refused -> android.util.Log.e(
+                        "guru_agents",
+                        "Run '${session.id}' finished but the COMPLETED write was refused: " +
+                            "${outcome.reason}. The work is in the ledger and the row still " +
+                            "says it is running.",
+                    )
+                    AgentRunLedger.Outcome.NoSuchRun -> android.util.Log.e(
+                        "guru_agents",
+                        "Run '${session.id}' finished but its row is gone, so the completion " +
+                            "has nowhere to land.",
                     )
                 }
                 /*

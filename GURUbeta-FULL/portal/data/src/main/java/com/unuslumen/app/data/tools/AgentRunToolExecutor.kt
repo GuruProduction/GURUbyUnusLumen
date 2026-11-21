@@ -325,6 +325,50 @@ class AgentRunToolExecutor(
         val reason = (args["reason"] as? String)?.trim()?.takeIf { it.isNotBlank() }
             ?: "cancelled by GURU"
 
+        /*
+         * A RUN WAITING FOR AN ANSWER IS REFUSED, AND THIS GUARD IS NOT OPTIONAL.
+         *
+         * OBSERVED ON A DEVICE, 2026-11-21, AND IT DESTROYED REAL WORK. An agent ran four tool
+         * rounds, wrote a message, and went to WAITING_FOR_GURU to ask a question. The supervisor
+         * picked that up and its turn chose `cancelAgentRun`, because a previous version of its
+         * instruction offered cancelling as a way of dealing with a stuck run. The run was killed
+         * with the question in its hand and everything it had done thrown away.
+         *
+         * A PROMPT SAYING "do not cancel a waiting run" IS ADVICE. This is the guard, and it is in
+         * code because the model is allowed to be wrong about what it should do and the host is not.
+         * The only correct answer to a question is an answer, and there is no reading of a
+         * cancellation that answers one.
+         *
+         * THE TWO WAITING STATES ARE THE ONLY EXEMPTIONS, AND THEY ARE EXEMPT FOR A REASON. A
+         * WAITING_FOR_TOOL run is waiting on a tool, not on a person, so it can be dead and this
+         * guard must not hide that. Every other non-terminal state is still cancellable, which is
+         * what makes the stuck-run class from the specification cancelable at all.
+         */
+        val current = runCatching { runDao.run(runId) }.getOrNull()
+        if (current != null && current.status in AgentRunEntity.WAITING_STATUSES) {
+            val waitingOn = if (current.status == AgentRunEntity.STATUS_WAITING_FOR_GURU) {
+                "you"
+            } else {
+                "the person"
+            }
+            return success(
+                CancelOutcome(
+                    success = false,
+                    runId = runId,
+                    fromStatus = current.status,
+                    stoppedLiveExecution = false,
+                    alreadyTerminal = false,
+                    sentence = "That run was NOT cancelled. It is waiting for $waitingOn to answer " +
+                        "a question, and cancelling it would throw away everything it has done. " +
+                        "Read what it asked with getAgentRun, then answer it with resumeAgent. " +
+                        "If the question truly should never be answered, answer it by telling the " +
+                        "agent to stop, so the record says a person decided rather than the work " +
+                        "vanishing.",
+                ),
+                CancelOutcome.serializer(),
+            )
+        }
+
         val outcome = runCatching { cancellation.cancel(runId, reason) }
             .getOrElse { failure ->
                 return success(
@@ -355,7 +399,20 @@ class AgentRunToolExecutor(
         val reason = (args["reason"] as? String)?.trim()?.takeIf { it.isNotBlank() }
             ?: "cancelled by GURU, all runs"
 
-        val outcomes = runCatching { cancellation.cancelAll(reason) }
+        /*
+         * THE BULK PATH CARRIES THE SAME EXEMPTION AS THE SINGLE ONE.
+         *
+         * A GUARD ON ONE DOOR AND NOT THE OTHER IS NOT A GUARD. "Stop everything" is exactly how a
+         * model would route around a refusal on one run, and a run waiting for an answer is the one
+         * kind that must survive it: cancelling it discards work that a question was about to
+         * continue. So the waiting runs are partitioned out before the sweep, and the sentence says
+         * how many were left alone and why rather than quietly including them.
+         */
+        val all = runCatching { runDao.nonTerminalRuns() }.getOrDefault(emptyList())
+        val waiting = all.filter { it.status in AgentRunEntity.WAITING_STATUSES }
+        val cancellable = all.filterNot { it.status in AgentRunEntity.WAITING_STATUSES }
+
+        val outcomes = runCatching { cancellable.map { cancellation.cancel(it.runId, reason) } }
             .getOrElse { failure ->
                 return success(
                     CancelAllOutcome(
@@ -374,11 +431,25 @@ class AgentRunToolExecutor(
                 stopped = stopped,
                 alreadyFinished = outcomes.count { it.alreadyTerminal },
                 sentences = outcomes.map { it.sentence },
-                sentence = when {
-                    outcomes.isEmpty() -> "Nothing was running, so there was nothing to stop."
-                    stopped == 0 -> "Nothing was still running; every run had already finished."
-                    else -> "Stopped $stopped run${if (stopped == 1) "" else "s"}. " +
-                        "Nothing that was running is still running."
+                sentence = buildString {
+                    append(
+                        when {
+                            outcomes.isEmpty() && waiting.isEmpty() ->
+                                "Nothing was running, so there was nothing to stop."
+                            stopped == 0 ->
+                                "Nothing that could be stopped was still running."
+                            else -> "Stopped $stopped run${if (stopped == 1) "" else "s"}."
+                        }
+                    )
+                    if (waiting.isNotEmpty()) {
+                        append(" ")
+                        append(waiting.size)
+                        append(" run${if (waiting.size == 1) " was" else "s were"} left alone because ")
+                        append(if (waiting.size == 1) "it is" else "they are")
+                        append(" waiting for an answer, and cancelling a run that asked a question ")
+                        append("throws its work away. Read each with getAgentRun and answer it, or ")
+                        append("tell it to stop.")
+                    }
                 },
             ),
             CancelAllOutcome.serializer(),

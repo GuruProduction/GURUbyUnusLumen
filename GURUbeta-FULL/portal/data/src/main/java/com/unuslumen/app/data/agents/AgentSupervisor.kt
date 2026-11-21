@@ -120,8 +120,29 @@ class AgentSupervisor(
          * and the free text per run is bounded by what the operations snapshot already clipped.
          */
 
-        /** The title that identifies the supervisor's own conversation. Never shown in a room. */
-        const val SUPERVISOR_TITLE = "Agent supervision (internal)"
+        /**
+         * The title that identifies the supervisor's own conversation. Never shown in a room.
+         *
+         * THE PREFIX IS THE CONTRACT, NOT THE WHOLE STRING. The Portal and the Assistant both open
+         * the newest conversation, so a supervisory turn would otherwise make its own internal
+         * thread the person's chat. On a device on 2026-11-21 exactly that happened: a person's
+         * "hello" and a supervision prompt ended up in one thread, and the chat they saw was full of
+         * tool calls they never made. Every conversation whose title starts with this prefix is
+         * internal apparatus and is excluded from what a person can open.
+         */
+        const val SUPERVISOR_TITLE_PREFIX = "Agent supervision (internal)"
+
+        /** The full title, kept for the lookup that finds the existing row. */
+        const val SUPERVISOR_TITLE = SUPERVISOR_TITLE_PREFIX
+
+        /**
+         * Whether a conversation is internal apparatus rather than something a person made.
+         *
+         * ONE PLACE THAT DECIDES, so the Portal, the Assistant and any future surface cannot
+         * disagree about which threads are theirs to open.
+         */
+        fun isInternalConversation(title: String?): Boolean =
+            title != null && title.startsWith(SUPERVISOR_TITLE_PREFIX)
 
         /**
          * The agent name a supervisory spawn carries, so its own work is never supervised.
@@ -484,13 +505,20 @@ class AgentSupervisor(
         append("\nWhat to do:\n")
         append("1. Read any run you need to act on with getAgentRun, so you are deciding from what ")
         append("it actually did rather than from this summary.\n")
-        append("2. If a run is waiting on you, answer it with resumeAgent. If it is waiting on the ")
-        append("person, say so to them. If it is stuck or no longer wanted, cancel it with ")
-        append("cancelAgentRun.\n")
-        append("3. Tell the person only what they would want to know: a decision they must make, a ")
+        append("2. A run WAITING_FOR_GURU IS NOT STUCK AND MUST NEVER BE CANCELLED. It is asking ")
+        append("you a question and it is waiting for an answer. Read its question with getAgentRun ")
+        append("and answer it with resumeAgent, using the run id. That is what keeps the work ")
+        append("alive. Cancelling a run that asked you something throws away everything it has ")
+        append("done, and it is the worst possible answer to a question.\n")
+        append("3. If a run is waiting on the PERSON, say so to them. Do not answer on their ")
+        append("behalf and do not cancel it.\n")
+        append("4. Cancel a run ONLY when it is genuinely dead or unwanted: it was interrupted and ")
+        append("its work is no longer wanted, it is looping without progress, or it duplicates ")
+        append("another run. Never cancel merely because you do not know what else to do.\n")
+        append("5. Tell the person only what they would want to know: a decision they must make, a ")
         append("failure, or work they were waiting for. Do not narrate routine completions one by ")
         append("one, and do not report your own supervision.\n")
-        append("4. If nothing here needs them, say nothing to them and simply deal with it yourself.")
+        append("6. If nothing here needs them, say nothing to them and simply deal with it yourself.")
     }.toString().take(MAX_PROMPT_CHARS)
 
     /**
