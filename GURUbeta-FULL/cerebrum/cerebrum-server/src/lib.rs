@@ -13,7 +13,10 @@ pub mod handler;
 pub mod hardening;
 pub mod lexical;
 pub mod persistence;
+pub mod retrieval_policy;
 pub mod state;
+
+pub use retrieval_policy::{Eligibility, RetrievalPolicy};
 
 use std::net::SocketAddr;
 

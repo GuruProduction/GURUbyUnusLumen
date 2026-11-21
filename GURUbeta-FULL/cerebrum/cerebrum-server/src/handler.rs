@@ -38,6 +38,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::frame_types;
+use crate::retrieval_policy::{Eligibility, RetrievalPolicy};
 use crate::state::CerebrumState;
 
 use crate::Frame;
@@ -114,11 +115,47 @@ pub async fn handle_frame(
 /// failed. This one predicate is the single place that decides it, so search,
 /// list and retrieve cannot drift apart on the question.
 fn is_retired(state: &CerebrumState, id: &MemoryId) -> bool {
-    state
+    let tree_says_retired = state
         .context_tree
         .find(*id)
         .map(|entry| entry.lifecycle == cerebrum_curate::EntryLifecycle::Archived)
-        .unwrap_or(true)
+        .unwrap_or(true);
+    if tree_says_retired {
+        return true;
+    }
+    /*
+     * THE SECOND OPINION THAT USED TO BE IGNORED.
+     *
+     * Decay archives a row by setting `DecayEntry::archived`, and consolidation
+     * does the same to every memory it consumes. Neither of those touched the
+     * tree's `EntryLifecycle`, which was the only thing this predicate read. So
+     * the two engines held different opinions about the same memory and every read
+     * asked only the one that never changed: a memory retired by decay still
+     * answered searches, still appeared in listings, and still resolved by id.
+     *
+     * A memory is retired when EITHER engine says it is. That is the conservative
+     * reading and the only one that cannot resurrect something a caller was told
+     * was gone.
+     */
+    state
+        .decay_engine
+        .entries
+        .get(id)
+        .map(|decay_entry| decay_entry.archived)
+        .unwrap_or(false)
+}
+
+/// The layer name for a memory, or an empty string when decay has no row for it.
+///
+/// A named helper rather than an inline `format!("{:?}", ...)` so the wire spelling
+/// comes from one place, the policy, and the read paths cannot drift.
+fn layer_label_for(state: &CerebrumState, id: &MemoryId) -> String {
+    state
+        .decay_engine
+        .entries
+        .get(id)
+        .map(|entry| RetrievalPolicy::layer_name(entry.layer).to_string())
+        .unwrap_or_default()
 }
 
 // ============================================================================
@@ -220,6 +257,20 @@ const SEARCH_LIMIT_DEFAULT: usize = 25;
 // CURATE
 // ============================================================================
 
+/// A memory's state read immediately before the executor mutates it.
+///
+/// Captured for Update and Delete because both write an audit event describing what
+/// they replaced, and the executor destroys the evidence before the pipeline that
+/// writes the event can run. Every field here is something an audit trail is asked
+/// for and cannot recover afterwards.
+struct PreWriteState {
+    content: String,
+    lifecycle: String,
+    domain: String,
+    provenance: String,
+    confidence: f32,
+}
+
 /// Side-effect summary so tests and clients can verify real engine coverage
 /// with one frame response.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -275,12 +326,35 @@ async fn handle_curate(
     // Every id an Update op names is read once, here, while the old wording still
     // exists. An id that does not resolve is simply absent, which the event records
     // honestly as no superseded text.
-    let mut pre_write_content: HashMap<MemoryId, String> = HashMap::new();
+    // The same snapshot answers the delete event. A deletion that records no text
+    // and no reason is an audit entry that says only "something went away", which
+    // is exactly what an audit trail must not say.
+    //
+    // IT MUST CARRY THE LIFECYCLE TOO, AND THAT IS NOT OBVIOUS. The curate executor
+    // implements Delete by archiving the row in the tree, so by the time the
+    // post-tree pipeline runs, the row's lifecycle already reads Archived. A
+    // pipeline that read it then would record "previous lifecycle: Archived" for
+    // every single deletion, which is a fiction: the state being described is the
+    // one before the delete. So the lifecycle is captured here, with the text,
+    // while both are still true.
+    let mut pre_write: HashMap<MemoryId, PreWriteState> = HashMap::new();
     for op in &curate_ops {
-        if let CurateOperation::Update { id, .. } = op {
-            if let Some(existing) = state.context_tree.find(*id) {
-                pre_write_content.insert(*id, existing.content.clone());
+        match op {
+            CurateOperation::Update { id, .. } | CurateOperation::Delete { id, .. } => {
+                if let Some(existing) = state.context_tree.find(*id) {
+                    pre_write.insert(
+                        *id,
+                        PreWriteState {
+                            content: existing.content.clone(),
+                            lifecycle: format!("{:?}", existing.lifecycle),
+                            domain: existing.domain.clone(),
+                            provenance: existing.provenance.source.clone(),
+                            confidence: existing.provenance.confidence,
+                        },
+                    );
+                }
             }
+            _ => {}
         }
     }
 
@@ -340,13 +414,23 @@ async fn handle_curate(
             | CurateOperation::Merge { reason, .. }
             | CurateOperation::Delete { reason, .. } => reason.clone(),
         };
-        // The pre-write text rides into the update pipeline so the event can carry
-        // it. Read from the snapshot, never from the already-mutated tree.
-        let superseded = match &curate_ops[i] {
-            CurateOperation::Update { id, .. } => pre_write_content.get(id).cloned(),
+        // The pre-write state rides into the update AND delete pipelines so their
+        // events can describe what they replaced. Read from the snapshot, never from
+        // the already-mutated tree, which for an update holds the new wording and for
+        // a delete holds an already-archived row.
+        let pre_write_state = match &curate_ops[i] {
+            CurateOperation::Update { id, .. } | CurateOperation::Delete { id, .. } => {
+                pre_write.get(id)
+            }
             _ => None,
         };
-        apply_post_tree_pipeline(&mut state, &curate_ops[i], &op_reason, superseded.as_deref(), &mut summary);
+        apply_post_tree_pipeline(
+            &mut state,
+            &curate_ops[i],
+            &op_reason,
+            pre_write_state,
+            &mut summary,
+        );
     }
 
     summarize_final_counts(&mut state, &mut summary);
@@ -485,7 +569,7 @@ fn apply_post_tree_pipeline(
     state: &mut CerebrumState,
     op: &CurateOperation,
     reason: &str,
-    superseded: Option<&str>,
+    pre_write: Option<&PreWriteState>,
     summary: &mut CurateSideEffectsSummary,
 ) {
     match op {
@@ -493,7 +577,7 @@ fn apply_post_tree_pipeline(
             run_full_add_pipeline(state, entry, reason, summary);
         }
         CurateOperation::Update { id, entry, .. } => {
-            run_full_update_pipeline(state, *id, entry, superseded, summary);
+            run_full_update_pipeline(state, *id, entry, reason, pre_write, summary);
         }
         CurateOperation::Merge {
             source_ids, target, ..
@@ -501,7 +585,7 @@ fn apply_post_tree_pipeline(
             run_full_merge_pipeline(state, source_ids, target, summary);
         }
         CurateOperation::Delete { id, .. } => {
-            run_full_delete_pipeline(state, *id, summary);
+            run_full_delete_pipeline(state, *id, reason, pre_write, summary);
         }
     }
 }
@@ -674,9 +758,14 @@ fn run_full_update_pipeline(
     state: &mut CerebrumState,
     id: MemoryId,
     entry: &ContextEntry,
-    superseded: Option<&str>,
+    reason: &str,
+    pre_write: Option<&PreWriteState>,
     summary: &mut CurateSideEffectsSummary,
 ) {
+    // The text this revision replaced, from the snapshot taken before the executor
+    // ran. Reading the tree here would read the row the update already replaced,
+    // which is what makes a history built at this point a list of the present.
+    let superseded = pre_write.map(|state_before| state_before.content.as_str());
     let new_content = entry.content.clone();
 
     // `superseded` is captured by the caller BEFORE the executor mutated the tree.
@@ -732,13 +821,21 @@ fn run_full_update_pipeline(
     // `text` is what the memory says from this revision onward; `superseded` is
     // what it said before it. Both are needed: one reconstructs the current state,
     // the other reconstructs the history.
+    // The reason is the caller's, not the literal string "update". An audit entry
+    // that restates the operation name instead of the caller's explanation records
+    // that something happened and not why, and "why" is the only part a person
+    // reading a history needs. An absent reason stays absent rather than being
+    // filled in with prose the caller never wrote.
     state.event_store.append(
         "memory.updated",
         id,
         serde_json::json!({
-            "reason": "update",
+            "reason": reason,
             "text": new_content,
             "superseded": superseded,
+            "category": entry.domain,
+            "actor": entry.provenance.source,
+            "confidence": entry.provenance.confidence,
         }),
     );
 
@@ -876,15 +973,70 @@ fn run_full_merge_pipeline(
     summary.merged += 1;
 }
 
+/// Retire a memory and record a deletion event that can actually be audited.
+///
+/// THE EVENT USED TO BE `{}`. It recorded that a memory disappeared and nothing
+/// else: no identifier, no text, no category, no reason, no actor, no prior
+/// lifecycle. An audit trail whose deletion entry carries an empty object answers
+/// none of the questions an audit trail exists for, and the delete is the one
+/// mutation a person is most likely to need explained later.
+///
+/// Everything here is read BEFORE `retire_memory` runs, because retirement archives
+/// the decay row and clears the indexes. The tree row survives, which is what makes
+/// the previous text and category recoverable at this moment and not afterwards.
+///
+/// This is an audit event, not a tombstone. The withheld mechanism is a second
+/// record whose job is to block reuse of a deleted identity. This is a description
+/// of what was retired, stored in the trail that already exists.
 fn run_full_delete_pipeline(
     state: &mut CerebrumState,
     id: MemoryId,
+    reason: &str,
+    pre_write: Option<&PreWriteState>,
     summary: &mut CurateSideEffectsSummary,
 ) {
+    // Everything the event records comes from the PreWriteState captured before the
+    // executor archived the row. A delete for an id the tree never held has no
+    // pre-write state and is described honestly as such rather than filled in.
+    let (previous_text, category, actor, confidence, prior_lifecycle) = match pre_write {
+        Some(before) => (
+            Some(before.content.clone()),
+            before.domain.clone(),
+            before.provenance.clone(),
+            before.confidence,
+            before.lifecycle.clone(),
+        ),
+        None => (
+            None,
+            String::new(),
+            String::new(),
+            0.0f32,
+            "Unknown".to_string(),
+        ),
+    };
+
+    // The content identity: the brain's ids are already the hash of the content, so
+    // the id IS the content address. Recorded explicitly so an auditor does not have
+    // to know that.
+    let content_id = hex_str(id);
+
     retire_memory(state, id);
-    state
-        .event_store
-        .append("memory.deleted", id, serde_json::json!({}));
+
+    state.event_store.append(
+        "memory.deleted",
+        id,
+        serde_json::json!({
+            // An absent reason is the empty string the caller gave, never invented.
+            // The event time is the event's own timestamp.
+            "reason": reason,
+            "text": previous_text,
+            "category": category,
+            "content_id": content_id,
+            "actor": actor,
+            "confidence": confidence,
+            "previous_lifecycle": prior_lifecycle,
+        }),
+    );
     summary.deleted += 1;
 }
 
@@ -1243,18 +1395,33 @@ async fn handle_retrieve(
     // gone, and this is the lookup a delete or an update uses to decide whether
     // the id resolves at all. Returning the archived body here would tell a
     // second delete that the memory is still there.
+    // The same retirement rule the search and listing use, so a memory cannot be
+    // gone from one surface and present on another.
+    if is_retired(&state, &req.memory_id) {
+        return Err(ErrorResponse::new(format!(
+            "memory not found: {:?}",
+            req.memory_id
+        )));
+    }
     let entry: ContextEntry = state
         .context_tree
         .find(req.memory_id)
-        .filter(|found| found.lifecycle != cerebrum_curate::EntryLifecycle::Archived)
         .cloned()
         .ok_or_else(|| {
             ErrorResponse::new(format!("memory not found: {:?}", req.memory_id))
         })?;
+    // The layer name is read from the policy so the wire spelling is one fact.
     let decay_metadata: Option<(String, f32, u32, bool)> = state
         .decay_engine
         .access(req.memory_id)
-        .map(|e| (format!("{:?}", e.layer), e.strength, e.access_count, e.archived));
+        .map(|e| {
+            (
+                RetrievalPolicy::layer_name(e.layer).to_string(),
+                e.strength,
+                e.access_count,
+                e.archived,
+            )
+        });
 
     // 2. Episode + its full context, if curated as episodic.
     let episode_json = state
@@ -1295,6 +1462,7 @@ async fn handle_retrieve(
             "subtopic": entry.subtopic,
             "provenance": provenance_json,
             "rationale": rationale_text,
+            "lifecycle": format!("{:?}", entry.lifecycle),
             "decay": decay_metadata,
         }))
         .unwrap_or_default(),
@@ -1306,6 +1474,7 @@ async fn handle_retrieve(
             "content": entry.content,
             "provenance": provenance_json,
             "rationale": rationale_text,
+            "lifecycle": format!("{:?}", entry.lifecycle),
             "decay": decay_metadata,
             "episode": episode_json,
             "referencing_this": referencing,
@@ -1473,45 +1642,98 @@ async fn handle_search(
             })
     });
 
-    // Build results from real tree bodies. A fused id with no row in the tree is
-    // skipped: the index must never return a memory the tree cannot produce.
-    // A retired row is skipped for the same reason in the other direction: a
-    // caller who deleted a memory must never see it come back out of search.
-    let mut results: Vec<SearchResult> = Vec::new();
-    for (memory_id, fused_score) in ordered.iter().take(limit) {
+    // Build results from real tree bodies, filtered and ranked by the memory's OWN
+    // stored state rather than by lexical agreement alone.
+    //
+    // A fused id with no row in the tree is skipped: the index must never return a
+    // memory the tree cannot produce. A retired row is skipped for the same reason
+    // in the other direction: a caller who deleted a memory must never see it come
+    // back out of search.
+    //
+    // THE POLICY IS WHERE THE MECHANISM ACTUALLY RUNS. Until now strength, layer
+    // and the decay archive flag were computed, stored, persisted and rendered, and
+    // none of them could change an answer. An archived or faded memory is now not
+    // offered at all, and an eligible one is weighted by how established, how
+    // consolidated and how recently reinforced it is.
+    let policy = RetrievalPolicy::default();
+    let top_fused = ordered.first().map(|(_, s)| *s).unwrap_or(1.0).max(f32::EPSILON);
+    let mut scored: Vec<(MemoryId, f32, String)> = Vec::new();
+    for (memory_id, fused_score) in ordered.iter() {
         if is_retired(&state, memory_id) {
             continue;
         }
-        let Some(content) = state
-            .context_tree
-            .find(*memory_id)
-            .map(|entry| entry.content.clone())
-        else {
+        let Some(entry) = state.context_tree.find(*memory_id) else {
             continue;
         };
-        state.decay_engine.access(*memory_id);
-        // Expose a 0..1 confidence for callers that want one. The fused rank
-        // score is tiny by construction, so normalise against the best hit.
-        let top = ordered.first().map(|(_, s)| *s).unwrap_or(1.0).max(f32::EPSILON);
-        results.push(SearchResult {
-            memory_id: *memory_id,
-            score: fused_score / top,
-            content,
-        });
+        let content = entry.content.clone();
+        let confidence = entry.provenance.confidence;
+
+        // Eligibility is asked BEFORE the access pass below, on the state as it
+        // stands. Otherwise a faint memory would strengthen itself by being
+        // considered and could qualify for an answer it does not deserve.
+        let decay_row = state.decay_engine.entries.get(memory_id);
+        if policy.eligibility(decay_row) != Eligibility::Eligible {
+            continue;
+        }
+        let Some(decay_row) = decay_row else { continue };
+        let multiplier = policy.score_multiplier(decay_row, confidence);
+
+        // Ranking is over the weighted score, never raw lexical agreement: a faint
+        // memory matching a word must not outrank a fresh one matching the same
+        // word.
+        let weighted = (fused_score / top_fused) * multiplier;
+        scored.push((*memory_id, weighted, content));
     }
+
+    // Highest weighted score first. The id breaks ties so two equal memories cannot
+    // swap order between identical calls.
+    scored.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0 .0.cmp(&b.0 .0))
+    });
+    scored.truncate(limit);
+
+    // Only what is actually RETURNED is strengthened, and only once the ordering is
+    // settled. Marking every candidate as accessed would reward memories the caller
+    // never saw, which reinforces the retrieval pass rather than the use of it.
+    for (memory_id, _, _) in &scored {
+        state.decay_engine.access(*memory_id);
+    }
+
+    let mut results: Vec<SearchResult> = scored
+        .into_iter()
+        .map(|(memory_id, score, content)| SearchResult {
+            memory_id,
+            score,
+            content,
+        })
+        .collect();
 
     // Last resort: exact phrase present but no shared indexed term (for example a
     // two-character query, which tokenisation drops).
+    //
+    // THIS FALLBACK OBEYS THE SAME POLICY. It used to check only the tree's
+    // lifecycle, so a memory decay had archived was excluded from the ranked path
+    // and then served by this one, which is the retrieval equivalent of locking the
+    // front door and leaving the window open. A fallback is still a read.
     if results.is_empty() {
         let query_lower = req.query.to_lowercase();
         for entry in state.context_tree.entries() {
-            if entry.lifecycle == cerebrum_curate::EntryLifecycle::Archived {
+            if is_retired(&state, &entry.id) {
+                continue;
+            }
+            let decay_row = state.decay_engine.entries.get(&entry.id);
+            if policy.eligibility(decay_row) != Eligibility::Eligible {
                 continue;
             }
             if entry.content.to_lowercase().contains(&query_lower) {
+                let multiplier = decay_row
+                    .map(|row| policy.score_multiplier(row, entry.provenance.confidence))
+                    .unwrap_or(1.0);
                 results.push(SearchResult {
                     memory_id: entry.id,
-                    score: 0.5,
+                    score: 0.5 * multiplier,
                     content: entry.content.clone(),
                 });
                 if results.len() >= limit {
@@ -1587,6 +1809,100 @@ async fn handle_consolidate(
     report.buffer_promotions = decay_report.buffer_to_episodic.len();
     report.episodic_promotions = decay_report.episodic_to_semantic.len();
     report.archived = decay_report.archived.len();
+
+    /*
+     * TWO ENGINES, ONE OPINION (archive correctness).
+     *
+     * `decay_engine.consolidate` retires a memory by setting its decay row's
+     * `archived` flag. It has never touched the context tree, whose
+     * `EntryLifecycle` is what every read filters on. The result was a brain that
+     * disagreed with itself: decay considered the memory dead, the tree considered
+     * it live, and search believed the tree. A memory could be archived by every
+     * pass for a year and still answer every query.
+     *
+     * So every archival decision is published to the tree here, at the one point
+     * where the pass knows both facts. This is the write half of the read rule in
+     * `is_retired`, which treats either engine's retirement as final.
+     */
+    for archived_id in &decay_report.archived {
+        if let Some(entry) = state.context_tree.find_mut(*archived_id) {
+            entry.lifecycle = cerebrum_curate::EntryLifecycle::Archived;
+            entry.updated_at = Utc::now();
+            state.event_store.append(
+                "memory.archived",
+                *archived_id,
+                serde_json::json!({
+                    "reason": "decay archive threshold reached",
+                    "lifecycle": "Archived",
+                }),
+            );
+        }
+    }
+
+    /*
+     * HIBERNATED GETS A PRODUCER.
+     *
+     * `EntryLifecycle::Hibernated` existed in the curate crate and was set by
+     * nothing in production: it appeared in a unit test and in the persistence
+     * parser, and nowhere else. A lifecycle state the system declares and never
+     * enters is a decorative enum value, and it makes the claim "this brain models
+     * memory fading" false.
+     *
+     * A memory whose strength has fallen below the decay config's hibernation
+     * threshold has genuinely faded: it is harder to recall, and it is on its way
+     * to archival if nothing reinforces it. That is what Hibernated means, so that
+     * is when it is entered. It is not terminal: a recall strengthens the entry and
+     * the next pass promotes it back, because `consolidate` promotes any Buffer or
+     * Episodic entry that has been accessed and is above the threshold.
+     */
+    let policy = RetrievalPolicy::default();
+    let now = Utc::now();
+    let mut hibernated_now: Vec<MemoryId> = Vec::new();
+    let mut revived_now: Vec<MemoryId> = Vec::new();
+    for decay_entry in state.decay_engine.entries.values() {
+        if decay_entry.archived {
+            continue;
+        }
+        if policy.should_hibernate(decay_entry, &state.decay_engine.config) {
+            hibernated_now.push(decay_entry.id);
+        } else if decay_entry.strength >= state.decay_engine.config.hibernation_threshold {
+            revived_now.push(decay_entry.id);
+        }
+    }
+    for hibernated_id in hibernated_now {
+        if let Some(entry) = state.context_tree.find_mut(hibernated_id) {
+            if entry.lifecycle == cerebrum_curate::EntryLifecycle::Active {
+                entry.lifecycle = cerebrum_curate::EntryLifecycle::Hibernated;
+                entry.updated_at = now;
+                state.event_store.append(
+                    "memory.hibernated",
+                    hibernated_id,
+                    serde_json::json!({
+                        "reason": "strength below hibernation threshold",
+                        "lifecycle": "Hibernated",
+                    }),
+                );
+            }
+        }
+    }
+    // A hibernated memory that was recalled is live again. Without this the state
+    // would be a one-way door and a remembered memory would stay marked as fading.
+    for revived_id in revived_now {
+        if let Some(entry) = state.context_tree.find_mut(revived_id) {
+            if entry.lifecycle == cerebrum_curate::EntryLifecycle::Hibernated {
+                entry.lifecycle = cerebrum_curate::EntryLifecycle::Active;
+                entry.updated_at = now;
+                state.event_store.append(
+                    "memory.revived",
+                    revived_id,
+                    serde_json::json!({
+                        "reason": "strength restored above hibernation threshold",
+                        "lifecycle": "Active",
+                    }),
+                );
+            }
+        }
+    }
 
     // 3. Rebuild the dream view from the live decay snapshot.
     //
@@ -1831,6 +2147,14 @@ pub struct ListedMemory {
     pub rationale: String,
     pub created_at: String,
     pub updated_at: String,
+    /// The memory's lifecycle as the tree holds it: Active, Hibernated or Archived.
+    ///
+    /// Carried on the wire so a caller can tell a memory that is fading from one
+    /// that is established without asking a second question the brain would have to
+    /// answer from a different engine.
+    pub lifecycle: String,
+    /// The decay layer: BUFFER, EPISODIC or SEMANTIC, empty when unrecorded.
+    pub layer: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1880,10 +2204,16 @@ async fn handle_list(
     let domain_filter = req.domain.trim();
     let limit = if req.limit == 0 { usize::MAX } else { req.limit };
 
+    // THE LISTING USES THE SAME RETIREMENT RULE AS SEARCH.
+    //
+    // It checked only the tree lifecycle, so a memory decay had archived stayed in
+    // every listing, and the listing is what the deduplication pass reads. That is
+    // one half of the resurrection defect: a deleted fact never looked deleted to
+    // the pass deciding whether to write it again.
     let mut live: Vec<ListedMemory> = state
         .context_tree
         .entries()
-        .filter(|entry| entry.lifecycle != cerebrum_curate::EntryLifecycle::Archived)
+        .filter(|entry| !is_retired(&state, &entry.id))
         .filter(|entry| {
             domain_filter.is_empty() || entry.domain.eq_ignore_ascii_case(domain_filter)
         })
@@ -1898,6 +2228,8 @@ async fn handle_list(
             rationale: entry.rationale.clone(),
             created_at: entry.created_at.to_rfc3339(),
             updated_at: entry.updated_at.to_rfc3339(),
+            lifecycle: format!("{:?}", entry.lifecycle),
+            layer: layer_label_for(&state, &entry.id),
         })
         .collect();
 
@@ -1912,10 +2244,12 @@ async fn handle_list(
     let total_matching = live.len();
     live.truncate(limit);
 
+    // The total obeys the same rule, or a listing would report a live count that
+    // disagrees with the rows it is willing to show.
     let total_live = state
         .context_tree
         .entries()
-        .filter(|entry| entry.lifecycle != cerebrum_curate::EntryLifecycle::Archived)
+        .filter(|entry| !is_retired(&state, &entry.id))
         .count();
 
     let response = ListResponse {
@@ -2017,6 +2351,248 @@ mod tests {
         assert_eq!(state_locked.event_store.count(), 1);
         assert_eq!(state_locked.query_engine.hot_cache.len(), 1);
         assert!(state_locked.graph_store.total_nodes() >= 1);
+    }
+
+    /// Put one memory in the brain and hand back its id, through the real curate path.
+    async fn add_one(state: Arc<Mutex<CerebrumState>>, content: &str, domain: &str) -> MemoryId {
+        let entry = CoreContextEntry {
+            memory_id: MemoryId::new(),
+            domain: domain.to_string(),
+            topic: "general".to_string(),
+            subtopic: "general".to_string(),
+            content: content.to_string(),
+            relations: vec![],
+            provenance: "test-suite".into(),
+            rationale: "test".into(),
+            created_at: Utc::now(),
+            modified_at: Utc::now(),
+        };
+        let id = entry.memory_id;
+        let bytes = serde_json::to_vec(&vec![CurateOp::Add {
+            entry,
+            reason: "test add".into(),
+        }])
+        .unwrap();
+        let response = handle_curate(&bytes, state).await.unwrap();
+        let parsed: CurateFullResponse = serde_json::from_slice(&response).unwrap();
+        assert!(parsed.executed.success);
+        id
+    }
+
+    async fn search_ids(state: Arc<Mutex<CerebrumState>>, query: &str) -> Vec<MemoryId> {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "query": query,
+            "limit": 20
+        }))
+        .unwrap();
+        let response = handle_search(&bytes, state).await.unwrap();
+        let results: Vec<SearchResult> = serde_json::from_slice(&response).unwrap();
+        results.into_iter().map(|row| row.memory_id).collect()
+    }
+
+    #[tokio::test]
+    async fn an_archived_memory_is_absent_from_search_and_from_the_listing() {
+        let state = Arc::new(Mutex::new(fresh_state()));
+        let id = add_one(state.clone(), "the router is in the hallway cupboard", "home").await;
+
+        // Present before retirement, so the assertion after it means something.
+        assert!(
+            search_ids(state.clone(), "router hallway").await.contains(&id),
+            "the memory must be findable before it is retired, or the test proves nothing"
+        );
+
+        // Retire it the way decay does: through the decay row only. The tree
+        // lifecycle is deliberately left Active, because that is the exact state the
+        // defect produced and the state a tree-only filter passed.
+        {
+            let mut locked = state.lock().await;
+            locked.decay_engine.entries.get_mut(&id).unwrap().archived = true;
+        }
+        assert_eq!(
+            state.lock().await.context_tree.find(id).unwrap().lifecycle,
+            cerebrum_curate::EntryLifecycle::Active,
+            "the tree must still say Active, or this test is not testing the disagreement"
+        );
+
+        assert!(
+            !search_ids(state.clone(), "router hallway").await.contains(&id),
+            "a memory retired by decay must not be served by search"
+        );
+
+        let list_bytes = serde_json::to_vec(&serde_json::json!({})).unwrap();
+        let listed: ListResponse = serde_json::from_slice(
+            &handle_list(&list_bytes, state.clone()).await.unwrap(),
+        )
+        .unwrap();
+        assert!(
+            !listed.memories.iter().any(|row| row.memory_id == id),
+            "a memory retired by decay must not appear in the listing"
+        );
+        assert_eq!(listed.total_live, 0, "nor be counted as live");
+    }
+
+    #[tokio::test]
+    async fn retrieval_strengthens_only_what_it_returns() {
+        let state = Arc::new(Mutex::new(fresh_state()));
+        let returned = add_one(state.clone(), "the boiler service is booked for tuesday", "home").await;
+        let unrelated = add_one(state.clone(), "the garden gate hinge needs oil", "home").await;
+
+        let hits = search_ids(state.clone(), "boiler service tuesday").await;
+        assert!(hits.contains(&returned));
+
+        let locked = state.lock().await;
+        let returned_accesses = locked.decay_engine.entries.get(&returned).unwrap().access_count;
+        let unrelated_accesses = locked.decay_engine.entries.get(&unrelated).unwrap().access_count;
+        assert!(
+            returned_accesses > 0,
+            "a returned memory is a used memory and must be strengthened"
+        );
+        assert_eq!(
+            unrelated_accesses, 0,
+            "a memory the caller never saw must not be strengthened by the retrieval pass"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidation_publishes_its_archival_decision_to_the_tree() {
+        let state = Arc::new(Mutex::new(fresh_state()));
+        let id = add_one(state.clone(), "an old fact that is about to fade away entirely", "home").await;
+
+        // Age it past the archive threshold and faint it, exactly as ninety days of
+        // neglect would, then run the real consolidation pass.
+        {
+            let mut locked = state.lock().await;
+            let decay_entry = locked.decay_engine.entries.get_mut(&id).unwrap();
+            decay_entry.strength = 0.0001;
+            decay_entry.last_accessed = Utc::now() - chrono::Duration::days(120);
+        }
+        let report_bytes = handle_consolidate(state.clone()).await.unwrap();
+        let report: ConsolidationReportFull = serde_json::from_slice(&report_bytes).unwrap();
+        assert!(report.archived >= 1, "the pass must have archived the faint old memory");
+
+        let locked = state.lock().await;
+        assert_eq!(
+            locked.context_tree.find(id).unwrap().lifecycle,
+            cerebrum_curate::EntryLifecycle::Archived,
+            "decay archived it, so the tree must agree; two engines cannot hold different opinions"
+        );
+        assert!(
+            locked
+                .event_store
+                .get_by_memory_id(id)
+                .iter()
+                .any(|event| event.event_type == "memory.archived"),
+            "the archival decision must be recorded in the trail"
+        );
+    }
+
+    #[tokio::test]
+    async fn hibernated_has_a_real_producer_and_is_reversible() {
+        let state = Arc::new(Mutex::new(fresh_state()));
+        let id = add_one(state.clone(), "a fact that will fade but not yet be archived", "home").await;
+
+        // Faint but recent: below the hibernation threshold, nowhere near ninety days.
+        {
+            let mut locked = state.lock().await;
+            locked.decay_engine.entries.get_mut(&id).unwrap().strength = 0.001;
+        }
+        handle_consolidate(state.clone()).await.unwrap();
+        assert_eq!(
+            state.lock().await.context_tree.find(id).unwrap().lifecycle,
+            cerebrum_curate::EntryLifecycle::Hibernated,
+            "a faint recent memory enters Hibernated, which nothing in production ever did before"
+        );
+
+        // Recall it hard enough to clear the threshold, then consolidate again.
+        {
+            let mut locked = state.lock().await;
+            for _ in 0..5 {
+                locked.decay_engine.access(id);
+            }
+        }
+        handle_consolidate(state.clone()).await.unwrap();
+        assert_eq!(
+            state.lock().await.context_tree.find(id).unwrap().lifecycle,
+            cerebrum_curate::EntryLifecycle::Active,
+            "a hibernated memory that is recalled is live again, so the state is not a one-way door"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deletion_event_carries_the_text_the_category_and_the_reason() {
+        let state = Arc::new(Mutex::new(fresh_state()));
+        let id = add_one(state.clone(), "the spare key is under the blue pot", "home").await;
+
+        let delete_op = serde_json::to_vec(&vec![CurateOp::Delete {
+            memory_id: id,
+            reason: "the owner asked for this to be forgotten".to_string(),
+        }])
+        .unwrap();
+        handle_curate(&delete_op, state.clone()).await.unwrap();
+
+        let locked = state.lock().await;
+        let events = locked.event_store.get_by_memory_id(id);
+        let deletion = events
+            .iter()
+            .find(|event| event.event_type == "memory.deleted")
+            .expect("a deletion must leave an event");
+
+        assert_eq!(
+            deletion.payload.get("text").and_then(|v| v.as_str()),
+            Some("the spare key is under the blue pot"),
+            "the event must carry the text it retired, read before retirement cleared it"
+        );
+        assert_eq!(
+            deletion.payload.get("category").and_then(|v| v.as_str()),
+            Some("home"),
+            "the event must carry the category the memory was filed under"
+        );
+        assert_eq!(
+            deletion.payload.get("reason").and_then(|v| v.as_str()),
+            Some("the owner asked for this to be forgotten"),
+            "the caller's reason must be recorded as given, never replaced with an operation name"
+        );
+        assert_eq!(
+            deletion.payload.get("previous_lifecycle").and_then(|v| v.as_str()),
+            Some("Active"),
+            "the lifecycle before retirement is part of the audit"
+        );
+        assert!(
+            deletion.payload.get("content_id").and_then(|v| v.as_str()).is_some(),
+            "the content identity must be recorded so the retired row can be traced"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_update_records_the_text_it_replaced_and_the_reason_it_was_given() {
+        let state = Arc::new(Mutex::new(fresh_state()));
+        let id = add_one(state.clone(), "the meeting is on monday", "work").await;
+
+        let changes = cerebrum_core::PartialEntry {
+            content: Some("the meeting is on tuesday".to_string()),
+            ..Default::default()
+        };
+        let update_op = serde_json::to_vec(&vec![CurateOp::Update {
+            memory_id: id,
+            changes,
+            reason: "the meeting moved a day".to_string(),
+        }])
+        .unwrap();
+        handle_curate(&update_op, state.clone()).await.unwrap();
+
+        let locked = state.lock().await;
+        let revisions = locked.event_store.history_for(id);
+        let latest = revisions.last().expect("an update must produce a revision");
+        assert_eq!(latest.content, "the meeting is on tuesday");
+        assert_eq!(
+            latest.superseded.as_deref(),
+            Some("the meeting is on monday"),
+            "the superseded text must survive, which is the only reason the native Update exists"
+        );
+        assert_eq!(
+            latest.reason, "the meeting moved a day",
+            "the caller's reason must be recorded, not the literal string update"
+        );
     }
 
     #[tokio::test]
