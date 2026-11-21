@@ -20,6 +20,22 @@ data class LivePresence(
     /** Which of the house colours this agent keeps. From its stored visual identity, not a list index. */
     val colourIndex: Int,
     val status: String,
+    /**
+     * The conversation this run belongs to, so unread state and the room's door are one identity.
+     *
+     * A RUN CANNOT EXIST WITHOUT ONE, so this is always populated on a row read from disk. It is
+     * carried because the unread dot is per CONVERSATION and the glow is per RUN: without this the
+     * Portal would have to look the conversation up again, and two lookups are two answers.
+     */
+    val conversationId: String = "",
+    /**
+     * Whether anything in that conversation is waiting to be read.
+     *
+     * THE DOT, AND THE ONLY THING THE PORTAL NEEDS TO KNOW ABOUT UNREAD. A count would be a number to
+     * render next to a mark the specification says is a mark; and the mark does not depend on the run
+     * being alive, which is why it is a separate flag rather than a status.
+     */
+    val hasUnread: Boolean = false,
 ) {
     /** Is work genuinely executing, as opposed to waiting or stopped? */
     val isExecuting: Boolean

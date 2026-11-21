@@ -56,6 +56,14 @@ data class AgentPresenceNode(
     val agentName: String,
     val colourIndex: Int,
     val status: String,
+    /**
+     * Whether anything in this run's conversation is waiting to be read.
+     *
+     * A DIFFERENT FACT FROM THE STATUS, WITH A DIFFERENT LIFETIME. The glow clears when the run ends;
+     * this survives it, because a message that arrived a second before the run finished is still
+     * unread after it is gone. Driving both from the status is how a dot vanished unread.
+     */
+    val hasUnread: Boolean = false,
 ) {
     /** Is work actually executing, as opposed to waiting or finished? */
     val isExecuting: Boolean
@@ -141,22 +149,51 @@ fun AgentPortalGlow(
         androidx.compose.foundation.Canvas(
             Modifier.fillMaxSize(),
         ) {
-            val rings = 14
-            val step = size.minDimension * 0.006f
-            for (index in 0 until rings) {
-                // 0 at the innermost ring, 1 at the rim, squared so most of the dark is in the outer
-                // few pixels and the middle stays clean.
-                val position = (rings - index).toFloat() / rings
-                val alpha = bloom * position * position
-                val inset = index * step
-                drawRect(
-                    color = ink.copy(alpha = alpha),
-                    topLeft = androidx.compose.ui.geometry.Offset(inset, inset),
-                    size = androidx.compose.ui.geometry.Size(
-                        size.width - inset * 2f,
-                        size.height - inset * 2f,
+            /*
+             * ONE RADIAL DRAW, NOT FOURTEEN RECTANGLES.
+             *
+             * THE RECTANGLES WERE THE BOXINESS. Fourteen nested `drawRect` strokes produced a band
+             * whose corners were the darkest point on the screen, because every rectangle's corner
+             * sits further from the centre than its midpoint and the strokes therefore accumulate
+             * hardest exactly where a bloom should be faintest. On the glass it read as a frame
+             * around the phone.
+             *
+             * A radial gradient has no corners. It is transparent through the middle, rises to the
+             * rim, and its radius is measured to the CORNER so the falloff is even all the way round
+             * rather than clipped into a rectangle halfway up the falloff. One draw call, one shader,
+             * and the shape of the light is the shape of the light rather than the shape of a box.
+             *
+             * The vignette is drawn four times at decreasing radii so the ramp is dense near the rim,
+             * which is what makes it read as coming from behind the glass instead of as a tinted
+             * overlay. Each pass is one draw, so this is four calls where it used to be fourteen.
+             */
+            val corner = kotlin.math.hypot(size.width, size.height) / 2f
+            val centre = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f)
+            for (pass in 0 until 4) {
+                // 1.0 at the outermost pass down to 0.55: each ring's transparent inner stop sits
+                // further in, so the outer few percent of the screen carries the densest colour.
+                val scale = 1f - pass * 0.15f
+                val radius = corner * scale
+                val stroke = corner * 0.16f
+                drawCircle(
+                    brush = androidx.compose.ui.graphics.Brush.radialGradient(
+                        colorStops = arrayOf(
+                            0.00f to ink.copy(alpha = 0f),
+                            // Rises late, so the middle of the screen stays clean and the last few
+                            // percent carry the light.
+                            0.78f to ink.copy(alpha = bloom * 0.12f),
+                            0.94f to ink.copy(alpha = bloom * 0.55f),
+                            1.00f to ink.copy(alpha = 0f),
+                        ),
+                        center = centre,
+                        radius = radius,
                     ),
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = step),
+                    radius = radius,
+                    center = centre,
+                    // STROKE, NOT FILL, AND WIDE ENOUGH TO CARRY THE RAMP. A filled radial would
+                    // tint the whole conversation; a hairline stroke would band. This covers the
+                    // outer slice of the screen and nothing else.
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = stroke),
                 )
             }
         }
@@ -184,6 +221,29 @@ fun AgentPortalGlow(
                 borderWidth = 2.5.dp,
                 shadowOffset = 3.dp,
             ) {}
+
+            /*
+             * THE UNREAD DOT, AND WHY IT IS NOT THE GLOW.
+             *
+             * THE GLOW SAYS "WORK IS HAPPENING" AND THE DOT SAYS "SOMETHING WAS SAID TO YOU". They
+             * are different facts with different lifetimes: the glow clears the instant a run ends,
+             * and the dot survives it, because a message that arrived one second before the run
+             * finished is still unread after the run is gone. Driving both from the run status is
+             * how the dot used to disappear under a person's eyes having never been read.
+             *
+             * A CONVERSATION, NOT AN AGENT, DECIDES IT. Reading one thread must not clear another's
+             * mark, which is exactly what an agent-keyed watermark does once an agent has two.
+             */
+            if (node.hasUnread) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 6.dp, end = 6.dp)
+                        .size(12.dp)
+                        .background(Memphis.Coral)
+                        .border(2.dp, Memphis.Ink),
+                )
+            }
         }
     }
 }

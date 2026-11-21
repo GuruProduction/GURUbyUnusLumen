@@ -46,6 +46,9 @@ val agentsModule = module {
              * could only ever display runs somebody else had started.
              */
             conversations = get(),
+            // Opening the chat is what clears the unread dot, and the room is the only place that
+            // can prove a transcript was actually on screen.
+            unread = get(),
         )
     }
     viewModel {

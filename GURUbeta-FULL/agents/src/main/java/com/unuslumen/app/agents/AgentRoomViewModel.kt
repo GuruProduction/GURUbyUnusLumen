@@ -11,13 +11,11 @@ import com.unuslumen.app.data.agents.AgentRunHost
 import com.unuslumen.app.data.agents.AgentRuntime
 import com.unuslumen.app.domain.agents.AgentRoomState
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.last
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -60,6 +58,14 @@ class AgentRoomViewModel(
      * always has one; a room opened directly had none, so this is what lets the room start work.
      */
     private val conversations: com.unuslumen.app.domain.memory.MemoryRepository,
+    /**
+     * The unread watermark, so opening the chat is what clears the dot.
+     *
+     * THE ROOM OWNS THIS WRITE BECAUSE THE ROOM IS WHERE READING HAPPENS. A notification, a scan or a
+     * preview must not clear it, and the only place that can prove a transcript was on screen is
+     * here.
+     */
+    private val unread: com.unuslumen.app.data.agents.AgentUnreadStore,
 ) : ViewModel() {
 
     data class UiState(
@@ -106,27 +112,39 @@ class AgentRoomViewModel(
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     /**
-     * The live poll.
+     * The live view of the open room.
      *
-     * A POLL RATHER THAN A DATABASE FLOW, DELIBERATELY. The room's state is assembled from six
-     * tables plus the ledger; a Flow would need six subscriptions and a combine, and the assemble
-     * would still run on every emission. One refresh on a short interval is simpler to reason about
-     * and cannot produce a half-updated room.
+     * A FLOW RATHER THAN A TWO-SECOND POLL, AND THE DIFFERENCE IS THE WHOLE OF D1.
      *
-     * The interval is a live view of work in flight, not a load spinner: two seconds is fast enough
-     * that a tool appearing feels immediate and slow enough that the assemble does not run in a
-     * tight loop while nothing changes.
+     * The room used to re-assemble everything every two seconds whether anything had changed or not.
+     * Every assemble reads the run's event ledger, every event payload is sealed on disk, and the
+     * measured cost was 77 Keystore decrypts and 181,661 bytes per assemble, 2,310 decrypts a minute,
+     * growing with the run. That is what made the app crawl while an agent worked.
+     *
+     * The assembler owns the cadence: it observes the displayed run's row and folds only the events
+     * committed since its last pass, so an unchanged room costs nothing and a change costs the new
+     * events and no more. This view model just collects it.
      */
-    private var poll: Job? = null
+    private var watch: Job? = null
 
     init {
-        refresh()
-        startPolling()
+        watchRoom()
     }
 
     fun onEvent(event: Event) {
         when (event) {
-            is Event.SelectTab -> _state.update { it.copy(tab = event.tab) }
+            is Event.SelectTab -> {
+                _state.update { it.copy(tab = event.tab) }
+                /*
+                 * OPENING THE CHAT IS READING IT, AND THAT IS THE ONLY THING THAT IS.
+                 *
+                 * The dot clears here and nowhere else: not on a notification, not on a background
+                 * scan, not when the room is merely open on another tab. Advancing a watermark for a
+                 * transcript nobody looked at is claiming a read that did not happen, which is the
+                 * exact failure the dot exists to prevent.
+                 */
+                if (event.tab == RoomTab.CHAT) markConversationRead()
+            }
             is Event.UpdateDraft -> _state.update { it.copy(draft = event.text) }
             is Event.SelectDraftType -> _state.update { it.copy(draftType = event.type) }
             Event.SendToAgent -> sendToAgent()
@@ -213,46 +231,57 @@ class AgentRoomViewModel(
      * that stopped working, which is the worst possible confusion in a surface whose entire job is
      * to say what is happening.
      */
-    private fun refresh() {
-        viewModelScope.launch {
-            try {
-                val room = assembler.assemble(agentId)
-                _state.update {
-                    it.copy(
+    private fun watchRoom() {
+        watch?.cancel()
+        watch = viewModelScope.launch {
+            assembler.roomFlow(agentId).collect { room ->
+                _state.update { current ->
+                    current.copy(
                         isLoading = false,
                         room = room,
                         error = if (room == null) {
                             "This agent no longer exists. It may have been deleted."
                         } else null,
-                    )
-                }
-            } catch (e: Exception) {
-                _state.update {
-                    it.copy(
-                        isLoading = false,
-                        error = e.message ?: "Could not read this agent's state.",
+                        awaitingRun = if (room?.run != null) false else current.awaitingRun,
                     )
                 }
             }
         }
     }
 
-    private fun startPolling() {
-        poll?.cancel()
-        poll = viewModelScope.launch {
-            while (isActive) {
-                delay(POLL_INTERVAL_MS)
-                // Only poll while there is something to watch. An idle agent's room does not need a
-                // refresh every two seconds, and polling anyway is a battery cost for no new fact.
-                val room = _state.value.room
-                val worthWatching = room == null ||
-                    room.isRunning ||
-                    _state.value.awaitingRun
-                if (!worthWatching) continue
-                runCatching { assembler.assemble(agentId) }.getOrNull()?.let { fresh ->
-                    _state.update { it.copy(room = fresh, awaitingRun = fresh.run == null && it.awaitingRun) }
-                }
-            }
+    /**
+     * Ask the room to look again now, rather than waiting for the next change.
+     *
+     * THE FLOW ALREADY ANSWERS EVERY CHANGE, so this exists for the gaps it cannot see: a run that has
+     * just been created by a start this view model performed, and a control whose effect is a write
+     * the flow has not emitted yet. It restarts the flow rather than querying beside it, so there is
+     * still exactly one reader.
+     *
+     * A FAILURE IS SHOWN, NOT SWALLOWED. A room that silently stops updating looks like an agent that
+     * stopped working, which is the worst possible confusion in a surface whose whole job is to say
+     * what is happening.
+     */
+    private fun refresh() {
+        watchRoom()
+    }
+
+    /**
+     * Record that the person has read this conversation.
+     *
+     * ADVANCED TO THE NEWEST MESSAGE'S TIME, NOT TO NOW. A message written in the same millisecond as
+     * the read would otherwise be skipped, and on a device where a send and a render land in one turn
+     * that is a real window rather than a theoretical one.
+     *
+     * THE CONVERSATION COMES FROM THE DISPLAYED RUN. A run cannot exist without one, so this is
+     * always populated on a room that has anything to read; a room with no run has no conversation
+     * and nothing to mark.
+     */
+    private fun markConversationRead() {
+        val conversationId = _state.value.room?.run?.conversationId
+        if (conversationId.isNullOrBlank()) return
+        viewModelScope.launch {
+            runCatching { unread.markRead(conversationId) }
+                .onFailure { android.util.Log.w("guru_agents", "Unread watermark not advanced: ${it.message}") }
         }
     }
 
@@ -663,11 +692,7 @@ class AgentRoomViewModel(
     override fun onCleared() {
         // THE RUN IS NOT TOUCHED. Leaving the room is not stopping the work; that is the whole
         // point of the run living on the host rather than in this view model's scope.
-        poll?.cancel()
+        watch?.cancel()
         super.onCleared()
-    }
-
-    private companion object {
-        const val POLL_INTERVAL_MS = 2_000L
     }
 }

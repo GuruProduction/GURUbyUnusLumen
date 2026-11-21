@@ -782,6 +782,10 @@ fun PortalScreenContent(
                         agentName = it.agentName,
                         colourIndex = it.colourIndex,
                         status = it.status,
+                        // Carried so the mark shows a dot for something said to the person. It is
+                        // resolved per conversation in the presence flow, not from the run status,
+                        // so reading one thread does not clear another's.
+                        hasUnread = it.hasUnread,
                     )
                 },
                 onOpen = { onOpenAgent(liveAgent!!) },
