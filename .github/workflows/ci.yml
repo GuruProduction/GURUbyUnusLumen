@@ -261,27 +261,69 @@ jobs:
           echo "Expecting cerebrum-build-rev=${REVISION}"
 
           python3 - "$APK" "$REVISION" <<'PY'
-          import re, sys, zipfile
+          import sys, zipfile
           apk, revision = sys.argv[1], sys.argv[2]
           expected = {"arm64-v8a", "armeabi-v7a", "x86_64", "x86"}
+
+          # THE MARKER IS READ WITH A DELIMITER, NOT A GREEDY CLASS.
+          #
+          # A Rust string literal has no NUL in .rodata once the linker merges adjacent
+          # constants, so an unterminated marker sits directly next to whatever literal
+          # follows. A `[A-Za-z0-9._-]+` class then runs past the revision and produces
+          # "cerebrum-build-rev=<40 hex>payload" - the first CI failure of this check, where
+          # the brain WAS from the right commit and the extra bytes came from the next
+          # string in the binary. The marker carries a trailing ';' now, and this reader
+          # requires it, so a marker that loses its terminator fails loudly here instead of
+          # silently absorbing its neighbour.
+          PREFIX = b"cerebrum-build-rev="
+          # The class the build script filters a revision through. The DELIMITER is separate
+          # and is not part of it, so the run stops before the ';' and the byte after the run
+          # is checked to be the terminator.
+          REVISION_CHARS = set(b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
+          TERMINATOR = ord(";")
+
+          def markers_in(payload):
+              out = set()
+              start = 0
+              while True:
+                  at = payload.find(PREFIX, start)
+                  if at < 0:
+                      return out
+                  index = at + len(PREFIX)
+                  run = bytearray()
+                  while index < len(payload) and payload[index] in REVISION_CHARS:
+                      run.append(payload[index])
+                      index += 1
+                  # THE TERMINATOR MUST FOLLOW IMMEDIATELY. A run that reaches the end of the
+                  # buffer, or is followed by anything but ';', has no delimiter: that is the
+                  # shape that produced "cerebrum-build-rev=<40 hex>payload" and failed a run
+                  # whose brain was from the correct commit.
+                  terminated = index < len(payload) and payload[index] == TERMINATOR
+                  text = run.decode("ascii", "replace")
+                  out.add(text if terminated else f"{text} [NO TERMINATOR]")
+                  start = index + 1 if terminated else index
+
           with zipfile.ZipFile(apk) as archive:
               found = {}
               for name in archive.namelist():
                   if not name.endswith("/libcerebrum_android.so"):
                       continue
                   abi = name.split("/")[1]
-                  payload = archive.read(name)
-                  marker = re.findall(rb"cerebrum-build-rev=[A-Za-z0-9._-]+", payload)
-                  found[abi] = sorted({m.decode() for m in marker})
+                  found[abi] = sorted(markers_in(archive.read(name)))
               missing = expected - set(found)
               if missing:
                   sys.exit(f"::error::the APK carries no brain for {sorted(missing)}")
               for abi, markers in sorted(found.items()):
                   if not markers:
                       sys.exit(f"::error::{abi} brain carries no provenance marker at all")
-                  if f"cerebrum-build-rev={revision}" not in markers:
+                  if any("[NO TERMINATOR]" in m for m in markers):
+                      sys.exit(f"::error::{abi} marker is not terminated: {markers}")
+                  # `markers` holds the REVISIONS, not the prefixed marker, because the prefix
+                  # is what `find` consumed. Comparing a bare revision against a prefixed
+                  # expectation is the mistake this line used to make.
+                  if revision not in markers:
                       sys.exit(f"::error::{abi} brain is not from {revision}: {markers}")
-                  print(f"{abi}: {markers[0]}")
+                  print(f"{abi}: cerebrum-build-rev={revision}")
           PY
 
       - name: Upload the APK for inspection

@@ -732,7 +732,21 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
 /// so a scan for `cerebrum-build-rev=<rev>` finds the prefix and then nothing.
 /// Concatenation at compile time puts the whole marker in the binary as one run
 /// of bytes, which is what the APK provenance check reads.
-const BUILD_IDENTITY: &str = concat!("cerebrum-build-rev=", env!("CEREBRUM_BUILD_REV"));
+///
+/// THE TRAILING `;` IS LOAD-BEARING, and its absence failed a CI run.
+///
+/// A Rust string literal carries no NUL in `.rodata` once the linker has merged
+/// adjacent constants, so an unterminated marker sits immediately next to
+/// whatever literal follows it. The APK check reads the marker back with
+/// `[A-Za-z0-9._-]+`, which happily ran on past the end of the revision and
+/// produced `cerebrum-build-rev=<40 hex>payload` - the start of the next string
+/// in the binary. The comparison then failed even though the brain WAS built
+/// from the right commit, and reported it as a stale artefact.
+///
+/// `;` is outside that character class, so the scan stops exactly where the
+/// revision ends. The marker is now self-delimiting rather than relying on what
+/// the linker happens to place after it.
+const BUILD_IDENTITY: &str = concat!("cerebrum-build-rev=", env!("CEREBRUM_BUILD_REV"), ";");
 
 /// Report the Cerebrum source revision compiled into this library.
 ///
@@ -763,5 +777,43 @@ fn jni_string<'local>(env_value: JNIEnv<'local>, text_value: &str) -> JString<'l
                 .new_string("")
                 .expect("jvm cannot even allocate empty string; hard stop")
         }
+    }
+}
+
+#[cfg(test)]
+mod build_identity_tests {
+    use super::BUILD_IDENTITY;
+
+    /// The marker terminates itself, so a scan cannot run into the next literal.
+    ///
+    /// THE DEFECT THIS GUARDS. The APK provenance check failed a CI run with
+    /// `cerebrum-build-rev=<40 hex>payload` because the marker had no terminator and the
+    /// scanner's character class ran on into the following string in `.rodata`. The
+    /// revision was correct; the bytes after it were not part of it. A delimiter outside
+    /// the scanned class ends the match exactly at the revision.
+    #[test]
+    fn the_marker_ends_where_the_revision_ends() {
+        assert_eq!(
+            BUILD_IDENTITY,
+            format!("cerebrum-build-rev={};", env!("CEREBRUM_BUILD_REV")),
+            "the marker must be the prefix, the revision and one terminator and nothing else",
+        );
+
+        // The scan the pipeline runs. It must recover exactly the revision.
+        let scanned: String = BUILD_IDENTITY
+            .chars()
+            .skip("cerebrum-build-rev=".len())
+            .take_while(|character| {
+                character.is_ascii_alphanumeric()
+                    || *character == '-'
+                    || *character == '_'
+                    || *character == '.'
+            })
+            .collect();
+        assert_eq!(
+            scanned,
+            env!("CEREBRUM_BUILD_REV"),
+            "a scan of the marker must recover the revision and stop at the terminator",
+        );
     }
 }

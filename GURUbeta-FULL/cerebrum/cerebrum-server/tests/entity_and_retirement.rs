@@ -45,9 +45,12 @@ async fn fresh_state() -> Arc<Mutex<CerebrumState>> {
 }
 
 async fn call(state: &Arc<Mutex<CerebrumState>>, frame_type: u8, payload: &[u8]) -> Vec<u8> {
-    handle_frame(Frame::new(frame_type, 4242, payload.to_vec()), state.clone())
-        .await
-        .unwrap_or_else(|e| serde_json::to_vec(&serde_json::json!({ "error": e.message })).unwrap())
+    handle_frame(
+        Frame::new(frame_type, 4242, payload.to_vec()),
+        state.clone(),
+    )
+    .await
+    .unwrap_or_else(|e| serde_json::to_vec(&serde_json::json!({ "error": e.message })).unwrap())
 }
 
 fn add(id: MemoryId, content: &str, domain: &str) -> CurateOp {
@@ -354,17 +357,18 @@ async fn a_memory_retired_by_decay_is_refused_everywhere_and_kept_in_the_trail()
         "the trail must record that this memory was retired: {history}",
     );
     assert!(
-        history["revisions"].as_array().is_some_and(|rows| rows
-            .iter()
-            .any(|row| row["kind"] == "Archived" && row["reason"]
-                .as_str()
-                .is_some_and(|reason| reason.contains("decay archive")))),
+        history["revisions"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["kind"] == "Archived"
+                && row["reason"]
+                    .as_str()
+                    .is_some_and(|reason| reason.contains("decay archive")))),
         "the archival must be a revision carrying its reason, not a silent flag: {history}",
     );
     assert!(
-        history["revisions"].as_array().is_some_and(|rows| rows
-            .iter()
-            .any(|row| row["content"]
+        history["revisions"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["content"]
                 .as_str()
                 .is_some_and(|content| content.contains("four four two one")))),
         "and the text it held must be readable from the trail: {history}",

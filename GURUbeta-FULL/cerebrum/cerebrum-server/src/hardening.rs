@@ -271,7 +271,12 @@ mod linux_impl {
         // The architecture preamble: load arch, accept the two targets, kill on anything else.
         program.push(bpf_stmt(BPF_LD | BPF_W | BPF_ABS, 4)); // offsetof(arch) in seccomp_data
         program.push(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 2, 0));
-        program.push(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_AARCH64, 1, 0));
+        program.push(bpf_jump(
+            BPF_JMP | BPF_JEQ | BPF_K,
+            AUDIT_ARCH_AARCH64,
+            1,
+            0,
+        ));
         program.push(bpf_ret(SECCOMP_RET_KILL_PROCESS));
         program.push(bpf_stmt(BPF_LD | BPF_W | BPF_ABS, 0)); // offsetof(nr)
 
@@ -577,7 +582,10 @@ mod tests {
         let has_eperm = filter
             .iter()
             .any(|w| unpack_operand(*w) == linux_impl::SECCOMP_RET_ERRNO_EPERM);
-        assert!(has_eperm, "an internet socket attempt must be refused with EPERM");
+        assert!(
+            has_eperm,
+            "an internet socket attempt must be refused with EPERM"
+        );
     }
 
     /// Every jump in the program lands on a real instruction, and every permitted syscall
