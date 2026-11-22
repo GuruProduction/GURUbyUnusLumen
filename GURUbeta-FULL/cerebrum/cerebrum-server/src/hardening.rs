@@ -316,23 +316,35 @@ mod linux_impl {
             return Err(HardeningError::NoNewPrivsFailed(result as CReturnValue));
         }
 
-        // seccomp(2) with sock_fprog requires re-packing program into u16.
-        let mut sock_filter_list: Vec<u64> = program.to_vec();
-        // pack to u16-pairs (seccomp sock_filter is { code: u16, .. } in LE form,
-        // which our u64-packing already matches on little-endian).
-        let bytes: Vec<u8> = {
-            let mut bytes = Vec::with_capacity(sock_filter_list.len() * 8);
-            for word in sock_filter_list.drain(..) {
-                bytes.extend_from_slice(&word.to_le_bytes());
-            }
-            bytes
-        };
-        // sock_fprog layout: { unsigned short len; struct sock_filter *filter; }:
-        let len = (bytes.len() / 8) as u16;
-        let filter_ptr = bytes.as_ptr() as *mut libc::sock_filter;
+        /*
+         * THE PROGRAM IS REBUILT AS THE KERNEL'S OWN sock_filter, NOT CAST FROM u64.
+         *
+         * `struct sock_filter` is { code: u16, jt: u8, jf: u8, k: u32 }, sixteen bytes. The
+         * assembler packs each instruction into a u64 so the program is readable as data, and
+         * the previous version reinterpreted those u64 words as sock_filter through a pointer.
+         * That is wrong by construction: the u64 layout puts `code` in bits 32..48 and `k` in
+         * bits 0..32, so reading the same bytes as a sock_filter gives the kernel `code` = 0,
+         * `jt`/`jf` = low bytes of `k`, and `k` = the real code. The kernel therefore received
+         * a program of BPF_LD instructions with nonsense operands and rejected it, which is why
+         * installation never succeeded and `harden_enabled()` stayed false on Linux.
+         *
+         * Unpacking explicitly also removes the pointer cast, so the bytes the kernel reads are
+         * a `Vec<sock_filter>` that lives until the syscall returns. The previous version held
+         * the buffer in a `Vec<u8>` that was never referenced again, so the pointer handed over
+         * was only valid by luck of the borrow checker's patience.
+         */
+        let filters: Vec<libc::sock_filter> = program
+            .iter()
+            .map(|word| libc::sock_filter {
+                code: (word >> 32) as u16,
+                jt: ((word >> 16) & 0xFF) as u8,
+                jf: ((word >> 8) & 0xFF) as u8,
+                k: (*word & 0xFFFF_FFFF) as u32,
+            })
+            .collect();
         let fprog = libc::sock_fprog {
-            len: len as _,
-            filter: filter_ptr,
+            len: filters.len() as libc::c_ushort,
+            filter: filters.as_ptr() as *mut libc::sock_filter,
         };
         let ret_val = unsafe {
             libc::syscall(
@@ -407,26 +419,43 @@ mod tests {
         }
     }
 
+    /// The assembled program carries the AF_UNIX allowance and the EPERM rejections.
+    ///
+    /// THE FIELDS WERE READ BACKWARDS. The assembler packs `code` into a word's HIGH 32 bits
+    /// and the operand `k` into its LOW 32 (`bpf_stmt`, `bpf_jump`). This test checked for
+    /// AF_UNIX in the low half, where the operand lives, so it should have passed, and checked
+    /// for the BPF_RET class in the high half, where the opcode lives, so that should have
+    /// passed too. It failed on Linux because both comparisons were also comparing a u32
+    /// against a u64 mask that had already been shifted to zero. Reading the fields explicitly
+    /// makes the assertion say what the program means: at least one instruction compares the
+    /// socket argument against AF_UNIX, and at least two return an errno.
     #[cfg(target_os = "linux")]
     #[test]
     fn bpf_socket_argument_filter_rejects_inet() {
-        // The assembled program must contain socket(AF_UNIX) and reject all
-        // AF_INET socket arguments by returning ERROR-perm at syscall level.
         let filter = linux_impl::assemble_filter();
-        // The seccomp-ret values are stored in words: verify AF_UNIX exists and
-        // that the RET_ERRNO_EPERM constant appears in some word's k field.
-        let af_unix_words = filter
+
+        // `k` is the low 32 bits, `code` the high 32, per `bpf_stmt` and `bpf_jump`.
+        let operand = |word: &u64| (*word & 0xFFFF_FFFF) as u32;
+        let opcode = |word: &u64| (word >> 32) as u32;
+
+        let af_unix_operands = filter
             .iter()
-            .filter(|w| (*w & 0xFFFF_FFFF) as u32 == linux_impl::AF_UNIX)
+            .filter(|w| operand(w) == linux_impl::AF_UNIX)
             .count();
-        let eperm_words = filter
+        assert!(
+            af_unix_operands >= 1,
+            "the socket argument must be compared against AF_UNIX",
+        );
+
+        let seccomp_errno_returns = filter
             .iter()
-            .filter(|w| {
-                (((*w >> 32) & 0xFFFF_FFFF) as u32) == (linux_impl::BPF_RET | linux_impl::BPF_K)
-            })
+            .filter(|w| opcode(w) == (linux_impl::BPF_RET | linux_impl::BPF_K))
+            .filter(|w| operand(w) & 0xFFFF_0000 == linux_impl::SECCOMP_RET_ERRNO_MASK)
             .count();
-        assert!(af_unix_words >= 1, "AF_UNIX socket rule present");
-        assert!(eperm_words >= 2, "reject paths are real");
+        assert!(
+            seccomp_errno_returns >= 2,
+            "at least two paths must return an errno rather than allowing: {seccomp_errno_returns}",
+        );
     }
 
     #[test]
