@@ -84,6 +84,16 @@ time in this project's history: 8 tests, 0 skipped, 0 failed, on an API 34 emula
 The count of fifteen is the CI workflow only. The repository also has security-scanning
 workflow runs that conclude success, and those are not this pipeline.
 
+One failure in that set is environmental and must not be read as a defect in the code. The
+device job failed in 35 seconds at configuration time with
+
+    Plugin [id: 'com.google.devtools.ksp', version: '2.3.4'] was not found
+
+while two earlier runs on the same branch, with the same version catalog, resolved KSP and
+reached the tests. The stage is the tell: this fails before a module is compiled, so it says
+nothing about what is being tested. Nothing was changed in response, because a version
+change would have been a guess at a lookup that returned nothing.
+
 **The intermittent failures had real causes, both fixed.** `AgentExecutionOwnershipTest`
 used `delay` where the ordering needed establishing, so a loaded suite could assert before
 the work it named had run. `CerebrumBackupRestoreOnDeviceTest` failed on one run and passed
