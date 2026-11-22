@@ -345,7 +345,10 @@ val aiDataModule = module {
     factory { BookmarkToolExecutor(get(), get(), get(), get(), get(), get()) }
     factory { JobToolExecutor(get(), get<Context>()) }
     factory { TaskToolExecutor(get(), get(), get(), get(), get(), get(), get()) }
-    factory { MemoryToolExecutor(get()) }
+    // The repository is supplied so the tool layer can resolve the CALLING agent's scope.
+    // Without it the visibility partition lives only in AgentMemoryService and every other
+    // route into memory bypasses it, which is exactly the hole this binding closes.
+    factory { MemoryToolExecutor(get(), get()) }
     factory { MetaToolExecutor(get()) }
     // The agent lane. The runtime is a factory because it reads the connected
     // provider on every spawn, so switching model mid-session takes effect on

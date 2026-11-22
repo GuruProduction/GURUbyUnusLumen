@@ -9,6 +9,9 @@ import com.unuslumen.app.data.brain.cerebrum.CerebrumBrainApi
 import com.unuslumen.app.data.brain.cerebrum.CerebrumHost
 import com.unuslumen.app.data.memory.LocalEmbeddingService
 import com.unuslumen.app.domain.memory.MemoryFact
+import com.unuslumen.app.domain.memory.MemoryHistory
+import com.unuslumen.app.domain.memory.MemoryOwnership
+import com.unuslumen.app.domain.memory.MemoryRevision
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -40,28 +43,50 @@ class BrainService(
     // Wire conversions (brain reply bytes -> domain types), boundary-only.
     // =====================================================================
 
-    private fun buildDomainFact(entityId: String, text: String, score: Float): MemoryFact =
+    /**
+     * Build a domain fact from a SEARCH hit, with the metadata the hit now carries.
+     *
+     * THE TWO CONSTANTS THAT WERE HERE WERE THE DEFECT. This used to set
+     * `category = "memory"` and `source = "cerebrum"`, and both were wrong:
+     *
+     *  - `memory` is not in the category vocabulary, so a category-filtered search
+     *    returned nothing for every real category, while listing and retrieve answered
+     *    correctly from the same rows. Three read paths, two answers.
+     *  - `cerebrum` is the storage BACKEND. The agent memory service looked in `source`
+     *    for `agent=<slug>` to decide ownership, so an own-only agent was handed an
+     *    empty memory every time and a shared reader was handed the whole vault.
+     *
+     * The category is now the row's real domain and the provenance is the label the
+     * write actually carried, which is where ownership and visibility live.
+     */
+    private fun buildDomainFactFromHit(hit: CerebrumBrainApi.BrainHit): MemoryFact =
         MemoryFact(
-            id = entityId,
-            category = "memory",      // the brain holds it; the room category field no longer decides identity
-            fact = text,
+            id = hit.idHex,
+            // The stored category IS the tree's domain. Reading it beats inventing it.
+            category = categoryOf(hit.provenance, hit.domain),
+            fact = hit.content,
             embedding = emptyList(),
-            confidence = score,
+            confidence = hit.confidence.coerceIn(0f, 1f),
             sourceConversationIds = emptyList(),
             extractedDate = System.currentTimeMillis(),
             lastRecalledDate = System.currentTimeMillis(),
-            layer = "BUFFER",         // real layer lives inside the brain's decay engine
-            strength = score.coerceIn(0f, 1f),
+            layer = hit.layer.ifBlank { "BUFFER" },
+            strength = hit.strength.coerceIn(0f, 1f),
             accessCount = 0,
-            source = "cerebrum",
+            // The provenance label, verbatim. It is not the backend and it is not
+            // invented here: MemoryOwnership.parse reads the owner and visibility out
+            // of it.
+            source = hit.provenance,
             trigger = "",
             beforeContext = "",
             afterContext = "",
             emotionalValence = 0f,
-            domain = "",
-            topic = "",
-            subtopic = "",
-            signature = ""
+            domain = hit.domain,
+            topic = hit.topic,
+            subtopic = hit.subtopic,
+            signature = "",
+            ownerAgentId = hit.ownerAgentId,
+            visibility = hit.visibility,
         )
 
     /**
@@ -192,19 +217,24 @@ class BrainService(
     }
 
     /**
-     * The category a stored row was filed under: read back from the rationale
-     * the write recorded, falling back to the row's own domain, which is the
-     * same value. A row written by any older path still reports a real
-     * category rather than a blank.
+     * The category a stored row was filed under.
+     *
+     * THE DOMAIN IS THE CATEGORY. `domainForCategory` files every write under the
+     * caller's category, so reading the domain back is exact and needs no marker. This
+     * used to prefer a `guru storeFact: <category>` marker inside the rationale and
+     * fall back to the domain, which meant two writers disagreed about where the truth
+     * was: `storeFact` wrote that marker, `storeRecord` did not. The marker is still
+     * honoured as a fallback for rows written before the domain carried the category.
      */
-    private fun categoryOf(rationale: String, domain: String): String {
+    private fun categoryOf(provenanceLabel: String, domain: String): String {
+        if (domain.isNotBlank()) return domain
         val markerText = "guru storeFact: "
-        val markerAt = rationale.indexOf(markerText)
+        val markerAt = provenanceLabel.indexOf(markerText)
         if (markerAt >= 0) {
-            val tail = rationale.substring(markerAt + markerText.length).trim()
+            val tail = provenanceLabel.substring(markerAt + markerText.length).trim()
             if (tail.isNotEmpty()) return tail
         }
-        return domain.ifBlank { "knowledge" }
+        return ""
     }
 
     /**
@@ -264,7 +294,9 @@ class BrainService(
             domain = row.domain,
             topic = row.topic,
             subtopic = row.subtopic,
-            signature = ""
+            signature = "",
+            ownerAgentId = row.ownerAgentId,
+            visibility = row.visibility,
         )
 
     /**
@@ -326,9 +358,11 @@ class BrainService(
     ) {
         brainApi.searchFacts(query, topK).map { hit ->
             DomainSearchResult(
-                fact = buildDomainFact(hit.idHex, hit.content, hit.score),
+                fact = buildDomainFactFromHit(hit),
                 score = hit.score,
-                source = "CEREBRUM",
+                // The backend label belongs here, on the RESULT TIER, not on the fact's
+                // provenance. Provenance is who wrote it; this is which engine answered.
+                source = MemoryOwnership.BACKEND_CEREBRUM.uppercase(),
             )
         }
     }
@@ -343,6 +377,80 @@ class BrainService(
         val score: Float,
         val source: String,
     )
+
+    /**
+     * One result of the tiered QUERY pipeline, with its rows already resolved.
+     *
+     * A QUERY frame answers with ids and the tier that produced them, and an id alone is
+     * not usable by a caller: it names a row without its text. So each id is resolved to
+     * its body here, and an id the brain cannot retrieve is dropped rather than reported
+     * as an empty fact. That is the same rule the graph walk follows, for the same
+     * reason: a hit with no text is not a result.
+     */
+    data class QueryResultPage(
+        /** The rows the answering tier produced, in the engine's order. */
+        val facts: List<MemoryFact>,
+        /** The engine's own confidence, 0..1. */
+        val confidence: Float,
+        /** Which tier answered: HOT_CACHE, DWM_SEARCH, GRAPH_TRAVERSAL, or similar. */
+        val tierUsed: String,
+        /** How long the engine reported spending. */
+        val latencyMs: Long,
+        /** False when the brain did not answer, so a caller can tell it apart from empty. */
+        val brainReachable: Boolean,
+    )
+
+    /**
+     * Run the tiered retrieval pipeline and hand back usable rows.
+     *
+     * USE THIS WHEN THE QUESTION IS "WHAT IS MOST LIKELY TO BE RELEVANT", not "which rows
+     * share these words". SEARCH is a lexical match over an inverted index; this walks a
+     * hot cache, then the DWM, then the graph, and stops at the first tier that answers,
+     * reporting which one it was. The brain has always supported it and no Kotlin code
+     * ever sent the frame, so the pipeline was dead weight in the shipped library.
+     */
+    suspend fun tieredQuery(query: String, maxTokens: Int = 2048): QueryResultPage =
+        withContext(Dispatchers.Default) {
+            val outcome = brainApi.query(query, maxTokens)
+                ?: return@withContext QueryResultPage(
+                    facts = emptyList(),
+                    confidence = 0f,
+                    tierUsed = "",
+                    latencyMs = 0L,
+                    brainReachable = false,
+                )
+            val rows = outcome.memoryIds.mapNotNull { idHex ->
+                brainApi.retrieveDeepOrShallow(idHex, wantDeep = true)?.let { body ->
+                    buildDomainFactFrom(body)
+                }
+            }
+            QueryResultPage(
+                facts = rows,
+                confidence = outcome.confidence,
+                tierUsed = outcome.tierUsed,
+                latencyMs = outcome.latencyMs,
+                brainReachable = true,
+            )
+        }
+
+    /**
+     * Ask the engine to surface what a named specialist, topic or event is about to need.
+     *
+     * A prefetch is a prediction, so an empty answer is not a failure: `hit` distinguishes
+     * "the engine holds nothing for this trigger" from "the engine is not running", and a
+     * caller that treated the first as the second would warm a cache with nothing every
+     * time.
+     */
+    suspend fun prefetchFor(kind: String, value: String): List<MemoryFact> =
+        withContext(Dispatchers.Default) {
+            val outcome = brainApi.prefetch(kind, value) ?: return@withContext emptyList()
+            if (!outcome.hit) return@withContext emptyList()
+            outcome.memoryIds.mapNotNull { idHex ->
+                brainApi.retrieveDeepOrShallow(idHex, wantDeep = true)?.let { body ->
+                    buildDomainFactFrom(body)
+                }
+            }
+        }
 
     /**
      * Past-conversation search (preamble's message tier): one real brain
@@ -456,6 +564,81 @@ class BrainService(
         }
     }
 
+    /**
+     * Update a memory IN PLACE, through the one operation that records what it replaced.
+     *
+     * THE DEFECT THIS REPLACES. `updateMemoryFact` wrote the new text as an Upsert and then
+     * deleted the old id. Because an id is the hash of the content, that is a create plus a
+     * delete, and the old row was archived with no record of what it said. The merged
+     * update-history work, `EventStore::history_for` and `previous_content`, could all answer
+     * "what did this say before"; nothing in the app ever produced the event that makes the
+     * answer possible.
+     *
+     * The row keeps its identity, so every id a caller was given still resolves, and the
+     * superseded text is recorded by the brain rather than lost.
+     */
+    suspend fun updateFact(
+        factId: String,
+        newContent: String,
+        category: String,
+        confidence: Float,
+        reason: String,
+    ): MemoryFact = withContext(Dispatchers.Default) {
+        if (!isBrainId(factId)) {
+            error("not a brain id, nothing was updated: $factId")
+        }
+        val ack = brainApi.curateJsonOps(
+            listOf(
+                brainApi.updateJsonOpByHex(
+                    idHexLower = factId.lowercase(),
+                    newContent = newContent,
+                    category = category,
+                    confidence = confidence,
+                    reasonText = reason,
+                )
+            )
+        )
+        if (!ack.success) {
+            Log.e(TAG, "brain update rejected: ${ack.raw.take(300)}")
+            error("brain update rejected: ${ack.raw.take(200)}")
+        }
+        // Read the row back so the caller is handed what the brain holds, not what it sent.
+        val body = brainApi.retrieveDeepOrShallow(factId, wantDeep = true)
+            ?: error("the update was accepted but the row could not be read back")
+        buildDomainFactFrom(body)
+    }
+
+    /**
+     * One memory's revision trail, read from the brain's own event store.
+     *
+     * THIS IS THE READ THAT WORKS AFTER THE ROW IS GONE. Every other path in this class
+     * refuses a retired memory; a deletion makes the question "what did it say and who
+     * removed it" more urgent, not less, so the answer has to survive the row.
+     *
+     * Null means the brain did not answer, which is a different fact from a memory with no
+     * recorded history: the first is a machine state, the second is an answer.
+     */
+    suspend fun factHistory(factId: String): MemoryHistory? = withContext(Dispatchers.Default) {
+        if (!isBrainId(factId)) return@withContext null
+        val frame = brainApi.history(factId.lowercase()) ?: return@withContext null
+        MemoryHistory(
+            memoryId = factId.lowercase(),
+            lifecycle = frame.lifecycle,
+            category = frame.category,
+            everRetired = frame.everRetired,
+            revisions = frame.revisions.map { revision ->
+                MemoryRevision(
+                    kind = revision.kind,
+                    content = revision.content,
+                    superseded = revision.superseded,
+                    reason = revision.reason,
+                    actor = revision.actor,
+                    recordedAt = revision.recordedAt,
+                )
+            },
+        )
+    }
+
     /** Dream = one CONSOLIDATE frame: real decay refresh + dream merges inside the brain. */
     suspend fun dream(): DreamReport = withContext(Dispatchers.Default) {
         val dispatchedFrame = brainApi.runDreamConsolidation()
@@ -493,6 +676,23 @@ class BrainService(
      */
     suspend fun getFactsByCategory(category: String): List<MemoryFact> = withContext(Dispatchers.Default) {
         val listing = brainApi.listFacts(domainFilter = domainForCategory(category), limit = 0)
+            ?: return@withContext emptyList()
+        listing.memories.map { row -> buildDomainFactFromListed(row) }
+    }
+
+    /**
+     * The RETIRED facts, for the deduplication pass only.
+     *
+     * The brain's id for a memory is the hash of its content, so a sentence written a
+     * second time resolves to the row a deletion archived. A pass that sees only live
+     * rows cannot tell a fact is already known, and the write it proposes lands on its
+     * own retired row. This is the read that lets it conclude "already known".
+     *
+     * Scoped deliberately: an ordinary listing must never show a retired row, and no
+     * tool surfaces this.
+     */
+    suspend fun getArchivedFactsForDeduplication(): List<MemoryFact> = withContext(Dispatchers.Default) {
+        val listing = brainApi.listFacts(domainFilter = "", limit = 0, includeArchived = true)
             ?: return@withContext emptyList()
         listing.memories.map { row -> buildDomainFactFromListed(row) }
     }

@@ -145,10 +145,10 @@ impl FenwickTree {
         self.tree.push(0); // extend with placeholder
 
         let i = idx + 1; // 1-based
-        // The interval (i - lsb(i), i] contains elements that are already stored
-        // in ancestors. We need: tree[i] = value + sum of already-stored values in range.
-        // The already-stored values in the range are:
-        //   prefix_sum(idx) - prefix_sum(i - lsb(i))
+                         // The interval (i - lsb(i), i] contains elements that are already stored
+                         // in ancestors. We need: tree[i] = value + sum of already-stored values in range.
+                         // The already-stored values in the range are:
+                         //   prefix_sum(idx) - prefix_sum(i - lsb(i))
         let start = i.wrapping_sub(lsb(i));
         let existing = self.prefix_sum(idx).wrapping_sub(self.prefix_sum(start));
         self.tree[i] = existing.wrapping_add(value);
@@ -352,10 +352,7 @@ impl Block {
     /// Caller ensures block is not full.
     /// Uses bitwise shift-and-carry across u64 words — O(WORDS_PER_BLOCK) with no heap alloc.
     fn insert(&mut self, pos: usize, bit: bool) {
-        debug_assert!(
-            (self.len as usize) < BLOCK_SIZE,
-            "insert into full block"
-        );
+        debug_assert!((self.len as usize) < BLOCK_SIZE, "insert into full block");
         debug_assert!(pos <= self.len as usize);
 
         let old_len = self.len as usize;
@@ -383,9 +380,7 @@ impl Block {
         // Rebuild: low stays put, new bit at bit_off, high shifted left by 1.
         // Mask out bit 0 of (high << 1) since the MSB of the original word
         // wraps to bit 0 via Rust's wrapping shift — that bit is carried below.
-        self.data[word_idx] = low
-            | ((bit as u64) << bit_off)
-            | ((high << 1) & !1u64);
+        self.data[word_idx] = low | ((bit as u64) << bit_off) | ((high << 1) & !1u64);
 
         // ----- Propagate carry through subsequent words -----
         let mut c = carry;
@@ -485,7 +480,11 @@ impl Block {
 
         // word_ones[word_idx] = prefix sum up to (but not including) word_idx
         // word_idx < WORDS_PER_BLOCK guaranteed since pos < len
-        debug_assert!(word_idx < WORDS_PER_BLOCK, "word_idx {word_idx} >= {WORDS_PER_BLOCK}, pos={pos}, len={}", self.len);
+        debug_assert!(
+            word_idx < WORDS_PER_BLOCK,
+            "word_idx {word_idx} >= {WORDS_PER_BLOCK}, pos={pos}, len={}",
+            self.len
+        );
         let count = self.word_ones[word_idx] as u32;
 
         // Partial popcount within word_idx
@@ -520,8 +519,7 @@ impl Block {
             let wc = (self.data[full_words] & mask).count_ones() as usize;
             if remaining <= wc {
                 return Some(
-                    full_words * 64
-                        + select_in_word(self.data[full_words] & mask, remaining),
+                    full_words * 64 + select_in_word(self.data[full_words] & mask, remaining),
                 );
             }
         }
@@ -719,7 +717,11 @@ impl DynamicSuccinctBitVec {
     /// Panics if i ≥ len.
     #[inline]
     pub fn access(&self, i: usize) -> bool {
-        debug_assert!(i < self.num_bits, "access: index {i} >= len {}", self.num_bits);
+        debug_assert!(
+            i < self.num_bits,
+            "access: index {i} >= len {}",
+            self.num_bits
+        );
         let (block_idx, local_pos) = self.locate(i);
         self.blocks[block_idx].access(local_pos)
     }
@@ -730,7 +732,11 @@ impl DynamicSuccinctBitVec {
     /// Panics if i > len.
     #[inline]
     pub fn rank(&self, i: usize, b: bool) -> u64 {
-        debug_assert!(i <= self.num_bits, "rank: index {i} > len {}", self.num_bits);
+        debug_assert!(
+            i <= self.num_bits,
+            "rank: index {i} > len {}",
+            self.num_bits
+        );
         if i == 0 {
             return 0;
         }
@@ -798,10 +804,7 @@ impl DynamicSuccinctBitVec {
                     lo = mid + 1;
                 }
             }
-            if lo < self.num_bits
-                && self.rank(lo + 1, false) as usize == k
-                && !self.access(lo)
-            {
+            if lo < self.num_bits && self.rank(lo + 1, false) as usize == k && !self.access(lo) {
                 Some(lo)
             } else {
                 None
@@ -843,7 +846,10 @@ impl DynamicSuccinctBitVec {
     /// Append a bit to the end. O(1) amortized.
     pub fn push(&mut self, bit: bool) {
         if self.blocks.is_empty()
-            || self.blocks.last().is_none_or(|b| b.len as usize >= BLOCK_SIZE)
+            || self
+                .blocks
+                .last()
+                .is_none_or(|b| b.len as usize >= BLOCK_SIZE)
         {
             let mut new_block = Block::new();
             new_block.push(bit); // maintains word_ones incrementally
@@ -929,7 +935,11 @@ impl DynamicSuccinctBitVec {
     /// # Debug-panics
     /// Panics if i ≥ len.
     pub fn delete_bit(&mut self, i: usize) -> bool {
-        debug_assert!(i < self.num_bits, "delete_bit: index {i} >= len {}", self.num_bits);
+        debug_assert!(
+            i < self.num_bits,
+            "delete_bit: index {i} >= len {}",
+            self.num_bits
+        );
 
         let (block_idx, local_pos) = self.locate(i);
         let old_ones = self.blocks[block_idx].ones;
@@ -972,7 +982,9 @@ impl DynamicSuccinctBitVec {
         // Use Fenwick tree lower_bound: find first block where prefix_sum >= i+1
         let target = (i + 1) as u32;
         let (one_idx, _) = self.len_fenwick.lower_bound(target);
-        let block_idx = one_idx.saturating_sub(1).min(self.blocks.len().saturating_sub(1));
+        let block_idx = one_idx
+            .saturating_sub(1)
+            .min(self.blocks.len().saturating_sub(1));
 
         let offset = if block_idx > 0 {
             self.len_fenwick.prefix_sum(block_idx) as usize
@@ -1263,8 +1275,7 @@ mod tests {
 
     #[test]
     fn test_delete_bit_middle() {
-        let mut dv =
-            DynamicSuccinctBitVec::from_bits(&[true, false, true, false, true]);
+        let mut dv = DynamicSuccinctBitVec::from_bits(&[true, false, true, false, true]);
         let deleted = dv.delete_bit(1);
         assert!(!deleted);
         assert_eq!(dv.len(), 4);
@@ -1338,16 +1349,15 @@ mod tests {
         let bits: Vec<bool> = (0..200).map(|i| i % 2 == 0).collect();
         let dv = DynamicSuccinctBitVec::from_bits(&bits);
         for i in 0..=200 {
-            assert_eq!(dv.rank(i, true), ((i + 1) / 2) as u64);
+            assert_eq!(dv.rank(i, true), i.div_ceil(2) as u64);
             assert_eq!(dv.rank(i, false), (i / 2) as u64);
         }
     }
 
     #[test]
     fn test_rank_small() {
-        let dv = DynamicSuccinctBitVec::from_bits(&[
-            true, false, true, true, false, false, false, true,
-        ]);
+        let dv =
+            DynamicSuccinctBitVec::from_bits(&[true, false, true, true, false, false, false, true]);
         assert_eq!(dv.rank(0, true), 0);
         assert_eq!(dv.rank(1, true), 1);
         assert_eq!(dv.rank(2, true), 1);
@@ -1360,8 +1370,8 @@ mod tests {
     #[test]
     fn test_rank_cross_block_boundary() {
         let mut bits = vec![false; 600];
-        for i in 0..512 {
-            bits[i] = true;
+        for bit in bits.iter_mut().take(512) {
+            *bit = true;
         }
         let dv = DynamicSuccinctBitVec::from_bits(&bits);
         assert_eq!(dv.rank(512, true), 512);
@@ -1426,9 +1436,8 @@ mod tests {
 
     #[test]
     fn test_select_small() {
-        let dv = DynamicSuccinctBitVec::from_bits(&[
-            true, false, true, true, false, false, false, true,
-        ]);
+        let dv =
+            DynamicSuccinctBitVec::from_bits(&[true, false, true, true, false, false, false, true]);
         assert_eq!(dv.select(1, true), Some(0));
         assert_eq!(dv.select(2, true), Some(2));
         assert_eq!(dv.select(3, true), Some(3));
@@ -1484,8 +1493,7 @@ mod tests {
 
     #[test]
     fn test_serde_roundtrip_after_modifications() {
-        let mut dv =
-            DynamicSuccinctBitVec::from_bits(&[true, false, true, true, false]);
+        let mut dv = DynamicSuccinctBitVec::from_bits(&[true, false, true, true, false]);
         dv.insert_bit(2, false);
         dv.set(0, false);
         dv.push(true);
@@ -1544,8 +1552,8 @@ mod tests {
         }
 
         assert_eq!(dv.len(), oracle.len());
-        for i in 0..oracle.len() {
-            assert_eq!(dv.access(i), oracle[i]);
+        for (index, expected) in oracle.iter().enumerate() {
+            assert_eq!(dv.access(index), *expected);
         }
         for i in 0..=oracle.len() {
             let expected_ones = oracle[..i].iter().filter(|&&b| b).count();
@@ -1609,8 +1617,8 @@ mod tests {
         }
 
         assert_eq!(dv.len(), oracle.len());
-        for i in 0..oracle.len() {
-            assert_eq!(dv.access(i), oracle[i]);
+        for (index, expected) in oracle.iter().enumerate() {
+            assert_eq!(dv.access(index), *expected);
         }
         for i in 0..=oracle.len() {
             let expected_ones = oracle[..i].iter().filter(|&&b| b).count();
@@ -1698,8 +1706,8 @@ mod tests {
         dv.rebuild_from_bits(&new_bits);
 
         assert_eq!(dv.len(), 100);
-        for i in 0..100 {
-            assert_eq!(dv.access(i), new_bits[i]);
+        for (index, expected) in new_bits.iter().enumerate() {
+            assert_eq!(dv.access(index), *expected);
         }
     }
 
@@ -1832,8 +1840,8 @@ mod tests {
                 prop_assert_eq!(dv2.len(), bits.len() + 1);
                 dv2.delete_bit(safe_pos);
                 prop_assert_eq!(dv2.len(), bits.len());
-                for i in 0..bits.len() {
-                    prop_assert_eq!(dv2.access(i), bits[i]);
+                for (index, expected) in bits.iter().enumerate() {
+                    prop_assert_eq!(dv2.access(index), *expected);
                 }
             }
         }
@@ -1853,8 +1861,8 @@ mod tests {
                 dv.insert_bit(pos, *bit);
             }
             prop_assert_eq!(dv.len(), oracle.len());
-            for i in 0..oracle.len() {
-                prop_assert_eq!(dv.access(i), oracle[i]);
+            for (index, expected) in oracle.iter().enumerate() {
+                prop_assert_eq!(dv.access(index), *expected);
             }
             for j in 0..=oracle.len() {
                 let expected_ones = oracle[..j].iter().filter(|&&b| b).count() as u64;
@@ -1876,8 +1884,8 @@ mod tests {
                 dv.delete_bit(pos);
             }
             prop_assert_eq!(dv.len(), oracle.len());
-            for i in 0..oracle.len() {
-                prop_assert_eq!(dv.access(i), oracle[i]);
+            for (index, expected) in oracle.iter().enumerate() {
+                prop_assert_eq!(dv.access(index), *expected);
             }
         }
     }
@@ -1979,607 +1987,766 @@ mod tests {
     }
 }
 
-    #[test]
-    fn test_dwm_pattern_rank_consistency() {
-        // Simulate the DWM pattern: insert bits at various positions
-        let mut bv = DynamicSuccinctBitVec::new();
-        let mut oracle: Vec<bool> = Vec::new();
-        let mut rng_state: u64 = 12345;
-        
-        for i in 0..600 {
-            let pos = if oracle.is_empty() {
-                0
-            } else {
-                rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                (rng_state as usize) % (oracle.len() + 1)
-            };
-            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            let bit = (rng_state & 1) == 1;
-            
-            oracle.insert(pos, bit);
-            bv.insert_bit(pos, bit);
-            
-            // Verify count_ones after each insert
-            let expected_ones = oracle.iter().filter(|&&b| b).count() as u64;
-            let actual_ones = bv.count_ones();
-            if actual_ones != expected_ones {
-                panic!(
-                    "count_ones mismatch at i={}: actual={} expected={} len={}",
-                    i, actual_ones, expected_ones, bv.len()
-                );
-            }
-            
-            // Verify rank(len, false) = count_zeros
-            let expected_zeros = oracle.len() as u64 - expected_ones;
-            let actual_zeros = bv.rank(bv.len(), false);
-            if actual_zeros != expected_zeros {
-                panic!(
-                    "rank(len, false) mismatch at i={}: actual={} expected={} len={}",
-                    i, actual_zeros, expected_zeros, bv.len()
-                );
-            }
+#[test]
+fn test_dwm_pattern_rank_consistency() {
+    // Simulate the DWM pattern: insert bits at various positions
+    let mut bv = DynamicSuccinctBitVec::new();
+    let mut oracle: Vec<bool> = Vec::new();
+    let mut rng_state: u64 = 12345;
+
+    for i in 0..600 {
+        let pos = if oracle.is_empty() {
+            0
+        } else {
+            rng_state = rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (rng_state as usize) % (oracle.len() + 1)
+        };
+        rng_state = rng_state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let bit = (rng_state & 1) == 1;
+
+        oracle.insert(pos, bit);
+        bv.insert_bit(pos, bit);
+
+        // Verify count_ones after each insert
+        let expected_ones = oracle.iter().filter(|&&b| b).count() as u64;
+        let actual_ones = bv.count_ones();
+        if actual_ones != expected_ones {
+            panic!(
+                "count_ones mismatch at i={}: actual={} expected={} len={}",
+                i,
+                actual_ones,
+                expected_ones,
+                bv.len()
+            );
+        }
+
+        // Verify rank(len, false) = count_zeros
+        let expected_zeros = oracle.len() as u64 - expected_ones;
+        let actual_zeros = bv.rank(bv.len(), false);
+        if actual_zeros != expected_zeros {
+            panic!(
+                "rank(len, false) mismatch at i={}: actual={} expected={} len={}",
+                i,
+                actual_zeros,
+                expected_zeros,
+                bv.len()
+            );
         }
     }
+}
 
-    #[test]
-    fn test_dwm_insert_bit_count_ones_vs_brute_force() {
-        // Reproduce exact DWM insert pattern: insert bits at calculated positions
-        // Use same LCG as the DWM test
-        let mut rng_state: u64 = 98765;
-        let mut next_sig = || -> [u8; 32] {
-            let mut bytes = [0u8; 32];
-            for b in 0..32 {
-                rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
-                bytes[b] = (rng_state >> 8) as u8;
+#[test]
+fn test_dwm_insert_bit_count_ones_vs_brute_force() {
+    // Reproduce exact DWM insert pattern: insert bits at calculated positions
+    // Use same LCG as the DWM test
+    let mut rng_state: u64 = 98765;
+    let mut next_sig = || -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        for byte in bytes.iter_mut() {
+            rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
+            *byte = (rng_state >> 8) as u8;
+        }
+        bytes
+    };
+
+    // Simulate level 0 of DWM: insert bits in sorted order at positions
+    // determined by find_insert_position (binary search on sorted sigs)
+    let mut bv = DynamicSuccinctBitVec::new();
+    let mut sorted_sigs: Vec<[u8; 32]> = Vec::new();
+
+    for i in 0..512 {
+        let sig = next_sig();
+
+        // Find insertion position (same as DWM's find_insert_position)
+        let pos = sorted_sigs.binary_search(&sig).unwrap_or_else(|x| x);
+        sorted_sigs.insert(pos, sig);
+
+        // Level-0 bit is (sig[0] >> 0) & 1
+        let bit = (sig[0] & 1) == 1;
+        bv.insert_bit(pos, bit);
+
+        // Brute-force count zeros
+        let mut bf_zeros = 0usize;
+        let mut bf_ones = 0usize;
+        for j in 0..bv.len() {
+            if bv.access(j) {
+                bf_ones += 1;
+            } else {
+                bf_zeros += 1;
             }
-            bytes
+        }
+
+        let co = bv.count_ones();
+        let cz = bv.rank(bv.len(), false);
+
+        if bf_ones != co as usize {
+            panic!(
+                "count_ones mismatch at i={}: brute_force_ones={} count_ones={} len={}",
+                i,
+                bf_ones,
+                co,
+                bv.len()
+            );
+        }
+        if bf_zeros != cz as usize {
+            panic!(
+                "rank(len,false) mismatch at i={}: brute_force_zeros={} rank_zeros={} len={}",
+                i,
+                bf_zeros,
+                cz,
+                bv.len()
+            );
+        }
+    }
+}
+
+#[test]
+fn test_count_ones_after_many_block_splitsting_inserts() {
+    // Insert 1000 bits via insert_bit (which triggers block splits)
+    // and verify count_ones() matches brute force at every step
+    let mut bv = DynamicSuccinctBitVec::new();
+    let mut oracle: Vec<bool> = Vec::new();
+    let mut rng_state: u64 = 77777;
+
+    for i in 0..1500 {
+        let pos = if oracle.is_empty() {
+            0
+        } else {
+            rng_state = rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (rng_state as usize) % (oracle.len() + 1)
+        };
+        rng_state = rng_state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let bit = (rng_state & 1) == 1;
+
+        oracle.insert(pos, bit);
+        bv.insert_bit(pos, bit);
+
+        // Brute-force count_ones
+        let mut bf_ones = 0usize;
+        for j in 0..bv.len() {
+            if bv.access(j) {
+                bf_ones += 1;
+            }
+        }
+
+        let co = bv.count_ones() as usize;
+        if co != bf_ones {
+            panic!(
+                "count_ones mismatch at i={}: count_ones={} brute_force={} len={} num_blocks={}",
+                i,
+                co,
+                bf_ones,
+                bv.len(),
+                bv.blocks.len()
+            );
+        }
+    }
+}
+
+#[test]
+fn test_rank_after_many_inserts_with_splits() {
+    // Replicate the DWM pattern: insert at sorted positions
+    let mut bv = DynamicSuccinctBitVec::new();
+    let mut oracle: Vec<bool> = Vec::new();
+    let mut rng_state: u64 = 98765;
+
+    for i in 0..600 {
+        let mut sig = [0u8; 32];
+        for byte in sig.iter_mut() {
+            rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
+            *byte = (rng_state >> 8) as u8;
+        }
+
+        // Find insertion position (binary search on sorted sigs)
+        let pos = if oracle.is_empty() {
+            0
+        } else {
+            // Simulate DWM's find_insert_position
+            let lo = 0;
+            let hi = oracle.len();
+            // Just use a position based on i for determinism
+            lo + ((hi - lo) * (i as usize) % (oracle.len() + 1).max(1)).min(hi - lo)
         };
 
-        // Simulate level 0 of DWM: insert bits in sorted order at positions
-        // determined by find_insert_position (binary search on sorted sigs)
-        let mut bv = DynamicSuccinctBitVec::new();
-        let mut sorted_sigs: Vec<[u8; 32]> = Vec::new();
+        let bit = (sig[0] & 1) == 1;
 
-        for i in 0..512 {
-            let sig = next_sig();
-            
-            // Find insertion position (same as DWM's find_insert_position)
-            let pos = sorted_sigs.binary_search(&sig).unwrap_or_else(|x| x);
-            sorted_sigs.insert(pos, sig);
-            
-            // Level-0 bit is (sig[0] >> 0) & 1
-            let bit = (sig[0] & 1) == 1;
-            bv.insert_bit(pos, bit);
-            
-            // Brute-force count zeros
-            let mut bf_zeros = 0usize;
-            let mut bf_ones = 0usize;
-            for j in 0..bv.len() {
-                if bv.access(j) {
-                    bf_ones += 1;
-                } else {
-                    bf_zeros += 1;
-                }
-            }
-            
-            let co = bv.count_ones();
-            let cz = bv.rank(bv.len(), false);
-            
-            if bf_ones != co as usize {
-                panic!(
-                    "count_ones mismatch at i={}: brute_force_ones={} count_ones={} len={}",
-                    i, bf_ones, co, bv.len()
-                );
-            }
-            if bf_zeros != cz as usize {
-                panic!(
-                    "rank(len,false) mismatch at i={}: brute_force_zeros={} rank_zeros={} len={}",
-                    i, bf_zeros, cz, bv.len()
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_count_ones_after_many_block_splitsting_inserts() {
-        // Insert 1000 bits via insert_bit (which triggers block splits)
-        // and verify count_ones() matches brute force at every step
-        let mut bv = DynamicSuccinctBitVec::new();
-        let mut oracle: Vec<bool> = Vec::new();
-        let mut rng_state: u64 = 77777;
-
-        for i in 0..1500 {
-            let pos = if oracle.is_empty() {
-                0
-            } else {
-                rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                (rng_state as usize) % (oracle.len() + 1)
-            };
-            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            let bit = (rng_state & 1) == 1;
-
+        if pos <= oracle.len() {
             oracle.insert(pos, bit);
             bv.insert_bit(pos, bit);
+        }
 
-            // Brute-force count_ones
-            let mut bf_ones = 0usize;
-            for j in 0..bv.len() {
-                if bv.access(j) {
-                    bf_ones += 1;
+        // Verify rank at multiple positions
+        for q in [0, bv.len() / 4, bv.len() / 2, 3 * bv.len() / 4, bv.len()] {
+            if q <= bv.len() {
+                let rank_true = bv.rank(q, true) as usize;
+                let rank_false = bv.rank(q, false) as usize;
+
+                let mut bf_true = 0;
+                let mut bf_false = 0;
+                for entry in oracle.iter().take(q.min(bv.len())) {
+                    if *entry {
+                        bf_true += 1;
+                    } else {
+                        bf_false += 1;
+                    }
                 }
-            }
 
-            let co = bv.count_ones() as usize;
-            if co != bf_ones {
-                panic!(
-                    "count_ones mismatch at i={}: count_ones={} brute_force={} len={} num_blocks={}",
-                    i, co, bf_ones, bv.len(), bv.blocks.len()
+                assert_eq!(
+                    rank_true, bf_true,
+                    "rank({},{}) mismatch at i={}: rank={} bf={}",
+                    q, true, i, rank_true, bf_true
+                );
+                assert_eq!(
+                    rank_false, bf_false,
+                    "rank({},{}) mismatch at i={}: rank={} bf={}",
+                    q, false, i, rank_false, bf_false
                 );
             }
         }
     }
+}
 
-    #[test]
-    fn test_rank_after_many_inserts_with_splits() {
-        // Replicate the DWM pattern: insert at sorted positions
-        let mut bv = DynamicSuccinctBitVec::new();
-        let mut oracle: Vec<bool> = Vec::new();
-        let mut rng_state: u64 = 98765;
+#[test]
+fn test_rank_exact_dwm_pattern() {
+    // Exactly replicate what insert_bits_across_levels does:
+    // For each of N entries, find insertion position via binary search on signatures,
+    // then insert a bit at that position in the level-0 bitvec.
+    // Then verify rank matches brute force.
+    let mut bv = DynamicSuccinctBitVec::new();
+    let mut rng_state: u64 = 98765;
 
-        for i in 0..600 {
-            let mut sig = [0u8; 32];
-            for b in 0..32 {
-                rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
-                sig[b] = (rng_state >> 8) as u8;
-            }
-            
-            // Find insertion position (binary search on sorted sigs)
-            let pos = if oracle.is_empty() { 0 } else {
-                // Simulate DWM's find_insert_position
-                let lo = 0;
-                let hi = oracle.len();
-                // Just use a position based on i for determinism
-                lo + ((hi - lo) * (i as usize) % (oracle.len() + 1).max(1)).min(hi - lo)
-            };
-            
-            let bit = (sig[0] & 1) == 1;
-            
-            if pos <= oracle.len() {
-                oracle.insert(pos, bit);
-                bv.insert_bit(pos, bit);
-            }
-            
-            // Verify rank at multiple positions
-            for q in [0, bv.len() / 4, bv.len() / 2, 3 * bv.len() / 4, bv.len()] {
-                if q <= bv.len() {
-                    let rank_true = bv.rank(q, true) as usize;
-                    let rank_false = bv.rank(q, false) as usize;
-                    
-                    let mut bf_true = 0;
-                    let mut bf_false = 0;
-                    for j in 0..q.min(bv.len()) {
-                        if oracle[j] { bf_true += 1; } else { bf_false += 1; }
+    // Store sorted signatures and their level-0 bits
+    let mut sorted_sigs: Vec<[u8; 32]> = Vec::new();
+    let mut sorted_bits: Vec<bool> = Vec::new();
+
+    for i in 0..600 {
+        // Generate signature (same LCG as DWM test)
+        let mut sig = [0u8; 32];
+        for byte in sig.iter_mut() {
+            rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
+            *byte = (rng_state >> 8) as u8;
+        }
+
+        // Level-0 bit
+        let bit = (sig[0] & 1) == 1;
+
+        // Find insertion position (binary search on sorted sigs)
+        let pos = sorted_sigs.binary_search(&sig).unwrap_or_else(|x| x);
+
+        sorted_sigs.insert(pos, sig);
+        sorted_bits.insert(pos, bit);
+        bv.insert_bit(pos, bit);
+
+        // Verify every position with rank
+        if i % 50 == 0 || i < 10 {
+            for q in 0..=bv.len() {
+                let rank_true = bv.rank(q, true) as usize;
+                let rank_false = bv.rank(q, false) as usize;
+
+                let mut bf_true = 0;
+                let mut bf_false = 0;
+                for entry in sorted_bits.iter().take(q) {
+                    if *entry {
+                        bf_true += 1;
+                    } else {
+                        bf_false += 1;
                     }
-                    
-                    assert_eq!(rank_true, bf_true, "rank({},{}) mismatch at i={}: rank={} bf={}", q, true, i, rank_true, bf_true);
-                    assert_eq!(rank_false, bf_false, "rank({},{}) mismatch at i={}: rank={} bf={}", q, false, i, rank_false, bf_false);
                 }
+
+                assert_eq!(
+                    rank_true, bf_true,
+                    "rank({},{}) mismatch at i={} pos={}: rank={} bf={}",
+                    q, true, i, pos, rank_true, bf_true
+                );
+                assert_eq!(
+                    rank_false, bf_false,
+                    "rank({},{}) mismatch at i={} pos={}: rank={} bf={}",
+                    q, false, i, pos, rank_false, bf_false
+                );
             }
         }
     }
+}
 
-    #[test]
-    fn test_rank_exact_dwm_pattern() {
-        // Exactly replicate what insert_bits_across_levels does:
-        // For each of N entries, find insertion position via binary search on signatures,
-        // then insert a bit at that position in the level-0 bitvec.
-        // Then verify rank matches brute force.
-        let mut bv = DynamicSuccinctBitVec::new();
-        let mut rng_state: u64 = 98765;
-        
-        // Store sorted signatures and their level-0 bits
-        let mut sorted_sigs: Vec<[u8; 32]> = Vec::new();
-        let mut sorted_bits: Vec<bool> = Vec::new();
-        
-        for i in 0..600 {
-            // Generate signature (same LCG as DWM test)
-            let mut sig = [0u8; 32];
-            for b in 0..32 {
-                rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
-                sig[b] = (rng_state >> 8) as u8;
-            }
-            
-            // Level-0 bit
-            let bit = (sig[0] & 1) == 1;
-            
-            // Find insertion position (binary search on sorted sigs)
-            let pos = sorted_sigs.binary_search(&sig).unwrap_or_else(|x| x);
-            
-            sorted_sigs.insert(pos, sig);
-            sorted_bits.insert(pos, bit);
-            bv.insert_bit(pos, bit);
-            
-            // Verify every position with rank
-            if i % 50 == 0 || i < 10 {
-                for q in 0..=bv.len() {
-                    let rank_true = bv.rank(q, true) as usize;
-                    let rank_false = bv.rank(q, false) as usize;
-                    
-                    let mut bf_true = 0;
-                    let mut bf_false = 0;
-                    for j in 0..q {
-                        if sorted_bits[j] { bf_true += 1; } else { bf_false += 1; }
-                    }
-                    
-                    assert_eq!(rank_true, bf_true, "rank({},{}) mismatch at i={} pos={}: rank={} bf={}", q, true, i, pos, rank_true, bf_true);
-                    assert_eq!(rank_false, bf_false, "rank({},{}) mismatch at i={} pos={}: rank={} bf={}", q, false, i, pos, rank_false, bf_false);
-                }
-            }
+#[test]
+fn test_rank_dwm_multi_level_simulation() {
+    // Simulate what insert_bits_across_levels does: multiple independent bitvecs,
+    // each getting one insert_bit per DWM entry, at positions determined by rank navigation.
+    // With 8 levels and 600 entries.
+    let num_levels = 8;
+    let mut bitvecs: Vec<DynamicSuccinctBitVec> = (0..num_levels)
+        .map(|_| DynamicSuccinctBitVec::new())
+        .collect();
+    let mut boundaries: Vec<usize> = vec![0; num_levels];
+
+    let mut rng_state: u64 = 98765;
+    let mut sorted_sigs: Vec<[u8; 32]> = Vec::new();
+
+    for i in 0..600 {
+        // Generate signature
+        let mut sig = [0u8; 32];
+        for byte in sig.iter_mut() {
+            rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
+            *byte = (rng_state >> 8) as u8;
         }
-    }
 
-    #[test]
-    fn test_rank_dwm_multi_level_simulation() {
-        // Simulate what insert_bits_across_levels does: multiple independent bitvecs,
-        // each getting one insert_bit per DWM entry, at positions determined by rank navigation.
-        // With 8 levels and 600 entries.
-        let num_levels = 8;
-        let mut bitvecs: Vec<DynamicSuccinctBitVec> = (0..num_levels).map(|_| DynamicSuccinctBitVec::new()).collect();
-        let mut boundaries: Vec<usize> = vec![0; num_levels];
-        
-        let mut rng_state: u64 = 98765;
-        let mut sorted_sigs: Vec<[u8; 32]> = Vec::new();
-        
-        for i in 0..600 {
-            // Generate signature
-            let mut sig = [0u8; 32];
-            for b in 0..32 {
-                rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
-                sig[b] = (rng_state >> 8) as u8;
+        // Find level-0 insertion position
+        let p0 = sorted_sigs.binary_search(&sig).unwrap_or_else(|x| x);
+        sorted_sigs.insert(p0, sig);
+
+        // Insert bits across levels (same as insert_bits_across_levels)
+        let mut p = p0;
+        for level in 0..num_levels {
+            let bit = (sig[level / 8] >> (level % 8)) & 1 == 1;
+            let insert_pos = p; // Save insertion position BEFORE computing next
+
+            // Insert bit
+            bitvecs[level].insert_bit(insert_pos, bit);
+
+            // Read boundary BEFORE update
+            let boundary = boundaries[level];
+
+            // Update boundary for 0-bit
+            if !bit {
+                boundaries[level] += 1;
             }
-            
-            // Find level-0 insertion position
-            let p0 = sorted_sigs.binary_search(&sig).unwrap_or_else(|x| x);
-            sorted_sigs.insert(p0, sig);
-            
-            // Insert bits across levels (same as insert_bits_across_levels)
-            let mut p = p0;
-            for level in 0..num_levels {
-                let bit = (sig[level / 8] >> (level % 8)) & 1 == 1;
-                let insert_pos = p; // Save insertion position BEFORE computing next
-                
-                // Insert bit
-                bitvecs[level].insert_bit(insert_pos, bit);
-                
-                // Read boundary BEFORE update
-                let boundary = boundaries[level];
-                
-                // Update boundary for 0-bit
-                if !bit {
-                    boundaries[level] += 1;
+
+            // Compute rank at insertion position
+            let rank_at_insert = bitvecs[level].rank(insert_pos + 1, bit) as usize;
+
+            // Compute next-level position
+            if bit {
+                p = boundary + rank_at_insert - 1;
+            } else {
+                p = rank_at_insert - 1;
+            }
+
+            // Brute-force verify rank
+            let mut bf_count = 0usize;
+            for j in 0..bitvecs[level].len().min(insert_pos + 1) {
+                if bitvecs[level].access(j) == bit {
+                    bf_count += 1;
                 }
-                
-                // Compute rank at insertion position
-                let rank_at_insert = bitvecs[level].rank(insert_pos + 1, bit) as usize;
-                
-                // Compute next-level position
-                if bit {
-                    p = boundary + rank_at_insert - 1;
-                } else {
-                    p = rank_at_insert - 1;
+            }
+            if rank_at_insert != bf_count {
+                let mut contents = String::new();
+                for j in 0..bitvecs[level].len() {
+                    contents.push(if bitvecs[level].access(j) { '1' } else { '0' });
                 }
-                
-                // Brute-force verify rank
-                let mut bf_count = 0usize;
-                for j in 0..bitvecs[level].len().min(insert_pos + 1) {
-                    if bitvecs[level].access(j) == bit {
-                        bf_count += 1;
-                    }
-                }
-                if rank_at_insert != bf_count {
-                    let mut contents = String::new();
-                    for j in 0..bitvecs[level].len() {
-                        contents.push(if bitvecs[level].access(j) { '1' } else { '0' });
-                    }
-                    panic!(
+                panic!(
                         "RANK BUG at level={} i={}: rank({},{})={} but bf={} len={} insert_pos={} bit={} contents={}",
                         level, i, insert_pos + 1, bit, rank_at_insert, bf_count, bitvecs[level].len(), insert_pos, bit, contents
                     );
-                }
             }
         }
     }
+}
 
-    #[test]
-    fn test_rank_after_two_inserts_at_front() {
-        let mut bv = DynamicSuccinctBitVec::new();
-        
-        // First: insert true at position 0
-        bv.insert_bit(0, true);
-        println!("After insert(0, true): len={}, access(0)={}", bv.len(), bv.access(0));
-        assert_eq!(bv.len(), 1);
-        assert!(bv.access(0));
-        assert_eq!(bv.rank(1, true), 1);
-        assert_eq!(bv.rank(1, false), 0);
-        
-        // Second: insert false at position 0 (push existing true to position 1)
-        bv.insert_bit(0, false);
-        println!("After insert(0, false): len={}, access(0)={}, access(1)={}", bv.len(), bv.access(0), bv.access(1));
-        assert_eq!(bv.len(), 2);
-        assert!(!bv.access(0));  // position 0 = false
-        assert!(bv.access(1));   // position 1 = true
-        
-        // rank(1, true) = count of true in [0,1) = just position 0 = false = 0
-        assert_eq!(bv.rank(1, true), 0, "rank(1,true) should be 0 but got {}", bv.rank(1, true));
-        // rank(1, false) = count of false in [0,1) = just position 0 = false = 1
-        assert_eq!(bv.rank(1, false), 1);
-        // rank(2, true) = count of true in [0,2) = 1
-        assert_eq!(bv.rank(2, true), 1);
-        // rank(2, false) = count of false in [0,2) = 1
-        assert_eq!(bv.rank(2, false), 1);
+#[test]
+fn test_rank_after_two_inserts_at_front() {
+    let mut bv = DynamicSuccinctBitVec::new();
+
+    // First: insert true at position 0
+    bv.insert_bit(0, true);
+    println!(
+        "After insert(0, true): len={}, access(0)={}",
+        bv.len(),
+        bv.access(0)
+    );
+    assert_eq!(bv.len(), 1);
+    assert!(bv.access(0));
+    assert_eq!(bv.rank(1, true), 1);
+    assert_eq!(bv.rank(1, false), 0);
+
+    // Second: insert false at position 0 (push existing true to position 1)
+    bv.insert_bit(0, false);
+    println!(
+        "After insert(0, false): len={}, access(0)={}, access(1)={}",
+        bv.len(),
+        bv.access(0),
+        bv.access(1)
+    );
+    assert_eq!(bv.len(), 2);
+    assert!(!bv.access(0)); // position 0 = false
+    assert!(bv.access(1)); // position 1 = true
+
+    // rank(1, true) = count of true in [0,1) = just position 0 = false = 0
+    assert_eq!(
+        bv.rank(1, true),
+        0,
+        "rank(1,true) should be 0 but got {}",
+        bv.rank(1, true)
+    );
+    // rank(1, false) = count of false in [0,1) = just position 0 = false = 1
+    assert_eq!(bv.rank(1, false), 1);
+    // rank(2, true) = count of true in [0,2) = 1
+    assert_eq!(bv.rank(2, true), 1);
+    // rank(2, false) = count of false in [0,2) = 1
+    assert_eq!(bv.rank(2, false), 1);
+}
+
+#[test]
+fn test_rank_exact_multi_level_sequence() {
+    // Reproduce the exact sequence from test_rank_dwm_multi_level_simulation
+    // that triggers RANK BUG at level=1 i=1
+    let mut bitvecs: Vec<DynamicSuccinctBitVec> =
+        (0..8).map(|_| DynamicSuccinctBitVec::new()).collect();
+
+    let mut rng_state: u64 = 98765;
+
+    // i=0
+    let mut sig0 = [0u8; 32];
+    for byte in sig0.iter_mut() {
+        rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
+        *byte = (rng_state >> 8) as u8;
+    }
+    // sig0 = the first signature from the LCG
+
+    // i=1
+    let mut sig1 = [0u8; 32];
+    for byte in sig1.iter_mut() {
+        rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
+        *byte = (rng_state >> 8) as u8;
     }
 
-    #[test]
-    fn test_rank_exact_multi_level_sequence() {
-        // Reproduce the exact sequence from test_rank_dwm_multi_level_simulation
-        // that triggers RANK BUG at level=1 i=1
-        let mut bitvecs: Vec<DynamicSuccinctBitVec> = (0..8).map(|_| DynamicSuccinctBitVec::new()).collect();
-        
-        let mut rng_state: u64 = 98765;
-        
-        // i=0
-        let mut sig0 = [0u8; 32];
-        for b in 0..32 {
+    // Manually compute sorted order
+    // sig0 and sig1 need to be compared
+    println!("sig0[0]={:08b}, sig1[0]={:08b}", sig0[0], sig1[0]);
+    println!("sig0={:?}...", &sig0[..4]);
+    println!("sig1={:?}...", &sig1[..4]);
+
+    // Find insertion positions
+    // The first signature always goes at position 0
+    let p0_0 = 0;
+
+    // For i=0: insert bits across levels starting at p0=0
+    let mut p = p0_0;
+    for level in 0..8 {
+        let bit = (sig0[level / 8] >> (level % 8)) & 1 == 1;
+        bitvecs[level].insert_bit(p, bit);
+
+        let boundary = 0; // Initially 0
+        let rank_before = bitvecs[level].rank(p + 1, bit) as usize;
+
+        // Brute-force verify
+        let mut bf_count = 0usize;
+        for j in 0..=p.min(bitvecs[level].len() - 1) {
+            if bitvecs[level].access(j) == bit {
+                bf_count += 1;
+            }
+        }
+        assert_eq!(
+            rank_before,
+            bf_count,
+            "i=0 level={}: rank({},{})={} but bf={}",
+            level,
+            p + 1,
+            bit,
+            rank_before,
+            bf_count
+        );
+
+        if bit {
+            p = boundary + rank_before - 1;
+        } else {
+            p = rank_before - 1;
+        }
+    }
+
+    // Now i=1
+    // Find where sig1 goes in sorted order relative to sig0
+    let p0_1 = if sig1 < sig0 { 0 } else { 1 };
+    let mut p = p0_1;
+
+    for level in 0..8 {
+        let bit = (sig1[level / 8] >> (level % 8)) & 1 == 1;
+        bitvecs[level].insert_bit(p, bit);
+
+        let rank_before = bitvecs[level].rank(p + 1, bit) as usize;
+
+        // Brute-force verify
+        let mut bf_count = 0usize;
+        for j in 0..bitvecs[level].len().min(p + 1) {
+            if bitvecs[level].access(j) == bit {
+                bf_count += 1;
+            }
+        }
+        assert_eq!(
+            rank_before,
+            bf_count,
+            "i=1 level={}: rank({},{})={} but bf={}",
+            level,
+            p + 1,
+            bit,
+            rank_before,
+            bf_count
+        );
+
+        let boundary = if bit { 0 } else { 1 }; // updated boundary for level 0/1
+        if bit {
+            p = boundary + rank_before - 1;
+        } else {
+            p = rank_before - 1;
+        }
+    }
+}
+
+#[test]
+fn test_rank_insert_true_at_0_then_false_at_1() {
+    // Exact sequence from the multi-level simulation:
+    // Level 1 bitvec: insert true at position 0, then insert false at position 1
+    // Expected: bitvec = [true, false] = "10"
+    // rank(1, false) should be 0 (position 0 is true, not false)
+    // rank(2, false) should be 1 (position 1 is false)
+    // rank(1, true) should be 1 (position 0 is true)
+    let mut bv = DynamicSuccinctBitVec::new();
+
+    bv.insert_bit(0, true);
+    eprintln!("After insert(0, true): len={}", bv.len());
+    for i in 0..bv.len() {
+        eprintln!("  access({}) = {}", i, bv.access(i));
+    }
+    eprintln!(
+        "  rank(0, true)={}, rank(1, true)={}",
+        bv.rank(0, true),
+        bv.rank(1, true)
+    );
+    eprintln!(
+        "  rank(0, false)={}, rank(1, false)={}",
+        bv.rank(0, false),
+        bv.rank(1, false)
+    );
+    eprintln!("  count_ones={}", bv.count_ones());
+
+    assert_eq!(bv.len(), 1);
+    assert!(bv.access(0), "position 0 should be true");
+    assert_eq!(bv.rank(1, true), 1, "rank(1,true) after first insert");
+    assert_eq!(bv.rank(1, false), 0, "rank(1,false) after first insert");
+
+    bv.insert_bit(1, false);
+    eprintln!("After insert(1, false): len={}", bv.len());
+    for i in 0..bv.len() {
+        eprintln!("  access({}) = {}", i, bv.access(i));
+    }
+    eprintln!(
+        "  rank(0, true)={}, rank(1, true)={}, rank(2, true)={}",
+        bv.rank(0, true),
+        bv.rank(1, true),
+        bv.rank(2, true)
+    );
+    eprintln!(
+        "  rank(0, false)={}, rank(1, false)={}, rank(2, false)={}",
+        bv.rank(0, false),
+        bv.rank(1, false),
+        bv.rank(2, false)
+    );
+    eprintln!("  count_ones={}", bv.count_ones());
+
+    assert_eq!(bv.len(), 2);
+    assert!(bv.access(0), "position 0 should be true");
+    assert!(!bv.access(1), "position 1 should be false");
+    assert_eq!(bv.rank(1, true), 1, "rank(1,true) = count of true in [0,1)");
+    assert_eq!(
+        bv.rank(1, false),
+        0,
+        "rank(1,false) = count of false in [0,1)"
+    );
+    assert_eq!(bv.rank(2, true), 1, "rank(2,true) = count of true in [0,2)");
+    assert_eq!(
+        bv.rank(2, false),
+        1,
+        "rank(2,false) = count of false in [0,2)"
+    );
+    assert_eq!(bv.count_ones(), 1, "count_ones should be 1");
+}
+
+#[test]
+fn test_rank_insert_true_at_0_then_false_at_1_append() {
+    // Exact sequence from the multi-level simulation:
+    // Level 1: insert true at position 0, then insert false at position 1 (appending)
+    // Result: [true, false] = "10"
+    let mut bv = DynamicSuccinctBitVec::new();
+
+    bv.insert_bit(0, true); // [true]
+    bv.insert_bit(1, false); // [true, false] — appending at the end
+
+    // Verify contents
+    assert_eq!(bv.len(), 2);
+    assert!(bv.access(0), "position 0 should be true");
+    assert!(!bv.access(1), "position 1 should be false");
+
+    // Verify rank
+    let r0t = bv.rank(0, true);
+    let r1t = bv.rank(1, true);
+    let r2t = bv.rank(2, true);
+    let r0f = bv.rank(0, false);
+    let r1f = bv.rank(1, false);
+    let r2f = bv.rank(2, false);
+
+    eprintln!(
+        "rank(0,true)={} rank(1,true)={} rank(2,true)={}",
+        r0t, r1t, r2t
+    );
+    eprintln!(
+        "rank(0,false)={} rank(1,false)={} rank(2,false)={}",
+        r0f, r1f, r2f
+    );
+    eprintln!("count_ones={}", bv.count_ones());
+
+    // Brute force: [true, false]
+    // rank(0,true) = 0, rank(1,true) = 1, rank(2,true) = 1
+    // rank(0,false) = 0, rank(1,false) = 0, rank(2,false) = 1
+    assert_eq!(r0t, 0, "rank(0,true)");
+    assert_eq!(r1t, 1, "rank(1,true)");
+    assert_eq!(r2t, 1, "rank(2,true)");
+    assert_eq!(r0f, 0, "rank(0,false)");
+    assert_eq!(r1f, 0, "rank(1,false)"); // <-- THIS is the bug
+    assert_eq!(r2f, 1, "rank(2,false)");
+}
+
+#[test]
+fn test_rank_exact_level0_sequence() {
+    // Reproduce the EXACT level-0 insert sequence from the multi-level simulation
+    // until the rank bug appears (i=512, level=0)
+    let mut bv = DynamicSuccinctBitVec::new();
+    let mut rng_state: u64 = 98765;
+    let mut sorted_sigs: Vec<[u8; 32]> = Vec::new();
+
+    for i in 0..513 {
+        let mut sig = [0u8; 32];
+        for byte in sig.iter_mut() {
             rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
-            sig0[b] = (rng_state >> 8) as u8;
+            *byte = (rng_state >> 8) as u8;
         }
-        // sig0 = the first signature from the LCG
-        
-        // i=1
-        let mut sig1 = [0u8; 32];
-        for b in 0..32 {
-            rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
-            sig1[b] = (rng_state >> 8) as u8;
-        }
-        
-        // Manually compute sorted order
-        // sig0 and sig1 need to be compared
-        println!("sig0[0]={:08b}, sig1[0]={:08b}", sig0[0], sig1[0]);
-        println!("sig0={:?}...", &sig0[..4]);
-        println!("sig1={:?}...", &sig1[..4]);
-        
-        // Find insertion positions
-        // The first signature always goes at position 0
-        let p0_0 = 0;
-        
-        // For i=0: insert bits across levels starting at p0=0
-        let mut p = p0_0;
-        for level in 0..8 {
-            let bit = (sig0[level / 8] >> (level % 8)) & 1 == 1;
-            bitvecs[level].insert_bit(p, bit);
-            
-            let boundary = 0; // Initially 0
-            let rank_before = bitvecs[level].rank(p + 1, bit) as usize;
-            
-            // Brute-force verify
-            let mut bf_count = 0usize;
-            for j in 0..=p.min(bitvecs[level].len() - 1) {
-                if bitvecs[level].access(j) == bit { bf_count += 1; }
-            }
-            assert_eq!(rank_before, bf_count, "i=0 level={}: rank({},{})={} but bf={}", level, p+1, bit, rank_before, bf_count);
-            
-            if bit {
-                p = boundary + rank_before - 1;
-            } else {
-                p = rank_before - 1;
-            }
-        }
-        
-        // Now i=1
-        // Find where sig1 goes in sorted order relative to sig0
-        let p0_1 = if sig1 < sig0 { 0 } else { 1 };
-        let mut p = p0_1;
-        
-        for level in 0..8 {
-            let bit = (sig1[level / 8] >> (level % 8)) & 1 == 1;
-            bitvecs[level].insert_bit(p, bit);
-            
-            let rank_before = bitvecs[level].rank(p + 1, bit) as usize;
-            
-            // Brute-force verify
-            let mut bf_count = 0usize;
-            for j in 0..bitvecs[level].len().min(p + 1) {
-                if bitvecs[level].access(j) == bit { bf_count += 1; }
-            }
-            assert_eq!(rank_before, bf_count, "i=1 level={}: rank({},{})={} but bf={}", level, p+1, bit, rank_before, bf_count);
-            
-            let boundary = if bit { 0 } else { 1 }; // updated boundary for level 0/1
-            if bit {
-                p = boundary + rank_before - 1;
-            } else {
-                p = rank_before - 1;
-            }
-        }
-    }
 
-    #[test]
-    fn test_rank_insert_true_at_0_then_false_at_1() {
-        // Exact sequence from the multi-level simulation:
-        // Level 1 bitvec: insert true at position 0, then insert false at position 1
-        // Expected: bitvec = [true, false] = "10"
-        // rank(1, false) should be 0 (position 0 is true, not false)
-        // rank(2, false) should be 1 (position 1 is false)
-        // rank(1, true) should be 1 (position 0 is true)
-        let mut bv = DynamicSuccinctBitVec::new();
-        
-        bv.insert_bit(0, true);
-        eprintln!("After insert(0, true): len={}", bv.len());
-        for i in 0..bv.len() {
-            eprintln!("  access({}) = {}", i, bv.access(i));
-        }
-        eprintln!("  rank(0, true)={}, rank(1, true)={}", bv.rank(0, true), bv.rank(1, true));
-        eprintln!("  rank(0, false)={}, rank(1, false)={}", bv.rank(0, false), bv.rank(1, false));
-        eprintln!("  count_ones={}", bv.count_ones());
-        
-        assert_eq!(bv.len(), 1);
-        assert!(bv.access(0), "position 0 should be true");
-        assert_eq!(bv.rank(1, true), 1, "rank(1,true) after first insert");
-        assert_eq!(bv.rank(1, false), 0, "rank(1,false) after first insert");
-        
-        bv.insert_bit(1, false);
-        eprintln!("After insert(1, false): len={}", bv.len());
-        for i in 0..bv.len() {
-            eprintln!("  access({}) = {}", i, bv.access(i));
-        }
-        eprintln!("  rank(0, true)={}, rank(1, true)={}, rank(2, true)={}", bv.rank(0, true), bv.rank(1, true), bv.rank(2, true));
-        eprintln!("  rank(0, false)={}, rank(1, false)={}, rank(2, false)={}", bv.rank(0, false), bv.rank(1, false), bv.rank(2, false));
-        eprintln!("  count_ones={}", bv.count_ones());
-        
-        assert_eq!(bv.len(), 2);
-        assert!(bv.access(0), "position 0 should be true");
-        assert!(!bv.access(1), "position 1 should be false");
-        assert_eq!(bv.rank(1, true), 1, "rank(1,true) = count of true in [0,1)");
-        assert_eq!(bv.rank(1, false), 0, "rank(1,false) = count of false in [0,1)");
-        assert_eq!(bv.rank(2, true), 1, "rank(2,true) = count of true in [0,2)");
-        assert_eq!(bv.rank(2, false), 1, "rank(2,false) = count of false in [0,2)");
-        assert_eq!(bv.count_ones(), 1, "count_ones should be 1");
-    }
+        let p0 = sorted_sigs.binary_search(&sig).unwrap_or_else(|x| x);
+        sorted_sigs.insert(p0, sig);
 
-    #[test]
-    fn test_rank_insert_true_at_0_then_false_at_1_append() {
-        // Exact sequence from the multi-level simulation:
-        // Level 1: insert true at position 0, then insert false at position 1 (appending)
-        // Result: [true, false] = "10"
-        let mut bv = DynamicSuccinctBitVec::new();
-        
-        bv.insert_bit(0, true);   // [true]
-        bv.insert_bit(1, false);  // [true, false] — appending at the end
-        
-        // Verify contents
-        assert_eq!(bv.len(), 2);
-        assert!(bv.access(0), "position 0 should be true");
-        assert!(!bv.access(1), "position 1 should be false");
-        
-        // Verify rank
-        let r0t = bv.rank(0, true); let r1t = bv.rank(1, true); let r2t = bv.rank(2, true);
-        let r0f = bv.rank(0, false); let r1f = bv.rank(1, false); let r2f = bv.rank(2, false);
-        
-        eprintln!("rank(0,true)={} rank(1,true)={} rank(2,true)={}", r0t, r1t, r2t);
-        eprintln!("rank(0,false)={} rank(1,false)={} rank(2,false)={}", r0f, r1f, r2f);
-        eprintln!("count_ones={}", bv.count_ones());
-        
-        // Brute force: [true, false]
-        // rank(0,true) = 0, rank(1,true) = 1, rank(2,true) = 1
-        // rank(0,false) = 0, rank(1,false) = 0, rank(2,false) = 1
-        assert_eq!(r0t, 0, "rank(0,true)");
-        assert_eq!(r1t, 1, "rank(1,true)");
-        assert_eq!(r2t, 1, "rank(2,true)");
-        assert_eq!(r0f, 0, "rank(0,false)");
-        assert_eq!(r1f, 0, "rank(1,false)");  // <-- THIS is the bug
-        assert_eq!(r2f, 1, "rank(2,false)");
-    }
+        let bit = (sig[0] & 1) == 1;
+        bv.insert_bit(p0, bit);
 
-    #[test]
-    fn test_rank_exact_level0_sequence() {
-        // Reproduce the EXACT level-0 insert sequence from the multi-level simulation
-        // until the rank bug appears (i=512, level=0)
-        let mut bv = DynamicSuccinctBitVec::new();
-        let mut rng_state: u64 = 98765;
-        let mut sorted_sigs: Vec<[u8; 32]> = Vec::new();
-        
-        for i in 0..513 {
-            let mut sig = [0u8; 32];
-            for b in 0..32 {
-                rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
-                sig[b] = (rng_state >> 8) as u8;
-            }
-            
-            let p0 = sorted_sigs.binary_search(&sig).unwrap_or_else(|x| x);
-            sorted_sigs.insert(p0, sig);
-            
-            let bit = (sig[0] & 1) == 1;
-            bv.insert_bit(p0, bit);
-            
-            // Verify rank at every position after each insert
-            if i >= 510 {
-                for q in 0..=bv.len() {
-                    let rank_true = bv.rank(q, true) as usize;
-                    let rank_false = bv.rank(q, false) as usize;
-                    
-                    let mut bf_true = 0;
-                    let mut bf_false = 0;
-                    for j in 0..q {
-                        if bv.access(j) { bf_true += 1; } else { bf_false += 1; }
-                    }
-                    
-                    assert_eq!(rank_true, bf_true, "rank({},{}) mismatch at i={}: rank={} bf={}", q, true, i, rank_true, bf_true);
-                    assert_eq!(rank_false, bf_false, "rank({},{}) mismatch at i={}: rank={} bf={}", q, false, i, rank_false, bf_false);
-                }
-            }
-        }
-    }
+        // Verify rank at every position after each insert
+        if i >= 510 {
+            for q in 0..=bv.len() {
+                let rank_true = bv.rank(q, true) as usize;
+                let rank_false = bv.rank(q, false) as usize;
 
-    #[test]
-    fn test_rank_and_fenwick_after_513_inserts() {
-        let mut bv = DynamicSuccinctBitVec::new();
-        let mut rng_state: u64 = 98765;
-        let mut sorted_sigs: Vec<[u8; 32]> = Vec::new();
-        let mut oracle: Vec<bool> = Vec::new();
-        
-        for _i in 0..513 {
-            let mut sig = [0u8; 32];
-            for b in 0..32 {
-                rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
-                sig[b] = (rng_state >> 8) as u8;
-            }
-            
-            let p0 = sorted_sigs.binary_search(&sig).unwrap_or_else(|x| x);
-            sorted_sigs.insert(p0, sig);
-            
-            let bit = (sig[0] & 1) == 1;
-            oracle.insert(p0, bit);
-            bv.insert_bit(p0, bit);
-        }
-        
-        // Dump block structure
-        eprintln!("BitVec: num_bits={}, num_blocks={}", bv.num_bits, bv.blocks.len());
-        for (bi, block) in bv.blocks.iter().enumerate() {
-            eprintln!("  Block {}: len={}, ones={}", bi, block.len, block.ones);
-        }
-        eprintln!("len_fenwick prefix_sum(B): {}", bv.len_fenwick.prefix_sum(bv.blocks.len()));
-        
-        // Check fenwick tree against brute-force block ones
-        let mut cum_ones = 0u32;
-        for bi in 0..bv.blocks.len() {
-            let fenwick_sum = bv.fenwick.prefix_sum(bi + 1); // 1-indexed
-            cum_ones += bv.blocks[bi].ones as u32;
-            eprintln!("  fenwick.prefix_sum({})={}, cum_ones={}", bi + 1, fenwick_sum, cum_ones);
-            assert_eq!(fenwick_sum, cum_ones, "fenwick sum mismatch at block {}", bi);
-        }
-        
-        // Check locate function
-        eprintln!("\nLocate checks:");
-        for pos in [0, 1, 255, 256, 257, 511, 512] {
-            if pos <= bv.len() {
-                let (bi, lp) = bv.locate(pos);
-                eprintln!("  locate({}) = (block={}, local={})", pos, bi, lp);
-            }
-        }
-        
-        // Check rank at key positions
-        for pos in [256, 257] {
-            if pos <= bv.len() {
-                let rank_true = bv.rank(pos, true) as usize;
-                let rank_false = bv.rank(pos, false) as usize;
                 let mut bf_true = 0;
                 let mut bf_false = 0;
-                for j in 0..pos {
-                    if oracle[j] { bf_true += 1; } else { bf_false += 1; }
+                for j in 0..q {
+                    if bv.access(j) {
+                        bf_true += 1;
+                    } else {
+                        bf_false += 1;
+                    }
                 }
-                eprintln!("rank({},{}) = {} (bf={}), rank({},{}) = {} (bf={})", 
-                    pos, true, rank_true, bf_true, pos, false, rank_false, bf_false);
-                assert_eq!(rank_true, bf_true, "rank({},{}) mismatch", pos, true);
-                assert_eq!(rank_false, bf_false, "rank({},{}) mismatch", pos, false);
+
+                assert_eq!(
+                    rank_true, bf_true,
+                    "rank({},{}) mismatch at i={}: rank={} bf={}",
+                    q, true, i, rank_true, bf_true
+                );
+                assert_eq!(
+                    rank_false, bf_false,
+                    "rank({},{}) mismatch at i={}: rank={} bf={}",
+                    q, false, i, rank_false, bf_false
+                );
             }
         }
     }
+}
+
+#[test]
+fn test_rank_and_fenwick_after_513_inserts() {
+    let mut bv = DynamicSuccinctBitVec::new();
+    let mut rng_state: u64 = 98765;
+    let mut sorted_sigs: Vec<[u8; 32]> = Vec::new();
+    let mut oracle: Vec<bool> = Vec::new();
+
+    for _i in 0..513 {
+        let mut sig = [0u8; 32];
+        for byte in sig.iter_mut() {
+            rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
+            *byte = (rng_state >> 8) as u8;
+        }
+
+        let p0 = sorted_sigs.binary_search(&sig).unwrap_or_else(|x| x);
+        sorted_sigs.insert(p0, sig);
+
+        let bit = (sig[0] & 1) == 1;
+        oracle.insert(p0, bit);
+        bv.insert_bit(p0, bit);
+    }
+
+    // Dump block structure
+    eprintln!(
+        "BitVec: num_bits={}, num_blocks={}",
+        bv.num_bits,
+        bv.blocks.len()
+    );
+    for (bi, block) in bv.blocks.iter().enumerate() {
+        eprintln!("  Block {}: len={}, ones={}", bi, block.len, block.ones);
+    }
+    eprintln!(
+        "len_fenwick prefix_sum(B): {}",
+        bv.len_fenwick.prefix_sum(bv.blocks.len())
+    );
+
+    // Check fenwick tree against brute-force block ones
+    let mut cum_ones = 0u32;
+    for bi in 0..bv.blocks.len() {
+        let fenwick_sum = bv.fenwick.prefix_sum(bi + 1); // 1-indexed
+        cum_ones += bv.blocks[bi].ones as u32;
+        eprintln!(
+            "  fenwick.prefix_sum({})={}, cum_ones={}",
+            bi + 1,
+            fenwick_sum,
+            cum_ones
+        );
+        assert_eq!(
+            fenwick_sum, cum_ones,
+            "fenwick sum mismatch at block {}",
+            bi
+        );
+    }
+
+    // Check locate function
+    eprintln!("\nLocate checks:");
+    for pos in [0, 1, 255, 256, 257, 511, 512] {
+        if pos <= bv.len() {
+            let (bi, lp) = bv.locate(pos);
+            eprintln!("  locate({}) = (block={}, local={})", pos, bi, lp);
+        }
+    }
+
+    // Check rank at key positions
+    for pos in [256, 257] {
+        if pos <= bv.len() {
+            let rank_true = bv.rank(pos, true) as usize;
+            let rank_false = bv.rank(pos, false) as usize;
+            let mut bf_true = 0;
+            let mut bf_false = 0;
+            for entry in oracle.iter().take(pos) {
+                if *entry {
+                    bf_true += 1;
+                } else {
+                    bf_false += 1;
+                }
+            }
+            eprintln!(
+                "rank({},true) = {} (bf={}), rank({},false) = {} (bf={})",
+                pos, rank_true, bf_true, pos, rank_false, bf_false
+            );
+            assert_eq!(rank_true, bf_true, "rank({},{}) mismatch", pos, true);
+            assert_eq!(rank_false, bf_false, "rank({},{}) mismatch", pos, false);
+        }
+    }
+}

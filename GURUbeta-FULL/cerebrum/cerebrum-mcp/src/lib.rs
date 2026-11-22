@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering as MemOrdering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use cerebrum_core::{CurateOp, ContextEntry, MemoryId, PartialEntry};
+use cerebrum_core::{ContextEntry, CurateOp, MemoryId, PartialEntry};
 use cerebrum_server::handler::handle_frame;
 use cerebrum_server::state::CerebrumState;
 use cerebrum_server::{frame_types, Frame};
@@ -61,7 +61,10 @@ pub struct McpResponse {
 
 impl McpResponse {
     pub fn success(result: serde_json::Value) -> Self {
-        Self { result, error: None }
+        Self {
+            result,
+            error: None,
+        }
     }
 
     pub fn error(message: impl Into<String>) -> Self {
@@ -200,10 +203,7 @@ fn tool_name_to_frame(name: &str) -> Option<u8> {
 /// A tool payload's request body bytes for the matching frame type, exactly
 /// matching what the wire protocol deserializes for that handler. Unknown
 /// tools short-circuit earlier by name dispatch.
-fn build_frame_payload(
-    _tool: &str,
-    params: &serde_json::Value,
-) -> Result<Vec<u8>, String> {
+fn build_frame_payload(_tool: &str, params: &serde_json::Value) -> Result<Vec<u8>, String> {
     serde_json::to_vec(params).map_err(|e| e.to_string())
 }
 
@@ -267,9 +267,7 @@ pub async fn dispatch_tool(
                 "limit": params.get("limit").and_then(|x| x.as_u64()).unwrap_or(10) as usize
             })
         }
-        "cerebrum_graph_traverse"
-        | "cerebrum_consolidate"
-        | "cerebrum_prefetch" => params.clone(),
+        "cerebrum_graph_traverse" | "cerebrum_consolidate" | "cerebrum_prefetch" => params.clone(),
         _ => unreachable!("tool name filtered above"),
     };
 
@@ -325,8 +323,8 @@ fn build_curate_ops(params: &serde_json::Value) -> Result<serde_json::Value, Str
         .get("memory_id")
         .and_then(|x| x.as_str())
         .unwrap_or("");
-    let mem_id = memory_id_from_hex_string(memory_hex)
-        .ok_or("valid entry.memory_id hex required")?;
+    let mem_id =
+        memory_id_from_hex_string(memory_hex).ok_or("valid entry.memory_id hex required")?;
     let domain = entry
         .get("domain")
         .and_then(|x| x.as_str())
@@ -375,6 +373,10 @@ fn build_curate_ops(params: &serde_json::Value) -> Result<serde_json::Value, Str
                 relations: Vec::new(),
                 provenance: "mcp".to_string(),
                 rationale: reason.to_string(),
+                // The MCP bridge writes as an automatic lane, so these facts belong to the
+                // person's shared memory rather than to any agent.
+                owner_agent_id: String::new(),
+                visibility: String::new(),
                 created_at: now,
                 modified_at: now,
             },
@@ -392,6 +394,14 @@ fn build_curate_ops(params: &serde_json::Value) -> Result<serde_json::Value, Str
 pub fn memory_id_hex(id: &MemoryId) -> String {
     id.0.iter().map(|b| format!("{:02x}", b)).collect()
 }
+
+/// Ascending 32-byte pattern as a stable 64-char test id: the id every MCP
+/// flow test curates under, so a failure names a known memory.
+#[cfg(test)]
+const MEMORY_HEX_A: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+/// Descending 32-byte pattern used as stable test id (verified 64 hex chars).
+#[cfg(test)]
+const MEMORY_HEX_B: &str = "1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100";
 
 #[cfg(test)]
 mod tests {
@@ -432,8 +442,14 @@ mod tests {
 
         // Two upserts with related content, both through the MCP tool.
         for (hex_id_text, content) in [
-            (MEMORY_HEX_A, "Rust is a productive language with real safety."),
-            (MEMORY_HEX_B, "Rust memory safety rules improve productivity."),
+            (
+                MEMORY_HEX_A,
+                "Rust is a productive language with real safety.",
+            ),
+            (
+                MEMORY_HEX_B,
+                "Rust memory safety rules improve productivity.",
+            ),
         ] {
             let params = json!({
                 "operation": "upsert",
@@ -481,10 +497,16 @@ mod tests {
             .unwrap_or_default();
         let hit_texts = hits
             .iter()
-            .filter_map(|row| row.get("content").and_then(|x| x.as_str()).map(|item| item.to_string()))
+            .filter_map(|row| {
+                row.get("content")
+                    .and_then(|x| x.as_str())
+                    .map(|item| item.to_string())
+            })
             .collect::<Vec<String>>();
         assert!(
-            hit_texts.iter().any(|text| text.contains("Rust memory safety")),
+            hit_texts
+                .iter()
+                .any(|text| text.contains("Rust memory safety")),
             "MCP search must surface the matching curated memory through real engines; got {:?}",
             hit_texts
         );
@@ -504,11 +526,3 @@ mod tests {
         });
     }
 }
-
-/// Ascending 32-byte pattern as a stable 64-char test id: the id every MCP
-/// flow test curates under, so a failure names a known memory.
-#[cfg(test)]
-const MEMORY_HEX_A: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
-/// Descending 32-byte pattern used as stable test id (verified 64 hex chars).
-#[cfg(test)]
-const MEMORY_HEX_B: &str = "1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100";

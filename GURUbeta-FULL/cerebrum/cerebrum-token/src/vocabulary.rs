@@ -51,10 +51,7 @@ impl TokenVocabulary {
     ///
     /// # Errors
     /// Returns [`TokenError::IdOutOfRange`] if `id >= vocab_size`.
-    pub fn insert(&mut self,
-        token: impl Into<String>,
-        id: u32,
-    ) -> TokenResult<()> {
+    pub fn insert(&mut self, token: impl Into<String>, id: u32) -> TokenResult<()> {
         let token = token.into();
         if id >= self.vocab_size {
             return Err(TokenError::IdOutOfRange {
@@ -180,27 +177,17 @@ pub trait VocabularyLoader {
 pub struct JsonVocabularyLoader;
 
 impl VocabularyLoader for JsonVocabularyLoader {
-    fn load(
-        &self,
-        path: &Path,
-        name: &str,
-        vocabulary_id: u32,
-    ) -> TokenResult<TokenVocabulary> {
-        let content =
-            fs::read_to_string(path).map_err(|e| {
-                TokenError::VocabularyLoad(format!("{}: {}", path.display(), e))
-            })?;
+    fn load(&self, path: &Path, name: &str, vocabulary_id: u32) -> TokenResult<TokenVocabulary> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| TokenError::VocabularyLoad(format!("{}: {}", path.display(), e)))?;
 
-        let json: serde_json::Value =
-            serde_json::from_str(&content).map_err(|e| {
-                TokenError::VocabularyFormat(format!("JSON parse error: {}", e))
-            })?;
+        let json: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| TokenError::VocabularyFormat(format!("JSON parse error: {}", e)))?;
 
         let vocab_size = json["vocab_size"]
             .as_u64()
-            .ok_or_else(|| {
-                TokenError::VocabularyFormat("missing or invalid 'vocab_size'".into())
-            })? as u32;
+            .ok_or_else(|| TokenError::VocabularyFormat("missing or invalid 'vocab_size'".into()))?
+            as u32;
 
         let mut vocab = TokenVocabulary::new(name, vocabulary_id, vocab_size);
 
@@ -210,10 +197,7 @@ impl VocabularyLoader for JsonVocabularyLoader {
 
         for (token_str, id_val) in tokens {
             let id = id_val.as_u64().ok_or_else(|| {
-                TokenError::VocabularyFormat(format!(
-                    "token '{}' has non-integer ID",
-                    token_str
-                ))
+                TokenError::VocabularyFormat(format!("token '{}' has non-integer ID", token_str))
             })? as u32;
 
             vocab.insert(token_str.clone(), id)?;
@@ -230,16 +214,9 @@ impl VocabularyLoader for JsonVocabularyLoader {
 pub struct TextVocabularyLoader;
 
 impl VocabularyLoader for TextVocabularyLoader {
-    fn load(
-        &self,
-        path: &Path,
-        name: &str,
-        vocabulary_id: u32,
-    ) -> TokenResult<TokenVocabulary> {
-        let content =
-            fs::read_to_string(path).map_err(|e| {
-                TokenError::VocabularyLoad(format!("{}: {}", path.display(), e))
-            })?;
+    fn load(&self, path: &Path, name: &str, vocabulary_id: u32) -> TokenResult<TokenVocabulary> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| TokenError::VocabularyLoad(format!("{}: {}", path.display(), e)))?;
 
         let lines: Vec<&str> = content.lines().collect();
         let vocab_size = lines.len() as u32;
@@ -433,6 +410,9 @@ mod tests {
         assert_eq!(vocab.len(), count as usize);
         assert_eq!(vocab.get_id("t0"), Some(0));
         assert_eq!(vocab.get_id(&format!("t{}", count - 1)), Some(count - 1));
-        assert_eq!(vocab.get_token(count - 1), Some(format!("t{}", count - 1).as_str()));
+        assert_eq!(
+            vocab.get_token(count - 1),
+            Some(format!("t{}", count - 1).as_str())
+        );
     }
 }

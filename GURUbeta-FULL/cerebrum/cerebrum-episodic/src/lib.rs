@@ -106,16 +106,12 @@ impl EpisodicStore {
     }
 
     /// Reconstruct the full rich episode for a memory id.
-    pub fn reconstruct(&self,
-        memory_id: MemoryId,
-    ) -> Option<&RichEpisode> {
+    pub fn reconstruct(&self, memory_id: MemoryId) -> Option<&RichEpisode> {
         self.episodes.get(&memory_id)
     }
 
     /// Find all rich episodes whose source contains the query string.
-    pub fn find_by_source(&self,
-        source: &str,
-    ) -> Vec<&RichEpisode> {
+    pub fn find_by_source(&self, source: &str) -> Vec<&RichEpisode> {
         let query = source.to_lowercase();
         self.episodes
             .values()
@@ -124,9 +120,7 @@ impl EpisodicStore {
     }
 
     /// Find all rich episodes whose trigger contains the query string.
-    pub fn find_by_trigger(&self,
-        trigger: &str,
-    ) -> Vec<&RichEpisode> {
+    pub fn find_by_trigger(&self, trigger: &str) -> Vec<&RichEpisode> {
         let query = trigger.to_lowercase();
         self.episodes
             .values()
@@ -135,9 +129,7 @@ impl EpisodicStore {
     }
 
     /// Find all rich episodes matching a given emotional valence.
-    pub fn find_by_valence(&self,
-        valence: EmotionalValence,
-    ) -> Vec<&RichEpisode> {
+    pub fn find_by_valence(&self, valence: EmotionalValence) -> Vec<&RichEpisode> {
         self.episodes
             .values()
             .filter(|r| r.valence == valence)
@@ -192,34 +184,22 @@ impl EpisodicEngine {
     }
 
     /// Reconstruct the full story for a memory id.
-    pub fn reconstruct(
-        &self,
-        memory_id: MemoryId,
-    ) -> Option<&RichEpisode> {
+    pub fn reconstruct(&self, memory_id: MemoryId) -> Option<&RichEpisode> {
         self.store.reconstruct(memory_id)
     }
 
     /// Find episodes by source string.
-    pub fn find_by_source(
-        &self,
-        source: &str,
-    ) -> Vec<&RichEpisode> {
+    pub fn find_by_source(&self, source: &str) -> Vec<&RichEpisode> {
         self.store.find_by_source(source)
     }
 
     /// Find episodes by trigger string.
-    pub fn find_by_trigger(
-        &self,
-        trigger: &str,
-    ) -> Vec<&RichEpisode> {
+    pub fn find_by_trigger(&self, trigger: &str) -> Vec<&RichEpisode> {
         self.store.find_by_trigger(trigger)
     }
 
     /// Find episodes by emotional valence.
-    pub fn find_by_valence(
-        &self,
-        valence: EmotionalValence,
-    ) -> Vec<&RichEpisode> {
+    pub fn find_by_valence(&self, valence: EmotionalValence) -> Vec<&RichEpisode> {
         self.store.find_by_valence(valence)
     }
 }
@@ -230,10 +210,18 @@ impl EpisodicEngine {
 /// feedback or a learned model.
 fn infer_valence(context: &str) -> EmotionalValence {
     let lower = context.to_lowercase();
-    if lower.contains("error") || lower.contains("crash") || lower.contains("fail") || lower.contains("urgent") {
+    if lower.contains("error")
+        || lower.contains("crash")
+        || lower.contains("fail")
+        || lower.contains("urgent")
+    {
         return EmotionalValence::Concerning;
     }
-    if lower.contains("amazing") || lower.contains("exciting") || lower.contains("great") || lower.contains("breakthrough") {
+    if lower.contains("amazing")
+        || lower.contains("exciting")
+        || lower.contains("great")
+        || lower.contains("breakthrough")
+    {
         return EmotionalValence::Exciting;
     }
     if lower.contains("surprising") || lower.contains("unexpected") || lower.contains("shocking") {
@@ -281,7 +269,10 @@ mod tests {
 
         let rich = engine.reconstruct(id).expect("episode should exist");
         assert_eq!(rich.episode.memory_id, id);
-        assert_eq!(rich.before_context, "Earlier: general programming languages");
+        assert_eq!(
+            rich.before_context,
+            "Earlier: general programming languages"
+        );
         assert_eq!(rich.after_context, "Later: Rust ownership model");
         assert!(rich.related_episodes.contains(&MemoryId([2u8; 32])));
     }

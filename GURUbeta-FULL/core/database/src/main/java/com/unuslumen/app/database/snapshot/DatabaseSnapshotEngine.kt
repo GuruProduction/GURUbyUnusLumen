@@ -58,6 +58,24 @@ class DatabaseSnapshotEngine(private val context: Context) {
     private fun databaseFile(): File =
         context.getDatabasePath(com.unuslumen.app.database.guruDatabase.DATABASE_NAME)
 
+    /**
+     * The live Cerebrum vault, or null when this device has never booted a brain.
+     *
+     * THE SECOND HALF OF THE APPLICATION'S MEMORY. Room holds the transcript and the tool
+     * results; every fact the brain extracted lives in this one file, under
+     * `filesDir/cerebrum/state/cerebrum.vault`. The paths are the ones
+     * `CerebrumHost.vaultDataDir` and `VAULT_FILE_NAME` in `persistence.rs` define, and
+     * they are repeated here rather than imported because `core:database` must not depend
+     * on `portal:data`; the constant is asserted against the real file in a test.
+     *
+     * A device with no vault is not an error: a fresh install has never written one.
+     */
+    private fun cerebrumVaultFile(): File =
+        File(File(File(context.filesDir, CEREBRUM_DIR), CEREBRUM_STATE_DIR), SnapshotFormat.CEREBRUM_VAULT_ENTRY)
+
+    /** Whether a brain has registered its flush, so a caller can report the state rather than guess. */
+    fun vaultFlushRegistered(): Boolean = flushVaultBeforeSeal != null
+
     private fun stagingRoot(): File = File(context.cacheDir, "brain_snapshot_staging")
 
     private fun newStagingDir(): File {
@@ -164,15 +182,70 @@ class DatabaseSnapshotEngine(private val context: Context) {
             // Passing the directory produced a manifest describing a folder, which then failed
             // its own verification on every write. The unit test that asserts a snapshot is
             // taken at all is what caught it, which is why that test exists.
+            // THE BRAIN ITSELF, read here and nowhere else. A device that has never booted
+            // has no vault, and that is a state the manifest records by omission rather
+            // than by an empty entry: an empty vault file and no vault file are different,
+            // and restoring an empty one over a real brain would be a silent wipe.
+            val vault = cerebrumVaultFile()
+            val vaultHasBytes = vault.isFile && vault.length() > 0
+            val vaultBytes: ByteArray? = if (vaultHasBytes) {
+                /*
+                 * FLUSH FIRST, OR REFUSE. A vault is a file the brain rewrites on its own
+                 * cadence while the live state sits in memory, so reading it without a flush
+                 * captures an older brain and every fact written since the last save is lost
+                 * inside a snapshot that verifies perfectly.
+                 *
+                 * Refusing is the only honest answer when nothing can flush: a snapshot that
+                 * omits the newest memories is worse than no snapshot at all, because the person
+                 * holding it believes they are covered.
+                 */
+                val flush = flushVaultBeforeSeal
+                    ?: return SnapshotWriteOutcome.Failed(
+                        "This device holds a Cerebrum vault but no running brain registered to flush " +
+                            "it, so a snapshot taken now could silently omit everything written since " +
+                            "the last save. Nothing was written. Start GURU and try again.",
+                    )
+                progress?.invoke("Flushing the Cerebrum vault so the newest memories are in the file")
+                runCatching { flush() }.getOrElse { flushError ->
+                    return SnapshotWriteOutcome.Failed(
+                        "The Cerebrum brain would not flush its memory to disk, so a snapshot taken now " +
+                            "could omit the newest facts. Nothing was written: ${flushError.message}.",
+                    )
+                }
+                // The flush rewrites the file, so the existence and length are re-read rather
+                // than trusted from before it ran.
+                if (!vault.isFile || vault.length() == 0L) {
+                    return SnapshotWriteOutcome.Failed(
+                        "The Cerebrum vault disappeared while it was being flushed, so there is no " +
+                            "memory to carry. Nothing was written.",
+                    )
+                }
+                progress?.invoke("Reading the Cerebrum vault so the memories travel with the transcript")
+                runCatching { vault.readBytes() }.getOrElse { readError ->
+                    return SnapshotWriteOutcome.Failed(
+                        "The Cerebrum vault could not be read, so a snapshot of the transcript alone " +
+                            "would claim to be a backup of the memory. Nothing was written: " +
+                            "${readError.message}.",
+                    )
+                }
+            } else {
+                null
+            }
+
+            val entries = LinkedHashMap<String, ByteArray>(2)
+            entries[SnapshotFormat.DATABASE_ENTRY] = staged.readBytes()
+            vaultBytes?.let { entries[SnapshotFormat.CEREBRUM_VAULT_ENTRY] = it }
+
             val manifest = buildManifest(
                 createdAtMillis = System.currentTimeMillis(),
                 schemaVersion = schemaVersion,
                 counts = counts,
-                stagedDatabase = staged,
+                entries = entries,
                 sourceBytes = source.length(),
+                vaultIncluded = vaultBytes != null,
             )
 
-            val archive = buildArchive(ByteArrayFile(staged), manifest)
+            val archive = buildArchive(manifest, entries)
             val sealed = seal(archive, passphrase)
 
             progress?.invoke("Opening the snapshot again to prove it restores")
@@ -411,7 +484,7 @@ class DatabaseSnapshotEngine(private val context: Context) {
         }
 
         val entries = try {
-            parseArchive(archive)
+            parseArchive(archive, header.version)
         } catch (e: Exception) {
             return SnapshotVerification.CorruptContent(
                 "The snapshot decrypted but its contents could not be read: ${e.message}.",
@@ -427,6 +500,33 @@ class DatabaseSnapshotEngine(private val context: Context) {
 
         SnapshotVerifier.verifyFile(entry, databaseBytes.size.toLong(), SnapshotFormat.sha256(databaseBytes))
             ?.let { return it }
+
+        /*
+         * THE VAULT IS CHECKED THE SAME WAY THE DATABASE IS, because an unverified second
+         * entry is a claim rather than a payload. The three cases are distinct:
+         *
+         *  - the manifest lists a vault and the archive carries it: verify the hash;
+         *  - the manifest lists it and the archive does not: corrupt, not "empty brain";
+         *  - neither lists nor carries it: a version 1 snapshot, or a device that never
+         *    booted a brain, and both are legitimately vaultless.
+         */
+        val manifestVaultEntry = manifest.files.firstOrNull {
+            it.name == SnapshotFormat.CEREBRUM_VAULT_ENTRY
+        }
+        val carriedVault = entries.cerebrumVault
+        if (manifestVaultEntry != null && carriedVault == null) {
+            return SnapshotVerification.CorruptContent(
+                "The manifest names a Cerebrum vault but the archive does not carry one, so this " +
+                    "snapshot would restore a transcript with no memory behind it.",
+            )
+        }
+        if (manifestVaultEntry != null && carriedVault != null) {
+            SnapshotVerifier.verifyFile(
+                manifestVaultEntry,
+                carriedVault.size.toLong(),
+                SnapshotFormat.sha256(carriedVault),
+            )?.let { return it }
+        }
 
         // The database is opened from a temporary file because SQLite needs a path, and
         // the whole point of counting rows is to ask SQLite rather than trust the bytes.
@@ -502,16 +602,101 @@ class DatabaseSnapshotEngine(private val context: Context) {
         }
         return try {
             val archive = open(sealed, headerRead.header, passphrase)
-            val entries = parseArchive(archive)
+            val entries = parseArchive(archive, headerRead.header.version)
             destination.parentFile?.mkdirs()
             destination.writeBytes(entries.database)
             // A fresh file must not inherit a stale sidecar from a previous attempt at
             // the same path, or the restored brain reads pages from the wrong history.
             deleteSidecars(destination)
-            SnapshotExtractOutcome.Extracted(destination, entries.manifest, verification)
+
+            /*
+             * THE VAULT COMES OUT BESIDE THE DATABASE, NOT INSTEAD OF IT.
+             *
+             * It is written into the same staging directory under its own name, so a caller
+             * that installs both moves two files from one proven set. It is written as its
+             * own SEALED bytes: nothing here decrypts the brain, and no key is derived. The
+             * vault's Argon2id/XChaCha20 seal is intact and still needs its passphrase,
+             * which means copying it is safe and opening it is not free.
+             *
+             * A version 1 snapshot has no vault, and the outcome says so through a null
+             * path rather than an empty file, because an empty vault installed over a real
+             * one is a silent wipe.
+             */
+            val vaultDestination = entries.cerebrumVault?.let { vaultBytes ->
+                val vaultOut = File(destination.parentFile, SnapshotFormat.CEREBRUM_VAULT_ENTRY)
+                vaultOut.parentFile?.mkdirs()
+                vaultOut.writeBytes(vaultBytes)
+                vaultOut
+            }
+
+            SnapshotExtractOutcome.Extracted(
+                staged = destination,
+                manifest = entries.manifest,
+                verification = verification,
+                stagedCerebrumVault = vaultDestination,
+            )
         } catch (e: Exception) {
             SnapshotExtractOutcome.Refused(
                 SnapshotVerification.CorruptContent("The snapshot could not be extracted: ${e.message}."),
+            )
+        }
+    }
+
+    /**
+     * Put a restored vault in place, moving the live one aside rather than deleting it.
+     *
+     * THE SAME RULE AS THE DATABASE, and it matters more here, because the vault is the
+     * only copy of every fact the brain ever extracted. A restore that failed halfway
+     * through replacing it would leave a brain with neither the old memories nor the new
+     * ones.
+     *
+     * The caller must stop the brain first: `CerebrumHost` holds the vault's key and an
+     * open handle for the life of the process, so a vault swapped under a running brain is
+     * not in effect. Reporting it as restored while the old handle is live would be a lie.
+     */
+    suspend fun installStagedCerebrumVault(stagedVault: File): SnapshotInstallOutcome {
+        if (!stagedVault.isFile || stagedVault.length() == 0L) {
+            return SnapshotInstallOutcome.Failed("The staged Cerebrum vault is missing or empty.")
+        }
+        val live = cerebrumVaultFile()
+        val stamp = System.currentTimeMillis()
+        val aside = File(live.absolutePath + ".replaced-$stamp")
+        val hadLive = live.isFile
+
+        return try {
+            live.parentFile?.mkdirs()
+            if (hadLive && !live.renameTo(aside)) {
+                return SnapshotInstallOutcome.Failed(
+                    "The existing vault could not be moved aside, so the brain was left untouched. " +
+                        "Nothing changed.",
+                )
+            }
+            if (!stagedVault.renameTo(live)) {
+                stagedVault.copyTo(live, overwrite = true)
+                stagedVault.delete()
+            }
+            aside.delete()
+            SnapshotInstallOutcome.Installed(
+                hadExistingBrain = hadLive,
+                message = if (hadLive) {
+                    "The restored Cerebrum vault is in place and the previous one was removed. GURU " +
+                        "must be restarted before it opens it, and it still needs the passphrase that " +
+                        "encrypts it."
+                } else {
+                    "The restored Cerebrum vault is in place on a device that had none. GURU must be " +
+                        "restarted before it opens it."
+                },
+            )
+        } catch (e: Exception) {
+            runCatching {
+                if (aside.isFile) {
+                    if (live.isFile) live.delete()
+                    aside.renameTo(live)
+                }
+            }
+            SnapshotInstallOutcome.Failed(
+                "The vault restore failed while moving files and the previous vault was put back: " +
+                    "${e.message}.",
             )
         }
     }
@@ -616,29 +801,54 @@ class DatabaseSnapshotEngine(private val context: Context) {
     // ------------------------------------------------------------------
 
     /**
-     * The sealed archive's layout: a 4-byte manifest length, the manifest JSON, then
-     * the database bytes.
+     * The sealed archive's layout, version 2: a 4-byte manifest length, the manifest
+     * JSON, then a counted list of named entries.
      *
-     * Deliberately simple. A zip would need a library, a tar would need a header
-     * writer, and both would add a second way for the format to be wrong. One length
-     * prefix cannot be misread, and the manifest carries every hash needed to prove
-     * the bytes behind it.
+     * WHY THE ENTRIES ARE COUNTED RATHER THAN CONCATENATED. Version 1 sealed exactly one
+     * payload after the manifest, so the reader took everything that was left. That works
+     * for one file and cannot express two. A count and a per-entry name and length mean a
+     * reader knows what it is holding before it reads it, and a future version can add a
+     * third store without guessing where the bytes end.
      */
-    private fun buildArchive(database: ByteArrayFile, manifest: SnapshotManifest): ByteArray {
+    private fun buildArchive(
+        manifest: SnapshotManifest,
+        entries: Map<String, ByteArray>,
+    ): ByteArray {
         val manifestBytes = json.encodeToString(SnapshotManifest.serializer(), manifest).toByteArray()
-        val fileBytes = database.readAll()
-        val out = java.io.ByteArrayOutputStream(4 + manifestBytes.size + fileBytes.size)
+        val out = java.io.ByteArrayOutputStream()
         val data = java.io.DataOutputStream(out)
         data.writeInt(manifestBytes.size)
         data.write(manifestBytes)
-        data.write(fileBytes)
+        data.writeInt(entries.size)
+        for ((name, bytes) in entries) {
+            val nameBytes = name.toByteArray(Charsets.UTF_8)
+            data.writeInt(nameBytes.size)
+            data.write(nameBytes)
+            data.writeInt(bytes.size)
+            data.write(bytes)
+        }
         data.flush()
         return out.toByteArray()
     }
 
-    private data class ArchiveEntries(val manifest: SnapshotManifest, val database: ByteArray)
+    /**
+     * What a sealed archive carried: the manifest and every named entry.
+     *
+     * `database` is a convenience view of the [SnapshotFormat.DATABASE_ENTRY] member,
+     * because the Room database is what almost every caller wants and making them all
+     * index a map would be noise. `cerebrumVault` is null for a version 1 file and for a
+     * device that had no brain, which are different facts that the caller can tell apart
+     * from the manifest.
+     */
+    private data class ArchiveEntries(
+        val manifest: SnapshotManifest,
+        val entries: Map<String, ByteArray>,
+    ) {
+        val database: ByteArray get() = entries.getValue(SnapshotFormat.DATABASE_ENTRY)
+        val cerebrumVault: ByteArray? get() = entries[SnapshotFormat.CEREBRUM_VAULT_ENTRY]
+    }
 
-    private fun parseArchive(archive: ByteArray): ArchiveEntries {
+    private fun parseArchive(archive: ByteArray, formatVersion: Int): ArchiveEntries {
         val data = java.io.DataInputStream(archive.inputStream())
         val manifestLength = data.readInt()
         require(manifestLength > 0 && manifestLength <= archive.size - 4) {
@@ -647,9 +857,40 @@ class DatabaseSnapshotEngine(private val context: Context) {
         val manifestBytes = ByteArray(manifestLength)
         data.readFully(manifestBytes)
         val manifest = json.decodeFromString(SnapshotManifest.serializer(), String(manifestBytes))
-        val database = ByteArray(archive.size - 4 - manifestLength)
-        data.readFully(database)
-        return ArchiveEntries(manifest, database)
+
+        if (formatVersion < 2) {
+            /*
+             * A VERSION 1 ARCHIVE IS ONE PAYLOAD AND NOTHING ELSE. Everything after the
+             * manifest is the database. Read this way rather than refused, so a backup
+             * taken before the vault was included still restores: it simply has no brain
+             * in it, and the caller is told that by the absence of the entry rather than
+             * by a format error.
+             */
+            val database = ByteArray(archive.size - 4 - manifestLength)
+            data.readFully(database)
+            return ArchiveEntries(
+                manifest = manifest,
+                entries = mapOf(SnapshotFormat.DATABASE_ENTRY to database),
+            )
+        }
+
+        val entryCount = data.readInt()
+        require(entryCount in 0..64) { "The archive claims $entryCount entries, which is not a snapshot." }
+        val parsed = LinkedHashMap<String, ByteArray>(entryCount)
+        repeat(entryCount) {
+            val nameLength = data.readInt()
+            require(nameLength in 1..256) { "A snapshot entry name is $nameLength bytes long." }
+            val nameBytes = ByteArray(nameLength)
+            data.readFully(nameBytes)
+            val entryLength = data.readInt()
+            require(entryLength >= 0 && entryLength <= archive.size) {
+                "Snapshot entry ${String(nameBytes)} claims $entryLength bytes, more than the archive holds."
+            }
+            val body = ByteArray(entryLength)
+            data.readFully(body)
+            parsed[String(nameBytes, Charsets.UTF_8)] = body
+        }
+        return ArchiveEntries(manifest = manifest, entries = parsed)
     }
 
     /**
@@ -664,23 +905,30 @@ class DatabaseSnapshotEngine(private val context: Context) {
         createdAtMillis: Long,
         schemaVersion: Int,
         counts: Map<String, Long>,
-        stagedDatabase: File,
+        entries: Map<String, ByteArray>,
         sourceBytes: Long,
+        vaultIncluded: Boolean,
     ): SnapshotManifest {
-        val entry = SnapshotFileEntry(
-            name = SnapshotFormat.DATABASE_ENTRY,
-            sizeBytes = stagedDatabase.length(),
-            sha256 = hashFile(stagedDatabase),
-        )
+        // One entry per file actually sealed, hashed from the bytes in hand. Hashing the
+        // staged file on disk would describe a file rather than the payload behind the
+        // manifest, which is how a manifest ends up describing something else.
+        val fileEntries = entries.map { (name, bytes) ->
+            SnapshotFileEntry(
+                name = name,
+                sizeBytes = bytes.size.toLong(),
+                sha256 = SnapshotFormat.sha256(bytes),
+            )
+        }
         return SnapshotManifest(
             createdAtMillis = createdAtMillis,
             databaseSchemaVersion = schemaVersion,
-            files = listOf(entry),
+            files = fileEntries,
             tableRowCounts = counts,
             // An uncountable table records -1, which would poison a plain sum, so only
             // real counts are added and the map itself carries the -1s visibly.
             totalRows = counts.values.filter { it >= 0 }.sum(),
             sourceDatabaseBytes = sourceBytes,
+            cerebrumVaultIncluded = vaultIncluded,
         )
     }
 
@@ -738,6 +986,58 @@ class DatabaseSnapshotEngine(private val context: Context) {
     /** Read [file] fully. Named so the archive builder does not hide a second full read. */
     private class ByteArrayFile(private val file: File) {
         fun readAll(): ByteArray = file.readBytes()
+    }
+
+    companion object VaultFlushRegistration {
+        /**
+         * The vault's directory names, mirroring `CerebrumHost` and `persistence.rs`.
+         *
+         * Repeated rather than imported because `core:database` sits below `portal:data` in
+         * the module graph and must not depend on it. `CerebrumVaultPathTest` asserts that
+         * the path this engine reads is the path the host writes, so the copy cannot drift
+         * in silence.
+         */
+        const val CEREBRUM_DIR = "cerebrum"
+        const val CEREBRUM_STATE_DIR = "state"
+
+        /**
+         * How a snapshot asks the running brain to write its in-memory state to the vault.
+         *
+         * THE DEFECT THIS EXISTS FOR. Reading `cerebrum.vault` copies whatever the last save
+         * wrote. The brain keeps its whole state in memory and flushes on its own cadence, so a
+         * snapshot taken between two flushes carries a stale brain: every fact written since the
+         * last save is ABSENT, the snapshot verifies perfectly because the file is a valid vault,
+         * just an older one, and the loss is found only when somebody restores it and discovers
+         * the last hour missing.
+         *
+         * WHEN A VAULT EXISTS AND NOTHING CAN FLUSH, [sealSnapshot] REFUSES rather than sealing a
+         * snapshot that silently omits the newest memories. A person holding that snapshot
+         * believes they are covered, which makes it worse than no snapshot at all.
+         *
+         * `CerebrumHost` registers this when its class is first touched, because it is the only
+         * object that holds a brain. The module graph already points that way: `portal:data`
+         * depends on `core:database` and not the reverse.
+         */
+        @Volatile
+        var flushVaultBeforeSeal: (() -> Unit)? = null
+            private set
+
+        /** Called by the object that owns the brain, at its class-initialisation time. */
+        fun registerVaultFlush(flush: () -> Unit) {
+            flushVaultBeforeSeal = flush
+        }
+
+        /**
+         * Remove the registration, so a test can exercise the absent case.
+         *
+         * INTERNAL RATHER THAN PUBLIC, because production never unregisters: there is one brain
+         * for the life of the process, and a snapshot taken when it is not running is exactly the
+         * case the refusal exists for. A test has to be able to put the world back into the
+         * "nothing can flush" state, and without this it could only do so by running first.
+         */
+        internal fun clearVaultFlushForTest() {
+            flushVaultBeforeSeal = null
+        }
     }
 
     /** How a rotation decides what to keep. */
@@ -828,10 +1128,20 @@ sealed class SnapshotWriteOutcome {
 
 /** What an extraction did. */
 sealed class SnapshotExtractOutcome {
+    /**
+     * [stagedCerebrumVault] is the vault written beside the database, or null when the
+     * snapshot carried none.
+     *
+     * NULL AND "EMPTY" ARE DIFFERENT. A version 1 snapshot, and a device that never booted
+     * a brain, both legitimately have no vault; an empty file would be a vault that holds
+     * nothing, and installing one over a real brain would wipe it silently. So absence is
+     * expressed as absence.
+     */
     data class Extracted(
         val staged: File,
         val manifest: SnapshotManifest,
         val verification: SnapshotVerification,
+        val stagedCerebrumVault: File? = null,
     ) : SnapshotExtractOutcome()
 
     data class Refused(val verification: SnapshotVerification) : SnapshotExtractOutcome()

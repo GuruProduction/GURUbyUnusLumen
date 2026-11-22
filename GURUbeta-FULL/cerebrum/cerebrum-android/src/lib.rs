@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock};
 
 use jni::objects::{JClass, JString};
-use jni::sys::{jint, jlong};
+use jni::sys::{jboolean, jint, jlong};
 use jni::JNIEnv;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -43,8 +43,35 @@ use cerebrum_server::{frame_types, Frame, FrameHeader, HEADER_SIZE};
 static LAST_ERROR: StdMutex<String> = StdMutex::new(String::new());
 
 fn record_error(error_text: &str) {
-    *LAST_ERROR.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
-        error_text.to_string();
+    *LAST_ERROR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = error_text.to_string();
+}
+
+/// Empty the last-error slot, so the next failure is described by its own cause.
+///
+/// THE DEFECT THIS EXISTS FOR, and it cost a red CI run.
+///
+/// `LAST_ERROR` is one string for the whole process and nothing ever cleared it. Kotlin's
+/// `bootOnce` reads it back immediately after a failed start and hands it to
+/// `attemptWasKeyOrphan`, which treats a `PassphraseRejected` in that string as permission to
+/// delete the Keystore alias and the vault. So a `PassphraseRejected` left in the slot by ANY
+/// earlier operation - a previous app launch, an earlier test in the same instrumentation
+/// process - became the diagnosis for an unrelated start failure, and the heal destroyed the
+/// key on the strength of a stale sentence.
+///
+/// The symptom was a device test failing intermittently with `pass missing, fail closed` at the
+/// point where it booted a restored vault with no caller-supplied passphrase. The vault was
+/// fine. The envelope had been deleted by a heal that fired on a message about something else.
+///
+/// A failed start now describes itself or says nothing, which is the only reading `bootOnce` can
+/// safely act on. A start that records no error is reported by Kotlin as the empty string, and
+/// an empty string is not a keyword match.
+fn clear_last_error() {
+    LAST_ERROR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
 }
 
 // ============================================================================
@@ -170,7 +197,7 @@ fn hex_to_bytes(hex_input: &str) -> Result<Vec<u8>, String> {
         return Ok(Vec::new());
     }
     let clean_value = hex_input.trim().to_lowercase();
-    if clean_value.len() % 2 != 0 {
+    if !clean_value.len().is_multiple_of(2) {
         return Err("odd-length hex payload".to_string());
     }
     let clean_bytes = clean_value.as_bytes();
@@ -206,8 +233,7 @@ async fn socket_read_frame(reader_stream: &mut UnixStream) -> Result<Option<Fram
         }
     }
     let frame_header_value = FrameHeader::decode(&header_space);
-    let raw_payload_len =
-        (frame_header_value.length as usize).saturating_sub(HEADER_SIZE);
+    let raw_payload_len = (frame_header_value.length as usize).saturating_sub(HEADER_SIZE);
     let mut body_buffer = vec![0u8; raw_payload_len];
     if raw_payload_len > 0 {
         reader_stream
@@ -226,7 +252,10 @@ fn payload_read_capture_to_string<T: std::fmt::Debug>(value: T) -> String {
     format!("{:?}", value)
 }
 
-async fn socket_write_frame(writer_stream: &mut UnixStream, frame_value: &Frame) -> Result<(), String> {
+async fn socket_write_frame(
+    writer_stream: &mut UnixStream,
+    frame_value: &Frame,
+) -> Result<(), String> {
     writer_stream
         .write_all(&frame_value.encode())
         .await
@@ -250,8 +279,7 @@ async fn android_connection_loop(
             return Ok(()); // client closed; the standard disconnect
         };
         let frame_request_value = one_frame.header.request_id;
-        let dispatch_value =
-            handle_frame(one_frame, Arc::clone(&working_target.state)).await;
+        let dispatch_value = handle_frame(one_frame, Arc::clone(&working_target.state)).await;
         let outgoing_frame = match dispatch_value {
             Ok(response_bytes) => {
                 Frame::new(frame_types::RESPONSE, frame_request_value, response_bytes)
@@ -259,12 +287,13 @@ async fn android_connection_loop(
             Err(ErrorResponse { message }) => Frame::new(
                 frame_types::ERROR,
                 frame_request_value,
-                serde_json::to_vec(&serde_json::json!({ "error": message }))
-                    .unwrap_or_default(),
+                serde_json::to_vec(&serde_json::json!({ "error": message })).unwrap_or_default(),
             ),
         };
         socket_write_frame(&mut active_stream, &outgoing_frame).await?;
-        working_target.requests_handled.fetch_add(1, Ordering::SeqCst);
+        working_target
+            .requests_handled
+            .fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -282,7 +311,7 @@ fn spawn_periodic_save_cell(brain_shared: Arc<AndroidBrain>) {
         interval_cell.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval_cell.tick().await;
-            if tick_brain.save_loop_alive.load(Ordering::SeqCst) == false {
+            if !tick_brain.save_loop_alive.load(Ordering::SeqCst) {
                 break;
             }
             if let Err(save_fail) = tick_brain.save_pass().await {
@@ -304,7 +333,7 @@ fn spawn_periodic_save_cell(brain_shared: Arc<AndroidBrain>) {
     runtime().spawn(async move {
         let mut gen_seen: u64 = 0;
         loop {
-            if tail_brain.save_loop_alive.load(Ordering::SeqCst) == false {
+            if !tail_brain.save_loop_alive.load(Ordering::SeqCst) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -388,17 +417,11 @@ fn spawn_socket_listener_cell(brain_shared: Arc<AndroidBrain>) {
 // boot internal
 // ============================================================================
 
-fn brain_boot(
-    data_dir_in: &str,
-    socket_value: &str,
-    pass_value: String,
-) -> Result<u64, String> {
+fn brain_boot(data_dir_in: &str, socket_value: &str, pass_value: String) -> Result<u64, String> {
     if pass_value.trim().is_empty() {
         return Err("cerebrum-android boot refused: empty passphrase (fail closed)".into());
     }
-    if let Some(already) =
-        brain_registered().filter(|registered_one| registered_one.running())
-    {
+    if let Some(already) = brain_registered().filter(|registered_one| registered_one.running()) {
         return Ok(already.started_at_unix_ms);
     }
 
@@ -426,10 +449,7 @@ fn brain_boot(
             Err(failure_value_in) => Err(format!("{:?}", failure_value_in)),
         }
     });
-    let restore_report = match restore_value {
-        Ok(report_value) => report_value,
-        Err(restore_fail) => return Err(restore_fail),
-    };
+    let restore_report = restore_value?;
     if !restore_report.clean() {
         eprintln!(
             "cerebrum-android restore: {} records, {} skipped{}",
@@ -522,6 +542,15 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
     socket_input: JString<'local>,
     pass_input: JString<'local>,
 ) -> jlong {
+    /*
+     * A START BEGINS WITH A CLEAN SLOT. Kotlin reads `lastError` straight after a failed start
+     * and treats a `PassphraseRejected` in it as permission to wipe the Keystore alias and the
+     * vault. Without this clear, a failure from any earlier operation in this process could be
+     * read as the cause of THIS start, and the heal would destroy a healthy key on a stale
+     * sentence. That is exactly what made a device test fail intermittently.
+     */
+    clear_last_error();
+
     let mut env_value_ref_borrow = env_value;
     let data_extract = jstring_to_owned_value(&mut env_value_ref_borrow, &data_input);
     let socket_extract = jstring_to_owned_value(&mut env_value_ref_borrow, &socket_input);
@@ -545,6 +574,8 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
         Ok(stamp_value) => stamp_value as jlong,
         Err(boot_failure) => {
             eprintln!("{}", boot_failure);
+            // The slot was cleared at the top of this call, so this is THIS start's failure
+            // and nothing else. A caller reading it back gets a cause, not a leftover.
             record_error(&boot_failure);
             0
         }
@@ -564,10 +595,16 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
         Ok(mut writer_slot) => writer_slot.take(),
         Err(_) => None,
     };
-    let Some(stop_brain_target) = target_brain else { return; };
+    let Some(stop_brain_target) = target_brain else {
+        return;
+    };
 
-    stop_brain_target.listener_alive.store(false, Ordering::SeqCst);
-    stop_brain_target.save_loop_alive.store(false, Ordering::SeqCst);
+    stop_brain_target
+        .listener_alive
+        .store(false, Ordering::SeqCst);
+    stop_brain_target
+        .save_loop_alive
+        .store(false, Ordering::SeqCst);
 
     let save_attempt = runtime().block_on(stop_brain_target.save_pass());
     if let Err(fail_to_run) = save_attempt {
@@ -580,15 +617,11 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
     let _ = std::fs::remove_file(&stale_socket_path);
 
     // The passphrase slot empties now. Zeroizing wrapper's own drop wipes it.
-    let wipe_outcome: Option<Option<Zeroizing<String>>> = match Arc::clone(
-        &stop_brain_target,
-    )
-    .passphrase_ram
-        .write()
-    {
-        Ok(mut holder_slot) => Some(holder_slot.take()),
-        Err(_) => None,
-    };
+    let wipe_outcome: Option<Option<Zeroizing<String>>> =
+        match Arc::clone(&stop_brain_target).passphrase_ram.write() {
+            Ok(mut holder_slot) => Some(holder_slot.take()),
+            Err(_) => None,
+        };
     let _ = wipe_outcome;
 }
 
@@ -600,8 +633,7 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
     _class_value: JClass<'local>,
 ) -> jint {
     // Some brain, and alive, or zero records.
-    let Some(living_target) = brain_registered().filter(|check_value| check_value.running())
-    else {
+    let Some(living_target) = brain_registered().filter(|check_value| check_value.running()) else {
         return 0;
     };
     match runtime().block_on(living_target.save_pass()) {
@@ -624,15 +656,16 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
 ) -> JString<'local> {
     let now_mutable_environment = env_value;
     let mut env_value_borrow_cell = now_mutable_environment;
-    let Some(current_brain) =
-        brain_registered().filter(|running_brain| running_brain.running())
+    let Some(current_brain) = brain_registered().filter(|running_brain| running_brain.running())
     else {
         let offline_json =
             serde_json::json!({ "error": "cerebrum brain is not running" }).to_string();
         return jni_string(env_value_borrow_cell, &offline_json);
     };
 
-    let Some(payload_hex_text) = jstring_to_owned_value(&mut env_value_borrow_cell, &payload_hex_input) else {
+    let Some(payload_hex_text) =
+        jstring_to_owned_value(&mut env_value_borrow_cell, &payload_hex_input)
+    else {
         let null_arg_json =
             serde_json::json!({ "error": "payload hex argument null or unreadable" }).to_string();
         return jni_string(env_value_borrow_cell, &null_arg_json);
@@ -650,12 +683,18 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
 
     let dispatched_result = runtime().block_on(async {
         handle_frame(
-            Frame::new(frame_type_value as u8, next_request_id(), payload_input_value),
+            Frame::new(
+                frame_type_value as u8,
+                next_request_id(),
+                payload_input_value,
+            ),
             Arc::clone(&current_brain.state),
         )
         .await
     });
-    current_brain.requests_handled.fetch_add(1, Ordering::SeqCst);
+    current_brain
+        .requests_handled
+        .fetch_add(1, Ordering::SeqCst);
 
     // Trailing-save arm: ANY successful mutating frame (curate/consolidate)
     // bumps the dirty count so the 10-second tail-save watcher comes in and
@@ -697,9 +736,110 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
     env_value: JNIEnv<'local>,
     _class_value: JClass<'local>,
 ) -> JString<'local> {
-    let error_text_value =
-        LAST_ERROR.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+    let error_text_value = LAST_ERROR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     jni_string(env_value, &error_text_value)
+}
+
+/// Ask whether this boot's failure was the vault's own header refusing the passphrase.
+///
+/// THE KEY-VAULT ORPHAN SIGNAL, ASKED AS ITS OWN QUESTION rather than found by searching prose.
+///
+/// Kotlin's heal path deletes the Keystore alias and the vault, so it must fire on exactly one
+/// condition. It used to search the last-error text for `PassphraseRejected`, and that string is
+/// a single process-wide slot: a rejection recorded by an earlier operation stayed there, so a
+/// later unrelated failure inherited it, the heal ran, and it destroyed a healthy key. A device
+/// test failed intermittently at exactly that point - booting a restored vault with no
+/// caller-supplied passphrase - because the envelope had been deleted by a heal triggered by a
+/// sentence about something else.
+///
+/// The slot is cleared at the start of every boot now, so this reads THIS attempt's failure.
+/// The substring test remains the mechanism, but it is over a string with one writer and one
+/// lifetime rather than over whatever happened to be in there.
+#[no_mangle]
+pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_cerebrumLastErrorWasPassphraseRejectionJNI<
+    'local,
+>(
+    _env_value: JNIEnv<'local>,
+    _class_value: JClass<'local>,
+) -> jboolean {
+    let was_rejection = LAST_ERROR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains("PassphraseRejected");
+    jboolean::from(was_rejection)
+}
+
+/// Empty the last-error slot on demand.
+///
+/// The start path already clears it, so this exists for a caller that has read the slot and
+/// wants the next read to describe a new attempt rather than the one it just handled.
+#[no_mangle]
+pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_cerebrumClearLastErrorJNI<
+    'local,
+>(
+    _env_value: JNIEnv<'local>,
+    _class_value: JClass<'local>,
+) {
+    clear_last_error();
+}
+
+// ============================================================================
+// build identity
+// ============================================================================
+
+/// The commit this cdylib was compiled from, as one searchable marker.
+///
+/// WHY THIS EXISTS. Until now the shipped `libcerebrum_android.so` was a
+/// hand-copied artefact, and nothing in any build could say which Cerebrum
+/// source it came from. Three merged fixes were missing from the released APK
+/// and no check caught it, because there was no way to ask the binary what it
+/// was. Gradle now compiles this crate, and this marker is how the packaged APK
+/// proves which revision landed inside it: the string is read back out of the
+/// shipped `.so` and compared with the revision being built.
+///
+/// A build with no revision available still compiles and reports "unknown",
+/// which is honest rather than plausible.
+///
+/// A bare 40-character hex string appears nowhere else in the library and is
+/// awkward to find in an extracted APK. The `cerebrum-build-rev=` prefix makes
+/// it greppable and unmistakable.
+///
+/// It is a single `concat!` constant rather than `format!` on purpose: a
+/// formatted string stores the prefix and the revision as two separate literals,
+/// so a scan for `cerebrum-build-rev=<rev>` finds the prefix and then nothing.
+/// Concatenation at compile time puts the whole marker in the binary as one run
+/// of bytes, which is what the APK provenance check reads.
+///
+/// THE TRAILING `;` IS LOAD-BEARING, and its absence failed a CI run.
+///
+/// A Rust string literal carries no NUL in `.rodata` once the linker has merged
+/// adjacent constants, so an unterminated marker sits immediately next to
+/// whatever literal follows it. The APK check reads the marker back with
+/// `[A-Za-z0-9._-]+`, which happily ran on past the end of the revision and
+/// produced `cerebrum-build-rev=<40 hex>payload` - the start of the next string
+/// in the binary. The comparison then failed even though the brain WAS built
+/// from the right commit, and reported it as a stale artefact.
+///
+/// `;` is outside that character class, so the scan stops exactly where the
+/// revision ends. The marker is now self-delimiting rather than relying on what
+/// the linker happens to place after it.
+const BUILD_IDENTITY: &str = concat!("cerebrum-build-rev=", env!("CEREBRUM_BUILD_REV"), ";");
+
+/// Report the Cerebrum source revision compiled into this library.
+///
+/// `CerebrumHost.buildIdentity()` calls this, and the native-provenance check
+/// compares it against the git revision the APK was built from.
+#[no_mangle]
+pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_cerebrumBuildIdentityJNI<
+    'local,
+>(
+    env_value: JNIEnv<'local>,
+    _class_value: JClass<'local>,
+) -> JString<'local> {
+    jni_string(env_value, BUILD_IDENTITY)
 }
 
 // ============================================================================
@@ -717,5 +857,111 @@ fn jni_string<'local>(env_value: JNIEnv<'local>, text_value: &str) -> JString<'l
                 .new_string("")
                 .expect("jvm cannot even allocate empty string; hard stop")
         }
+    }
+}
+
+#[cfg(test)]
+mod last_error_slot_tests {
+    use super::{clear_last_error, record_error};
+
+    /// The slot describes the attempt that just failed, and nothing older.
+    ///
+    /// THE DEFECT THAT FAILED A DEVICE TEST INTERMITTENTLY. This slot is one string for the
+    /// whole process. Kotlin reads it after a failed boot and treats a `PassphraseRejected` in
+    /// it as permission to delete the Keystore alias and the vault. Nothing cleared it, so a
+    /// rejection from an earlier operation was inherited by a later unrelated failure and the
+    /// heal destroyed a healthy key. The device test then found no envelope and reported
+    /// `pass missing, fail closed` against a vault that was never opened.
+    ///
+    /// Clearing at the start of each attempt is what makes a stale sentence unreachable. These
+    /// tests exist because the sequence, not the string, is the entire defect; a test that only
+    /// checked the error text would pass with the clear removed.
+    ///
+    /// THE TESTS SERIALISE ON A MUTEX because the slot is process-global and `cargo test` runs
+    /// tests in parallel. Without it, two of these would clear each other's writes and fail for
+    /// a reason that has nothing to do with the behaviour.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_lock<R>(body: impl FnOnce() -> R) -> R {
+        let _guard = SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        body()
+    }
+
+    #[test]
+    fn a_stale_rejection_is_not_readable_after_the_slot_is_cleared() {
+        with_lock(|| {
+            record_error("restore failed: PassphraseRejected");
+            assert!(
+                super::LAST_ERROR
+                    .lock()
+                    .unwrap()
+                    .contains("PassphraseRejected"),
+                "precondition: the slot holds a rejection",
+            );
+
+            clear_last_error();
+            assert!(
+                !super::LAST_ERROR
+                    .lock()
+                    .unwrap()
+                    .contains("PassphraseRejected"),
+                "after the clear, an earlier rejection must not be readable as this attempt's cause",
+            );
+        });
+    }
+
+    #[test]
+    fn a_later_failure_replaces_an_earlier_rejection_rather_than_joining_it() {
+        with_lock(|| {
+            record_error("restore failed: PassphraseRejected");
+            // A different failure on the next attempt, as the start path writes it.
+            record_error("cerebrum-android boot refused: empty passphrase (fail closed)");
+
+            let slot = super::LAST_ERROR.lock().unwrap().clone();
+            assert!(
+                !slot.contains("PassphraseRejected"),
+                "the slot must carry only the newest failure; got {slot:?}",
+            );
+        });
+    }
+}
+
+#[cfg(test)]
+mod build_identity_tests {
+    use super::BUILD_IDENTITY;
+
+    /// The marker terminates itself, so a scan cannot run into the next literal.
+    ///
+    /// THE DEFECT THIS GUARDS. The APK provenance check failed a CI run with
+    /// `cerebrum-build-rev=<40 hex>payload` because the marker had no terminator and the
+    /// scanner's character class ran on into the following string in `.rodata`. The
+    /// revision was correct; the bytes after it were not part of it. A delimiter outside
+    /// the scanned class ends the match exactly at the revision.
+    #[test]
+    fn the_marker_ends_where_the_revision_ends() {
+        assert_eq!(
+            BUILD_IDENTITY,
+            format!("cerebrum-build-rev={};", env!("CEREBRUM_BUILD_REV")),
+            "the marker must be the prefix, the revision and one terminator and nothing else",
+        );
+
+        // The scan the pipeline runs. It must recover exactly the revision.
+        let scanned: String = BUILD_IDENTITY
+            .chars()
+            .skip("cerebrum-build-rev=".len())
+            .take_while(|character| {
+                character.is_ascii_alphanumeric()
+                    || *character == '-'
+                    || *character == '_'
+                    || *character == '.'
+            })
+            .collect();
+        assert_eq!(
+            scanned,
+            env!("CEREBRUM_BUILD_REV"),
+            "a scan of the marker must recover the revision and stop at the terminator",
+        );
     }
 }

@@ -32,11 +32,7 @@ use crate::vocabulary::TokenVocabulary;
 /// let text = detokenize(&vocab, &tokens, "").unwrap();
 /// assert_eq!(text, "Hello world!");
 /// ```
-pub fn detokenize(
-    vocab: &TokenVocabulary,
-    tokens: &[u32],
-    separator: &str,
-) -> TokenResult<String> {
+pub fn detokenize(vocab: &TokenVocabulary, tokens: &[u32], separator: &str) -> TokenResult<String> {
     let mut parts = Vec::with_capacity(tokens.len());
 
     for &id in tokens {

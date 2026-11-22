@@ -178,7 +178,7 @@ impl DreamEngine {
         // survivor the smallest id in the pair, which is stable for the life of
         // the data.
         let mut ids: Vec<MemoryId> = self.memories.keys().copied().collect();
-        ids.sort_by(|a, b| a.0.cmp(&b.0));
+        ids.sort_by_key(|memory_id| memory_id.0);
         for i in 0..ids.len() {
             let id_a = ids[i];
             if absorbed.contains(&id_a) {
@@ -190,16 +190,17 @@ impl DreamEngine {
             };
 
             let mut best_match: Option<(MemoryId, f32)> = None;
-            for j in (i + 1)..ids.len() {
-                let id_b = ids[j];
+            // Iterate the candidate ids directly rather than indexing them by position: the
+            // position was only ever used to reach the id, so the loop says what it means.
+            for id_b in ids.iter().skip(i + 1).copied() {
                 if absorbed.contains(&id_b) {
                     continue;
                 }
                 if let Some(sim) = mem_a.similarity.iter().find(|(id, _)| *id == id_b) {
-                    if sim.1 >= threshold {
-                        if best_match.map(|(_, s)| sim.1 > s).unwrap_or(true) {
-                            best_match = Some((id_b, sim.1));
-                        }
+                    // One condition, not two nested: a candidate qualifies when it is at or
+                    // above the threshold AND better than the best so far.
+                    if sim.1 >= threshold && best_match.is_none_or(|(_, s)| sim.1 > s) {
+                        best_match = Some((id_b, sim.1));
                     }
                 }
             }
@@ -285,7 +286,7 @@ impl DreamEngine {
         // Sorted for the same reason as `merge`: the survivor must be a stable
         // choice, not whichever key the hash map happened to visit first.
         let mut ids: Vec<MemoryId> = self.memories.keys().copied().collect();
-        ids.sort_by(|a, b| a.0.cmp(&b.0));
+        ids.sort_by_key(|memory_id| memory_id.0);
         for i in 0..ids.len() {
             let id_a = ids[i];
             if absorbed.contains(&id_a) {
@@ -297,8 +298,7 @@ impl DreamEngine {
             };
 
             let mut duplicates = vec![id_a];
-            for j in (i + 1)..ids.len() {
-                let id_b = ids[j];
+            for id_b in ids.iter().skip(i + 1).copied() {
                 if absorbed.contains(&id_b) {
                     continue;
                 }

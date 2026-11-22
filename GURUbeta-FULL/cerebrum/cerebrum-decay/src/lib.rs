@@ -45,7 +45,7 @@ pub struct DecayConfig {
 impl Default for DecayConfig {
     fn default() -> Self {
         Self {
-            buffer_halflife: Duration::from_secs(60 * 60),             // 1 hour
+            buffer_halflife: Duration::from_secs(60 * 60), // 1 hour
             episodic_halflife: Duration::from_secs(60 * 60 * 24 * 30), // 30 days
             hibernation_threshold: 0.01,
             archive_threshold_days: 90,
@@ -207,7 +207,10 @@ impl DecayEngine {
             .entries
             .values()
             .filter(|e| {
-                e.is_archivable(self.config.archive_threshold_days, self.config.hibernation_threshold)
+                e.is_archivable(
+                    self.config.archive_threshold_days,
+                    self.config.hibernation_threshold,
+                )
             })
             .map(|e| e.id)
             .collect();
@@ -243,7 +246,10 @@ impl DecayEngine {
         self.entries
             .values()
             .filter(|e| {
-                e.is_archivable(self.config.archive_threshold_days, self.config.hibernation_threshold)
+                e.is_archivable(
+                    self.config.archive_threshold_days,
+                    self.config.hibernation_threshold,
+                )
             })
             .collect()
     }
@@ -333,7 +339,10 @@ mod tests {
 
         let report = engine.consolidate(Utc::now());
         assert!(report.buffer_to_episodic.contains(&id));
-        assert_eq!(engine.entries.get(&id).unwrap().layer, MemoryLayer::Episodic);
+        assert_eq!(
+            engine.entries.get(&id).unwrap().layer,
+            MemoryLayer::Episodic
+        );
     }
 
     #[test]
@@ -347,7 +356,10 @@ mod tests {
 
         let report = engine.consolidate(Utc::now());
         assert!(report.episodic_to_semantic.contains(&id));
-        assert_eq!(engine.entries.get(&id).unwrap().layer, MemoryLayer::Semantic);
+        assert_eq!(
+            engine.entries.get(&id).unwrap().layer,
+            MemoryLayer::Semantic
+        );
     }
 
     #[test]

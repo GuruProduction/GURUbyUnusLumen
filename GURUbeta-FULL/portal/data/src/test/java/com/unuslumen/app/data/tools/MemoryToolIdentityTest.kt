@@ -9,7 +9,9 @@ import com.unuslumen.app.domain.memory.ConversationMessage
 import com.unuslumen.app.domain.memory.ConversationThread
 import com.unuslumen.app.domain.memory.FactListing
 import com.unuslumen.app.domain.memory.MemoryFact
+import com.unuslumen.app.domain.memory.MemoryHistory
 import com.unuslumen.app.domain.memory.MemoryRepository
+import com.unuslumen.app.domain.memory.MemoryRevision
 import com.unuslumen.app.domain.memory.RetrievedContext
 import com.unuslumen.app.domain.memory.ToolResultSearchHit
 import com.unuslumen.app.domain.model.AiMessage
@@ -60,7 +62,40 @@ class MemoryToolIdentityTest {
      */
     private class BrainLikeRepository : MemoryRepository {
         val stored = LinkedHashMap<String, MemoryFact>()
+        /** Retired rows, which a live listing cannot show and dedup must still see. */
+        val archived = LinkedHashMap<String, MemoryFact>()
+
+        /**
+         * The append-only trail, keyed by memory id.
+         *
+         * KEPT SEPARATELY FROM [stored] BECAUSE THAT IS WHAT THE BRAIN DOES. The trail
+         * outlives the row, which is the entire reason a history read can answer for a
+         * deleted memory, so a fake that read the live rows would make the one behaviour
+         * worth proving impossible to prove.
+         */
+        val trail = LinkedHashMap<String, MutableList<MemoryRevision>>()
+
         var brainReachable = true
+
+        private fun record(
+            id: String,
+            kind: String,
+            content: String,
+            superseded: String?,
+            reason: String,
+            actor: String = "guru.role=",
+        ) {
+            trail.getOrPut(id) { mutableListOf() }.add(
+                MemoryRevision(
+                    kind = kind,
+                    content = content,
+                    superseded = superseded,
+                    reason = reason,
+                    actor = actor,
+                    recordedAt = "2026-11-21T00:00:00Z",
+                )
+            )
+        }
 
         override suspend fun persistFacts(facts: List<MemoryFact>): List<MemoryFact> {
             val out = mutableListOf<MemoryFact>()
@@ -68,6 +103,7 @@ class MemoryToolIdentityTest {
                 val id = digestOf(one.fact)
                 val row = one.copy(id = id, domain = one.category.lowercase())
                 stored[id] = row
+                record(id, "Created", row.fact, null, "")
                 out.add(row)
             }
             return out
@@ -105,7 +141,30 @@ class MemoryToolIdentityTest {
                 subtopic = subtopic.ifBlank { "general" },
             )
             stored[id] = row
+            record(id, "Created", content, null, rationale)
             return row
+        }
+
+        /**
+         * The trail, read exactly as the brain serves it: from the event log, including
+         * revisions of a row that has since been retired.
+         */
+        override suspend fun getFactHistory(factId: String): MemoryHistory? {
+            if (!brainReachable) return null
+            val revisions = trail[factId] ?: return null
+            val live = stored[factId]
+            val retired = archived[factId]
+            return MemoryHistory(
+                memoryId = factId,
+                lifecycle = when {
+                    live != null -> "Active"
+                    retired != null -> "Archived"
+                    else -> "Archived"
+                },
+                category = (live ?: retired)?.category.orEmpty(),
+                everRetired = revisions.any { it.kind == "Deleted" } || retired != null,
+                revisions = revisions.toList(),
+            )
         }
 
         override suspend fun getAllFacts(): List<MemoryFact> = stored.values.toList()
@@ -126,11 +185,59 @@ class MemoryToolIdentityTest {
         override suspend fun getFactsByCategory(category: String): List<MemoryFact> =
             stored.values.filter { it.category.equals(category, ignoreCase = true) }
 
+        /**
+         * The retired rows, which this fake keeps separate from the live ones.
+         *
+         * `getArchivedFactsForDeduplication` was added to MemoryRepository for the
+         * anti-resurrection fix, and a fake that does not implement it stops the whole
+         * unit suite compiling. Answering it with the live rows would be worse than
+         * answering with nothing: the method exists precisely because the live rows are
+         * the wrong comparison set.
+         */
+        override suspend fun getArchivedFactsForDeduplication(): List<MemoryFact> =
+            archived.values.toList()
+
+        /**
+         * Update IN PLACE, keeping the id, exactly as the brain's Update op does.
+         *
+         * A fake that implemented this as a delete plus a write would hide the very defect
+         * the production change exists to remove, so it overwrites the stored row under the
+         * same key and leaves the identity alone.
+         */
+        override suspend fun updateFact(
+            factId: String,
+            newContent: String,
+            category: String,
+            confidence: Float,
+            reason: String,
+        ): MemoryFact {
+            val existing = stored[factId] ?: error("no such fact: $factId")
+            val updated = existing.copy(
+                fact = newContent,
+                category = category,
+                confidence = confidence,
+            )
+            stored[factId] = updated
+            // The superseded text is recorded, which is the one thing an update exists to
+            // do beyond changing the row.
+            record(factId, "Updated", newContent, existing.fact, reason)
+            return updated
+        }
+
         override suspend fun searchFacts(query: String, category: String?): List<MemoryFact> =
             stored.values.filter { it.fact.contains(query, ignoreCase = true) }
 
+        /**
+         * Retire a row rather than erasing it, exactly as the brain's No-Delete
+         * doctrine does. That is what makes the retired set meaningful, and it is what
+         * the anti-resurrection rule is about: the row still exists, so a repeat write
+         * of the same content resolves to it.
+         */
         override suspend fun deleteFact(factId: String) {
-            stored.remove(factId)
+            stored.remove(factId)?.let { retired ->
+                archived[factId] = retired
+                record(factId, "Deleted", retired.fact, null, "guru deleteFact: brain archive")
+            }
         }
 
         override suspend fun markFactRecalled(factId: String) = Unit
@@ -333,7 +440,20 @@ class MemoryToolIdentityTest {
     }
 
     @Test
-    fun `update resolves the same ids as delete and reports the new id`() = runBlocking {
+    fun `update keeps the identity and rewrites the row in place`() = runBlocking {
+        /*
+         * THE CONTRACT THIS ASSERTS USED TO BE THE OPPOSITE, AND THE OLD VERSION WAS THE BUG.
+         *
+         * It used to require that an update produced a NEW id and archived the old row. That
+         * is not an update: an id is the hash of the content, so writing new text creates a
+         * different row and the old one is archived with no record of what it said. The
+         * update-history mechanism exists so "what did this memory say before" has an answer,
+         * and the old path never produced the event that makes the answer possible.
+         *
+         * The identity now survives, so every id a caller was given still resolves, and the
+         * superseded text is the brain's business rather than something lost between two
+         * writes.
+         */
         val repository = BrainLikeRepository()
         val executor = MemoryToolExecutor(repository)
         val originalContent = "the landlord has not fixed the boiler"
@@ -353,15 +473,24 @@ class MemoryToolIdentityTest {
         )
 
         assertTrue("update must accept a search id: ${payloadOf(updateResult)}", updateResult.success)
-        val newId = brainIdFor(updatedContent)
         assertTrue(
-            "update must report the stored id for the new content: ${payloadOf(updateResult)}",
-            payloadOf(updateResult).contains(newId),
+            "the row must keep its id, so every id the caller holds still resolves: ${payloadOf(updateResult)}",
+            payloadOf(updateResult).contains(originalId),
         )
-        assertTrue("the new row must be stored", repository.stored.containsKey(newId))
+        assertEquals(
+            "the text is rewritten in place",
+            updatedContent,
+            repository.stored.getValue(originalId).fact,
+        )
+        assertEquals(
+            "and the confidence the caller asked for is the one stored",
+            0.95f,
+            repository.stored.getValue(originalId).confidence,
+            0.0001f,
+        )
         assertFalse(
-            "the old row must be archived, not left live beside the new one",
-            repository.stored.containsKey(originalId),
+            "no second row is created for the same memory: that is what made an update a delete plus a write",
+            repository.stored.containsKey(brainIdFor(updatedContent)),
         )
     }
 
@@ -418,6 +547,133 @@ class MemoryToolIdentityTest {
         assertTrue(
             "the failure must say the brain is not running: ${payloadOf(listResult)}",
             payloadOf(listResult).contains("not running", ignoreCase = true),
+        )
+    }
+
+    /**
+     * The history tool reaches the trail through the tool surface, and it carries the
+     * superseded text, the reason and the actor.
+     *
+     * THE DEFECT THIS HOLDS SHUT. Every piece of this existed and was unreachable: the
+     * engine writes an append-only event per mutation, `EventStore::history_for` answers
+     * from it, the HISTORY frame dispatches, and `CerebrumBrainApi.history` parses it. What
+     * did not exist was a DOOR, so "what did this memory say before" was stored and
+     * unreadable. This drives the tool the model actually calls.
+     */
+    @Test
+    fun `memoryHistory reports each revision with the text it replaced`() = runBlocking {
+        val repository = BrainLikeRepository()
+        val executor = MemoryToolExecutor(repository)
+        val original = "the boiler service is booked for tuesday"
+        val id = brainIdFor(original)
+        repository.stored[id] = MemoryFact(
+            id = id,
+            category = "knowledge",
+            fact = original,
+            confidence = 0.9f,
+            extractedDate = 1L,
+        )
+        repository.trail[id] = mutableListOf(
+            MemoryRevision("Created", original, null, "", "guru.role=", "2026-11-21T10:00:00Z"),
+        )
+
+        executor.execute(
+            MemoryToolDefinitions.UPDATE_MEMORY_FACT,
+            mapOf(
+                "factId" to id,
+                "fact" to "the boiler service is booked for wednesday",
+                "confidence" to 0.95,
+            ),
+        )
+
+        val historyResult = executor.execute(
+            MemoryToolDefinitions.MEMORY_HISTORY,
+            mapOf("factId" to id),
+        )
+        val payload = payloadOf(historyResult)
+        assertTrue("history must succeed: $payload", historyResult.success)
+        assertTrue(
+            "the trail must carry the original text as the superseded one: $payload",
+            payload.contains(original),
+        )
+        assertTrue(
+            "and the new text: $payload",
+            payload.contains("the boiler service is booked for wednesday"),
+        )
+        assertTrue("the revision count must be stated: $payload", payload.contains("\"revisionCount\":2"))
+        assertTrue("the lifecycle must be stated: $payload", payload.contains("\"lifecycle\":\"Active\""))
+    }
+
+    /**
+     * A DELETED MEMORY STILL ANSWERS ITS HISTORY, which is the case the read exists for.
+     *
+     * Every other verb refuses a retired row. Asking who deleted something and what it said
+     * is a question that can only be asked after the deletion, so a history read that
+     * behaved like the others would be a read nobody could ever use.
+     */
+    @Test
+    fun `memoryHistory still answers after the memory is deleted`() = runBlocking {
+        val repository = BrainLikeRepository()
+        val executor = MemoryToolExecutor(repository)
+        val content = "the spare key is under the blue pot"
+        val id = brainIdFor(content)
+        repository.stored[id] = MemoryFact(
+            id = id,
+            category = "knowledge",
+            fact = content,
+            confidence = 0.9f,
+            extractedDate = 1L,
+        )
+        repository.trail[id] = mutableListOf(
+            MemoryRevision("Created", content, null, "", "guru.role=", "2026-11-21T10:00:00Z"),
+        )
+
+        val deleteResult = executor.execute(
+            MemoryToolDefinitions.DELETE_MEMORY_FACT,
+            mapOf("factId" to id),
+        )
+        assertTrue("precondition: the delete must land: ${payloadOf(deleteResult)}", deleteResult.success)
+        assertFalse("precondition: the row must be gone from the live set", repository.stored.containsKey(id))
+
+        val historyResult = executor.execute(
+            MemoryToolDefinitions.MEMORY_HISTORY,
+            mapOf("factId" to id),
+        )
+        val payload = payloadOf(historyResult)
+        assertTrue("a deleted memory must still answer its history: $payload", historyResult.success)
+        assertTrue("the deletion must be recorded: $payload", payload.contains("Deleted"))
+        assertTrue("and the retirement flagged: $payload", payload.contains("\"everRetired\":true"))
+        assertTrue("with the text it held: $payload", payload.contains(content))
+    }
+
+    @Test
+    fun `memoryHistory refuses a non brain id without touching the brain`() = runBlocking {
+        val repository = BrainLikeRepository()
+        val executor = MemoryToolExecutor(repository)
+
+        val result = executor.execute(
+            MemoryToolDefinitions.MEMORY_HISTORY,
+            mapOf("factId" to "5b39855b-2e02-4b15-8079-f756566ea52d"),
+        )
+        assertFalse("a uuid is not a brain id: ${payloadOf(result)}", result.success)
+        assertTrue(
+            "the refusal must name the id shape: ${payloadOf(result)}",
+            payloadOf(result).contains("Not a memory id"),
+        )
+    }
+
+    @Test
+    fun `memoryHistory reports an id with no trail rather than inventing one`() = runBlocking {
+        val repository = BrainLikeRepository()
+        val executor = MemoryToolExecutor(repository)
+
+        val result = executor.execute(
+            MemoryToolDefinitions.MEMORY_HISTORY,
+            mapOf("factId" to brainIdFor("this was never stored or recorded")),
+        )
+        assertFalse(
+            "an id with no row and no trail must fail rather than return an empty history: ${payloadOf(result)}",
+            result.success,
         )
     }
 

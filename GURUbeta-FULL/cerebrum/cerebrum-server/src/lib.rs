@@ -13,7 +13,10 @@ pub mod handler;
 pub mod hardening;
 pub mod lexical;
 pub mod persistence;
+pub mod retrieval_policy;
 pub mod state;
+
+pub use retrieval_policy::{Eligibility, RetrievalPolicy};
 
 use std::net::SocketAddr;
 
@@ -37,10 +40,20 @@ pub mod frame_types {
     /// text. Search answers a relevance question and cannot answer "what do you
     /// hold"; this frame can.
     pub const LIST: u8 = 0x08;
+
+    /// One memory's recorded history: every revision, what each replaced, and why.
+    ///
+    /// WHY A FRAME RATHER THAN A TOOL READ. `EventStore::history_for` and
+    /// `previous_content` were merged, tested and reachable by nothing: no frame existed,
+    /// so the only caller was a unit test. Mutation audit was stored and unusable, which is
+    /// the same shape as the other defects here: a mechanism that exists in the code and
+    /// nowhere in the behaviour. A memory's history is a question a person asks about their
+    /// own data, so it needs a door.
+    pub const HISTORY: u8 = 0x09;
     pub const RESPONSE: u8 = 0x80;
     pub const ERROR: u8 = 0x81;
 
-    pub const ALL: [u8; 10] = [
+    pub const ALL: [u8; 11] = [
         QUERY,
         CURATE,
         RETRIEVE,
@@ -49,6 +62,7 @@ pub mod frame_types {
         CONSOLIDATE,
         PREFETCH,
         LIST,
+        HISTORY,
         RESPONSE,
         ERROR,
     ];
@@ -128,7 +142,9 @@ impl Frame {
             return Err(ServerError::InvalidFrame("incomplete frame".to_string()));
         }
         if total_len < HEADER_SIZE {
-            return Err(ServerError::InvalidFrame("length below header size".to_string()));
+            return Err(ServerError::InvalidFrame(
+                "length below header size".to_string(),
+            ));
         }
 
         let payload = bytes[HEADER_SIZE..total_len].to_vec();
@@ -181,7 +197,9 @@ impl CerebrumServer {
         let listener = TcpListener::bind(&self.config.bind_address)
             .await
             .map_err(|e| ServerError::BindFailed(e.to_string()))?;
-        let addr = listener.local_addr().map_err(|e| ServerError::BindFailed(e.to_string()))?;
+        let addr = listener
+            .local_addr()
+            .map_err(|e| ServerError::BindFailed(e.to_string()))?;
         self.listener = Some(listener);
         self.running = true;
         Ok(addr)

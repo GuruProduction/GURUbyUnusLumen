@@ -95,7 +95,11 @@ impl WaveletTree {
     /// Create a WaveletTree with a known alphabet size.
     pub fn with_alphabet(values: &[usize], alphabet_size: usize) -> Self {
         if values.is_empty() {
-            let bps = if alphabet_size <= 1 { 1 } else { (alphabet_size - 1).ilog2() as usize + 1 };
+            let bps = if alphabet_size <= 1 {
+                1
+            } else {
+                (alphabet_size - 1).ilog2() as usize + 1
+            };
             return Self {
                 alphabet_size: alphabet_size.max(2),
                 bits_per_symbol: bps,
@@ -188,7 +192,8 @@ impl WaveletTree {
             } else {
                 // Left child: partition is at the beginning
                 let zeros_before = self.levels[level].rank(pos, false) as usize;
-                let partition_zeros_start = self.levels[level].rank(partition_start, false) as usize;
+                let partition_zeros_start =
+                    self.levels[level].rank(partition_start, false) as usize;
                 partition_start = partition_zeros_start;
                 pos = zeros_before;
             }

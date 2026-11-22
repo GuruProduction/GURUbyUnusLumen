@@ -63,15 +63,12 @@ fn legacy_request_and_op_shapes() {
     let store = serde_json::from_str::<StoreMemoryRequest>(r#"{"content":"hello"}"#).unwrap();
     assert_eq!(store.content, "hello");
 
-    let search: cerebrum_http::SearchMemoriesRequest = serde_json::from_str(
-        r#"{"query":"rust","radius":10,"limit":5}"#,
-    )
-    .unwrap();
+    let search: cerebrum_http::SearchMemoriesRequest =
+        serde_json::from_str(r#"{"query":"rust","radius":10,"limit":5}"#).unwrap();
     assert_eq!(search.query, "rust");
     assert_eq!(search.radius, Some(10));
 
-    let consolidate: ConsolidateRequest =
-        serde_json::from_str(r#"{"domain":"code"}"#).unwrap();
+    let consolidate: ConsolidateRequest = serde_json::from_str(r#"{"domain":"code"}"#).unwrap();
     assert_eq!(consolidate.domain, Some("code".to_string()));
 
     // CurateOp round-trips its real enum shape via serde on bytes.
@@ -80,7 +77,7 @@ fn legacy_request_and_op_shapes() {
         reason: "battery".to_string(),
     };
     let parsed_op: CurateOp = serde_json::to_value(&delete_op)
-        .and_then(|value| serde_json::from_value(value))
+        .and_then(serde_json::from_value)
         .unwrap();
     match parsed_op {
         CurateOp::Delete { memory_id, .. } => assert_eq!(memory_id, MemoryId([9u8; 32])),
@@ -129,7 +126,7 @@ async fn dispatch_store_then_search_and_get() {
         assert_eq!(locked.event_store.count(), 1);
         assert_eq!(locked.query_engine.hot_cache.len(), 1);
         assert_eq!(locked.experience_store.count(), 1);
-        assert!(locked.decay_engine.entries.len() >= 1);
+        assert!(!locked.decay_engine.entries.is_empty());
     }
 
     let tree_entries = { state.lock().await.context_tree.clone_entries() };
@@ -154,16 +151,26 @@ async fn dispatch_store_then_search_and_get() {
         .cloned()
         .unwrap_or_default()
         .iter()
-        .filter_map(|hit| hit.get("content").and_then(|c| c.as_str()).map(|c| c.to_string()))
+        .filter_map(|hit| {
+            hit.get("content")
+                .and_then(|c| c.as_str())
+                .map(|c| c.to_string())
+        })
         .collect();
     assert!(
-        contents.iter().any(|text_value| text_value.contains("rust is memorable")),
+        contents
+            .iter()
+            .any(|text_value| text_value.contains("rust is memorable")),
         "search must return real curated content; got {:?}",
         contents
     );
 
     let got = dispatch_request(
-        HttpRequest { method: "GET".to_string(), path: format!("/memory/{}", encode_memory_id(&memory_id)), body: None },
+        HttpRequest {
+            method: "GET".to_string(),
+            path: format!("/memory/{}", encode_memory_id(&memory_id)),
+            body: None,
+        },
         state.clone(),
     )
     .await;
@@ -174,7 +181,11 @@ async fn dispatch_store_then_search_and_get() {
 async fn dispatch_unknown_route_carries_404() {
     let state = http_state();
     let response = dispatch_request(
-        HttpRequest { method: "POST".to_string(), path: "/no/such/route".to_string(), body: None },
+        HttpRequest {
+            method: "POST".to_string(),
+            path: "/no/such/route".to_string(),
+            body: None,
+        },
         state,
     )
     .await;

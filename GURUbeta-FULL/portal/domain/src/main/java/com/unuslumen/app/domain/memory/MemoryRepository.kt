@@ -71,6 +71,48 @@ interface MemoryRepository {
      */
     suspend fun listFacts(category: String? = null): FactListing
 
+    /**
+     * The RETIRED facts, for the deduplication pass only.
+     *
+     * The brain's id for a memory is the hash of its content, so a sentence written a
+     * second time resolves to the row a deletion archived. A dedup pass that could
+     * see only live rows therefore treated a deleted fact as novel, and the write it
+     * proposed landed on its own retired row. The brain now refuses to reactivate a
+     * retired id, so the outcome changed from "silently undeleted" to "the pass
+     * fails", which is still wrong.
+     *
+     * This read lets the pass conclude "already known, do not write". It exists for
+     * that one caller: an ordinary listing must never show a retired row, and no tool
+     * surfaces it.
+     */
+    suspend fun getArchivedFactsForDeduplication(): List<MemoryFact>
+
+    /**
+     * Update a fact IN PLACE, keeping its id, and record what it replaced.
+     *
+     * Separate from a delete-plus-write because that is not an update: an id is the hash of
+     * the content, so writing new text creates a DIFFERENT row and deleting the old one
+     * archives it silently. The brain's own Update op is the only path that keeps the
+     * identity and records the superseded text, and this is it.
+     */
+    suspend fun updateFact(
+        factId: String,
+        newContent: String,
+        category: String,
+        confidence: Float,
+        reason: String,
+    ): MemoryFact
+
+    /**
+     * One memory's revision trail, or null when the brain does not answer for that id.
+     *
+     * THE READ THAT OUTLIVES THE ROW. Every other path here refuses a retired memory, and
+     * this one must not: "who deleted it, when, and what did it say" is asked precisely once
+     * the memory is gone. Null means the brain did not answer, so a caller can tell an
+     * unreachable brain from a memory with no recorded history.
+     */
+    suspend fun getFactHistory(factId: String): MemoryHistory?
+
     suspend fun getFactsByCategory(category: String): List<MemoryFact>
     suspend fun searchFacts(query: String, category: String? = null): List<MemoryFact>
     suspend fun markFactRecalled(factId: String)

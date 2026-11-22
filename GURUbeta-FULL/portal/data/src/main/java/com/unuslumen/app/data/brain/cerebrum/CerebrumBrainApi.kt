@@ -145,8 +145,34 @@ object CerebrumBrainApi {
         val cross_references: Int = 0,
     )
 
-    /** one search hit from the SEARCH frame; id is 64-hex lower, score 0..1f real. */
-    data class BrainHit(val idHex: String, val score: Float, val content: String)
+    /**
+     * One search hit from the SEARCH frame: id, score, body, and the row's metadata.
+     *
+     * THE METADATA IS ON THE WIRE NOW, AND THAT WAS THE DEFECT. A hit used to carry
+     * only `{memory_id, score, content}`, so the Kotlin boundary had to invent a
+     * category and an origin, and it invented constants that were wrong in a way no
+     * test caught: the category `memory` matched no real category, and the origin
+     * `cerebrum` was the storage backend rather than the writer. Listing and retrieve
+     * read the real values from the same rows, so the three read paths disagreed.
+     *
+     * The defaults are empty rather than a plausible stand-in, so a brain that predates
+     * these fields produces an obviously absent value rather than a confident wrong one.
+     */
+    data class BrainHit(
+        val idHex: String,
+        val score: Float,
+        val content: String,
+        val domain: String = "",
+        val topic: String = "",
+        val subtopic: String = "",
+        val confidence: Float = 1.0f,
+        val provenance: String = "",
+        val lifecycle: String = "",
+        val layer: String = "",
+        val strength: Float = 0f,
+        val ownerAgentId: String = "",
+        val visibility: String = "",
+    )
 
     /**
      * One retrieved memory's real shape from the RETRIEVE wire.
@@ -185,6 +211,14 @@ object CerebrumBrainApi {
         val confidence: Float,
         val rationale: String,
         val updatedAt: String,
+        /** Active, Hibernated or Archived, as the tree holds it. */
+        val lifecycle: String = "",
+        /** BUFFER, EPISODIC or SEMANTIC, empty when decay has no row. */
+        val layer: String = "",
+        /** The stable id of the agent that wrote this row, empty when none did. */
+        val ownerAgentId: String = "",
+        /** Shared, Owned or OwnedAndShared, from the store rather than parsed from prose. */
+        val visibility: String = "",
     )
 
     /**
@@ -208,12 +242,14 @@ object CerebrumBrainApi {
     private fun dispatchOrNull(frameType: Int, jsonPayloadText: String): String? {
         val payloadBytes = jsonPayloadText.toByteArray(StandardCharsets.UTF_8)
         val hexIn = bytesToHex(payloadBytes)
-        val responseHex = CerebrumHost.executeFrame(frameType, hexIn) ?: return null
+        // The host owns the last hop so a test can substitute it and prove what this object
+        // would actually have sent. Every byte before that hop is the production encoder.
+        val responseHex = CerebrumHost.dispatchFrame(frameType, hexIn) ?: return null
         if (responseHex.isEmpty()) return null
         return String(hexToBytes(responseHex), StandardCharsets.UTF_8)
     }
 
-    private fun brainDown(): Boolean = !CerebrumHost.isRunning()
+    private fun brainDown(): Boolean = !CerebrumHost.isRunningForDispatch()
 
     // --------------------------------------------------------------------
     // 1. store/curate (real CURATE frame; upsert semantics inside)
@@ -397,6 +433,49 @@ object CerebrumBrainApi {
         "{\"Delete\":{\"memory_id\":[" + memoryIdArrayJson(idHexLower) + "],\"reason\":\"" +
             jsonEscape(reasonText) + "\"}}"
 
+    /**
+     * CurateOp::Update wire shape: the ONLY operation that records the text it replaced.
+     *
+     * WHY THIS EXISTS AT ALL. Production updates did not use it. `updateMemoryFact` wrote the
+     * new text as an Upsert and then deleted the old id, which is a delete plus a create
+     * wearing an update's name. Because the brain derives an id from the content, that left
+     * the OLD row archived with no record of what it said, and the superseded text was gone.
+     * The update-history mechanism was merged, shipped and unreachable: `handle_search`,
+     * `history_for` and `previous_content` could all answer "what did this say before", and
+     * nothing in the app ever produced the event that makes the answer possible.
+     *
+     * `changes` is a PartialEntry, so only the fields the caller actually set are sent. An
+     * absent field keeps the row's existing value, which is what makes this an update rather
+     * than a replacement.
+     */
+    fun updateJsonOpByHex(
+        idHexLower: String,
+        newContent: String,
+        category: String,
+        confidence: Float,
+        reasonText: String,
+    ): String = buildString {
+        append("{\"Update\":{\"memory_id\":[").append(memoryIdArrayJson(idHexLower)).append("],")
+        append("\"changes\":{")
+        append("\"content\":\"").append(jsonEscape(newContent)).append("\",")
+        /*
+         * THE CATEGORY RIDES IN THE DOMAIN, because that is where a category lives: the
+         * brain's hierarchy is domain/topic/subtopic and the domain is the category. Sending
+         * the domain here is what lets an update that changes the category be found by the
+         * new one, rather than staying filed where it was.
+         */
+        append("\"domain\":\"").append(jsonEscape(category.trim().lowercase().ifBlank { "knowledge" })).append("\",")
+        /*
+         * THE CONFIDENCE RIDES INSIDE PROVENANCE, because the core wire entry has no
+         * confidence field. Leaving it out would silently preserve the old confidence on an
+         * update whose whole point was to change it.
+         */
+        append("\"provenance\":\"").append(jsonEscape(provenanceLabelFor("guru update", confidence))).append("\",")
+        append("\"rationale\":\"").append(jsonEscape("guru updateMemoryFact: $category")).append("\"")
+        append("},")
+        append("\"reason\":\"").append(jsonEscape(reasonText)).append("\"}}")
+    }
+
     fun curateJsonOps(oneOpsJson: List<String>): CurateAck = run {
         if (brainDown()) {
             return CurateAck(success = false, createdInEngine = 0, rawCounts = zeroCounts, perItem = emptyList(), raw = "brain down")
@@ -473,7 +552,23 @@ object CerebrumBrainApi {
             val hexId = hexBuilder.toString()
             val hitScore = hitObject["score"]?.jsonPrimitive?.content?.toFloatOrNull() ?: continue
             val hitContent = hitObject["content"]?.jsonPrimitive?.content ?: continue
-            hits.add(BrainHit(hexId, hitScore, hitContent))
+            hits.add(
+                BrainHit(
+                    idHex = hexId,
+                    score = hitScore,
+                    content = hitContent,
+                    domain = hitObject["domain"]?.jsonPrimitive?.content ?: "",
+                    topic = hitObject["topic"]?.jsonPrimitive?.content ?: "",
+                    subtopic = hitObject["subtopic"]?.jsonPrimitive?.content ?: "",
+                    confidence = hitObject["confidence"]?.jsonPrimitive?.content?.toFloatOrNull() ?: 1.0f,
+                    provenance = hitObject["provenance"]?.jsonPrimitive?.content ?: "",
+                    lifecycle = hitObject["lifecycle"]?.jsonPrimitive?.content ?: "",
+                    layer = hitObject["layer"]?.jsonPrimitive?.content ?: "",
+                    strength = hitObject["strength"]?.jsonPrimitive?.content?.toFloatOrNull() ?: 0f,
+                    ownerAgentId = hitObject["owner_agent_id"]?.jsonPrimitive?.content ?: "",
+                    visibility = hitObject["visibility"]?.jsonPrimitive?.content ?: "",
+                )
+            )
         }
         return hits
     }
@@ -560,18 +655,30 @@ object CerebrumBrainApi {
     }
 
     /**
-     * Enumerate live memories from the brain, newest first.
+     * Enumerate memories from the brain, newest first.
      *
      * `domainFilter` blank means everything. `limit` of zero means the brain's
      * own unbounded listing, which the tool lane uses because a caller asking
      * what it remembers must be shown all of it.
      *
+     * `includeArchived` selects the RETIRED rows instead of the live ones, and there
+     * is one caller that needs it: the deduplication pass. The brain's id for a
+     * memory is the hash of its content, so writing a sentence a second time resolves
+     * to the row a delete archived. A pass that can only see live rows cannot tell
+     * that a fact is already known, and the write it proposes lands on that retired
+     * row. Seeing the archive lets it conclude "already known, do not write".
+     *
      * Returns null when the brain is down, so a caller can report "the brain is
      * not running" rather than an empty memory that looks like a real zero.
      */
-    fun listFacts(domainFilter: String = "", limit: Int = 0): ListResult? {
+    fun listFacts(
+        domainFilter: String = "",
+        limit: Int = 0,
+        includeArchived: Boolean = false,
+    ): ListResult? {
         if (brainDown()) return null
-        val requestJson = "{\"domain\":\"" + jsonEscape(domainFilter) + "\",\"limit\":" + limit + "}"
+        val requestJson = "{\"domain\":\"" + jsonEscape(domainFilter) + "\",\"limit\":" + limit +
+            ",\"include_archived\":" + includeArchived + "}"
         val responseText = dispatchOrNull(FRAME_LIST, requestJson) ?: return null
         val responseRoot = runCatching { wire.parseToJsonElement(responseText).jsonObject }
             .getOrNull() ?: return null
@@ -596,6 +703,10 @@ object CerebrumBrainApi {
                     confidence = rowObject["confidence"]?.jsonPrimitive?.content?.toFloatOrNull() ?: 1.0f,
                     rationale = rowObject["rationale"]?.jsonPrimitive?.content ?: "",
                     updatedAt = rowObject["updated_at"]?.jsonPrimitive?.content ?: "",
+                    lifecycle = rowObject["lifecycle"]?.jsonPrimitive?.content ?: "",
+                    layer = rowObject["layer"]?.jsonPrimitive?.content ?: "",
+                    ownerAgentId = rowObject["owner_agent_id"]?.jsonPrimitive?.content ?: "",
+                    visibility = rowObject["visibility"]?.jsonPrimitive?.content ?: "",
                 )
             )
         }
@@ -610,14 +721,70 @@ object CerebrumBrainApi {
     // 4. dream (consolidation). Same call, real engine dispatch everywhere.
     // --------------------------------------------------------------------
 
-    fun runDreamConsolidation(): Boolean {
-        if (brainDown()) return false
-        val dreamReply = dispatchOrNull(FRAME_CONSOLIDATE, "{}") ?: return false
-        if (!dreamReply.contains("\"decayed_all\"")) {
-            Log.w(TAG, "dream: odd response shape: ${dreamReply.take(300)}")
+    fun runDreamConsolidation(): Boolean = consolidateWithReport() != null
+
+    /**
+     * One consolidation, with the engine's own report rather than a bare boolean.
+     *
+     * THE BOOLEAN PROVED ALMOST NOTHING. It answered whether the frame was dispatched, which is
+     * true for a handler that ran every step and for one that returned immediately. The handler
+     * returns a report saying what each stage did, and it was discarded at the last hop, so no
+     * caller anywhere could tell a pass that decayed, archived, hibernated and reconciled
+     * entities from a pass that changed nothing.
+     *
+     * Null means the brain did not answer, which is a different fact from a pass that ran and
+     * found nothing to do.
+     */
+    fun consolidateWithReport(): ConsolidationReport? {
+        if (brainDown()) return null
+        val reply = dispatchOrNull(FRAME_CONSOLIDATE, "{}") ?: return null
+        val root = runCatching { wire.parseToJsonElement(reply).jsonObject }.getOrNull()
+            ?: return null
+        fun count(key: String): Int = root[key]?.jsonPrimitive?.content?.toIntOrNull() ?: 0
+        if (!root.containsKey("decayed_all")) {
+            Log.w(TAG, "dream: response carries no report: ${reply.take(300)}")
         }
-        return true
+        return ConsolidationReport(
+            decayedAll = count("decayed_all"),
+            bufferPromotions = count("buffer_promotions"),
+            episodicPromotions = count("episodic_promotions"),
+            archived = count("archived"),
+            mergedIntoDwm = count("merged_into_dwm"),
+            removedFromDwm = count("removed_from_dwm"),
+            eventsEnriched = count("events_enriched"),
+            entitiesReconciled = count("entities_reconciled"),
+            aliasesRecorded = count("aliases_recorded"),
+        )
     }
+
+    /**
+     * What one consolidation pass did, stage by stage.
+     *
+     * EVERY FIELD IS A KEY THE HANDLER WRITES, named identically, so a reader can find it in
+     * `handle_consolidate` and check this decode still matches. A key the engine stops writing
+     * decodes as zero, which reads the same as a stage that did nothing; the only way to tell
+     * those apart is the handler itself, and that is where to look rather than here.
+     */
+    data class ConsolidationReport(
+        /** Decay rows the sweep visited. */
+        val decayedAll: Int,
+        /** Buffer to Episodic promotions this pass. */
+        val bufferPromotions: Int,
+        /** Episodic to Semantic promotions this pass. */
+        val episodicPromotions: Int,
+        /** Memories the decay engine retired, which the handler also publishes to the tree. */
+        val archived: Int,
+        /** Rows a dream merge wrote into the DWM. */
+        val mergedIntoDwm: Int,
+        /** Source rows a merge retired after their content was absorbed. */
+        val removedFromDwm: Int,
+        /** Events the enricher processed. */
+        val eventsEnriched: Int,
+        /** Same-referent entity label nodes reconciled in the graph sweep. */
+        val entitiesReconciled: Int,
+        /** Aliases recorded, so a merged spelling still resolves. */
+        val aliasesRecorded: Int,
+    )
 
     // --------------------------------------------------------------------
     // 5. graph query. Real wire, the engine's own shape; hits mirror SEARCH.
@@ -681,6 +848,212 @@ object CerebrumBrainApi {
     }
 
     // --------------------------------------------------------------------
+    // 6. QUERY — the tiered pipeline, dispatched rather than merely declared
+    // --------------------------------------------------------------------
+
+    /**
+     * One result of a QUERY frame: what the tiered retrieval produced.
+     *
+     * QUERY IS NOT SEARCH, AND THAT IS WHY IT IS A SEPARATE FRAME. SEARCH is two lexical
+     * lanes fused by reciprocal rank, which answers "which stored words match these
+     * words". QUERY runs the tiered pipeline: a hot-cache hit, then a DWM pass, then a
+     * graph traversal, then a vector fallback, stopping at the first tier that returns
+     * anything, and it reports WHICH TIER answered. That is a different question with a
+     * different cost profile, and the brain has always been able to answer it.
+     *
+     * IT WAS DEFINED AND NEVER DISPATCHED. `FRAME_QUERY` existed as a constant and no
+     * Kotlin code ever sent it, so the whole tiered pipeline was dead weight inside the
+     * shipped library: reachable over the unix socket by the CLI, unreachable by the app.
+     */
+    data class QueryOutcome(
+        /** The ids the chosen tier produced, in the engine's order. */
+        val memoryIds: List<String>,
+        /** The engine's own confidence in the result, 0..1. */
+        val confidence: Float,
+        /** Which retrieval tier answered: HOT_CACHE, DWM_SEARCH, GRAPH_TRAVERSAL, etc. */
+        val tierUsed: String,
+        /** How long the engine spent, as it measured it. */
+        val latencyMs: Long,
+    )
+
+    /**
+     * Run one QUERY frame through the tiered pipeline.
+     *
+     * Returns null when the brain is down, so a caller can report an unreachable brain
+     * rather than an empty memory: the two are different facts about the machine.
+     *
+     * An invalid or empty query is refused here rather than sent, because the engine
+     * would answer a blank query with whatever its tiers happen to hold and that answer
+     * would be indistinguishable from a real one.
+     */
+    fun query(queryText: String, maxTokens: Int = 2048): QueryOutcome? {
+        if (brainDown()) return null
+        if (queryText.isBlank()) return null
+        val askJson = "{\"query_type\":\"Semantic\",\"text\":\"" + jsonEscape(queryText) +
+            "\",\"budget\":{\"max_tokens\":" + maxTokens + "}}"
+        val replyBody = dispatchOrNull(FRAME_QUERY, askJson) ?: return null
+        val root = runCatching { wire.parseToJsonElement(replyBody).jsonObject }.getOrNull()
+            ?: return null
+
+        val resultIds = root["results"]?.jsonArray.orEmpty().mapNotNull { element ->
+            hexFromByteArray(element)
+        }
+        return QueryOutcome(
+            memoryIds = resultIds,
+            confidence = root["confidence"]?.jsonPrimitive?.content?.toFloatOrNull() ?: 0f,
+            tierUsed = root["tier_used"]?.jsonPrimitive?.content ?: "",
+            latencyMs = root["latency_ms"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
+        )
+    }
+
+    // --------------------------------------------------------------------
+    // 7. PREFETCH — registered memories made available before they are asked for
+    // --------------------------------------------------------------------
+
+    /**
+     * What a PREFETCH frame produced: the ids it believes are about to be needed.
+     *
+     * [hit] is the engine's own verdict on whether the trigger matched anything it holds,
+     * which is different from an empty list because the engine distinguishes "nothing
+     * matched" from "nothing registered".
+     */
+    data class PrefetchOutcome(
+        val memoryIds: List<String>,
+        val hit: Boolean,
+    )
+
+    /**
+     * Ask the engine to surface what a named specialist, topic or event will need.
+     *
+     * THE TRIGGER SHAPE IS THE ENGINE'S. `PrefetchTrigger` is an externally tagged enum,
+     * so the wire is `{"SpecialistActivated":"doctor"}` and not a `{kind, value}` pair.
+     * Sending a shape it does not parse is how a frame appears to succeed while
+     * answering nothing.
+     *
+     * `kind` is one of specialist, topic or event; anything else is refused here rather
+     * than sent as a variant the engine will reject.
+     */
+    fun prefetch(kind: String, value: String): PrefetchOutcome? {
+        if (brainDown()) return null
+        if (value.isBlank()) return null
+        val variant = when (kind.trim().lowercase()) {
+            "specialist" -> "SpecialistActivated"
+            "topic" -> "TopicShift"
+            "event" -> "ScheduledEvent"
+            else -> return null
+        }
+        val askJson = "{\"" + variant + "\":\"" + jsonEscape(value) + "\"}"
+        val replyBody = dispatchOrNull(FRAME_PREFETCH, askJson) ?: return null
+        val root = runCatching { wire.parseToJsonElement(replyBody).jsonObject }.getOrNull()
+            ?: return null
+        return PrefetchOutcome(
+            memoryIds = root["prefetched"]?.jsonArray.orEmpty().mapNotNull { element ->
+                hexFromByteArray(element)
+            },
+            hit = root["hit"]?.jsonPrimitive?.content == "true",
+        )
+    }
+
+    /**
+     * The 64-hex form of one serialised MemoryId, or null when the element is not one.
+     *
+     * The engine serialises a `MemoryId` as its 32-byte array, so an id arrives as a JSON
+     * array of numbers. Reading it as a string yields a number and every id comes back
+     * wrong, which is the bug the graph parser already had to fix once.
+     */
+    private fun hexFromByteArray(element: kotlinx.serialization.json.JsonElement): String? {
+        val bytes = runCatching { element.jsonArray }.getOrNull() ?: return null
+        if (bytes.size != 32) return null
+        val builder = StringBuilder(64)
+        for (byteElement in bytes) {
+            val value = byteElement.jsonPrimitive.content.toIntOrNull() ?: return null
+            builder.append("%02x".format(value and 0xFF))
+        }
+        return builder.toString()
+    }
+
+    // --------------------------------------------------------------------
+    // 9. HISTORY — the one read that survives retirement
+    // --------------------------------------------------------------------
+
+    /** One recorded revision of a memory, as the brain's trail reports it. */
+    data class HistoryRevision(
+        /** Created, Updated, Merged, Consolidated or Archived. */
+        val kind: String,
+        /** What the memory said during this revision. */
+        val content: String,
+        /** What this revision replaced, null for a create. */
+        val superseded: String?,
+        /** The caller's stated reason, empty when none was given. */
+        val reason: String,
+        /** The provenance label the write carried. */
+        val actor: String,
+        /** RFC 3339, when the brain recorded it. */
+        val recordedAt: String,
+    )
+
+    /**
+     * The recorded history of one memory.
+     *
+     * [everRetired] is read from the trail rather than inferred from the current state, so a
+     * memory that was deleted and later re-created under the same content hash still reports
+     * that it was once retired.
+     */
+    data class History(
+        val memoryId: String,
+        val lifecycle: String,
+        val category: String,
+        val revisions: List<HistoryRevision>,
+        val everRetired: Boolean,
+    )
+
+    /**
+     * Read every event the brain ever recorded about one memory.
+     *
+     * THE DOOR THAT DID NOT EXIST. `EventStore::history_for` and the superseded text in
+     * `memory.updated` were merged, tested and reachable by nothing: no frame carried the
+     * question, so the only caller was a unit test. A person asking "what did this memory say
+     * before, who changed it, and why" had no way to ask.
+     *
+     * A DELETED OR ARCHIVED MEMORY ANSWERS HERE. That is deliberate and is the one place it
+     * happens: the question is asked precisely when the memory is gone.
+     */
+    fun history(idHexLower: String): History? {
+        if (brainDown()) return null
+        if (idHexLower.length != 64) return null
+        val requestJson = "{\"memory_id\":[" + memoryIdArrayJson(idHexLower) + "]}"
+        val replyBody = dispatchOrNull(FRAME_HISTORY, requestJson) ?: return null
+        val root = runCatching { wire.parseToJsonElement(replyBody).jsonObject }.getOrNull()
+            ?: return null
+        val revisions = root["revisions"]?.jsonArray.orEmpty().mapNotNull { element ->
+            val row = runCatching { element.jsonObject }.getOrNull() ?: return@mapNotNull null
+            HistoryRevision(
+                kind = row["kind"]?.jsonPrimitive?.content ?: "",
+                content = row["content"]?.jsonPrimitive?.content ?: "",
+                // A JSON null superseded and a missing one mean the same thing here: nothing
+                // was replaced. Both become null rather than the string "null".
+                superseded = row["superseded"]?.let { value ->
+                    if (value.toString().equals("null", ignoreCase = true)) null
+                    else runCatching { value.jsonPrimitive.content }.getOrNull()
+                },
+                reason = row["reason"]?.jsonPrimitive?.content ?: "",
+                actor = row["actor"]?.jsonPrimitive?.content ?: "",
+                recordedAt = row["recorded_at"]?.jsonPrimitive?.content ?: "",
+            )
+        }
+        return History(
+            memoryId = hexFromByteArray(root["memory_id"] ?: return null) ?: idHexLower,
+            lifecycle = root["lifecycle"]?.jsonPrimitive?.content ?: "",
+            category = root["category"]?.jsonPrimitive?.content ?: "",
+            revisions = revisions,
+            everRetired = root["ever_retired"]?.jsonPrimitive?.content == "true",
+        )
+    }
+
+    /** The frame type for a history request. */
+    internal const val FRAME_HISTORY = 9
+
+    // --------------------------------------------------------------------
     // frame constants; identical bytes to the JNI exports contract
     // --------------------------------------------------------------------
     internal const val FRAME_QUERY = 1
@@ -689,6 +1062,7 @@ object CerebrumBrainApi {
     internal const val FRAME_SEARCH = 4
     internal const val FRAME_GRAPH_TRAVERSE = 5
     internal const val FRAME_CONSOLIDATE = 6
+    internal const val FRAME_PREFETCH = 7
     internal const val FRAME_LIST = 8
 
     fun lastErrorOrNull(): String? = runCatching { CerebrumHost.lastError() }.getOrNull()?.let { text ->

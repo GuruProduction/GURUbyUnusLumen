@@ -200,19 +200,27 @@ fn prepare_store(body: Option<serde_json::Value>) -> PreparedFrame {
     };
     let parsed: StoreMemoryRequest = match serde_json::from_value(raw) {
         Ok(parsed) => parsed,
-        Err(e) => return Err(HttpResponse::error(400, &format!("store body malformed: {}", e))),
+        Err(e) => {
+            return Err(HttpResponse::error(
+                400,
+                &format!("store body malformed: {}", e),
+            ))
+        }
     };
     let ops = store_to_curate_ops(parsed);
     let ops_values = ops
         .iter()
-        .map(|op| serde_json::to_value(op))
+        .map(serde_json::to_value)
         .collect::<Result<Vec<serde_json::Value>, _>>();
     let Ok(values) = ops_values else {
         return Err(HttpResponse::error(500, "serialize failure (ops)"));
     };
     match serde_json::to_vec(&values) {
         Ok(bytes) => Ok((cerebrum_server::frame_types::CURATE, bytes)),
-        Err(e) => Err(HttpResponse::error(500, &format!("serialize failure: {}", e))),
+        Err(e) => Err(HttpResponse::error(
+            500,
+            &format!("serialize failure: {}", e),
+        )),
     }
 }
 
@@ -222,7 +230,10 @@ fn prepare_curate(body: Option<serde_json::Value>) -> PreparedFrame {
     };
     match serde_json::to_vec(&raw) {
         Ok(bytes) => Ok((cerebrum_server::frame_types::CURATE, bytes)),
-        Err(e) => Err(HttpResponse::error(500, &format!("serialize failure: {}", e))),
+        Err(e) => Err(HttpResponse::error(
+            500,
+            &format!("serialize failure: {}", e),
+        )),
     }
 }
 
@@ -232,12 +243,20 @@ fn prepare_search(body: Option<serde_json::Value>) -> PreparedFrame {
     };
     let parsed: SearchMemoriesRequest = match serde_json::from_value(raw) {
         Ok(parsed) => parsed,
-        Err(e) => return Err(HttpResponse::error(400, &format!("search body malformed: {}", e))),
+        Err(e) => {
+            return Err(HttpResponse::error(
+                400,
+                &format!("search body malformed: {}", e),
+            ))
+        }
     };
     let shape = json!({ "query": parsed.query, "limit": parsed.limit.unwrap_or(10) });
     match serde_json::to_vec(&shape) {
         Ok(bytes) => Ok((cerebrum_server::frame_types::SEARCH, bytes)),
-        Err(e) => Err(HttpResponse::error(500, &format!("serialize failure: {}", e))),
+        Err(e) => Err(HttpResponse::error(
+            500,
+            &format!("serialize failure: {}", e),
+        )),
     }
 }
 
@@ -245,7 +264,10 @@ fn prepare_get(id: &MemoryId) -> PreparedFrame {
     let shape = json!({ "memory_id": id.0.to_vec(), "level": "Shallow" });
     match serde_json::to_vec(&shape) {
         Ok(bytes) => Ok((cerebrum_server::frame_types::RETRIEVE, bytes)),
-        Err(e) => Err(HttpResponse::error(500, &format!("serialize failure: {}", e))),
+        Err(e) => Err(HttpResponse::error(
+            500,
+            &format!("serialize failure: {}", e),
+        )),
     }
 }
 
@@ -255,14 +277,18 @@ fn prepare_graph_traverse(body: Option<serde_json::Value>) -> PreparedFrame {
     };
     match serde_json::to_vec(&raw) {
         Ok(bytes) => Ok((cerebrum_server::frame_types::GRAPH_TRAVERSE, bytes)),
-        Err(e) => Err(HttpResponse::error(500, &format!("serialize failure: {}", e))),
+        Err(e) => Err(HttpResponse::error(
+            500,
+            &format!("serialize failure: {}", e),
+        )),
     }
 }
 
 fn prepare_consolidate(body: Option<serde_json::Value>) -> PreparedFrame {
     let parse_attempt: Result<ConsolidateRequest, String> = match body {
-        Some(raw) => serde_json::from_value(raw)
-            .map_err(|e| format!("consolidate body malformed: {}", e)),
+        Some(raw) => {
+            serde_json::from_value(raw).map_err(|e| format!("consolidate body malformed: {}", e))
+        }
         None => Ok(ConsolidateRequest { domain: None }),
     };
     let shape = match parse_attempt {
@@ -271,16 +297,16 @@ fn prepare_consolidate(body: Option<serde_json::Value>) -> PreparedFrame {
     };
     match serde_json::to_vec(&json!({ "domain": shape.domain })) {
         Ok(bytes) => Ok((cerebrum_server::frame_types::CONSOLIDATE, bytes)),
-        Err(e) => Err(HttpResponse::error(500, &format!("serialize failure: {}", e))),
+        Err(e) => Err(HttpResponse::error(
+            500,
+            &format!("serialize failure: {}", e),
+        )),
     }
 }
 
 /// Dispatch one HTTP-shaped request against the real brain. Real engine
 /// mutation via shared CerebrumState; no sockets opened by dispatch.
-pub async fn dispatch_request(
-    request: HttpRequest,
-    state_handle: SharedHttpState,
-) -> HttpResponse {
+pub async fn dispatch_request(request: HttpRequest, state_handle: SharedHttpState) -> HttpResponse {
     use cerebrum_server::Frame;
 
     let route = request.route();
@@ -330,6 +356,9 @@ fn store_to_curate_ops(store_req: StoreMemoryRequest) -> Vec<CurateOp> {
         relations: Vec::new(),
         provenance: "http".to_string(),
         rationale: store_reason_text(),
+        // The HTTP front door is an automatic lane, so no agent owns these facts.
+        owner_agent_id: String::new(),
+        visibility: String::new(),
         created_at: rfc3339_now(),
         modified_at: rfc3339_now(),
     };
@@ -365,7 +394,12 @@ fn deterministic_id_of_content(content: &str) -> MemoryId {
     lane2.write(content.as_bytes());
     lane3.write_u64(0x5F3FA71E19C0DEAEu64.rotate_right(3) ^ content.len() as u64);
     lane3.write(content.as_bytes());
-    let lanes = [lane0.finish(), lane1.finish(), lane2.finish(), lane3.finish()];
+    let lanes = [
+        lane0.finish(),
+        lane1.finish(),
+        lane2.finish(),
+        lane3.finish(),
+    ];
     let mut bytes = [0u8; 32];
     for lane_index_index in 0..4usize {
         for byte_lane in 0..8usize {

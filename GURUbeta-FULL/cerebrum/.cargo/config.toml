@@ -1,27 +1,72 @@
+# Cargo configuration for the Cerebrum brain's Android targets.
+#
+# 16 KB PAGE-SIZE ALIGNMENT, FOR EVERY ABI (issue 13).
+#
+# Android 15+ enforces 16 KB pages on real hardware, and the loader refuses a PT_LOAD
+# segment whose p_align is 4 KB. That is not a warning on newer hardware: the app either
+# runs in compatibility mode or does not install. Every Android target here carries the flag
+# explicitly rather than relying on an NDK default that varies by minor version.
+#
+# IT USED TO COVER ONLY TWO OF THE FOUR TARGETS. arm64 and x86_64 had it; armeabi-v7a and x86
+# did not, and nothing noticed, because the old alignment test read a committed arm64 binary
+# in jniLibs and the 32-bit builds were never inspected. Once the Gradle task started
+# compiling all four ABIs, the test found armeabi-v7a at 0x1000 on every PT_LOAD segment,
+# which is an app that will not install on a 16 KB device.
+#
+# WHY THE LINKERS ARE NOT ABSOLUTE PATHS ANY MORE. They named one machine's SDK
+# installation, which meant the file could only build on that machine: a fresh clone and
+# every CI runner would fail to link. The linker is resolved from the environment instead:
+#
+#   CARGO_TARGET_<TRIPLE>_LINKER   set by gradle/cerebrum-native.gradle.kts for the NDK
+#                                 version the app pins, and by .github/workflows/ci.yml
+#                                 on a runner.
+#   CC_<triple with underscores>   the same value, for crates that build C code.
+#
+# That keeps one source of truth for the NDK version: `ndkVersion` in app/build.gradle.kts.
+
+# Every target gets the same rustflags, because every target ends up in the same APK and the
+# loader applies the same rule to all of them. rustflags here apply to the whole workspace
+# when these targets are selected, which is intended: every crate inside the cdylib agrees.
+#
+# It is a plain key INSIDE the target table. A nested [target.<triple>.rustflags] table and a
+# dotted key outside the table are both rejected by cargo with "expected a string, but found
+# a table", because the triple itself must hold a table of settings rather than a mixture of
+# shapes.
+# WHAT THE FLAGS ARE, AND WHAT THEY ARE NOT.
+#
+# -z max-page-size=16384 aligns every PT_LOAD segment, and that is the check the loader
+# refuses below. The packaged library measures 0x4000 on all four PT_LOAD segments for all
+# four ABIs.
+#
+# GNU_RELRO carries p_align 1 in this library, and that is NOT a defect: the ELF spec gives
+# that segment no page alignment, and every NDK-built library in this APK measures the same
+# (libquickjs, libpathshim, libjnidispatch). -z common-page-size=16384 was added while
+# chasing Android's "Unknown error" for this library and changed nothing at all, which is
+# what proved the RELRO alignment was never the problem. It is kept because it is correct
+# and costs nothing; it is NOT the cause of, nor the fix for, that warning.
 [target.aarch64-linux-android]
-linker = "/Users/unuslumen/Library/Android/sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android29-clang"
-ar = "/Users/unuslumen/Library/Android/sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar"
-rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
-# 16 KB page-size alignment (issue 13).
-#
-# Android 15+ enforces 16 KB pages on real hardware, and the system refuses to
-# load a PT_LOAD segment whose p_align is 4 KB. NDK r27 defaults the Android
-# targets to 16 KB, but this repo's own library is the one artefact we can prove
-# and control, so the flag is passed explicitly rather than relying on a default
-# that varies by NDK minor version. Measured before: libcerebrum_android.so came
-# out at 0x1000 (4 KB) on every PT_LOAD segment, which is what raised the
-# compatibility warning.
-#
-# rustflags here apply to the whole workspace when these targets are selected,
-# which is intended: every crate that ends up inside the cdylib must agree.
-#
-# It is a plain key INSIDE the target table. A nested [target.<triple>.rustflags]
-# table and a dotted key outside the table are both rejected by cargo with
-# "expected a string, but found a table", because the triple itself must hold a
-# table of settings rather than a mixture of shapes.
+rustflags = [
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+    "-C", "link-arg=-Wl,-z,common-page-size=16384",
+]
+
+[target.armv7-linux-androideabi]
+rustflags = [
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+    "-C", "link-arg=-Wl,-z,common-page-size=16384",
+]
+
 [target.x86_64-linux-android]
-linker = "/Users/unuslumen/Library/Android/sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/darwin-x86_64/bin/x86_64-linux-android29-clang"
-rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+rustflags = [
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+    "-C", "link-arg=-Wl,-z,common-page-size=16384",
+]
+
+[target.i686-linux-android]
+rustflags = [
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+    "-C", "link-arg=-Wl,-z,common-page-size=16384",
+]
 
 [net]
 retry = 3

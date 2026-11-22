@@ -49,17 +49,12 @@ pub struct SubtopicNode {
 // ============================================================================
 
 /// Lifecycle state of a context entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EntryLifecycle {
+    #[default]
     Active,
     Hibernated,
     Archived,
-}
-
-impl Default for EntryLifecycle {
-    fn default() -> Self {
-        EntryLifecycle::Active
-    }
 }
 
 /// A typed relation between two context entries, carrying a weight.
@@ -89,10 +84,34 @@ impl Default for Provenance {
     }
 }
 
+/// Who may read a memory that an agent wrote.
+///
+/// WHY THIS IS A FIELD AND NOT A STRING INSIDE PROVENANCE. Ownership and visibility used to
+/// live only in the provenance label, parsed back out with a marker grammar. That works, and
+/// it is how the app does it today, but it means the store cannot answer "give me agent X's
+/// private facts" without reading every row and parsing its prose. A filter that depends on
+/// parsing a string is a filter over a convention, not over data, and the convention can be
+/// typed into by any writer that composes a label by hand.
+///
+/// These are the two facts a permission decision needs, so they get their own slots.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EntryVisibility {
+    /// Written by the person or by an automatic lane: the shared scope, owned by nobody. That
+    /// is what an entry which says nothing about visibility means, so it is the default.
+    #[default]
+    Shared,
+    /// Written by an agent for itself. Only that agent reads it through an own-only scope.
+    Owned,
+    /// Written by an agent and explicitly offered to the shared scope.
+    OwnedAndShared,
+}
+
 /// A single curated memory entry in the Context Tree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextEntry {
     pub id: MemoryId,
+    /// The category. The brain's hierarchy calls it a domain, and it is the slot a category
+    /// filter partitions on.
     pub domain: String,
     pub topic: String,
     pub subtopic: String,
@@ -101,6 +120,18 @@ pub struct ContextEntry {
     pub provenance: Provenance,
     pub rationale: String,
     pub lifecycle: EntryLifecycle,
+    /// The stable id of the agent that wrote this entry, empty when no agent did.
+    ///
+    /// TYPED AND SEPARATE FROM PROVENANCE, because it is what a permission decision keys on.
+    /// A slug is derived and a name is editable, so neither can be an identity, and a label
+    /// that carries an id inside prose cannot be filtered without parsing prose.
+    #[serde(default)]
+    pub owner_agent_id: String,
+    /// Whether the owner offered this to the shared scope. Meaningless when the owner is
+    /// empty, and `#[serde(default)]` so a row written before this field existed still loads
+    /// as a shared, unowned fact rather than failing to deserialize.
+    #[serde(default)]
+    pub visibility: EntryVisibility,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -125,6 +156,10 @@ impl ContextEntry {
             provenance: Provenance::default(),
             rationale: String::new(),
             lifecycle: EntryLifecycle::Active,
+            // An entry created without saying who owns it belongs to nobody, which is the
+            // person's shared memory. A caller that means an agent's private fact says so.
+            owner_agent_id: String::new(),
+            visibility: EntryVisibility::Shared,
             created_at: now,
             updated_at: now,
         }
@@ -220,10 +255,11 @@ impl ContextTree {
         let old = self
             .entries
             .get(&entry.id)
-            .ok_or_else(|| CurationError::NotFound(entry.id))?
+            .ok_or(CurationError::NotFound(entry.id))?
             .clone();
 
-        if old.domain != entry.domain || old.topic != entry.topic || old.subtopic != entry.subtopic {
+        if old.domain != entry.domain || old.topic != entry.topic || old.subtopic != entry.subtopic
+        {
             self.remove_from_hierarchy(&old);
             let domain = self
                 .root
@@ -506,7 +542,9 @@ impl<'a> CurateExecutor<'a> {
                     return Err(CurationError::NotFound(*id));
                 }
             }
-            CurateOperation::Merge { source_ids, target, .. } => {
+            CurateOperation::Merge {
+                source_ids, target, ..
+            } => {
                 if source_ids.is_empty() {
                     return Err(CurationError::Invalid(
                         "merge requires at least one source id".into(),
@@ -522,7 +560,39 @@ impl<'a> CurateExecutor<'a> {
                     }
                 }
             }
-            CurateOperation::Upsert { .. } => {}
+            /*
+             * AN ORDINARY UPSERT MAY NOT RESURRECT A RETIRED MEMORY.
+             *
+             * This is the defect that let a deleted fact come back. The brain's id
+             * for a memory is the hash of its content, so "write this sentence"
+             * resolves to the SAME id as the row a deletion archived. Upsert then
+             * replaced that archived row wholesale, and a replaced row carries the
+             * lifecycle the caller supplied, which is Active. So deleting a fact and
+             * later writing the same fact again silently undid the deletion, with
+             * nothing reported at any layer.
+             *
+             * The deduplication pass made that likely rather than merely possible: it
+             * read the live listing, which excludes archived rows, so a deleted fact
+             * looked novel, and the write that followed landed on its own tombstone.
+             *
+             * REFUSED, not reactivated. Deliberate restoration is not a capability
+             * this brain offers, and inventing one here would claim something nobody
+             * asked for. The refusal names the reason, so a caller that genuinely
+             * wants the content back knows it must be written under a new identity
+             * rather than pretending the old one never retired.
+             */
+            CurateOperation::Upsert { entry, .. } => {
+                if let Some(existing) = self.tree.find(entry.id) {
+                    if existing.lifecycle == EntryLifecycle::Archived {
+                        return Err(CurationError::Invalid(format!(
+                            "memory {} is archived and an upsert will not bring it back: the id is the \
+                             hash of the content, so writing the same words again resolves to the \
+                             retired row, and this path does not reactivate a retired memory",
+                            hex_id(&entry.id)
+                        )));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -543,13 +613,15 @@ impl<'a> CurateExecutor<'a> {
                     detail: reason,
                 })
             }
-            CurateOperation::Update { id, entry, reason, .. } => {
+            CurateOperation::Update {
+                id, entry, reason, ..
+            } => {
                 let old = self
                     .tree
                     .find(id)
                     .ok_or(CurationError::NotFound(id))?
                     .clone();
-                rollback.push(RollbackAction::Restore(old));
+                rollback.push(RollbackAction::Restore(Box::new(old)));
                 self.tree.update(entry)?;
                 Ok(CurateResult {
                     memory_id: id,
@@ -561,7 +633,7 @@ impl<'a> CurateExecutor<'a> {
                 let id = entry.id;
                 let status = if self.tree.find(id).is_some() {
                     let old = self.tree.find(id).unwrap().clone();
-                    rollback.push(RollbackAction::Restore(old));
+                    rollback.push(RollbackAction::Restore(Box::new(old)));
                     CurateStatus::Updated
                 } else {
                     rollback.push(RollbackAction::Remove(id));
@@ -621,7 +693,7 @@ impl<'a> CurateExecutor<'a> {
 
                 let old_target = self.tree.find(target.id).cloned();
                 if let Some(old) = old_target {
-                    rollback.push(RollbackAction::Restore(old));
+                    rollback.push(RollbackAction::Restore(Box::new(old)));
                 } else {
                     rollback.push(RollbackAction::Remove(target.id));
                 }
@@ -634,8 +706,12 @@ impl<'a> CurateExecutor<'a> {
                 })
             }
             CurateOperation::Delete { id, reason, .. } => {
-                let old = self.tree.find(id).ok_or(CurationError::NotFound(id))?.clone();
-                rollback.push(RollbackAction::Restore(old));
+                let old = self
+                    .tree
+                    .find(id)
+                    .ok_or(CurationError::NotFound(id))?
+                    .clone();
+                rollback.push(RollbackAction::Restore(Box::new(old)));
                 let mut entry = self.tree.remove(id).ok_or(CurationError::NotFound(id))?;
                 entry.lifecycle = EntryLifecycle::Archived;
                 entry.touch();
@@ -657,7 +733,9 @@ impl<'a> CurateExecutor<'a> {
                     self.tree.remove(id);
                 }
                 RollbackAction::Restore(entry) => {
-                    self.tree.upsert(entry);
+                    // Boxed at construction so the enum stays pointer-sized; the tree wants
+                    // the entry itself, so the box is unwrapped here.
+                    self.tree.upsert(*entry);
                 }
                 RollbackAction::RestoreMany(entries) => {
                     for entry in entries {
@@ -669,10 +747,18 @@ impl<'a> CurateExecutor<'a> {
     }
 }
 
+/// One undo step for a curate operation.
+///
+/// `Restore` holds the single largest member of any variant here: a whole `ContextEntry`, which
+/// is several strings and a `MemoryId`. `RestoreMany` is already a heap vector of those, so it is
+/// small. Leaving `Restore` inline made every `RollbackAction` in a rollback list as big as a
+/// context entry, which the compiler flags as a large size difference between variants. Boxing
+/// the one large payload keeps the enum pointer-sized and costs an allocation only when a
+/// restore actually happens.
 #[derive(Debug, Clone)]
 enum RollbackAction {
     Remove(MemoryId),
-    Restore(ContextEntry),
+    Restore(Box<ContextEntry>),
     RestoreMany(Vec<ContextEntry>),
 }
 
@@ -711,7 +797,9 @@ impl ContextTree {
             .entries
             .get(&entry.id)
             .map(|old| {
-                old.domain != entry.domain || old.topic != entry.topic || old.subtopic != entry.subtopic
+                old.domain != entry.domain
+                    || old.topic != entry.topic
+                    || old.subtopic != entry.subtopic
             })
             .unwrap_or(true);
 
@@ -765,12 +853,7 @@ impl CrossReferenceEngine {
     }
 
     /// Add a unidirectional reference from `source` to `target`.
-    pub fn add_reference(
-        &mut self,
-        source: MemoryId,
-        target: MemoryId,
-        provenance: Provenance,
-    ) {
+    pub fn add_reference(&mut self, source: MemoryId, target: MemoryId, provenance: Provenance) {
         if source == target {
             return;
         }
@@ -789,12 +872,7 @@ impl CrossReferenceEngine {
     }
 
     /// Add a bidirectional reference between `a` and `b`.
-    pub fn add_bidirectional(
-        &mut self,
-        a: MemoryId,
-        b: MemoryId,
-        provenance: Provenance,
-    ) {
+    pub fn add_bidirectional(&mut self, a: MemoryId, b: MemoryId, provenance: Provenance) {
         self.add_reference(a, b, provenance.clone());
         self.add_reference(b, a, provenance);
     }
@@ -836,7 +914,9 @@ impl CrossReferenceEngine {
     pub fn remove(&mut self, id: MemoryId) {
         if let Some(targets) = self.references.remove(&id) {
             for target in &targets {
-                self.reverse.entry(*target).and_modify(|v| v.retain(|x| *x != id));
+                self.reverse
+                    .entry(*target)
+                    .and_modify(|v| v.retain(|x| *x != id));
                 self.provenance.remove(&(id, *target));
             }
         }
@@ -881,12 +961,7 @@ impl CrossReferenceEngine {
 mod tests {
     use super::*;
 
-    fn make_entry(
-        domain: &str,
-        topic: &str,
-        subtopic: &str,
-        content: &str,
-    ) -> ContextEntry {
+    fn make_entry(domain: &str, topic: &str, subtopic: &str, content: &str) -> ContextEntry {
         ContextEntry::new(
             MemoryId::new(),
             domain.to_string(),
@@ -902,12 +977,7 @@ mod tests {
         let mut ops = Vec::new();
 
         for i in 0..100 {
-            let entry = make_entry(
-                "knowledge",
-                "facts",
-                "batch",
-                &format!("fact number {}", i),
-            );
+            let entry = make_entry("knowledge", "facts", "batch", &format!("fact number {}", i));
             ops.push(CurateOperation::add(entry, format!("curate fact {}", i)));
         }
 
@@ -954,12 +1024,7 @@ mod tests {
         let mut ops = Vec::new();
 
         for i in 0..100 {
-            let entry = make_entry(
-                "knowledge",
-                "facts",
-                "batch",
-                &format!("fact number {}", i),
-            );
+            let entry = make_entry("knowledge", "facts", "batch", &format!("fact number {}", i));
             ops.push(CurateOperation::add(entry, format!("curate fact {}", i)));
         }
 
@@ -978,17 +1043,16 @@ mod tests {
         let mut executor = CurateExecutor::new(&mut tree);
         let result = executor.execute(ops);
         assert!(!result.success);
-        assert_eq!(tree.len(), 0, "tree must remain empty after atomic rollback");
+        assert_eq!(
+            tree.len(),
+            0,
+            "tree must remain empty after atomic rollback"
+        );
 
         // Retry with the failing operation removed.
         let mut retry_ops = Vec::new();
         for i in 0..100 {
-            let entry = make_entry(
-                "knowledge",
-                "facts",
-                "batch",
-                &format!("fact number {}", i),
-            );
+            let entry = make_entry("knowledge", "facts", "batch", &format!("fact number {}", i));
             retry_ops.push(CurateOperation::add(entry, format!("retry fact {}", i)));
         }
 
@@ -1026,6 +1090,84 @@ mod tests {
             executor.execute(vec![CurateOperation::update(id, archived, "archive")]);
         }
         assert_eq!(tree.find(id).unwrap().lifecycle, EntryLifecycle::Archived);
+    }
+
+    #[test]
+    fn an_upsert_cannot_resurrect_an_archived_memory() {
+        let mut tree = ContextTree::new();
+        // The same content twice means the same id twice, which is exactly how a
+        // deleted fact comes back: the write resolves to the retired row.
+        let entry = make_entry(
+            "home",
+            "security",
+            "keys",
+            "the spare key is under the blue pot",
+        );
+        let id = entry.id;
+
+        {
+            let mut executor = CurateExecutor::new(&mut tree);
+            let added = executor.execute(vec![CurateOperation::add(entry, "first write")]);
+            assert!(added.success);
+        }
+
+        // Retire it the way a delete does.
+        {
+            let mut executor = CurateExecutor::new(&mut tree);
+            let deleted = executor.execute(vec![CurateOperation::delete(id, "owner asked")]);
+            assert!(deleted.success);
+        }
+        assert_eq!(
+            tree.find(id).unwrap().lifecycle,
+            EntryLifecycle::Archived,
+            "the delete must have archived the row, or the resurrection test tests nothing"
+        );
+
+        // Now write the same words again, under the id the brain derives from the
+        // content. Production derives that id from a content hash, so a repeat write
+        // resolves to this exact row; the id is reconstructed here rather than
+        // generated, because `MemoryId::new()` is random and would hide the collision
+        // this test exists to exercise.
+        let same_content_again = ContextEntry::new(
+            id,
+            "home",
+            "security",
+            "keys",
+            "the spare key is under the blue pot",
+        );
+        assert_eq!(
+            same_content_again.id, id,
+            "the repeat write must land on the retired id"
+        );
+        let mut executor = CurateExecutor::new(&mut tree);
+        let resurrected = executor.execute(vec![CurateOperation::upsert(
+            same_content_again,
+            "extraction wrote the fact again",
+        )]);
+
+        assert!(
+            !resurrected.success,
+            "an ordinary upsert must refuse a retired id, not quietly bring it back"
+        );
+        assert_eq!(
+            tree.find(id).unwrap().lifecycle,
+            EntryLifecycle::Archived,
+            "the retired row must still be retired after the refused write"
+        );
+    }
+
+    #[test]
+    fn a_plain_upsert_of_live_content_still_works() {
+        // The refusal must be about ARCHIVED rows only, or the write path that creates
+        // new memories would break.
+        let mut tree = ContextTree::new();
+        let entry = make_entry("home", "security", "keys", "a different sentence entirely");
+        let mut executor = CurateExecutor::new(&mut tree);
+        let result = executor.execute(vec![CurateOperation::upsert(entry, "ordinary write")]);
+        assert!(
+            result.success,
+            "an upsert of live content is the normal path"
+        );
     }
 
     #[test]
@@ -1082,12 +1224,7 @@ mod tests {
             CurateOperation::add(source_b.clone(), "add source b"),
         ]);
 
-        let target = make_entry(
-            "project",
-            "api",
-            "endpoints",
-            "Base API user routes.",
-        );
+        let target = make_entry("project", "api", "endpoints", "Base API user routes.");
         let merged_id = target.id;
         let merge_op = CurateOperation::merge(
             vec![source_a.id, source_b.id],
@@ -1099,7 +1236,9 @@ mod tests {
         assert!(result.success);
 
         let merged = tree.find(merged_id).unwrap();
-        assert!(merged.content.contains("GET /users returns a list of users."));
+        assert!(merged
+            .content
+            .contains("GET /users returns a list of users."));
         assert!(merged.content.contains("POST /users creates a new user."));
         assert_eq!(merged.relations.len(), 1);
         assert_eq!(tree.find(source_a.id), None);

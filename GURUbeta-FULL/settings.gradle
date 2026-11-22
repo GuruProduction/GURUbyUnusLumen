@@ -5,9 +5,34 @@ pluginManagement {
         mavenCentral()
     }
 }
-plugins {
-    id 'org.gradle.toolchains.foojay-resolver-convention' version '0.10.0'
-}
+/*
+ * NOTHING HERE PROVISIONS A JDK, AND NOTHING OUTSIDE HERE SHOULD EITHER.
+ *
+ * The app targets Java 17, the Android Gradle Plugin brings its own toolchain handling, and
+ * every environment that builds this repository installs JDK 17 first: CI does it explicitly
+ * with `setup-java`, and the developer machine has it on PATH.
+ *
+ * TWO THINGS USED TO DOWNLOAD ONE ANYWAY, AND THE FIRST ONE MASKED THE SECOND.
+ *
+ * ONE, REMOVED. `org.gradle.toolchains.foojay-resolver-convention` downloads a JDK when the one
+ * a build asks for is not installed. It also resolved `com.google.code.gson:gson` from Maven
+ * Central on EVERY build, including one whose only job is to compile Rust, and twice in a row
+ * it failed the whole Android pipeline with
+ *
+ *     Could not GET .../gson-2.10.1.pom. Received status code 429 from server: Too Many Requests
+ *
+ * TWO, AND THIS IS THE ONE THAT IS EASY TO MISS. `gradle/gradle-daemon-jvm.properties` is a
+ * tracked, generated file that tells Gradle's OWN daemon which JVM to run on, and it pinned a
+ * JetBrains JDK 21 fetched from api.foojay.io. Nothing referenced it by name because Gradle
+ * reads it implicitly, so removing the plugin above left it in place and `./gradlew --version`
+ * still reported
+ *
+ *     Daemon JVM: Compatible with Java 21, JetBrains (from gradle/gradle-daemon-jvm.properties)
+ *
+ * That is a second supply chain on the same third party, and it chooses a JDK 21 for a project
+ * that compiles against 17. It has been deleted rather than regenerated, with the reason here.
+ * If a build ever genuinely needs `updateDaemonJvm`, it needs a paragraph here saying why.
+ */
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {

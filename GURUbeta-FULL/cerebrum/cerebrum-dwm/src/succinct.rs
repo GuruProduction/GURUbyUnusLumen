@@ -268,7 +268,11 @@ impl SuccinctBitVec {
             return 0;
         }
         let ones = self.rank1(i);
-        if b { ones } else { i as u64 - ones }
+        if b {
+            ones
+        } else {
+            i as u64 - ones
+        }
     }
 
     /// Count 1-bits in [0, i). O(1): one array lookup + one popcount.
@@ -321,12 +325,20 @@ impl SuccinctBitVec {
             return None;
         }
 
-        let total = if b { self.count_ones() as usize } else { self.count_zeros() as usize };
+        let total = if b {
+            self.count_ones() as usize
+        } else {
+            self.count_zeros() as usize
+        };
         if k > total {
             return None;
         }
 
-        let blocks = if b { &self.select_blocks_1 } else { &self.select_blocks_0 };
+        let blocks = if b {
+            &self.select_blocks_1
+        } else {
+            &self.select_blocks_0
+        };
         let sample_idx = (k - 1) / SELECT_RATE;
 
         // Lower bound: the sampled position for this sample_idx.
@@ -546,14 +558,14 @@ mod tests {
         assert_eq!(sv.len(), 8);
         assert_eq!(sv.count_ones(), 4);
         // MSB first: 1,0,1,1,0,0,0,1
-        assert!(sv.access(0));  // MSB
+        assert!(sv.access(0)); // MSB
         assert!(!sv.access(1));
         assert!(sv.access(2));
         assert!(sv.access(3));
         assert!(!sv.access(4));
         assert!(!sv.access(5));
         assert!(!sv.access(6));
-        assert!(sv.access(7));  // LSB
+        assert!(sv.access(7)); // LSB
     }
 
     #[test]
@@ -760,7 +772,7 @@ mod tests {
         let bits: Vec<bool> = (0..200).map(|i| i % 2 == 0).collect();
         let sv = SuccinctBitVec::from_bits(&bits);
         for i in 0..=200 {
-            assert_eq!(sv.rank(i, true), ((i + 1) / 2) as u64, "rank_1({i})");
+            assert_eq!(sv.rank(i, true), i.div_ceil(2) as u64, "rank_1({i})");
             assert_eq!(sv.rank(i, false), (i / 2) as u64, "rank_0({i})");
         }
     }
@@ -782,8 +794,8 @@ mod tests {
     fn test_rank_cross_word_boundary() {
         // Test rank across 64-bit word boundary
         let mut bits = vec![false; 128];
-        for i in 0..64 {
-            bits[i] = true; // First word all 1s
+        for bit in bits.iter_mut().take(64) {
+            *bit = true; // First word all 1s
         }
         // Second word all 0s
         let sv = SuccinctBitVec::from_bits(&bits);
@@ -804,7 +816,11 @@ mod tests {
             assert_eq!(sv.rank(i, true), ones, "rank_1({i})");
             assert_eq!(sv.rank(i, false), zeros, "rank_0({i})");
             if i < bits.len() {
-                if bits[i] { ones += 1; } else { zeros += 1; }
+                if bits[i] {
+                    ones += 1;
+                } else {
+                    zeros += 1;
+                }
             }
         }
     }
@@ -869,13 +885,27 @@ mod tests {
 
         for k in 1..=ones_count {
             let pos = sv.select(k, true).unwrap();
-            assert!(sv.access(pos), "select({k}, true) = {pos} but access is false");
-            assert_eq!(sv.rank(pos + 1, true) as usize, k, "rank(select({k}, true)+1) != {k}");
+            assert!(
+                sv.access(pos),
+                "select({k}, true) = {pos} but access is false"
+            );
+            assert_eq!(
+                sv.rank(pos + 1, true) as usize,
+                k,
+                "rank(select({k}, true)+1) != {k}"
+            );
         }
         for k in 1..=zeros_count {
             let pos = sv.select(k, false).unwrap();
-            assert!(!sv.access(pos), "select({k}, false) = {pos} but access is true");
-            assert_eq!(sv.rank(pos + 1, false) as usize, k, "rank(select({k}, false)+1) != {k}");
+            assert!(
+                !sv.access(pos),
+                "select({k}, false) = {pos} but access is true"
+            );
+            assert_eq!(
+                sv.rank(pos + 1, false) as usize,
+                k,
+                "rank(select({k}, false)+1) != {k}"
+            );
         }
     }
 
@@ -952,8 +982,8 @@ mod tests {
                 // Delete at same position we inserted
                 sv2.delete_bit(ins_pos.min(sv2.len()));
                 prop_assert_eq!(sv2.len(), bits.len());
-                for i in 0..bits.len() {
-                    prop_assert_eq!(sv2.access(i), bits[i]);
+                for (index, expected) in bits.iter().enumerate() {
+                    prop_assert_eq!(sv2.access(index), *expected);
                 }
             }
         }
@@ -979,8 +1009,14 @@ mod tests {
         assert_eq!(sv.rank(1_000_000, false), 1_000_000 - expected_ones);
 
         // Verify rank at word boundaries
-        assert_eq!(sv.rank(64, true), bits[0..64].iter().filter(|&&b| b).count() as u64);
-        assert_eq!(sv.rank(128, true), bits[0..128].iter().filter(|&&b| b).count() as u64);
+        assert_eq!(
+            sv.rank(64, true),
+            bits[0..64].iter().filter(|&&b| b).count() as u64
+        );
+        assert_eq!(
+            sv.rank(128, true),
+            bits[0..128].iter().filter(|&&b| b).count() as u64
+        );
 
         // Verify select
         if expected_ones > 0 {

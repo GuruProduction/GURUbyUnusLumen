@@ -140,7 +140,10 @@ pub struct TokenSequence {
 impl TokenSequence {
     /// Create a new TokenSequence from raw token IDs and a vocabulary ID.
     pub fn new(vocabulary_id: u32, tokens: Vec<u32>) -> Self {
-        Self { vocabulary_id, tokens }
+        Self {
+            vocabulary_id,
+            tokens,
+        }
     }
 
     /// Create a TokenSequence from a slice of token IDs using the default
@@ -188,7 +191,6 @@ impl TokenSequence {
     }
 }
 
-
 // ============================================================================
 // 2. CURATION OPERATIONS (Layer 4: Agent-Native Curation)
 // ============================================================================
@@ -207,6 +209,23 @@ pub struct ContextEntry {
     pub relations: Vec<MemoryId>,
     pub provenance: String,
     pub rationale: String,
+    /// The stable id of the agent that wrote this entry, empty when no agent did.
+    ///
+    /// ITS OWN SLOT, NOT A MARKER INSIDE PROVENANCE. A permission decision keyed on a
+    /// substring of a prose label is a decision about a convention, and any writer that
+    /// composes the label by hand can produce it. A field cannot be typed into by accident.
+    ///
+    /// `#[serde(default)]` so every existing writer, and every row already stored, still
+    /// decodes: an entry that says nothing about its owner belongs to the person.
+    #[serde(default)]
+    pub owner_agent_id: String,
+    /// Whether the owner offered this to the shared scope, when it has an owner.
+    ///
+    /// A string rather than the curate crate's enum because this is the WIRE shape, and the
+    /// wire is deliberately plain: "Shared", "Owned" or "OwnedAndShared", matching the enum's
+    /// variant names exactly. The conversion to the typed enum happens at the handler.
+    #[serde(default)]
+    pub visibility: String,
     pub created_at: DateTime<Utc>,
     pub modified_at: DateTime<Utc>,
 }
@@ -223,6 +242,9 @@ impl Default for ContextEntry {
             relations: Vec::new(),
             provenance: String::new(),
             rationale: String::new(),
+            // Nobody owns an entry that says nothing about ownership: it is the person's.
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: now,
             modified_at: now,
         }
@@ -266,6 +288,9 @@ impl ContextEntry {
             relations: Vec::new(),
             provenance: String::new(),
             rationale: String::new(),
+            // Nobody owns an entry that says nothing about ownership: it is the person's.
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: now,
             modified_at: now,
         }
@@ -610,7 +635,14 @@ pub mod frame_types {
 
     /// All valid request frame type bytes.
     pub const ALL_REQUEST: [u8; 8] = [
-        QUERY, CURATE, RETRIEVE, SEARCH, GRAPH_TRAVERSE, CONSOLIDATE, PREFETCH, LIST,
+        QUERY,
+        CURATE,
+        RETRIEVE,
+        SEARCH,
+        GRAPH_TRAVERSE,
+        CONSOLIDATE,
+        PREFETCH,
+        LIST,
     ];
 
     /// All valid response frame type bytes.
@@ -618,8 +650,16 @@ pub mod frame_types {
 
     /// All valid frame type bytes (requests + responses).
     pub const ALL: [u8; 10] = [
-        QUERY, CURATE, RETRIEVE, SEARCH, GRAPH_TRAVERSE, CONSOLIDATE, PREFETCH, LIST,
-        RESPONSE, ERROR,
+        QUERY,
+        CURATE,
+        RETRIEVE,
+        SEARCH,
+        GRAPH_TRAVERSE,
+        CONSOLIDATE,
+        PREFETCH,
+        LIST,
+        RESPONSE,
+        ERROR,
     ];
 }
 
@@ -814,12 +854,7 @@ pub trait DwmStore: Send + Sync {
     /// Search for memories within a Hamming distance radius of the query signature.
     ///
     /// Returns tuples of (MemoryId, hamming_distance), sorted by distance.
-    fn search(
-        &self,
-        query: &BinarySignature,
-        radius: u32,
-        limit: usize,
-    ) -> Vec<(MemoryId, u32)>;
+    fn search(&self, query: &BinarySignature, radius: u32, limit: usize) -> Vec<(MemoryId, u32)>;
 
     /// Reconstruct the original token sequence for a memory.
     fn reconstruct(&mut self, memory_id: MemoryId) -> Option<TokenSequence>;
@@ -897,13 +932,11 @@ pub trait GraphView: Send + Sync {
                         });
                         weighted
                     }
-                    _ => {
-                        neighbors
-                            .into_iter()
-                            .filter(|(id, _, _)| !visited.contains(id))
-                            .map(|(id, _, _)| (id, 0.0))
-                            .collect()
-                    }
+                    _ => neighbors
+                        .into_iter()
+                        .filter(|(id, _, _)| !visited.contains(id))
+                        .map(|(id, _, _)| (id, 0.0))
+                        .collect(),
                 };
 
                 for (neighbor_id, _) in filtered.drain(..) {
@@ -1108,7 +1141,10 @@ mod tests {
         let last_16 = &id.0[16..];
         // With true 256-bit randomness, the last 16 bytes should not be all zeros
         // (probability is 1/2^128 which is effectively impossible)
-        assert!(!last_16.iter().all(|&b| b == 0), "MemoryId should use full 256 bits of entropy");
+        assert!(
+            !last_16.iter().all(|&b| b == 0),
+            "MemoryId should use full 256 bits of entropy"
+        );
     }
 
     // ------------------------------------------------------------------------
@@ -1174,6 +1210,8 @@ mod tests {
             relations: vec![MemoryId([2u8; 32])],
             provenance: "test".into(),
             rationale: "because".into(),
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: Utc::now(),
             modified_at: Utc::now(),
         };
@@ -1213,6 +1251,8 @@ mod tests {
             relations: vec![],
             provenance: "upsert".into(),
             rationale: "upsert reason".into(),
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: Utc::now(),
             modified_at: Utc::now(),
         };
@@ -1236,6 +1276,8 @@ mod tests {
             relations: vec![],
             provenance: "merge".into(),
             rationale: "merge reason".into(),
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: Utc::now(),
             modified_at: Utc::now(),
         };
@@ -1308,6 +1350,8 @@ mod tests {
             relations: vec![MemoryId([21u8; 32])],
             provenance: "test".into(),
             rationale: "testing".into(),
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: Utc::now(),
             modified_at: Utc::now(),
         };
@@ -1552,7 +1596,12 @@ mod tests {
 
     #[test]
     fn test_edge_type_serialization() {
-        for edge_type in [EdgeType::Semantic, EdgeType::Temporal, EdgeType::Causal, EdgeType::Entity] {
+        for edge_type in [
+            EdgeType::Semantic,
+            EdgeType::Temporal,
+            EdgeType::Causal,
+            EdgeType::Entity,
+        ] {
             let json = serde_json::to_string(&edge_type).unwrap();
             let de: EdgeType = serde_json::from_str(&json).unwrap();
             assert_eq!(edge_type, de);
@@ -1561,7 +1610,15 @@ mod tests {
 
     #[test]
     fn test_curate_status_serialization() {
-        for status in [CurateStatus::Success, CurateStatus::Created, CurateStatus::Updated, CurateStatus::Merged, CurateStatus::Deleted, CurateStatus::Failed, CurateStatus::Pending] {
+        for status in [
+            CurateStatus::Success,
+            CurateStatus::Created,
+            CurateStatus::Updated,
+            CurateStatus::Merged,
+            CurateStatus::Deleted,
+            CurateStatus::Failed,
+            CurateStatus::Pending,
+        ] {
             let json = serde_json::to_string(&status).unwrap();
             let de: CurateStatus = serde_json::from_str(&json).unwrap();
             assert_eq!(status, de);
@@ -1586,7 +1643,11 @@ mod tests {
 
     #[test]
     fn test_confidence_level_all_variants() {
-        for level in [ConfidenceLevel::High, ConfidenceLevel::Medium, ConfidenceLevel::Low] {
+        for level in [
+            ConfidenceLevel::High,
+            ConfidenceLevel::Medium,
+            ConfidenceLevel::Low,
+        ] {
             let json = serde_json::to_string(&level).unwrap();
             let de: ConfidenceLevel = serde_json::from_str(&json).unwrap();
             assert_eq!(level, de);
@@ -1595,7 +1656,12 @@ mod tests {
 
     #[test]
     fn test_traverse_strategy_all_variants() {
-        for strat in [TraverseStrategy::Bfs, TraverseStrategy::Dfs, TraverseStrategy::Weighted, TraverseStrategy::Temporal] {
+        for strat in [
+            TraverseStrategy::Bfs,
+            TraverseStrategy::Dfs,
+            TraverseStrategy::Weighted,
+            TraverseStrategy::Temporal,
+        ] {
             let json = serde_json::to_string(&strat).unwrap();
             let de: TraverseStrategy = serde_json::from_str(&json).unwrap();
             assert_eq!(strat, de);
@@ -1604,7 +1670,13 @@ mod tests {
 
     #[test]
     fn test_query_type_all_variants() {
-        for qt in [QueryType::Semantic, QueryType::Temporal, QueryType::Causal, QueryType::Entity, QueryType::Composite] {
+        for qt in [
+            QueryType::Semantic,
+            QueryType::Temporal,
+            QueryType::Causal,
+            QueryType::Entity,
+            QueryType::Composite,
+        ] {
             let json = serde_json::to_string(&qt).unwrap();
             let de: QueryType = serde_json::from_str(&json).unwrap();
             assert_eq!(qt, de);
@@ -1613,7 +1685,12 @@ mod tests {
 
     #[test]
     fn test_enrichment_status_all_variants() {
-        for es in [EnrichmentStatus::Pending, EnrichmentStatus::Enriched, EnrichmentStatus::Failed, EnrichmentStatus::DeadLetter] {
+        for es in [
+            EnrichmentStatus::Pending,
+            EnrichmentStatus::Enriched,
+            EnrichmentStatus::Failed,
+            EnrichmentStatus::DeadLetter,
+        ] {
             let json = serde_json::to_string(&es).unwrap();
             let de: EnrichmentStatus = serde_json::from_str(&json).unwrap();
             assert_eq!(es, de);
@@ -1783,21 +1860,55 @@ mod tests {
         let mut sorted = all.to_vec();
         sorted.sort();
         sorted.dedup();
-        assert_eq!(sorted.len(), all.len(), "frame type constants must be distinct");
+        assert_eq!(
+            sorted.len(),
+            all.len(),
+            "frame type constants must be distinct"
+        );
     }
 
     #[test]
     fn test_frame_tag_try_from_valid() {
-        assert_eq!(FrameTag::try_from(frame_types::QUERY).unwrap(), FrameTag::Query);
-        assert_eq!(FrameTag::try_from(frame_types::CURATE).unwrap(), FrameTag::Curate);
-        assert_eq!(FrameTag::try_from(frame_types::RETRIEVE).unwrap(), FrameTag::Retrieve);
-        assert_eq!(FrameTag::try_from(frame_types::SEARCH).unwrap(), FrameTag::Search);
-        assert_eq!(FrameTag::try_from(frame_types::GRAPH_TRAVERSE).unwrap(), FrameTag::GraphTraverse);
-        assert_eq!(FrameTag::try_from(frame_types::CONSOLIDATE).unwrap(), FrameTag::Consolidate);
-        assert_eq!(FrameTag::try_from(frame_types::PREFETCH).unwrap(), FrameTag::Prefetch);
-        assert_eq!(FrameTag::try_from(frame_types::LIST).unwrap(), FrameTag::List);
-        assert_eq!(FrameTag::try_from(frame_types::RESPONSE).unwrap(), FrameTag::Response);
-        assert_eq!(FrameTag::try_from(frame_types::ERROR).unwrap(), FrameTag::ErrorFrame);
+        assert_eq!(
+            FrameTag::try_from(frame_types::QUERY).unwrap(),
+            FrameTag::Query
+        );
+        assert_eq!(
+            FrameTag::try_from(frame_types::CURATE).unwrap(),
+            FrameTag::Curate
+        );
+        assert_eq!(
+            FrameTag::try_from(frame_types::RETRIEVE).unwrap(),
+            FrameTag::Retrieve
+        );
+        assert_eq!(
+            FrameTag::try_from(frame_types::SEARCH).unwrap(),
+            FrameTag::Search
+        );
+        assert_eq!(
+            FrameTag::try_from(frame_types::GRAPH_TRAVERSE).unwrap(),
+            FrameTag::GraphTraverse
+        );
+        assert_eq!(
+            FrameTag::try_from(frame_types::CONSOLIDATE).unwrap(),
+            FrameTag::Consolidate
+        );
+        assert_eq!(
+            FrameTag::try_from(frame_types::PREFETCH).unwrap(),
+            FrameTag::Prefetch
+        );
+        assert_eq!(
+            FrameTag::try_from(frame_types::LIST).unwrap(),
+            FrameTag::List
+        );
+        assert_eq!(
+            FrameTag::try_from(frame_types::RESPONSE).unwrap(),
+            FrameTag::Response
+        );
+        assert_eq!(
+            FrameTag::try_from(frame_types::ERROR).unwrap(),
+            FrameTag::ErrorFrame
+        );
     }
 
     /// The list frame must be a distinct request byte and round-trip through
@@ -1872,7 +1983,9 @@ mod tests {
         let mut set = HashSet::new();
         set.insert(DereferenceLevel::Shallow);
         set.insert(DereferenceLevel::Deep);
-        set.insert(DereferenceLevel::Partial { sections: vec!["intro".into()] });
+        set.insert(DereferenceLevel::Partial {
+            sections: vec!["intro".into()],
+        });
         assert_eq!(set.len(), 3);
         // Inserting same variant again should not increase size
         set.insert(DereferenceLevel::Shallow);
@@ -1994,7 +2107,10 @@ mod tests {
         // Weighted should visit high-weight neighbor first
         assert_eq!(results.len(), 3);
         assert_eq!(results[0], node0);
-        assert_eq!(results[1], node_high, "high-weight neighbor should come first");
+        assert_eq!(
+            results[1], node_high,
+            "high-weight neighbor should come first"
+        );
         assert_eq!(results[2], node_low);
     }
 
@@ -2026,5 +2142,4 @@ mod tests {
         assert_eq!(results.len(), 1, "isolated node should return only itself");
         assert_eq!(results[0], isolated);
     }
-
 }

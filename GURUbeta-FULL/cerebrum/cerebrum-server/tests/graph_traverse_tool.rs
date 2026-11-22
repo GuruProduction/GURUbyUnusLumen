@@ -49,6 +49,8 @@ fn add_op(domain: &str, content: &str) -> CurateOp {
             relations: vec![],
             provenance: "graph-tool-test".into(),
             rationale: "graph tool contract".into(),
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: Utc::now(),
             modified_at: Utc::now(),
         },
@@ -103,7 +105,10 @@ async fn the_app_payload_traverses_and_returns_id_score_pairs() {
     ];
     let result = curate_through_frame(&state, ops).await;
     assert!(result.executed.success, "{:?}", result.executed.details);
-    assert!(result.side_effects.graph_edges > 0, "curate must build edges");
+    assert!(
+        result.side_effects.graph_edges > 0,
+        "curate must build edges"
+    );
 
     let payload = app_payload("Steven Newman Unus Lumen Bristol", "Entity", 3, 40);
     let frame = Frame::new(frame_types::GRAPH_TRAVERSE, 12, payload);
@@ -118,7 +123,10 @@ async fn the_app_payload_traverses_and_returns_id_score_pairs() {
     assert!(
         as_value.is_array(),
         "traverse must answer with an array of pairs, got: {}",
-        String::from_utf8_lossy(&reply).chars().take(200).collect::<String>()
+        String::from_utf8_lossy(&reply)
+            .chars()
+            .take(200)
+            .collect::<String>()
     );
 
     let pairs: Vec<GraphPair> =
@@ -142,8 +150,14 @@ async fn the_app_payload_traverses_and_returns_id_score_pairs() {
 async fn every_offered_edge_type_traverses() {
     let state = fresh_state().await;
     let ops = vec![
-        add_op("work", "Steven Newman runs Unus Lumen and builds GURU in Bristol"),
-        add_op("work", "Unus Lumen ships GURU releases from the Bristol office"),
+        add_op(
+            "work",
+            "Steven Newman runs Unus Lumen and builds GURU in Bristol",
+        ),
+        add_op(
+            "work",
+            "Unus Lumen ships GURU releases from the Bristol office",
+        ),
     ];
     assert!(curate_through_frame(&state, ops).await.executed.success);
 
@@ -157,7 +171,10 @@ async fn every_offered_edge_type_traverses() {
         assert!(
             parsed.is_array(),
             "{query_type} must answer with an array, got {}",
-            String::from_utf8_lossy(&reply).chars().take(160).collect::<String>()
+            String::from_utf8_lossy(&reply)
+                .chars()
+                .take(160)
+                .collect::<String>()
         );
     }
 }

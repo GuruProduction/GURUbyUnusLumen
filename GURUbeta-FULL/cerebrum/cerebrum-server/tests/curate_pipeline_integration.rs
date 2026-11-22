@@ -3,16 +3,14 @@
 //! protocol layer exactly as an external client would: frame bytes in,
 //! frame bytes out.
 
-use std::sync::Arc;
 use chrono::Utc;
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use cerebrum_core::{
-    ContextEntry, CurateOp, DereferenceLevel, MemoryId,
-};
-use cerebrum_server::{frame_types, Frame};
+use cerebrum_core::{ContextEntry, CurateOp, DereferenceLevel, MemoryId};
 use cerebrum_server::handler::{handle_frame, CurateFullResponse};
 use cerebrum_server::state::CerebrumState;
+use cerebrum_server::{frame_types, Frame};
 
 async fn fresh_state() -> Arc<Mutex<CerebrumState>> {
     let dir = std::env::temp_dir().join(format!(
@@ -28,11 +26,7 @@ async fn fresh_state() -> Arc<Mutex<CerebrumState>> {
 
 /// One round call: encode a payload into a frame, dispatch through
 /// handle_frame, return the JSON payload bytes of the response.
-async fn call_frame(
-    state: &Arc<Mutex<CerebrumState>>,
-    frame_type: u8,
-    payload: &[u8],
-) -> Vec<u8> {
+async fn call_frame(state: &Arc<Mutex<CerebrumState>>, frame_type: u8, payload: &[u8]) -> Vec<u8> {
     let frame = Frame::new(frame_type, 4242, payload.to_vec());
     let response = handle_frame(frame, state.clone()).await;
     match response {
@@ -54,6 +48,8 @@ fn add_op(content: &str) -> CurateOp {
             relations: vec![],
             provenance: "integration-test".into(),
             rationale: "battery test".into(),
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: Utc::now(),
             modified_at: Utc::now(),
         },
@@ -74,7 +70,13 @@ async fn curate(state: &Arc<Mutex<CerebrumState>>, ops: Vec<CurateOp>) -> Curate
 async fn test_10_curations_flow_to_every_engine() {
     let state = fresh_state().await;
     let ops: Vec<CurateOp> = (0..10)
-        .map(|i| add_op(&format!("battery memory {} on distinct theme {}", i, i * 13)))
+        .map(|i| {
+            add_op(&format!(
+                "battery memory {} on distinct theme {}",
+                i,
+                i * 13
+            ))
+        })
         .collect();
     let result = curate(&state, ops).await;
 
@@ -162,6 +164,8 @@ async fn test_retrieve_levels() {
             relations: vec![],
             provenance: "t".into(),
             rationale: "t".into(),
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: Utc::now(),
             modified_at: Utc::now(),
         },
@@ -178,11 +182,16 @@ async fn test_retrieve_levels() {
     }
 
     // Shallow: metadata only.
-    let shallow_response =
-        call_frame(&state, frame_types::RETRIEVE, &serde_json::to_vec(&RR {
+    let shallow_response = call_frame(
+        &state,
+        frame_types::RETRIEVE,
+        &serde_json::to_vec(&RR {
             memory_id,
             level: DereferenceLevel::Shallow,
-        }).unwrap()).await;
+        })
+        .unwrap(),
+    )
+    .await;
     let shallow: serde_json::Value = serde_json::from_slice(&shallow_response).unwrap();
     assert!(shallow.get("data").unwrap().is_array());
     assert!(String::from_utf8_lossy(
@@ -195,30 +204,41 @@ async fn test_retrieve_levels() {
     .starts_with(""));
 
     // Deep: full body must carry real content with both paragraphs.
-    let deep_response =
-        call_frame(&state, frame_types::RETRIEVE, &serde_json::to_vec(&RR {
+    let deep_response = call_frame(
+        &state,
+        frame_types::RETRIEVE,
+        &serde_json::to_vec(&RR {
             memory_id,
             level: DereferenceLevel::Deep,
-        }).unwrap()).await;
+        })
+        .unwrap(),
+    )
+    .await;
     let deep_resp: serde_json::Value = serde_json::from_slice(&deep_response).unwrap();
     let data_bytes = deep_resp.get("data").unwrap().as_array().unwrap();
-    let raw: Vec<u8> = data_bytes.iter().map(|v| v.as_u64().unwrap() as u8).collect();
-    let deep =
-        serde_json::from_slice::<serde_json::Value>(&raw).expect("deep body bytes parse");
+    let raw: Vec<u8> = data_bytes
+        .iter()
+        .map(|v| v.as_u64().unwrap() as u8)
+        .collect();
+    let deep = serde_json::from_slice::<serde_json::Value>(&raw).expect("deep body bytes parse");
     assert!(
-        deep.get("content")
-            .unwrap()
-            .as_str()
-            .is_some(),
+        deep.get("content").unwrap().as_str().is_some(),
         "deep body must serialize to a JSON text"
     );
 
     // Partial: lifetimes section request resolves to full content fallback.
-    let partial_response =
-        call_frame(&state, frame_types::RETRIEVE, &serde_json::to_vec(&RR {
+    let partial_response = call_frame(
+        &state,
+        frame_types::RETRIEVE,
+        &serde_json::to_vec(&RR {
             memory_id,
-            level: DereferenceLevel::Partial { sections: vec!["borrow".into()] },
-        }).unwrap()).await;
+            level: DereferenceLevel::Partial {
+                sections: vec!["borrow".into()],
+            },
+        })
+        .unwrap(),
+    )
+    .await;
     let partial: serde_json::Value = serde_json::from_slice(&partial_response).unwrap();
     let raw2_vec: Vec<u8> = partial
         .get("data")

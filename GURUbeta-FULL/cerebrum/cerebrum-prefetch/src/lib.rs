@@ -113,7 +113,9 @@ impl PrefetchEngine {
                     "code" | "engineer" | "programmer" => {
                         c.contains("code") || c.contains("rust") || c.contains("programming")
                     }
-                    "concierge" => c.contains("file") || c.contains("device") || c.contains("storage"),
+                    "concierge" => {
+                        c.contains("file") || c.contains("device") || c.contains("storage")
+                    }
                     _ => c.contains(&lowered),
                 }
             })
@@ -228,10 +230,7 @@ mod tests {
             MemoryId([10u8; 32]),
             "Medical appointment notes".to_string(),
         );
-        engine.register(
-            MemoryId([11u8; 32]),
-            "Tax deduction checklist".to_string(),
-        );
+        engine.register(MemoryId([11u8; 32]), "Tax deduction checklist".to_string());
         // Repeated doctor activation should hit.
         let doctor_trigger = PrefetchTrigger::SpecialistActivated("doctor".to_string());
         for _ in 0..8 {

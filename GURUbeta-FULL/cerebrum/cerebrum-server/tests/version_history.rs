@@ -50,6 +50,8 @@ fn entry_with_id(id: MemoryId, content: &str) -> ContextEntry {
         relations: vec![],
         provenance: "version-history-test".into(),
         rationale: "the reason for the write".into(),
+        owner_agent_id: String::new(),
+        visibility: String::new(),
         created_at: Utc::now(),
         modified_at: Utc::now(),
     }
@@ -58,9 +60,14 @@ fn entry_with_id(id: MemoryId, content: &str) -> ContextEntry {
 async fn curate(state: &Arc<Mutex<CerebrumState>>, ops: Vec<CurateOp>) -> serde_json::Value {
     let payload = serde_json::to_vec(&ops).unwrap();
     let frame = Frame::new(frame_types::CURATE, 31, payload);
-    let bytes = handle_frame(frame, state.clone()).await.expect("curate must answer");
+    let bytes = handle_frame(frame, state.clone())
+        .await
+        .expect("curate must answer");
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(value["executed"]["success"], true, "curation must succeed: {value}");
+    assert_eq!(
+        value["executed"]["success"], true,
+        "curation must succeed: {value}"
+    );
     value
 }
 

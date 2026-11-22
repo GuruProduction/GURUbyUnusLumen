@@ -230,10 +230,7 @@ mod tests {
         let t = HashTokenizer::with_hash_space(50_000);
         let a = t.tokenize("hello, world!");
         let b = t.tokenize("hello world");
-        assert_eq!(
-            a, b,
-            "punctuation strips to the same word ids"
-        );
+        assert_eq!(a, b, "punctuation strips to the same word ids");
     }
 
     #[test]
@@ -306,6 +303,9 @@ mod tests {
         assert_eq!(tokens, vec![1, 2, 3]);
         assert_eq!(tokenizer.vocabulary_id(), 0);
         assert_eq!(tokenizer.vocab_size(), 100);
-        assert!(tokenizer.has_registry(), "registry tokenizer keeps the flag on");
+        assert!(
+            tokenizer.has_registry(),
+            "registry tokenizer keeps the flag on"
+        );
     }
 }

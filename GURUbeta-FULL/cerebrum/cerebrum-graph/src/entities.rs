@@ -29,7 +29,7 @@ pub fn canonicalize_label(input_label: &str) -> String {
         if character.is_alphanumeric() {
             rebuilt.push(character);
             needs_space = false;
-        } else if needs_space == false && rebuilt.is_empty() == false {
+        } else if !needs_space && !rebuilt.is_empty() {
             rebuilt.push(' ');
             needs_space = true;
         }
@@ -66,7 +66,7 @@ pub fn reconcile_entities(store: &mut GraphStore) -> Vec<EntityReconciliationDet
         for retired_id in stable_group_ids.into_iter().skip(1) {
             let alias_text = store.label_of(retired_id).unwrap_or("").to_string();
             let moved_count = rewire_and_retire(store, kept_id, retired_id);
-            if alias_text.is_empty() == false {
+            if !alias_text.is_empty() {
                 store.add_alias_row(kept_id, alias_text.clone());
                 store.remove_label(retired_id);
             }
@@ -82,7 +82,10 @@ pub fn reconcile_entities(store: &mut GraphStore) -> Vec<EntityReconciliationDet
 }
 
 fn bytes_hex(bytes_value: &[u8]) -> String {
-    bytes_value.iter().map(|byte| format!("{:02x}", byte)).collect()
+    bytes_value
+        .iter()
+        .map(|byte| format!("{:02x}", byte))
+        .collect()
 }
 
 /// Rewire (source or target) rows onto canonical per view; retired id then
@@ -90,7 +93,12 @@ fn bytes_hex(bytes_value: &[u8]) -> String {
 fn rewire_and_retire(store: &mut GraphStore, canonical: MemoryId, retired: MemoryId) -> usize {
     let mut moved_count_all_views = 0usize;
 
-    for view_shape in [QueryType::Semantic, QueryType::Temporal, QueryType::Causal, QueryType::Entity] {
+    for view_shape in [
+        QueryType::Semantic,
+        QueryType::Temporal,
+        QueryType::Causal,
+        QueryType::Entity,
+    ] {
         let view_rows: Vec<Edge> = match store.graph_for(view_shape) {
             Some(view) => view.all_edges().cloned().collect(),
             None => continue,
@@ -99,30 +107,40 @@ fn rewire_and_retire(store: &mut GraphStore, canonical: MemoryId, retired: Memor
         // Removal first (drop all rows the retired id appears in), then
         // direct reinsertions for non-collapsed rows.
         {
-            let Some(rewriter) = store.graph_for_mut(view_shape) else { continue };
+            let Some(rewriter) = store.graph_for_mut(view_shape) else {
+                continue;
+            };
 
             for row in &view_rows {
                 let source_is = row.source == retired;
                 let target_is = row.target == retired;
-                if source_is == false && target_is == false {
+                if !source_is && !target_is {
                     continue;
                 }
                 rewriter.remove_edge(row);
             }
         }
         {
-            let Some(adder) = store.graph_for_mut(view_shape) else { continue };
+            let Some(adder) = store.graph_for_mut(view_shape) else {
+                continue;
+            };
             for row in &view_rows {
                 let source_is = row.source == retired;
                 let target_is = row.target == retired;
-                if source_is == false && target_is == false {
+                if !source_is && !target_is {
                     continue;
                 }
-                // True collapsed self-loop rows simply vanish.
-                if (source_is && target_is)
-                    || (source_is && row.target == canonical)
-                    || (target_is && row.source == canonical)
-                {
+                // A row that would become a self-loop on the canonical node adds nothing.
+                // Two ways that happens: both ends are the retired id, or the end that
+                // survives is already the canonical. `source_is` and `target_is` are
+                // mutually exclusive on every row that reaches here, because a row with both
+                // true was retired above, so one `source_is` test chooses between the halves.
+                let collapses = if source_is {
+                    row.target == canonical
+                } else {
+                    row.source == canonical
+                };
+                if source_is && target_is || collapses {
                     continue;
                 }
                 let (new_source, new_target) = if source_is {
@@ -140,6 +158,22 @@ fn rewire_and_retire(store: &mut GraphStore, canonical: MemoryId, retired: Memor
         }
     }
     moved_count_all_views
+}
+
+/// Hex -> MemoryId reader (engine-side); matches the engine's bytes-hex.
+pub fn decode_hex_to_memory(input_hex: &str) -> Option<MemoryId> {
+    let normalized = input_hex.to_lowercase();
+    if normalized.len() != 64 {
+        return None;
+    }
+    if !normalized
+        .chars()
+        .all(|char_value| char_value.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    let raw = hex::decode(normalized).ok()?;
+    Some(MemoryId(raw.try_into().ok()?))
 }
 
 #[cfg(test)]
@@ -178,14 +212,14 @@ mod tests {
         assert_eq!(detail.edges_rewired, 2, "both cross-view rows rewire");
 
         // The graph now carries NO retired-id shape on any view.
-        assert_eq!(
-            store.semantic.all_edges().any(|row| row.source == id_beta || row.target == id_beta),
-            false
-        );
-        assert_eq!(
-            store.temporal.all_edges().any(|row| row.source == id_beta || row.target == id_beta),
-            false
-        );
+        assert!(!store
+            .semantic
+            .all_edges()
+            .any(|row| row.source == id_beta || row.target == id_beta));
+        assert!(!store
+            .temporal
+            .all_edges()
+            .any(|row| row.source == id_beta || row.target == id_beta));
         // The retired id is gone from node sets and carries no label rows.
         assert!(store.label_of(id_beta).is_none());
 
@@ -193,21 +227,10 @@ mod tests {
         let canonical_hex = detail.kept_id_hex.clone();
         let canonical_id = crate::decode_hex_to_memory(&canonical_hex).expect("canonical");
         assert!(
-            store.alias_rows_for(canonical_id).contains(&"steven newman??".to_string()),
+            store
+                .alias_rows_for(canonical_id)
+                .contains(&"steven newman??".to_string()),
             "alias text of retired spelling is recorded"
         );
     }
-}
-
-/// Hex -> MemoryId reader (engine-side); matches the engine's bytes-hex.
-pub fn decode_hex_to_memory(input_hex: &str) -> Option<MemoryId> {
-    let normalized = input_hex.to_lowercase();
-    if normalized.len() != 64 {
-        return None;
-    }
-    if normalized.chars().all(|char_value| char_value.is_ascii_hexdigit()) == false {
-        return None;
-    }
-    let raw = hex::decode(normalized).ok()?;
-    Some(MemoryId(raw.try_into().ok()?))
 }

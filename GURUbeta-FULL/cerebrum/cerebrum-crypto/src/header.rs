@@ -8,11 +8,11 @@
 //! No byte beyond these is visible anywhere; records live past the header
 //! entirely as opaque framed ciphertext.
 //!
-//! Header total length is fixed at 119 bytes:
-//!   24 (magic+len fields+params) + 19 (salt) + 12 (verifier nonce)
-//!   + 32 (verifier ct: 13 header-bound info bytes or fixed verifier plaintext
-//!     + MAC padding... concretely: 16 bytes verifier plaintext + 16-byte tag)
-//!   + 32 (file id) = 119.
+//! Header total length is fixed at 119 bytes: 24 (magic, length fields and KDF
+//! parameters) plus 19 (salt) plus 12 (verifier nonce) plus 32 (verifier
+//! ciphertext, which is 16 bytes of verifier plaintext and a 16-byte tag) plus 32
+//! (file id).
+//!
 //! All fixed-width fields are validated before any record byte is ever read.
 
 pub const MAGIC_PREFIX: [u8; 4] = [0x43, 0x45, 0x52, 0x42]; // ascii "CERB"
@@ -57,11 +57,25 @@ pub enum HeaderParseError {
 impl std::fmt::Display for HeaderParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            HeaderParseError::TooShortForHeader => write!(f, "vault file too short to contain a full fixed-length v1 header"),
-            HeaderParseError::MissingMagic => write!(f, "vault file does not begin with the CERB magic bytes"),
-            HeaderParseError::VersionMismatch => write!(f, "vault header layout version is not v1 and is therefore rejected"),
-            HeaderParseError::HeaderFixedLengthReportMismatch => write!(f, "vault header reported a length that disagrees with the fixed v1 header size"),
-            HeaderParseError::UnreasonableKdfParameters => write!(f, "vault header Argon2id parameters fall outside the sane range this build accepts"),
+            HeaderParseError::TooShortForHeader => write!(
+                f,
+                "vault file too short to contain a full fixed-length v1 header"
+            ),
+            HeaderParseError::MissingMagic => {
+                write!(f, "vault file does not begin with the CERB magic bytes")
+            }
+            HeaderParseError::VersionMismatch => write!(
+                f,
+                "vault header layout version is not v1 and is therefore rejected"
+            ),
+            HeaderParseError::HeaderFixedLengthReportMismatch => write!(
+                f,
+                "vault header reported a length that disagrees with the fixed v1 header size"
+            ),
+            HeaderParseError::UnreasonableKdfParameters => write!(
+                f,
+                "vault header Argon2id parameters fall outside the sane range this build accepts"
+            ),
         }
     }
 }

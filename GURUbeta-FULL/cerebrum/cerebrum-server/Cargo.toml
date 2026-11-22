@@ -28,5 +28,16 @@ tracing-subscriber = "0.3"
 clap = { version = "4", features = ["derive"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
+# THE SECCOMP HARDENING NEEDS libc, AND ONLY ON LINUX.
+#
+# `hardening.rs` calls `libc::prctl`, `libc::syscall` and `libc::sock_filter` inside a
+# `#[cfg(target_os = "linux")]` module, and `libc` was never declared at all. That went
+# unnoticed for as long as it did because the whole module is Linux-gated, so a macOS
+# build never compiles it: the first Linux build in this repo's history (CI) failed with
+# "cannot find module or crate `libc`". Declared as a target dependency rather than a plain
+# one so a macOS build keeps exactly the dependency set it had before.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tokio-test = "0.4"

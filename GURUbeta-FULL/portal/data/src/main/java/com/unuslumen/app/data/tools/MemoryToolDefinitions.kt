@@ -24,6 +24,17 @@ object MemoryToolDefinitions : ToolSetRegistration {
     const val TRAVERSE_MEMORY_GRAPH = "traverseMemoryGraph"
 
     /**
+     * A memory's own revision trail.
+     *
+     * EVERY OTHER VERB HERE ANSWERS ABOUT A MEMORY'S PRESENT. This one answers about its
+     * past: what it said before it was changed, when each change landed, who made it and
+     * why, and whether it was ever retired. It works on a deleted memory, which is the case
+     * it most needs to, because the record is kept in the brain's append-only event trail
+     * rather than in the row.
+     */
+    const val MEMORY_HISTORY = "memoryHistory"
+
+    /**
      * The full curation surface, under the name an agent recognises (issue 486).
      *
      * The Archivist prompt calls this `cortex.record` and nothing in the repo
@@ -53,7 +64,36 @@ object MemoryToolDefinitions : ToolSetRegistration {
         ToolDefinition(name = SEARCH_MEMORY_FACTS, description = "Search your memory facts by text. Hits come from your encrypted on-device brain (ranked by semantic similarity, best first). Optional category filter narrows the result set.", category = "memory", parameters = listOf(ToolParameter("query", ToolParameterType.String, true, "Search query text"), ToolParameter("category", ToolParameterType.String, false, "Optional category filter. $CATEGORY_HELP")), permissions = emptyList()),
         ToolDefinition(name = ADD_MEMORY_FACT, description = "Add a new fact to your memory. Land it straight in your encrypted brain; the same text updates one stored row instead of duplicating, so a repeat save is a refresh, never a copy.", category = "memory", parameters = listOf(ToolParameter("fact", ToolParameterType.String, true, "The fact to remember"), ToolParameter("category", ToolParameterType.String, true, "Category. $CATEGORY_HELP"), ToolParameter("confidence", ToolParameterType.Float, false, "Confidence 0.0-1.0")), permissions = emptyList()),
         ToolDefinition(name = DELETE_MEMORY_FACT, description = "Delete a fact from your memory, using the real memory id from a searchMemoryFacts hit (a 64-hex id). The brain marks it archived; content stays recoverable in the memory trail.", category = "memory", parameters = listOf(ToolParameter("factId", ToolParameterType.String, true, "Fact ID (real 64-hex id from search hits)")), permissions = emptyList()),
-        ToolDefinition(name = UPDATE_MEMORY_FACT, description = "Change a memory: give the real memory id from a search hit plus the new fact content; the old version archives and the new content becomes the live row.", category = "memory", parameters = listOf(ToolParameter("factId", ToolParameterType.String, true, "Fact ID (real 64-hex id from search hits)"), ToolParameter("fact", ToolParameterType.String, false, "New fact content"), ToolParameter("category", ToolParameterType.String, false, "New category. $CATEGORY_HELP"), ToolParameter("confidence", ToolParameterType.Float, false, "New confidence")), permissions = emptyList()),
+        ToolDefinition(
+            name = UPDATE_MEMORY_FACT,
+            description = "Change a memory in place: give the real memory id from a search hit plus the new fact content. " +
+                "The row KEEPS ITS ID, so every id you already hold still resolves, and the text it replaced is recorded " +
+                "in its trail where memoryHistory can read it back. Use this rather than deleting and re-adding, which " +
+                "would create a different row and lose the old text.",
+            category = "memory",
+            parameters = listOf(
+                ToolParameter("factId", ToolParameterType.String, true, "Fact ID (real 64-hex id from search hits)"),
+                ToolParameter("fact", ToolParameterType.String, false, "New fact content"),
+                ToolParameter("category", ToolParameterType.String, false, "New category. $CATEGORY_HELP"),
+                ToolParameter("confidence", ToolParameterType.Float, false, "New confidence"),
+            ),
+            permissions = emptyList(),
+        ),
+        ToolDefinition(
+            name = MEMORY_HISTORY,
+            description = "Read a memory's full trail: every version it has had, what each change replaced, when it " +
+                "happened, who made it and why, plus whether it was ever retired. THIS IS THE ONLY VERB THAT STILL " +
+                "ANSWERS FOR A DELETED MEMORY, so use it when asked what a memory used to say, when something was " +
+                "changed, or who removed it.",
+            category = "memory",
+            parameters = listOf(
+                ToolParameter(
+                    "factId", ToolParameterType.String, true,
+                    "The memory's real 64-hex id, from a search hit, a listing, or the id a delete or update reported",
+                ),
+            ),
+            permissions = emptyList(),
+        ),
         ToolDefinition(name = LIST_MEMORY_FACTS, description = "Show your stored memories, newest first; optionally filtered by category. Your memory is the encrypted brain: everything it holds is real, searchable, and ranked by live frequency of your attention.", category = "memory", parameters = listOf(ToolParameter("category", ToolParameterType.String, false, "Optional category filter. $CATEGORY_HELP")), permissions = emptyList()),
         ToolDefinition(name = SEARCH_CONVERSATIONS, description = "Search your past conversations by title or message content. Hits come from memory.", category = "memory", parameters = listOf(ToolParameter("query", ToolParameterType.String, true, "Search query")), permissions = emptyList()),
         ToolDefinition(name = GET_CONVERSATION_THREAD, description = "Get a conversation and all of its exchanges by talking to your memory brain for the exact rows of that chat.", category = "memory", parameters = listOf(ToolParameter("threadId", ToolParameterType.String, true, "Conversation ID")), permissions = emptyList()),

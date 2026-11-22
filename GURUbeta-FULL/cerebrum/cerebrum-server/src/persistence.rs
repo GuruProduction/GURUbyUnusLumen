@@ -37,10 +37,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use cerebrum_crypto::{
-    CryptoError, EncryptedVault, RamKey, VaultBuilder, VerifiedPassphrase,
-};
 use cerebrum_core::{BinarySignature, MemoryId};
+use cerebrum_crypto::{CryptoError, EncryptedVault, RamKey, VaultBuilder, VerifiedPassphrase};
 
 use crate::state::CerebrumState;
 
@@ -198,14 +196,24 @@ impl CerebrumPersistence {
             &context_tree_records(&state.context_tree),
             &mut report,
         )?;
-        write_subsystem(&mut vault, SUBSYSTEM_DECAY, &decay_records(&state.decay_engine), &mut report)?;
+        write_subsystem(
+            &mut vault,
+            SUBSYSTEM_DECAY,
+            &decay_records(&state.decay_engine),
+            &mut report,
+        )?;
         write_subsystem(
             &mut vault,
             SUBSYSTEM_GRAPH_STORE,
             &graph_records(&state.graph_store),
             &mut report,
         )?;
-        write_subsystem(&mut vault, SUBSYSTEM_EPISODIC, &episodic_records(&state.episodic_store), &mut report)?;
+        write_subsystem(
+            &mut vault,
+            SUBSYSTEM_EPISODIC,
+            &episodic_records(&state.episodic_store),
+            &mut report,
+        )?;
         write_subsystem(
             &mut vault,
             SUBSYSTEM_CROSS_REFERENCE,
@@ -251,7 +259,12 @@ impl CerebrumPersistence {
             &mut report,
         )?;
 
-        write_subsystem(&mut vault, SUBSYSTEM_HAMMING_INDEX, &build_hamming_dump(state), &mut report)?;
+        write_subsystem(
+            &mut vault,
+            SUBSYSTEM_HAMMING_INDEX,
+            &build_hamming_dump(state),
+            &mut report,
+        )?;
 
         // DWM via its own byte format. The engine exposes disk save/load only,
         // so the snapshot is staged to a temp file, read back, and that staging
@@ -391,12 +404,19 @@ pub enum PersistError {
     #[default]
     #[doc(hidden)]
     UninitializedButDefaultNeeded,
-    Io { reason: String },
-    Serialize { reason: String },
+    Io {
+        reason: String,
+    },
+    Serialize {
+        reason: String,
+    },
     Crypto(CryptoError),
     Dwm(String),
     GraphRecord(String),
-    CorruptRecord { index: usize, reason: String },
+    CorruptRecord {
+        index: usize,
+        reason: String,
+    },
 }
 
 /// Per-save metrics so the write path's engine coverage is audited too.
@@ -500,9 +520,7 @@ fn write_subsystem<S: serde::Serialize>(
     let mut plains: Vec<u8> = vec![];
     plains.extend(tag.to_le_bytes());
     plains.append(&mut body_json);
-    vault
-        .append_record(&plains)
-        .map_err(PersistError::Crypto)?;
+    vault.append_record(&plains).map_err(PersistError::Crypto)?;
     report.records_written += 1;
     report.subsystem_tags.push(tag);
     Ok(())
@@ -517,9 +535,7 @@ fn write_bytes_subsystem(
     let mut plains: Vec<u8> = vec![];
     plains.extend(tag.to_le_bytes());
     plains.extend_from_slice(value);
-    vault
-        .append_record(&plains)
-        .map_err(PersistError::Crypto)?;
+    vault.append_record(&plains).map_err(PersistError::Crypto)?;
     report.records_written += 1;
     report.subsystem_tags.push(tag);
     Ok(())
@@ -556,12 +572,8 @@ fn decode_record_bytes(bytes: &[u8]) -> Option<LoadedSubsystem> {
 }
 
 /// Restore a graph-store record written by graph_records.
-fn restore_graph_state(
-    state: &mut CerebrumState,
-    bytes: &[u8],
-) -> Result<(), String> {
-    let value: serde_json::Value = serde_json::from_slice(bytes)
-        .map_err(|e| e.to_string())?;
+fn restore_graph_state(state: &mut CerebrumState, bytes: &[u8]) -> Result<(), String> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
 
     let mut graph_store = cerebrum_graph::GraphStore::new();
 
@@ -586,7 +598,8 @@ fn restore_graph_state(
                     .get("timestamp")
                     .and_then(|v| v.as_str())
                     .and_then(parse_rfc3339);
-                let relation_match = cerebrum_graph::Relation::from_relation_ordinal(ordinal as u32);
+                let relation_match =
+                    cerebrum_graph::Relation::from_relation_ordinal(ordinal as u32);
                 if let (Some(source), Some(target), Some(relation)) = (
                     memory_id_from_hex(source_json),
                     memory_id_from_hex(target_json),
@@ -669,28 +682,34 @@ fn context_tree_records(tree: &cerebrum_curate::ContextTree) -> serde_json::Valu
     let entry_json = tree
         .clone_entries()
         .iter()
-        .map(|entry| serde_json::json!({
-            "id": entry.id.to_string(),
-            "domain": entry.domain,
-            "topic": entry.topic,
-            "subtopic": entry.subtopic,
-            "content": entry.content,
-            "relations": entry.relations.iter().map(|rel| serde_json::json!({
-                "source": rel.source.to_string(),
-                "target": rel.target.to_string(),
-                "relation_type": rel.relation_type,
-                "weight": rel.weight,
-            })).collect::<Vec<_>>(),
-            "provenance": {
-                "source": entry.provenance.source,
-                "confidence": entry.provenance.confidence,
-                "timestamp": entry.provenance.timestamp.to_rfc3339(),
-            },
-            "rationale": entry.rationale,
-            "lifecycle": format!("{:?}", entry.lifecycle),
-            "created_at": entry.created_at.to_rfc3339(),
-            "updated_at": entry.updated_at.to_rfc3339(),
-        }))
+        .map(|entry| {
+            serde_json::json!({
+                "id": entry.id.to_string(),
+                "domain": entry.domain,
+                "topic": entry.topic,
+                "subtopic": entry.subtopic,
+                "content": entry.content,
+                "relations": entry.relations.iter().map(|rel| serde_json::json!({
+                    "source": rel.source.to_string(),
+                    "target": rel.target.to_string(),
+                    "relation_type": rel.relation_type,
+                    "weight": rel.weight,
+                })).collect::<Vec<_>>(),
+                "provenance": {
+                    "source": entry.provenance.source,
+                    "confidence": entry.provenance.confidence,
+                    "timestamp": entry.provenance.timestamp.to_rfc3339(),
+                },
+                "rationale": entry.rationale,
+                "lifecycle": format!("{:?}", entry.lifecycle),
+                // Typed ownership and visibility travel as their own fields, so a restore keeps
+                // them and a filter can partition on them rather than on parsed prose.
+                "owner_agent_id": entry.owner_agent_id,
+                "visibility": format!("{:?}", entry.visibility),
+                "created_at": entry.created_at.to_rfc3339(),
+                "updated_at": entry.updated_at.to_rfc3339(),
+            })
+        })
         .collect::<Vec<_>>();
 
     serde_json::json!({ "entries": entry_json })
@@ -816,9 +835,7 @@ fn graph_records(store: &cerebrum_graph::GraphStore) -> serde_json::Value {
     // Labels are (MemoryId, String); emit as string-keyed safe entries.
     let labels = store
         .labels_entries()
-        .map(|(id, label)| {
-            serde_json::json!({ "id": id.to_string(), "label": label })
-        })
+        .map(|(id, label)| serde_json::json!({ "id": id.to_string(), "label": label }))
         .collect::<Vec<_>>();
     // Alias groups carry (canonical id hex, [alternate spelling rows]).
     let aliases = store
@@ -922,8 +939,11 @@ pub fn restore_state(
     }
     if let Some(bytes) = &loaded.embeddings_bytes {
         let state_snapshot: cerebrum_embeddings::EmbeddingState = serde_json::from_slice(bytes)
-            .map_err(|e| PersistError::Serialize { reason: e.to_string() })?;
-        state.embedding_engine = cerebrum_embeddings::EmbeddingEngine::from_persistable(state_snapshot);
+            .map_err(|e| PersistError::Serialize {
+                reason: e.to_string(),
+            })?;
+        state.embedding_engine =
+            cerebrum_embeddings::EmbeddingEngine::from_persistable(state_snapshot);
     }
     if let Some(bytes) = &loaded.policy_bytes {
         state.experience_store = restore_policy_state(bytes)?;
@@ -936,8 +956,9 @@ pub fn restore_state(
         // file outside the brain directory: write the vault-decrypted bytes,
         // load, then zeroize the staged copy before removal.
         let tmp = dwm_stage_path(&data_dir);
-        std::fs::write(&tmp, bytes)
-            .map_err(|e| PersistError::Io { reason: e.to_string() })?;
+        std::fs::write(&tmp, bytes).map_err(|e| PersistError::Io {
+            reason: e.to_string(),
+        })?;
         let dwm = cerebrum_dwm::DwmPersistence::load(&tmp)
             .map_err(|e| PersistError::Dwm(format!("{:?}", e)))?;
         let size = bytes.len();
@@ -946,15 +967,20 @@ pub fn restore_state(
         state.dwm = dwm;
     }
     if let Some(bytes) = &loaded.hot_cache_bytes {
-        let json_value: serde_json::Value = serde_json::from_slice(bytes)
-            .map_err(|e| PersistError::Serialize { reason: e.to_string() })?;
+        let json_value: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|e| PersistError::Serialize {
+                reason: e.to_string(),
+            })?;
         let entry_list = json_value
             .get("entries")
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
         for entry in entry_list {
-            let id = entry.get("id").and_then(|v| v.as_str()).and_then(memory_id_from_hex);
+            let id = entry
+                .get("id")
+                .and_then(|v| v.as_str())
+                .and_then(memory_id_from_hex);
             let content = entry.get("content").and_then(|v| v.as_str());
             if let (Some(id), Some(content)) = (id, content) {
                 state.query_engine.hot_cache.insert(id, content.to_string());
@@ -963,15 +989,20 @@ pub fn restore_state(
         }
     }
     if let Some(bytes) = &loaded.prefetch_bytes {
-        let json_value: serde_json::Value = serde_json::from_slice(bytes)
-            .map_err(|e| PersistError::Serialize { reason: e.to_string() })?;
+        let json_value: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|e| PersistError::Serialize {
+                reason: e.to_string(),
+            })?;
         let entry_list = json_value
             .get("entries")
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
         for entry in entry_list {
-            let id = entry.get("id").and_then(|v| v.as_str()).and_then(memory_id_from_hex);
+            let id = entry
+                .get("id")
+                .and_then(|v| v.as_str())
+                .and_then(memory_id_from_hex);
             let content = entry.get("content").and_then(|v| v.as_str());
             if let (Some(id), Some(content)) = (id, content) {
                 state.prefetch_engine.register(id, content.to_string());
@@ -985,15 +1016,19 @@ pub fn restore_state(
         }
     }
     if let Some(bytes) = &loaded.last_id_bytes {
-        let json_value: serde_json::Value = serde_json::from_slice(bytes)
-            .map_err(|e| PersistError::Serialize { reason: e.to_string() })?;
+        let json_value: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|e| PersistError::Serialize {
+                reason: e.to_string(),
+            })?;
         if let Some(id_text) = json_value.get("last_curated_id").and_then(|x| x.as_str()) {
             state.last_curated_id = memory_id_from_hex(id_text);
         }
     }
     if let Some(bytes) = &loaded.wal_bytes {
-        let wal_restored: cerebrum_storage::WriteAheadLog = serde_json::from_slice(bytes)
-            .map_err(|e| PersistError::Serialize { reason: e.to_string() })?;
+        let wal_restored: cerebrum_storage::WriteAheadLog =
+            serde_json::from_slice(bytes).map_err(|e| PersistError::Serialize {
+                reason: e.to_string(),
+            })?;
         state.wal = wal_restored;
     }
 
@@ -1026,11 +1061,10 @@ fn restore_hamming_state(state: &mut CerebrumState, bytes: &[u8]) -> Result<(), 
         .cloned()
         .unwrap_or_default();
     for entry in entries {
-        let id: Option<MemoryId> =
-            entry
-                .get("id")
-                .and_then(|v| v.as_str())
-                .and_then(memory_id_from_hex);
+        let id: Option<MemoryId> = entry
+            .get("id")
+            .and_then(|v| v.as_str())
+            .and_then(memory_id_from_hex);
         let sig: Option<BinarySignature> = entry
             .get("signature")
             .and_then(|v| v.as_array())
@@ -1050,12 +1084,11 @@ fn restore_hamming_state(state: &mut CerebrumState, bytes: &[u8]) -> Result<(), 
 
 /// Restore the ContextTree from its entries-array record; the tree rebuilds
 /// hierarchy on insert, exactly like a fresh curation session.
-fn restore_context_tree_state(
-    bytes: &[u8],
-) -> Result<cerebrum_curate::ContextTree, PersistError> {
-    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| {
-        PersistError::Serialize { reason: e.to_string() }
-    })?;
+fn restore_context_tree_state(bytes: &[u8]) -> Result<cerebrum_curate::ContextTree, PersistError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| PersistError::Serialize {
+            reason: e.to_string(),
+        })?;
     let entries_value = value
         .get("entries")
         .and_then(|v| v.as_array())
@@ -1092,10 +1125,8 @@ fn restore_context_tree_state(
             .get("relations")
             .and_then(|v| v.as_array())
             .map(|list| {
-                let mapped_results: Vec<Option<cerebrum_curate::Relation>> = list
-                    .iter()
-                    .map(|rel_json| build_rel_opt(rel_json))
-                    .collect();
+                let mapped_results: Vec<Option<cerebrum_curate::Relation>> =
+                    list.iter().map(build_rel_opt).collect();
                 mapped_results.into_iter().flatten().collect()
             })
             .unwrap_or_default();
@@ -1120,6 +1151,30 @@ fn restore_context_tree_state(
         if let Some(lifecycle_from) = deserialize_lifecycle(&entry) {
             rebuilt_entry.lifecycle = lifecycle_from;
         }
+        /*
+         * OWNERSHIP AND VISIBILITY ARE READ BACK, and leaving them out was a real defect the
+         * roundtrip test caught: the writer stored them and the loader ignored them, so an
+         * agent's private fact became an unowned, shared fact after a restart. A permission
+         * decision that only holds in RAM is one that silently changes when the phone
+         * reboots.
+         *
+         * An older row that predates these fields falls back to the defaults, which is
+         * unowned and shared: a fact with no stated owner belongs to the person.
+         */
+        rebuilt_entry.owner_agent_id = entry
+            .get("owner_agent_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        rebuilt_entry.visibility = match entry
+            .get("visibility")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+        {
+            "Owned" => cerebrum_curate::EntryVisibility::Owned,
+            "OwnedAndShared" => cerebrum_curate::EntryVisibility::OwnedAndShared,
+            _ => cerebrum_curate::EntryVisibility::Shared,
+        };
         if let Some(bound_created) = deserialize_bound(&entry, "created_at") {
             rebuilt_entry.created_at = bound_created;
         }
@@ -1159,9 +1214,7 @@ fn deserialize_provenance(entry: &serde_json::Value) -> cerebrum_curate::Provena
     }
 }
 
-fn deserialize_lifecycle(
-    entry: &serde_json::Value,
-) -> Option<cerebrum_curate::EntryLifecycle> {
+fn deserialize_lifecycle(entry: &serde_json::Value) -> Option<cerebrum_curate::EntryLifecycle> {
     let word = entry.get("lifecycle").and_then(|x| x.as_str())?;
     Some(match word {
         "Active" => cerebrum_curate::EntryLifecycle::Active,
@@ -1171,7 +1224,10 @@ fn deserialize_lifecycle(
     })
 }
 
-fn deserialize_bound(entry: &serde_json::Value, key: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+fn deserialize_bound(
+    entry: &serde_json::Value,
+    key: &str,
+) -> Option<chrono::DateTime<chrono::Utc>> {
     entry
         .get(key)
         .and_then(|x| x.as_str())
@@ -1180,9 +1236,10 @@ fn deserialize_bound(entry: &serde_json::Value, key: &str) -> Option<chrono::Dat
 
 /// Restore the DecayEngine from its JSON record.
 fn restore_decay_state(bytes: &[u8]) -> Result<cerebrum_decay::DecayEngine, PersistError> {
-    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| {
-        PersistError::Serialize { reason: e.to_string() }
-    })?;
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| PersistError::Serialize {
+            reason: e.to_string(),
+        })?;
     let mut engine = cerebrum_decay::DecayEngine::default();
     if let Some(config_section) = value.get("config") {
         engine.config.hibernation_threshold = config_section
@@ -1197,54 +1254,61 @@ fn restore_decay_state(bytes: &[u8]) -> Result<cerebrum_decay::DecayEngine, Pers
             .get("consolidation_trigger")
             .and_then(|x| x.as_u64())
             .unwrap_or(100) as usize;
-        engine.config.buffer_halflife =
-            std::time::Duration::from_secs(config_section
+        engine.config.buffer_halflife = std::time::Duration::from_secs(
+            config_section
                 .get("buffer_halflife_secs")
                 .and_then(|x| x.as_u64())
-                .unwrap_or(3600));
-        engine.config.episodic_halflife =
-            std::time::Duration::from_secs(
-                config_section
-                    .get("episodic_halflife_secs")
-                    .and_then(|x| x.as_u64())
-                    .unwrap_or(60 * 60 * 24 * 30),
-            );
+                .unwrap_or(3600),
+        );
+        engine.config.episodic_halflife = std::time::Duration::from_secs(
+            config_section
+                .get("episodic_halflife_secs")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(60 * 60 * 24 * 30),
+        );
     }
     if let Some(entries_value) = value.get("entries").and_then(|x| x.as_array()) {
         for e in entries_value {
             // Each engine layer comes back as DecayEntry with lifecycle kept.
-            let id = e.get("id").and_then(|x| x.as_str()).and_then(memory_id_from_hex);
+            let id = e
+                .get("id")
+                .and_then(|x| x.as_str())
+                .and_then(memory_id_from_hex);
             if id.is_none() {
                 continue;
             }
             let layer = deserialize_memory_layer(e.get("layer"));
-            let content = e.get("content").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let content = e
+                .get("content")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
             let strength = e.get("strength").and_then(|x| x.as_f64()).unwrap_or(1.0) as f32;
             let created_at = deserialize_bound(e, "created_at").unwrap_or_else(chrono::Utc::now);
-            let last_accessed = deserialize_bound(e, "last_accessed").unwrap_or_else(chrono::Utc::now);
-            let access_count = e
-                .get("access_count")
-                .and_then(|x| x.as_u64())
-                .unwrap_or(0) as u32;
+            let last_accessed =
+                deserialize_bound(e, "last_accessed").unwrap_or_else(chrono::Utc::now);
+            let access_count = e.get("access_count").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
             let archived_status = deserialize_decay_archived(e.get("archived"));
 
-            let restored = build_decay_entry_restored(
-                id.unwrap(),
+            let restored = build_decay_entry_restored(RestoredDecayFields {
+                id: id.unwrap(),
                 layer,
                 content,
                 strength,
                 last_accessed,
                 created_at,
                 access_count,
-                archived_status,
-            );
+                archived: archived_status,
+            });
             engine.entries.insert(restored.id, restored);
         }
     }
     Ok(engine)
 }
 
-fn deserialize_memory_layer(layer_value: Option<&serde_json::Value>) -> cerebrum_decay::MemoryLayer {
+fn deserialize_memory_layer(
+    layer_value: Option<&serde_json::Value>,
+) -> cerebrum_decay::MemoryLayer {
     match layer_value.and_then(|x| x.as_str()) {
         Some("Semantic") => cerebrum_decay::MemoryLayer::Semantic,
         Some("Episodic") => cerebrum_decay::MemoryLayer::Episodic,
@@ -1256,8 +1320,13 @@ fn deserialize_decay_archived(marker: Option<&serde_json::Value>) -> bool {
     marker.and_then(|x| x.as_bool()).unwrap_or(false)
 }
 
-/// Build a decay engine's fully-populated entries store row.
-fn build_decay_entry_restored(
+/// Everything one restored decay row carries.
+///
+/// GROUPED RATHER THAN PASSED AS EIGHT POSITIONALS. The eight values are all fields of the
+/// same row and four of them are the same type on purpose, so a positional call could swap
+/// `last_accessed` and `created_at` and still compile. Naming them at the call site is what
+/// makes that impossible.
+struct RestoredDecayFields {
     id: MemoryId,
     layer: cerebrum_decay::MemoryLayer,
     content: String,
@@ -1266,28 +1335,38 @@ fn build_decay_entry_restored(
     created_at: chrono::DateTime<chrono::Utc>,
     access_count: u32,
     archived: bool,
-) -> cerebrum_decay::DecayEntry {
-    let mut entry = cerebrum_decay::DecayEntry::new(id, layer, content);
-    entry.strength = strength;
-    entry.last_accessed = last_accessed;
-    entry.created_at = created_at;
-    entry.access_count = access_count;
-    entry.archived = archived;
+}
+
+/// Build a decay engine's fully-populated entries store row.
+fn build_decay_entry_restored(fields: RestoredDecayFields) -> cerebrum_decay::DecayEntry {
+    let mut entry = cerebrum_decay::DecayEntry::new(fields.id, fields.layer, fields.content);
+    entry.strength = fields.strength;
+    entry.last_accessed = fields.last_accessed;
+    entry.created_at = fields.created_at;
+    entry.access_count = fields.access_count;
+    entry.archived = fields.archived;
     entry
 }
 
 /// Restore the episodic state from its JSON record.
-fn restore_episodic_state(
-    bytes: &[u8],
-) -> Result<cerebrum_episodic::EpisodicStore, PersistError> {
-    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| {
-        PersistError::Serialize { reason: e.to_string() }
-    })?;
+fn restore_episodic_state(bytes: &[u8]) -> Result<cerebrum_episodic::EpisodicStore, PersistError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| PersistError::Serialize {
+            reason: e.to_string(),
+        })?;
     let mut store = cerebrum_episodic::EpisodicStore::default();
-    if let Some(max) = value.get("config").and_then(|v| v.get("max_episodes")).and_then(|x| x.as_u64()) {
+    if let Some(max) = value
+        .get("config")
+        .and_then(|v| v.get("max_episodes"))
+        .and_then(|x| x.as_u64())
+    {
         store.config.max_episodes = max as usize;
     }
-    if let Some(valence) = value.get("config").and_then(|v| v.get("valence_tracking")).and_then(|x| x.as_bool()) {
+    if let Some(valence) = value
+        .get("config")
+        .and_then(|v| v.get("valence_tracking"))
+        .and_then(|x| x.as_bool())
+    {
         store.config.valence_tracking = valence;
     }
     if let Some(episode_rows) = value.get("episodes").and_then(|x| x.as_array()) {
@@ -1332,9 +1411,7 @@ fn restore_episodic_state(
                 .and_then(|x| x.as_array())
                 .map(|arr| {
                     arr.iter()
-                        .filter_map(|id_json| {
-                            id_json.as_str().and_then(memory_id_from_hex)
-                        })
+                        .filter_map(|id_json| id_json.as_str().and_then(memory_id_from_hex))
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
@@ -1366,9 +1443,7 @@ fn restore_episodic_state(
 }
 
 /// The engine's exact rich-episode restore surface.
-fn episodic_valence_of(
-    as_lower: &str,
-) -> cerebrum_episodic::EmotionalValence {
+fn episodic_valence_of(as_lower: &str) -> cerebrum_episodic::EmotionalValence {
     match as_lower {
         "Exciting" => cerebrum_episodic::EmotionalValence::Exciting,
         "Concerning" => cerebrum_episodic::EmotionalValence::Concerning,
@@ -1405,12 +1480,11 @@ fn rebuild_rich_episode(
 }
 
 /// Restore the event store state from its string-shaped event records.
-fn restore_event_store_state(
-    bytes: &[u8],
-) -> Result<cerebrum_events::EventStore, PersistError> {
-    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| {
-        PersistError::Serialize { reason: e.to_string() }
-    })?;
+fn restore_event_store_state(bytes: &[u8]) -> Result<cerebrum_events::EventStore, PersistError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| PersistError::Serialize {
+            reason: e.to_string(),
+        })?;
     let mut store = cerebrum_events::EventStore::default();
     if let Some(events) = value.get("events").and_then(|x| x.as_array()) {
         for event_row in events {
@@ -1440,9 +1514,7 @@ fn restore_event_store_state(
                 payload,
                 timestamp: deserialize_bound(event_row, "timestamp")
                     .unwrap_or_else(chrono::Utc::now),
-                enrichment_status: restore_enrichment_status(
-                    event_row.get("enrichment_status"),
-                ),
+                enrichment_status: restore_enrichment_status(event_row.get("enrichment_status")),
             });
         }
     }
@@ -1452,7 +1524,7 @@ fn restore_event_store_state(
 fn restore_enrichment_status(
     status_value: Option<&serde_json::Value>,
 ) -> cerebrum_core::EnrichmentStatus {
-    match status_value.map(|x| x.as_str()).flatten() {
+    match status_value.and_then(|x| x.as_str()) {
         Some("Enriched") => cerebrum_core::EnrichmentStatus::Enriched,
         Some("Failed") => cerebrum_core::EnrichmentStatus::Failed,
         Some("DeadLetter") => cerebrum_core::EnrichmentStatus::DeadLetter,
@@ -1464,12 +1536,10 @@ fn restore_enrichment_status(
 fn restore_policy_state(
     bytes: &[u8],
 ) -> Result<cerebrum_policy::IndexedExperienceStore, PersistError> {
-    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| {
-        PersistError::Serialize
-        {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| PersistError::Serialize {
             reason: e.to_string(),
-        }
-    })?;
+        })?;
     let mut store = cerebrum_policy::IndexedExperienceStore::new();
     if let Some(relevance_value) = get_policy_sections(&value) {
         for row in relevance_value {
@@ -1493,14 +1563,9 @@ fn restore_policy_state(
                 id.unwrap(),
                 summary,
                 artifact.unwrap(),
-                row.get("token_count")
-                    .and_then(|x| x.as_u64())
-                    .unwrap_or(0) as usize,
+                row.get("token_count").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
             );
-            built.relevance = row
-                .get("relevance")
-                .and_then(|x| x.as_f64())
-                .unwrap_or(0.5) as f32;
+            built.relevance = row.get("relevance").and_then(|x| x.as_f64()).unwrap_or(0.5) as f32;
             if let Some(created) = deserialize_bound(row, "created_at") {
                 built.created_at = created;
             }
@@ -1509,8 +1574,14 @@ fn restore_policy_state(
             }
             if let Some(section_list) = row.get("sections").and_then(|x| x.as_array()) {
                 for section_row in section_list {
-                    let name = section_row.get("name").and_then(|s| s.as_str()).unwrap_or("");
-                    let content = section_row.get("body").and_then(|s| s.as_str()).unwrap_or("");
+                    let name = section_row
+                        .get("name")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("");
+                    let content = section_row
+                        .get("body")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("");
                     built.sections.insert(name.to_string(), content.to_string());
                 }
             }
@@ -1529,14 +1600,21 @@ fn get_policy_sections(value: &serde_json::Value) -> Option<&Vec<serde_json::Val
 fn restore_cross_reference_state(
     bytes: &[u8],
 ) -> Result<cerebrum_curate::CrossReferenceEngine, PersistError> {
-    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| {
-        PersistError::Serialize { reason: e.to_string() }
-    })?;
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| PersistError::Serialize {
+            reason: e.to_string(),
+        })?;
     let mut engine = cerebrum_curate::CrossReferenceEngine::new();
     if let Some(pairs) = value.get("reference_pairs").and_then(|x| x.as_array()) {
         for pair in pairs {
-            let source = pair.get("source").and_then(|v| v.as_str()).and_then(memory_id_from_hex);
-            let target = pair.get("target").and_then(|v| v.as_str()).and_then(memory_id_from_hex);
+            let source = pair
+                .get("source")
+                .and_then(|v| v.as_str())
+                .and_then(memory_id_from_hex);
+            let target = pair
+                .get("target")
+                .and_then(|v| v.as_str())
+                .and_then(memory_id_from_hex);
             if source.is_none() || target.is_none() {
                 continue;
             }

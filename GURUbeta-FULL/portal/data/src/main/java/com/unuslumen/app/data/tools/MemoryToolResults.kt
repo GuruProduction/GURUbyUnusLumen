@@ -25,6 +25,38 @@ import kotlinx.serialization.Serializable
 ) : ToolResultData
 @Serializable data class MemoryFactResult(val fact: MemoryFactInfo) : ToolResultData
 @Serializable data class DeleteMemoryFactResult(val deletedFactId: String, val deletedFact: String) : ToolResultData
+
+/**
+ * One revision of a memory, as a tool caller reads it.
+ *
+ * `superseded` is null on a creation and carries the replaced text on an update, which is
+ * the whole reason the trail exists: a person asking what a memory used to say is asking
+ * about the previous text, not about the current one.
+ */
+@Serializable data class MemoryRevisionInfo(
+    val kind: String,
+    val content: String,
+    val superseded: String? = null,
+    val reason: String = "",
+    val actor: String = "",
+    val recordedAt: String = "",
+) : ToolResultData
+
+/**
+ * A memory's trail, with the fields a caller needs to interpret it.
+ *
+ * `everRetired` is separate from `lifecycle` because a memory that was deleted and then
+ * restored reads as Active, and the fact that it was ever retired is the part a person
+ * cannot recover from the current row.
+ */
+@Serializable data class MemoryHistoryResult(
+    val memoryId: String,
+    val lifecycle: String,
+    val category: String,
+    val everRetired: Boolean,
+    val revisionCount: Int,
+    val revisions: List<MemoryRevisionInfo>,
+) : ToolResultData
 @Serializable data class ConversationInfo(val id: String, val title: String, val createdDate: Long, val updatedDate: Long, val messageCount: Int) : ToolResultData
 @Serializable data class SearchConversationsResult(val conversations: List<ConversationInfo>) : ToolResultData
 @Serializable data class ConversationThreadInfo(val id: String, val title: String, val conversationIds: List<String>) : ToolResultData

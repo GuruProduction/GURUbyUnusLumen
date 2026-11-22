@@ -3,13 +3,17 @@
 // Licensed under the GNU AGPL v3.0-or-later. Full license text in the LICENSE file.
 package com.unuslumen.app.data.tools
 
+import com.unuslumen.app.data.agents.currentDispatchScope
 import com.unuslumen.app.data.memory.persistedFactRoundTrip
 import com.unuslumen.app.data.tools.registry.ToolExecutionResult
 import com.unuslumen.app.data.tools.registry.ToolExecutor
 import com.unuslumen.app.domain.memory.MemoryCategories
 import com.unuslumen.app.domain.memory.MemoryFact
+import com.unuslumen.app.domain.memory.MemoryOwnership
 import com.unuslumen.app.domain.memory.MemoryRepository
 import com.unuslumen.app.domain.memory.ConversationMessage
+import com.unuslumen.app.domain.model.AgentMemoryScope
+import com.unuslumen.app.domain.repository.GuruAgentRepository
 import kotlinx.serialization.json.Json
 
 /**
@@ -28,8 +32,67 @@ import kotlinx.serialization.json.Json
  * So: no uuid is ever created here, no listing is used as an existence check,
  * and a failure is reported as a failure with the reason attached.
  */
-class MemoryToolExecutor(private val memoryRepository: MemoryRepository) : ToolExecutor {
+class MemoryToolExecutor(
+    private val memoryRepository: MemoryRepository,
+    /**
+     * Used for ONE thing: resolving the calling agent's memory scope.
+     *
+     * The agent's identity arrives from the coroutine, and the scope is a property of the
+     * agent's own row. Nothing else about the agent is read here, and the scope is never
+     * taken from a tool argument, because a model that could name its own scope would have
+     * no scope at all.
+     */
+    private val agentRepository: GuruAgentRepository? = null,
+) : ToolExecutor {
     private val json = Json { ignoreUnknownKeys = true }
+
+    /**
+     * The memory facts the caller may see, filtered at the point of return.
+     *
+     * THIS IS THE BOUNDARY, AND IT IS ONE FUNCTION SO EVERY READ AGREES.
+     *
+     * The agent's visibility scope used to be enforced in `AgentMemoryService.search` and
+     * nowhere else. Every other route into memory went straight to the repository, so an
+     * agent that called `searchMemoryFacts`, `listMemoryFacts`, `traverseMemoryGraph` or
+     * `searchAllMemory` bypassed its own partition completely. An own-only agent could read
+     * the whole vault, and another agent's private fact was one tool name away. A filter on
+     * one entry point is a courtesy; a boundary is on every path out.
+     *
+     * A CALLER WITH NO AGENT IN SCOPE SEES EVERYTHING. That is the main assistant, whose
+     * memory this all is: the partition exists to stop one agent reading another's, not to
+     * lock the owner out of his own brain.
+     *
+     * A brain that is not running yields no rows before this point, so nothing here has to
+     * invent an answer for that case.
+     */
+    private suspend fun visibleToCaller(facts: List<MemoryFact>): List<MemoryFact> {
+        val scopeCarrier = currentDispatchScope()
+        val callerName = scopeCarrier?.agentName
+        if (callerName.isNullOrBlank()) return facts
+
+        val scope: AgentMemoryScope = agentRepository?.resolveAgent(callerName)?.memoryScope
+            // An agent named in scope that the repository cannot resolve is a state the
+            // dispatcher cannot produce. The safe reading is an empty scope, not a full one:
+            // a fact leaked to an unknown caller cannot be recalled.
+            ?: AgentMemoryScope.NONE
+        val callerId = agentRepository?.resolveAgent(callerName)?.id.orEmpty()
+
+        return facts.filter { fact ->
+            val inCategory = scope.categories.isEmpty() ||
+                scope.categories.any { wanted -> wanted.equals(fact.category, ignoreCase = true) }
+            if (!inCategory) return@filter false
+            // The TYPED ownership the store holds, with the label grammar as the fallback for
+            // rows written before those fields existed. A decision over data, not over prose.
+            MemoryOwnership.mayReadStored(
+                storedOwnerAgentId = fact.ownerAgentId,
+                storedVisibility = fact.visibility,
+                provenanceLabel = fact.source,
+                requestingAgentId = callerId,
+                readOwn = scope.readOwn,
+                readShared = scope.readShared,
+            )
+        }
+    }
 
     private fun MemoryFact.toInfo() = MemoryFactInfo(id, category, fact, confidence, extractedDate)
     private fun com.unuslumen.app.domain.memory.Conversation.toInfo() = ConversationInfo(id, title, createdDate, updatedDate, messageCount)
@@ -53,11 +116,23 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) : ToolE
             )
         }
         val known = memoryRepository.getFact(factId)
-        return if (known == null) {
-            null to ToolExecutionResult.error("Fact not found: $factId")
-        } else {
-            known to null
+        if (known == null) {
+            return null to ToolExecutionResult.error("Fact not found: $factId")
         }
+        /*
+         * AN EXISTENCE CHECK IS ALSO A READ.
+         *
+         * `deleteMemoryFact` and `updateMemoryFact` resolve a row by id, and that lookup
+         * returns its text. Without this, an agent could read any fact in the vault simply by
+         * naming its id, and the id is derivable from the content, so it is not a secret.
+         *
+         * It is reported as absent rather than refused. A refusal would confirm the row
+         * exists, which tells a caller something about a fact it may not see.
+         */
+        if (visibleToCaller(listOf(known)).isEmpty()) {
+            return null to ToolExecutionResult.error("Fact not found: $factId")
+        }
+        return known to null
     }
 
     /** A real brain id: 64 lowercase hex characters. */
@@ -75,7 +150,7 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) : ToolE
             } else {
                 memoryRepository.getAllFacts()
             }
-            val result = MemoryFactsResult(facts.map { it.toInfo() })
+            val result = MemoryFactsResult(visibleToCaller(facts).map { it.toInfo() })
             ToolExecutionResult.success(result, json.encodeToString(MemoryFactsResult.serializer(), result))
         }
 
@@ -167,9 +242,10 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) : ToolE
                         "Memory is not running, so nothing can be listed right now."
                     )
                 }
+                val permittedListing = visibleToCaller(listing.facts)
                 val result = MemoryListingResult(
-                    facts = listing.facts.map { it.toInfo() },
-                    shown = listing.facts.size,
+                    facts = permittedListing.map { it.toInfo() },
+                    shown = permittedListing.size,
                     // The totals are separate fields rather than implied by the
                     // row count: a listing that reported its own length as the
                     // total would claim the brain remembers less than it does.
@@ -242,18 +318,91 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) : ToolE
                 lastRecalledDate = now,
             )
             try {
-                val stored = persistedFactRoundTrip(memoryRepository, replacement)
-                // Content-addressed identity: an edit produces a new content id,
-                // so the row holding the OLD content is archived. Best effort
-                // because the new row is already live and correct; a failure
-                // here leaves a stale copy, not a lost edit.
-                if (existing.id != stored.id) {
-                    runCatching { memoryRepository.deleteFact(existing.id) }
-                }
+                /*
+                 * THE NATIVE UPDATE, NOT A DELETE PLUS A WRITE.
+                 *
+                 * This used to write the new text as a fresh fact and then delete the old
+                 * id. An id is the hash of the content, so that produced a DIFFERENT row and
+                 * archived the old one with no record of what it said. The merged
+                 * update-history work exists precisely so "what did this memory say before"
+                 * has an answer, and this path never produced the event that makes the answer
+                 * possible.
+                 *
+                 * The row keeps its identity, so every id a caller holds still resolves.
+                 */
+                val stored = memoryRepository.updateFact(
+                    factId = existing.id,
+                    newContent = updatedContent,
+                    category = updatedCategory,
+                    confidence = updatedConfidence.coerceIn(0f, 1f),
+                    reason = "guru updateMemoryFact: the owner edited this memory",
+                )
                 val result = MemoryFactResult(stored.toInfo())
                 ToolExecutionResult.success(result, json.encodeToString(MemoryFactResult.serializer(), result))
             } catch (e: Exception) {
                 ToolExecutionResult.error("brain update rejected: ${e.message?.take(200)}")
+            }
+        }
+
+        MemoryToolDefinitions.MEMORY_HISTORY -> {
+            /*
+             * A HISTORY READ DELIBERATELY DOES NOT REQUIRE THE ROW TO BE LIVE.
+             *
+             * Every other verb here refuses a retired memory, and this one must not: the
+             * question "what did it say, who removed it and why" is asked exactly once the
+             * memory is gone. So the id is validated as a brain id and NOT resolved through
+             * `resolveFactOrError`, because that resolution answers "Fact not found" for a
+             * deleted row.
+             *
+             * Ownership still applies. A caller that may not read a live fact may not read
+             * its trail either, and the trail is checked against the row when the row still
+             * exists. When it does not exist there is nothing to partition on and the
+             * deletion record is the owner's own audit material, so it answers.
+             */
+            val factId = args["factId"] as? String ?: return ToolExecutionResult.error("Missing 'factId'")
+            if (factId.isBlank()) return ToolExecutionResult.error("Missing 'factId'")
+            if (!isBrainId(factId)) {
+                return ToolExecutionResult.error(
+                    "Not a memory id: $factId. " +
+                        "Use the 64-character id from an addMemoryFact or searchMemoryFacts result."
+                )
+            }
+            val live = memoryRepository.getFact(factId)
+            if (live != null && visibleToCaller(listOf(live)).isEmpty()) {
+                // Reported as absent, not refused, for the same reason the resolution path
+                // does: a refusal confirms the row exists.
+                return ToolExecutionResult.error("Fact not found: $factId")
+            }
+            try {
+                val history = memoryRepository.getFactHistory(factId)
+                    ?: return ToolExecutionResult.error(
+                        "The brain did not answer for $factId, so this is not a statement that it has no history."
+                    )
+                if (history.revisions.isEmpty() && live == null) {
+                    return ToolExecutionResult.error(
+                        "No memory and no recorded history for $factId. That id does not belong to anything this brain holds."
+                    )
+                }
+                val result = MemoryHistoryResult(
+                    memoryId = history.memoryId,
+                    lifecycle = history.lifecycle,
+                    category = history.category,
+                    everRetired = history.everRetired,
+                    revisionCount = history.revisions.size,
+                    revisions = history.revisions.map { revision ->
+                        MemoryRevisionInfo(
+                            kind = revision.kind,
+                            content = revision.content,
+                            superseded = revision.superseded,
+                            reason = revision.reason,
+                            actor = revision.actor,
+                            recordedAt = revision.recordedAt,
+                        )
+                    },
+                )
+                ToolExecutionResult.success(result, json.encodeToString(MemoryHistoryResult.serializer(), result))
+            } catch (e: Exception) {
+                ToolExecutionResult.error("brain history rejected: ${e.message?.take(200)}")
             }
         }
 
@@ -280,7 +429,7 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) : ToolE
                     subject = subject.trim(),
                     edgeType = edgeType,
                     depth = depth.coerceIn(1, 6),
-                    connected = connected.map { it.toInfo() },
+                    connected = visibleToCaller(connected).map { it.toInfo() },
                 )
                 ToolExecutionResult.success(result, json.encodeToString(TraverseMemoryGraphResult.serializer(), result))
             } catch (e: Exception) {
@@ -294,7 +443,7 @@ class MemoryToolExecutor(private val memoryRepository: MemoryRepository) : ToolE
             val messages = memoryRepository.searchMessages(query)
             val toolResults = memoryRepository.searchToolResults(query)
             val result = UnifiedSearchResult(
-                facts.map { it.toInfo() },
+                visibleToCaller(facts).map { it.toInfo() },
                 messages.map { it.toInfo() },
                 toolResults.map { ToolResultHit(it.id, it.toolName, it.resultText, it.timestamp, it.conversationId) },
             )

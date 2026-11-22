@@ -261,7 +261,7 @@ impl TieredRetrieval {
                 .map(|(id, sig)| (*id, query_sig.hamming_distance(sig)))
                 .filter(|(_, d)| *d <= dwm_radius)
                 .collect();
-            matches.sort_by(|a, b| a.1.cmp(&b.1));
+            matches.sort_by_key(|a| a.1);
             let ids: Vec<MemoryId> = matches.into_iter().map(|(id, _)| id).collect();
             if !ids.is_empty() {
                 let latency = (Utc::now() - start).num_milliseconds() as u64;
@@ -512,13 +512,8 @@ mod tests {
         let id = MemoryId([1u8; 32]);
         retrieval.cache(id, "Rust programming language memory".to_string());
 
-        let (tier, results, _confidence) = retrieval.retrieve(
-            "Rust programming language",
-            None,
-            &[],
-            &[],
-            16,
-        );
+        let (tier, results, _confidence) =
+            retrieval.retrieve("Rust programming language", None, &[], &[], 16);
         assert_eq!(tier, RetrievalTier::HotCache);
         assert!(results.contains(&id));
     }
@@ -535,7 +530,10 @@ mod tests {
     fn test_end_to_end_classify_plan_execute() {
         let mut engine = QueryEngine::new();
         let id = MemoryId([7u8; 32]);
-        engine.hot_cache.insert(id, "The Rust borrow checker prevents data races".to_string());
+        engine.hot_cache.insert(
+            id,
+            "The Rust borrow checker prevents data races".to_string(),
+        );
 
         let query = Query {
             query_type: QueryType::Semantic,

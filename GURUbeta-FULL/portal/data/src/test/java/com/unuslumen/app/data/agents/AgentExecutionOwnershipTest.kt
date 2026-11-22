@@ -13,6 +13,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -78,20 +80,39 @@ class AgentExecutionOwnershipTest {
         val finished = AtomicInteger(0)
         val deferred = CompletableDeferred<String>()
 
+        /*
+         * A GATE INSTEAD OF A SLEEP, BECAUSE THE SLEEP MADE THIS TEST ABOUT THE MACHINE.
+         *
+         * The previous version delayed the work 250ms, cancelled its waiter at 50ms, then slept
+         * a further 600ms and asserted. On a loaded suite the work could still be pending when
+         * the assertion ran, and the test failed for a reason unrelated to the behaviour it
+         * names: whether a cancelled waiter can cancel its host's work. A gate holds the work
+         * open until the waiter has definitely been cancelled and the pre-condition asserted, so
+         * the ordering is established rather than hoped for, and the test runs faster.
+         */
+        val release = CompletableDeferred<Unit>()
         host.start("run-2", deferred) {
-            delay(250)
+            release.await()
             finished.incrementAndGet()
             "done"
         }
 
-        // A waiter that gives up after 50ms, long before the work finishes.
+        // A waiter that gives up long before the work is released.
         val waiter = async { deferred.await() }
-        delay(50)
+        // Let the waiter reach `await` before cancelling it, so this is a real cancellation of a
+        // suspended waiter rather than of a coroutine that never started.
+        yield()
         waiter.cancel()
 
-        delay(600)
-        assertEquals("the work must still have completed", 1, finished.get())
-        assertTrue("the deferred must still be completed", deferred.isCompleted)
+        assertEquals("the work must not have finished while it was held", 0, finished.get())
+        release.complete(Unit)
+
+        assertEquals(
+            "the work must still complete its own deferred",
+            "done",
+            withTimeoutOrNull(5_000) { deferred.await() },
+        )
+        assertEquals("and exactly once", 1, finished.get())
     }
 
     /** The host knows whether work is genuinely active, which is what the heartbeat asks. */
@@ -222,9 +243,16 @@ class AgentExecutionOwnershipTest {
             secondAdmission is AgentRunHost.Admission.AlreadyRunning,
         )
 
+        /*
+         * AWAIT BEFORE COUNTING. The block runs on a launched coroutine, so asserting its count
+         * immediately after `start` is a race in this test rather than a fact about the host.
+         * It passed for months and failed intermittently under a loaded suite, which is the
+         * signature of testing the scheduler instead of the behaviour. The claim is unchanged:
+         * the first block runs exactly once and the refused one never runs.
+         */
+        assertEquals("the winner still completes", "first", first.await())
         assertEquals("the first block ran exactly once", 1, firstRan.get())
         assertEquals("the refused block must never run", 0, secondRan.get())
-        assertEquals("the winner still completes", "first", first.await())
     }
 
     /** A refused start completes its deferred exceptionally rather than leaving a caller hanging. */

@@ -57,6 +57,26 @@ data class DedupJudgement(
 )
 
 /**
+ * One dedup decision in the shape the SERVED prompt asks for.
+ *
+ * The served row ends with its own output format: `action` of `merge`, `keep_both` or
+ * `flag_contradiction`, with a merged statement, a confidence and an explanation. This
+ * decodes exactly that and nothing else, because the served text is the only instruction
+ * that reaches the model.
+ *
+ * Every field is defaulted so a partial answer decodes rather than throws. A judge that
+ * answers nothing useful must not become a judge that drops a memory, and the caller
+ * treats a missing action as "keep".
+ */
+@Serializable
+data class DedupDecision(
+    val action: String = "",
+    val merged_fact: String? = null,
+    val confidence: Float = 0f,
+    val explanation: String = "",
+)
+
+/**
  * HiveMindWorker — the extraction pass for the memory brain. Runs every 15
  * minutes with ONLY battery-not-low (no network requirement, no idle
  * requirement; the one-store era's starved KEEP+idle chain was the F1 bug).
@@ -71,8 +91,18 @@ data class DedupJudgement(
  *  3. dedup pass skips cleanly when fewer than two candidate facts exist.
  *  4. the hive marker (brain-only) records the pass's reality.
  *
- * Prompts never come from source constants: HivePromptFetcher carries
- * server-authored shapes with structured constructs as offline fallback.
+ * EVERY INSTRUCTION COMES FROM THE PUBLISHER, AND A LANE WITH NO INSTRUCTION DOES NOT RUN.
+ *
+ * There used to be a `HiveStructuredFallback` object in this package holding four prompt
+ * bodies that the fetcher returned whenever the served field was blank. That was a second
+ * authoring surface compiled into the app, and it was the only one that ever ran: the server
+ * route filters on `category = 'hive_drive'`, no live row uses that category, so delivery
+ * has always failed and the hardcoded text has been doing the work invisibly.
+ *
+ * The fallbacks are deleted. A blank field now means this device holds no instruction for
+ * that lane, and the lane is skipped and says so. A model sent a transcript with no system
+ * instruction writes its own instructions, and memory written from instructions the owner
+ * never authored is worse than memory not written.
  */
 class HiveMindWorker(
     context: Context,
@@ -161,6 +191,17 @@ class HiveMindWorker(
         val timestamp = System.currentTimeMillis()
         val systemPrompt = HivePromptFetcher.factExtraction(appContext)
 
+        // NO INSTRUCTION, NO SEND. A transcript handed to a model with no system content
+        // gets whatever instructions the model invents, and the facts that come back are
+        // attributed to this device as though the owner had asked for them.
+        if (systemPrompt.isBlank()) {
+            android.util.Log.w(
+                TAG,
+                "extract lane skipped: no extraction instruction has been delivered to this device",
+            )
+            return emptyList()
+        }
+
         val result = aiRepository.sendSystemPrompt(
             systemPrompt = systemPrompt,
             userPrompt = "TRANSCRIPT START\n$conversationContent\nTRANSCRIPT END",
@@ -202,10 +243,24 @@ class HiveMindWorker(
     }
 
     /**
-     * Dedup pass: signature-space exactness FIRST (cheap, deterministic), then
-     * one LLM judgement over the whole batch when 2+ candidates share shape.
-     * Any model-side ambiguity (broken JSON, empty reply, no verdict) keeps
-     * all candidates: an uncertain judge never deletes a fresh memory.
+     * Dedup pass: exactness FIRST (cheap, deterministic), then one LLM judgement
+     * over the whole batch when 2+ candidates look novel.
+     * Any model-side ambiguity (broken JSON, empty reply, no verdict) keeps all
+     * candidates: an uncertain judge never drops a fresh memory.
+     *
+     * IT COMPARES AGAINST THE RETIRED ROWS TOO, AND THAT IS THE ANTI-RESURRECTION
+     * FIX ON THIS SIDE.
+     *
+     * The comparison set used to be the live listing only. A deleted fact is absent
+     * from a live listing, so the same sentence looked novel, and the write that
+     * followed resolved to the id the brain derives from that content: the row the
+     * deletion had archived. The brain now refuses to reactivate a retired id, so
+     * the outcome improved from "silently undeleted" to "the pass reports a store
+     * failure", which is still wrong.
+     *
+     * Seeing the archive means a deleted fact is recognised as already known and is
+     * never written again. The refusal remains a backstop for a caller that reaches
+     * the store another way, rather than the mechanism this pass depends on.
      */
     private suspend fun deduplicateAgainstExisting(
         appContext: Context,
@@ -213,58 +268,112 @@ class HiveMindWorker(
     ): List<MemoryFact> {
         if (candidates.isEmpty()) return candidates
 
-        // Tier 1: literal-duplicate kill without any model spend.
-        val existingFactsForCategory = candidates
+        // Tier 1: exact-duplicate kill without any model spend, over the live rows
+        // and the retired ones. An empty archive is the ordinary case on a fresh
+        // install and costs one call.
+        val liveFacts = candidates
             .map { it.category }
             .distinct()
             .flatMap { memoryRepository.getFactsByCategory(it) }
             .map { it.fact.trim().lowercase() }
             .toSet()
+        val retiredFacts = runCatching {
+            memoryRepository.getArchivedFactsForDeduplication()
+                .map { archived -> archived.fact.trim().lowercase() }
+                .toSet()
+        }.getOrDefault(emptySet())
+        val existingFactsForCategory = liveFacts + retiredFacts
+
         val literalNovel = candidates.filter { it.fact.trim().lowercase() !in existingFactsForCategory }
         if (existingFactsForCategory.isEmpty() || literalNovel.size <= 1) return literalNovel
 
-        // Tier 2: batch-LLM judgement, exactness only, never destructive.
+        // Tier 2: the model judges each candidate against what the brain already holds.
+        //
+        // ONE CANDIDATE AT A TIME, BECAUSE THE SERVED PROMPT ASKS ABOUT ONE PAIR. The row
+        // `guru-reflection-fact-deduplication` is written as a pairwise comparison: it ends
+        // with an output format of `{action, merged_fact, confidence, explanation}`. The
+        // worker used to send it a numbered batch and demand
+        // `{duplicates_of_existing, internal_duplicates}` instead, so the system prompt and
+        // the user prompt described two different replies, the model answered one of them,
+        // the parser read the other, found nothing, and every pass concluded everything was
+        // novel. That is the silent half of the resurrection defect.
+        //
+        // The fix is not a better fallback. It is asking the question the served prompt
+        // actually describes, one candidate at a time.
         val dedupPrompt = HivePromptFetcher.factDeduplication(appContext)
-        val existingList = existingFactsForCategory.take(50)
-            .joinToString("\n") { f -> "- $f" }
-        val candidatesList = literalNovel
-            .mapIndexed { index, fact -> "$index. ${fact.fact}" }
-            .joinToString("\n")
-        val judgementBody = (
-            "EXISTING FACTS:\n$existingList\n\nNEW FACTS (index numbers matter):\n$candidatesList\n\n" +
-                "Reply STRICT JSON ONLY: {\"duplicates_of_existing\":[<new-fact index>],\"internal_duplicates\":[<index>,<index>]}. " +
-                "Use [] for both lists when everything is novel. No prose outside the JSON."
+        if (dedupPrompt.isBlank()) {
+            android.util.Log.w(
+                TAG,
+                "dedup lane skipped: no deduplication instruction has been delivered to this device",
             )
-
-        val result = aiRepository.sendSystemPrompt(
-            systemPrompt = dedupPrompt,
-            userPrompt = judgementBody,
-        )
-        val keepAll = candidates
-        val judgement: DedupJudgement = when (result) {
-            is PortalResult.Success -> {
-                try {
-                    val trimmed = result.data.trim()
-                    val jsonStart = trimmed.indexOf('{')
-                    val jsonEnd = trimmed.lastIndexOf('}') + 1
-                    if (jsonStart < 0 || jsonEnd <= jsonStart) return keepAll
-                    val parsed = json.decodeFromString(DedupJudgement.serializer(), trimmed.substring(jsonStart, jsonEnd))
-                    parsed
-                } catch (e: Exception) {
-                    return keepAll
-                }
-            }
-            else -> return keepAll
+            return literalNovel
         }
 
-        val doomedInternal = judgement.internal_duplicates
-            .filter { it.size >= 2 }
-            .flatMap { pair -> pair.drop(1) }
-            .toSet()
-        val doomedExisting = judgement.duplicates_of_existing
-            .filter { it in literalNovel.indices }
-            .toSet()
-        return literalNovel.filterIndexed { index, _ -> index !in doomedInternal && index !in doomedExisting }
+        val kept = mutableListOf<MemoryFact>()
+        for (candidate in literalNovel) {
+            val existingList = existingFactsForCategory.take(50).joinToString("\n") { "- $it" }
+            val judgementBody =
+                "EXISTING FACT:\n$existingList\n\nNEW FACT:\n${candidate.fact}"
+            val result = aiRepository.sendSystemPrompt(
+                systemPrompt = dedupPrompt,
+                userPrompt = judgementBody,
+            )
+            val decision = when (result) {
+                is PortalResult.Success -> decodeDedupDecision(result.data)
+                // An unavailable judge keeps the memory. Dropping a fact because the model
+                // could not be asked is the destructive reading of an absent answer.
+                else -> null
+            }
+            when (decision?.action?.lowercase()) {
+                // The served prompt says a merge combines the statements into one clear
+                // contextual fact. That merged text is what gets remembered.
+                "merge" -> {
+                    val merged = decision.merged_fact?.trim().orEmpty()
+                    if (merged.isNotBlank()) {
+                        kept += candidate.copy(
+                            fact = merged,
+                            confidence = decision.confidence.takeIf { it > 0f } ?: candidate.confidence,
+                        )
+                    } else {
+                        // A merge with no merged statement is not an instruction to drop
+                        // anything, so the candidate is kept as written.
+                        kept += candidate
+                    }
+                }
+                // A contradiction is flagged to the owner and BOTH statements survive. The
+                // brain must never quietly pick a winner between two things a person said.
+                "flag_contradiction" -> {
+                    android.util.Log.i(
+                        TAG,
+                        "dedup: contradiction flagged against an existing fact: ${decision.explanation}",
+                    )
+                    kept += candidate
+                }
+                // "keep_both", an unrecognised action, and no answer at all all land here.
+                else -> kept += candidate
+            }
+        }
+        return kept
+    }
+
+    /**
+     * Decode one dedup decision, or null when the reply carries no usable answer.
+     *
+     * The reply is found by its first `{` and its last `}`, so a fenced or prefaced answer
+     * still parses. Anything else is a judge that did not answer, which the caller treats as
+     * "keep".
+     */
+    private fun decodeDedupDecision(responseText: String): DedupDecision? {
+        return try {
+            val trimmed = responseText.trim()
+            val jsonStart = trimmed.indexOf('{')
+            val jsonEnd = trimmed.lastIndexOf('}') + 1
+            if (jsonStart < 0 || jsonEnd <= jsonStart) return null
+            json.decodeFromString(DedupDecision.serializer(), trimmed.substring(jsonStart, jsonEnd))
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "dedup decision unparseable: ${e.message}")
+            null
+        }
     }
 
     /**
@@ -277,6 +386,13 @@ class HiveMindWorker(
         conversations: List<com.unuslumen.app.domain.memory.Conversation>
     ): List<ConversationThread> {
         val discoveryPrompt = HivePromptFetcher.threadDiscovery(appContext)
+        if (discoveryPrompt.isBlank()) {
+            android.util.Log.w(
+                TAG,
+                "thread discovery lane skipped: no instruction has been delivered to this device",
+            )
+            return emptyList()
+        }
         val conversationListing = conversations
             .joinToString("\n") { conv ->
                 "CONV ${conv.id}\tTITLE: ${conv.title}\tMESSAGES: ${conv.messageCount}"

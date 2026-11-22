@@ -44,22 +44,67 @@ const MEMORIES: &[&str] = &[
 
 /// (query, expected memory). Every query is a realistic thing a user types.
 const QUERIES: &[(&str, &str)] = &[
-    ("boiler not fixed", "the landlord still has not fixed the boiler in the flat"),
-    ("where is the spare key", "the spare key hangs in the kitchen cupboard behind the microwave"),
-    ("kitchen cupboard key", "the spare key hangs in the kitchen cupboard behind the microwave"),
-    ("rust memory safety", "rust borrow checker enforces safe memory rules at compile stage"),
-    ("borrow checker rules", "rust borrow checker enforces safe memory rules at compile stage"),
-    ("sister lisbon conference", "my sister is flying to lisbon on thursday for a conference"),
-    ("pasta tomato basil recipe", "italian pasta recipe uses fresh tomato and basil"),
+    (
+        "boiler not fixed",
+        "the landlord still has not fixed the boiler in the flat",
+    ),
+    (
+        "where is the spare key",
+        "the spare key hangs in the kitchen cupboard behind the microwave",
+    ),
+    (
+        "kitchen cupboard key",
+        "the spare key hangs in the kitchen cupboard behind the microwave",
+    ),
+    (
+        "rust memory safety",
+        "rust borrow checker enforces safe memory rules at compile stage",
+    ),
+    (
+        "borrow checker rules",
+        "rust borrow checker enforces safe memory rules at compile stage",
+    ),
+    (
+        "sister lisbon conference",
+        "my sister is flying to lisbon on thursday for a conference",
+    ),
+    (
+        "pasta tomato basil recipe",
+        "italian pasta recipe uses fresh tomato and basil",
+    ),
     ("who wants to be called", "they want to be called steven"),
-    ("accountant invoice", "the quarterly invoice from the accountant arrived this morning"),
-    ("car insurance renewal", "the car insurance renews on the fourteenth of november"),
-    ("when does insurance renew", "the car insurance renews on the fourteenth of november"),
-    ("mushrooms coriander", "she does not eat mushrooms and hates coriander"),
-    ("where is the router", "the router is in the hallway cupboard next to the fuse box"),
-    ("dentist filling", "the last dentist appointment was a filling on the lower left molar"),
-    ("passport expires", "the passport expires in april so it needs renewing before the trip"),
-    ("dog walking rain", "the dog needs walking twice a day and hates the rain"),
+    (
+        "accountant invoice",
+        "the quarterly invoice from the accountant arrived this morning",
+    ),
+    (
+        "car insurance renewal",
+        "the car insurance renews on the fourteenth of november",
+    ),
+    (
+        "when does insurance renew",
+        "the car insurance renews on the fourteenth of november",
+    ),
+    (
+        "mushrooms coriander",
+        "she does not eat mushrooms and hates coriander",
+    ),
+    (
+        "where is the router",
+        "the router is in the hallway cupboard next to the fuse box",
+    ),
+    (
+        "dentist filling",
+        "the last dentist appointment was a filling on the lower left molar",
+    ),
+    (
+        "passport expires",
+        "the passport expires in april so it needs renewing before the trip",
+    ),
+    (
+        "dog walking rain",
+        "the dog needs walking twice a day and hates the rain",
+    ),
 ];
 
 async fn fresh_state() -> Arc<Mutex<CerebrumState>> {
@@ -74,11 +119,7 @@ async fn fresh_state() -> Arc<Mutex<CerebrumState>> {
     Arc::new(Mutex::new(CerebrumState::new(dir)))
 }
 
-async fn call_frame(
-    state: &Arc<Mutex<CerebrumState>>,
-    frame_type: u8,
-    payload: &[u8],
-) -> Vec<u8> {
+async fn call_frame(state: &Arc<Mutex<CerebrumState>>, frame_type: u8, payload: &[u8]) -> Vec<u8> {
     let frame = Frame::new(frame_type, 4242, payload.to_vec());
     match handle_frame(frame, state.clone()).await {
         Ok(bytes) => bytes,
@@ -111,6 +152,8 @@ async fn seed(state: &Arc<Mutex<CerebrumState>>) {
                 relations: vec![],
                 provenance: "retrieval-test".into(),
                 rationale: "quality corpus".into(),
+                owner_agent_id: String::new(),
+                visibility: String::new(),
                 created_at: Utc::now(),
                 modified_at: Utc::now(),
             },
@@ -222,6 +265,8 @@ async fn rank_is_stable_as_the_corpus_grows() {
                 relations: vec![],
                 provenance: "retrieval-test".into(),
                 rationale: "bulk".into(),
+                owner_agent_id: String::new(),
+                visibility: String::new(),
                 created_at: Utc::now(),
                 modified_at: Utc::now(),
             },

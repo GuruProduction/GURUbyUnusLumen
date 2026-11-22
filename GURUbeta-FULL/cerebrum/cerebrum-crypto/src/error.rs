@@ -6,7 +6,9 @@ use thiserror::Error;
 pub enum CryptoError {
     #[error("vault file bytes could not be read from disk")]
     IoRead(String),
-    #[error("vault file could not be written to disk (no partial plaintext was ever stored): {reason}")]
+    #[error(
+        "vault file could not be written to disk (no partial plaintext was ever stored): {reason}"
+    )]
     IoWrite { reason: String },
     #[error("on-disk vault bytes are empty")]
     EmptyEnvelope,

@@ -25,7 +25,7 @@ fn probe_which_bytes_carry_information() {
     ];
 
     println!("\n=== POPCOUNT PER BYTE (32 bytes = 256 bits) ===");
-    let mut per_byte_nonzero = vec![0u32; 32];
+    let mut per_byte_nonzero = [0u32; 32];
     for s in samples {
         let sig = engine.generate(s);
         let counts = popcount_per_byte(&sig.0);
@@ -85,8 +85,12 @@ fn probe_unrelated_similarity_distribution() {
     let mean: f64 = distances.iter().map(|d| *d as f64).sum::<f64>() / distances.len() as f64;
 
     println!("\n=== UNRELATED PAIR HAMMING DISTANCES ===");
-    println!("  min={} max={} mean={:.1} (random expectation = 128)",
-        distances.first().unwrap(), distances.last().unwrap(), mean);
+    println!(
+        "  min={} max={} mean={:.1} (random expectation = 128)",
+        distances.first().unwrap(),
+        distances.last().unwrap(),
+        mean
+    );
     println!("========================================\n");
 
     assert!(

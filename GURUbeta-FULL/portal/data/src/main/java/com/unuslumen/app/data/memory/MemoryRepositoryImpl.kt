@@ -10,6 +10,7 @@ import com.unuslumen.app.domain.memory.ConversationMessage
 import com.unuslumen.app.domain.memory.FactListing
 import com.unuslumen.app.domain.memory.MemoryCategories
 import com.unuslumen.app.domain.memory.MemoryFact
+import com.unuslumen.app.domain.memory.MemoryHistory
 import com.unuslumen.app.domain.memory.MemoryRepository
 import com.unuslumen.app.domain.memory.ConversationThread
 import com.unuslumen.app.domain.memory.RetrievedContext
@@ -216,8 +217,49 @@ class MemoryRepositoryImpl(
         )
     }
 
+    /**
+     * One memory's revision trail.
+     *
+     * NO OWNERSHIP FILTER HERE, and that is deliberate rather than an omission. The caller
+     * that can name an id has already been through [MemoryToolExecutor]'s resolution, which
+     * asks the same visibility question a read does; and the trail of a retired row has to
+     * be readable by the person asking who deleted it. What this must not do is answer
+     * "no history" for a brain that did not reply, so null is passed through.
+     */
+    override suspend fun getFactHistory(factId: String): MemoryHistory? =
+        brainService.factHistory(factId)
+
     override suspend fun getFactsByCategory(category: String): List<MemoryFact> =
         brainService.getFactsByCategory(category)
+
+    override suspend fun updateFact(
+        factId: String,
+        newContent: String,
+        category: String,
+        confidence: Float,
+        reason: String,
+    ): MemoryFact = brainService.updateFact(
+        factId = factId,
+        newContent = newContent,
+        category = category,
+        confidence = confidence,
+        reason = reason,
+    )
+
+    /**
+     * The retired facts, read from the brain's archive listing.
+     *
+     * The one caller is the hive's deduplication pass, and the reason is on the
+     * interface: an id is the hash of its content, so a repeat write resolves to a
+     * retired row and the pass must know that before it proposes the write.
+     *
+     * A brain that is not running returns nothing rather than failing, because this is a
+     * comparison set for a background pass. The pass reads an empty archive as "nothing
+     * retired", which on a fresh install is exactly right, and its own store call still
+     * refuses a resurrection if a retired row turns out to exist.
+     */
+    override suspend fun getArchivedFactsForDeduplication(): List<MemoryFact> =
+        brainService.getArchivedFactsForDeduplication()
 
     override suspend fun searchFacts(query: String, category: String?): List<MemoryFact> =
         brainService.search(query)

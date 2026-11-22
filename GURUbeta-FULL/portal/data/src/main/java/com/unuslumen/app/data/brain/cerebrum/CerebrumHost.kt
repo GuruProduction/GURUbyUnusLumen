@@ -35,14 +35,76 @@ object CerebrumHost {
     private const val TAG = "guru_cerebrum"
 
     // ---- JNI declarations; symbol surface lives in libcerebrum_android.so ---
+
+    /**
+     * Whether the native library actually loaded in this process.
+     *
+     * A LOAD FAILURE IS RECORDED, NOT THROWN FROM `init`. Two reasons, and the second is
+     * the important one.
+     *
+     * A static initialiser that throws poisons the whole object for the life of the JVM:
+     * every later touch raises `NoClassDefFoundError` with the original cause buried, so a
+     * caller sees "could not initialize class" instead of "the library is missing". That is
+     * a worse diagnostic than the truth.
+     *
+     * And on a JVM unit test there is no `.so` and no Android, so a throwing initialiser
+     * makes the class untouchable from any JVM test at all. That is why frame dispatch had
+     * no test: the object could not be constructed off-device. The failure is now a state
+     * the class reports, so a test can drive the production encoder and the production
+     * parser with only the last hop replaced.
+     */
+    @Volatile
+    private var nativeLoaded: Boolean = false
+
+    @Volatile
+    private var nativeLoadFailure: String? = null
+
     init {
         // cdylib load fires exactly once per app process; the host object is
         // the only entry point into libcerebrum_android.so by convention.
         runCatching {
             System.loadLibrary("cerebrum_android")
+            nativeLoaded = true
             Log.i(TAG, "cerebrum_android.so loaded")
-        }.onFailure { throw IllegalStateException("libcerebrum_android.so missing; Cerebrum cannot start", it) }
+        }.onFailure { failure ->
+            nativeLoadFailure = failure.message ?: failure::class.java.simpleName
+            Log.e(TAG, "cerebrum_android.so could not be loaded: $nativeLoadFailure")
+        }
+
+        /*
+         * A SNAPSHOT MAY NOT BE TAKEN FROM A STALE VAULT.
+         *
+         * `DatabaseSnapshotEngine` reads `cerebrum.vault` from disk, and this brain keeps its
+         * whole state in memory and rewrites that file on its own cadence. So a backup taken
+         * between two saves carries an older brain, verifies perfectly, and loses everything
+         * written since the last flush. The engine cannot call `saveNow` itself: `core:database`
+         * sits below `portal:data` and must not depend on it. It exposes a registration instead,
+         * and this is the registration.
+         *
+         * A BOOTED BRAIN IS THE ONLY VALID FLUSHER. `saveNow` returns zero when the brain is
+         * not running, and a zero is a failure rather than "nothing to save", so the engine
+         * reports it rather than sealing a file it knows is behind.
+         */
+        runCatching {
+            com.unuslumen.app.database.snapshot.DatabaseSnapshotEngine.registerVaultFlush {
+                if (isBooted.get()) {
+                    val written = cerebrumSaveNowJNI()
+                    check(written > 0) { "the brain reported $written records written; refusing to call that a flush" }
+                    Log.d(TAG, "vault flushed before snapshot ($written records)")
+                } else {
+                    error("no brain is running, so there is nothing to flush")
+                }
+            }
+        }.onFailure { registrationError ->
+            Log.e(TAG, "could not register the snapshot flush: ${registrationError.message}")
+        }
     }
+
+    /** Whether the brain's native library is present in this process. */
+    fun isNativeLoaded(): Boolean = nativeLoaded
+
+    /** Why the library did not load, or null when it did. */
+    fun nativeLoadError(): String? = nativeLoadFailure
 
     private external fun cerebrumStartJNI(dataDir: String, socketPath: String, passphrase: String): Long
     private external fun cerebrumStopJNI()
@@ -50,6 +112,46 @@ object CerebrumHost {
     private external fun cerebrumExecuteJNI(frameType: Int, payloadHex: String): String
     private external fun cerebrumStatusJNI(): String
     private external fun cerebrumLastErrorJNI(): String
+
+    /**
+     * Whether the last start failure was the vault's own header refusing the passphrase.
+     *
+     * A SEPARATE QUESTION, NOT A SUBSTRING, because the answer deletes the user's memory.
+     * [attemptWasKeyOrphan] used to search the last-error text for `PassphraseRejected`, and
+     * the error slot is one string for the whole process. A `PassphraseRejected` left there by
+     * an earlier operation therefore became the diagnosis for a later, unrelated failure, and
+     * `healOrphanedKeyPair` then deleted the Keystore alias and the envelope on the strength of
+     * a stale sentence. That is what made a device test fail intermittently at the point where
+     * it booted a restored vault with no caller-supplied passphrase: the key was healthy and the
+     * heal had removed it.
+     *
+     * The slot is now cleared at the start of every boot, so this reads this attempt's failure
+     * or an empty string, and it is asked as its own yes/no rather than by searching prose.
+     */
+    private external fun cerebrumLastErrorWasPassphraseRejectionJNI(): Boolean
+
+    /**
+     * The Cerebrum source revision compiled into the loaded library.
+     *
+     * The library carries `cerebrum-build-rev=<git revision>` as a compile-time
+     * constant, substituted by `cerebrum-android/build.rs` from the value Gradle
+     * passed when it ran Cargo. Reading it back is how any caller, test or release
+     * check proves which source is actually running rather than which source was
+     * intended.
+     */
+    private external fun cerebrumBuildIdentityJNI(): String
+
+    /**
+     * The build identity of the loaded brain.
+     *
+     * Returns the marker the library carries, or an explicit refusal naming why it
+     * could not be read. It never substitutes a plausible answer: an unknown
+     * revision is reported as unknown. The shipped brain used to be a hand-copied
+     * `.so` with no such marker, and three merged fixes went missing from a release
+     * because nothing could ask the binary what it was.
+     */
+    fun buildIdentity(): String = runCatching { cerebrumBuildIdentityJNI() }
+        .getOrElse { failure -> "cerebrum-build-rev=unreadable (${failure.message ?: "load failed"})" }
 
     // ---- frame type constants, wire-byte true -------------------------------
     const val FRAME_QUERY = 1             // 0x01
@@ -198,9 +300,22 @@ object CerebrumHost {
      * `PassphraseRejected` is raised by the header verifier and by nothing
      * else. Record-level failures report `AeadOpenFailed`, which is NOT an
      * orphan signal and must never trigger the wipe.
+     *
+     * THE TEXT IS NO LONGER THE TEST. This used to search `bootError` for the word, and the
+     * error it was given comes from a single process-wide slot: a rejection recorded by an
+     * earlier operation stayed there, so an unrelated failure inherited it and this returned
+     * true, and the heal deleted a healthy key. The native side now answers the question
+     * directly and clears the slot at the start of every boot, so what arrives here is this
+     * boot's own cause.
+     *
+     * `bootError` is still consulted, because a start that fails for a different reason must
+     * never heal and the caller's string is the only thing that says so.
      */
-    private fun attemptWasKeyOrphan(bootError: String?): Boolean =
-        bootError?.contains("PassphraseRejected", ignoreCase = true) == true
+    private fun attemptWasKeyOrphan(bootError: String?): Boolean {
+        if (bootError.isNullOrBlank()) return false
+        return runCatching { cerebrumLastErrorWasPassphraseRejectionJNI() }
+            .getOrDefault(false)
+    }
 
     private fun healOrphanedKeyPair(context: Context) {
         runCatching {
@@ -333,6 +448,37 @@ object CerebrumHost {
         bootStamp = 0
         Log.d(TAG, "Cerebrum brain stopped (SIGTERM path completed)")
     }
+
+    /**
+     * A replaceable frame transport, for proving dispatch without a device.
+     *
+     * THE PROBLEM IT SOLVES. `FRAME_QUERY` and `FRAME_PREFETCH` were declared and never
+     * sent, and no test could catch that because reaching the real JNI needs a loaded
+     * `.so` and a booted brain. A test that re-implements the payload builder proves the
+     * test, not the app.
+     *
+     * With this, a test installs a transport that records the frame type and the decoded
+     * payload, and then calls the production methods. What is asserted is what production
+     * would have sent, through the same encoder and the same parser, with only the last
+     * hop replaced. It is null in every real run: the JNI is used unless something
+     * explicitly substitutes a transport.
+     */
+    internal var frameTransportForTest: ((frameType: Int, payloadHex: String) -> String?)? = null
+
+    internal fun dispatchFrame(frameType: Int, payloadHex: String): String? {
+        frameTransportForTest?.let { transport -> return transport(frameType, payloadHex) }
+        return executeFrame(frameType, payloadHex)
+    }
+
+    /**
+     * Whether the brain should be treated as running.
+     *
+     * The same seam as [frameTransportForTest], for the same reason: a dispatch test needs
+     * the production guard to pass without booting a brain.
+     */
+    internal var runningOverrideForTest: Boolean? = null
+
+    internal fun isRunningForDispatch(): Boolean = runningOverrideForTest ?: isRunning()
 
     fun saveNow(): Int = if (isBooted.get()) cerebrumSaveNowJNI() else 0
 

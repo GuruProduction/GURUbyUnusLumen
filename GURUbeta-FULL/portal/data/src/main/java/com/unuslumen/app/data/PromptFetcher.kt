@@ -17,9 +17,18 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 
 /**
- * Fetches the assembled system prompt from the GURU server at startup.
- * Caches it in SharedPreferences so the app doesn't need to fetch every session.
- * The hardcoded prompts in GuruPrompts.kt serve as fallback if the server is unreachable.
+ * Fetches the assembled system prompt from the GURU server at startup and keeps it on the
+ * device so a send never waits on the network.
+ *
+ * THERE IS NO HARDCODED COPY OF THE PROMPT IN THIS APP. The previous line here claimed
+ * `GuruPrompts.kt` served as a fallback. That object held no text at all, so the claim was
+ * false, and it is now deleted along with the two other vestigial prompt objects, because a
+ * source file that looks like a prompt and says nothing is an invitation to put one there.
+ *
+ * What a failed fetch leaves behind is the previously DELIVERED text, which is the
+ * behaviour the server-unreachable path has always had and is the locally persisted copy
+ * the architecture requires. A device that has never reached the publisher sends no prompt,
+ * and the absence is visible rather than hidden behind substitute words.
  */
 object PromptFetcher {
     private const val TAG = "PromptFetcher"

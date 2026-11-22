@@ -20,7 +20,9 @@ use serde::{Deserialize, Serialize};
 pub mod entities;
 
 pub use cerebrum_core::{EdgeType, GraphEdge, MemoryId, QueryType, TokenBudget};
-pub use entities::{canonicalize_label, decode_hex_to_memory, reconcile_entities, EntityReconciliationDetail};
+pub use entities::{
+    canonicalize_label, decode_hex_to_memory, reconcile_entities, EntityReconciliationDetail,
+};
 
 // Re-export the core query type under a clearer name for graph consumers.
 pub use cerebrum_core::Query as GraphQuery;
@@ -171,7 +173,15 @@ impl QueryTypeClassifier {
     pub fn classify(&self, text: &str) -> QueryType {
         let lower = text.to_lowercase();
         let causal = ["why", "cause", "caused", "enabled", "prevented", "reason"];
-        let temporal = ["when", "time", "date", "before", "after", "during", "chronological"];
+        let temporal = [
+            "when",
+            "time",
+            "date",
+            "before",
+            "after",
+            "during",
+            "chronological",
+        ];
         let entity = ["who", "whom", "person", "organization", "place", "involved"];
         let semantic = ["what", "related", "concept", "topic", "part of", "instance"];
 
@@ -499,7 +509,10 @@ impl Graph {
     pub fn add_edge(&mut self, edge: Edge) {
         self.nodes.insert(edge.source);
         self.nodes.insert(edge.target);
-        self.edges_out.entry(edge.source).or_default().push(edge.clone());
+        self.edges_out
+            .entry(edge.source)
+            .or_default()
+            .push(edge.clone());
         self.edges_in.entry(edge.target).or_default().push(edge);
     }
 
@@ -510,7 +523,10 @@ impl Graph {
         let mut removed_any = false;
 
         {
-            let before_len = self.edges_out.get(&target_row.source).map_or(0, |rows| rows.len());
+            let before_len = self
+                .edges_out
+                .get(&target_row.source)
+                .map_or(0, |rows| rows.len());
             let retained_len = self
                 .edges_out
                 .get_mut(&target_row.source)
@@ -530,7 +546,10 @@ impl Graph {
         }
 
         {
-            let before_len = self.edges_in.get(&target_row.target).map_or(0, |rows| rows.len());
+            let before_len = self
+                .edges_in
+                .get(&target_row.target)
+                .map_or(0, |rows| rows.len());
             let retained_len = self
                 .edges_in
                 .get_mut(&target_row.target)
@@ -607,16 +626,18 @@ impl Graph {
         }
 
         match strategy {
-            TraverseStrategy::BreadthFirst { max_depth, max_nodes } => {
-                Ok(self.bfs(start, max_depth, max_nodes))
-            }
+            TraverseStrategy::BreadthFirst {
+                max_depth,
+                max_nodes,
+            } => Ok(self.bfs(start, max_depth, max_nodes)),
             TraverseStrategy::DepthFirst {
                 max_depth,
                 follow_weights_above,
             } => Ok(self.dfs(start, max_depth, follow_weights_above)),
-            TraverseStrategy::EgoNetwork { max_hops, min_weight } => {
-                Ok(self.ego_network(start, max_hops, min_weight))
-            }
+            TraverseStrategy::EgoNetwork {
+                max_hops,
+                min_weight,
+            } => Ok(self.ego_network(start, max_hops, min_weight)),
             TraverseStrategy::Chronological { direction, window } => {
                 Ok(self.chronological(start, direction, window))
             }
@@ -710,7 +731,11 @@ impl Graph {
             let mut combined = self.outgoing(node).to_vec();
             combined.extend(self.incoming(node).iter().cloned());
             for edge in combined {
-                let neighbor = if edge.source == node { edge.target } else { edge.source };
+                let neighbor = if edge.source == node {
+                    edge.target
+                } else {
+                    edge.source
+                };
                 if edge.weight >= min_weight && visited.insert(neighbor) {
                     queue.push_back((neighbor, hops + 1, score * edge.weight));
                 }
@@ -734,7 +759,8 @@ impl Graph {
             .map(|e| e.timestamp)
             .unwrap_or_else(Utc::now);
 
-        let window = chrono::Duration::from_std(window).unwrap_or_else(|_| chrono::Duration::days(1));
+        let window =
+            chrono::Duration::from_std(window).unwrap_or_else(|_| chrono::Duration::days(1));
         let mut collected = Vec::new();
 
         for edges in [&self.edges_out, &self.edges_in] {
@@ -809,7 +835,11 @@ impl cerebrum_core::GraphView for Graph {
         });
     }
 
-    fn traverse(&self, start: MemoryId, strategy: cerebrum_core::TraverseStrategy) -> Vec<MemoryId> {
+    fn traverse(
+        &self,
+        start: MemoryId,
+        strategy: cerebrum_core::TraverseStrategy,
+    ) -> Vec<MemoryId> {
         let local_strategy = match strategy {
             cerebrum_core::TraverseStrategy::Bfs => TraverseStrategy::BreadthFirst {
                 max_depth: 3,
@@ -893,12 +923,8 @@ impl GraphStore {
     }
 
     /// Every label as (id, stored-lowercase-label) pairs.
-    pub fn labels_entries(
-        &self,
-    ) -> impl Iterator<Item = (MemoryId, &str)> {
-        self.labels
-            .iter()
-            .map(|(id, label)| (*id, label.as_str()))
+    pub fn labels_entries(&self) -> impl Iterator<Item = (MemoryId, &str)> {
+        self.labels.iter().map(|(id, label)| (*id, label.as_str()))
     }
 
     /// Restore labels from a (id, label) pair sequence (persistence path;
@@ -926,7 +952,7 @@ impl GraphStore {
     /// reconciliation writes these as it merges duplicate spellings.)
     pub fn add_alias_row(&mut self, id: MemoryId, alias_text: String) {
         let row = self.aliases.entry(id).or_default();
-        if row.contains(&alias_text) == false {
+        if !row.contains(&alias_text) {
             row.push(alias_text);
         }
     }
@@ -1037,7 +1063,12 @@ impl GraphStore {
         match plan.query_type {
             QueryType::Composite => {
                 let mut rankings = Vec::new();
-                for qt in [QueryType::Semantic, QueryType::Temporal, QueryType::Causal, QueryType::Entity] {
+                for qt in [
+                    QueryType::Semantic,
+                    QueryType::Temporal,
+                    QueryType::Causal,
+                    QueryType::Entity,
+                ] {
                     let sub_query = Query {
                         text: query.text.clone(),
                         budget: query.budget,
@@ -1056,9 +1087,7 @@ impl GraphStore {
                 Ok(rrf_fusion(rankings, 60))
             }
             single => {
-                let graph = self
-                    .graph_for(single)
-                    .ok_or(GraphError::InvalidStrategy)?;
+                let graph = self.graph_for(single).ok_or(GraphError::InvalidStrategy)?;
                 // NO START NODE IS AN EMPTY ANSWER, NOT A FAILURE.
                 //
                 // The caller names a subject by TEXT, so "nothing in this view
@@ -1087,7 +1116,10 @@ impl GraphStore {
         let graph = self.graph_for(query_type)?;
         let query_tokens: Vec<_> = text
             .split_whitespace()
-            .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+            .map(|t| {
+                t.trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_lowercase()
+            })
             .filter(|t| !t.is_empty())
             .collect();
 
@@ -1171,7 +1203,12 @@ mod test_data {
         MemoryId(arr)
     }
 
-    fn add_edges_for_memory(store: &mut GraphStore, i: usize, m: &SampleMemory, memories: &[SampleMemory]) {
+    fn add_edges_for_memory(
+        store: &mut GraphStore,
+        i: usize,
+        m: &SampleMemory,
+        memories: &[SampleMemory],
+    ) {
         let n = memories.len();
 
         // Semantic: connect each memory to a small fixed set of later memories.
@@ -1282,12 +1319,18 @@ mod tests {
         let store = build_store_from_memories(&memories);
         let planner = GraphQueryPlanner::new();
 
-        let query = Query::new("What is concept-5 related to?", Budget::new(50, 3)).with_type(QueryType::Semantic);
-        let results = store.query(&query, &planner).expect("semantic query should succeed");
+        let query = Query::new("What is concept-5 related to?", Budget::new(50, 3))
+            .with_type(QueryType::Semantic);
+        let results = store
+            .query(&query, &planner)
+            .expect("semantic query should succeed");
 
         assert!(!results.is_empty());
         let ids: Vec<_> = results.iter().map(|(id, _)| *id).collect();
-        assert!(!ids.contains(&memories[5].id), "result should not include the start node");
+        assert!(
+            !ids.contains(&memories[5].id),
+            "result should not include the start node"
+        );
     }
 
     #[test]
@@ -1296,8 +1339,11 @@ mod tests {
         let store = build_store_from_memories(&memories);
         let planner = GraphQueryPlanner::new();
 
-        let query = Query::new("When did event 10 happen?", Budget::new(50, 3)).with_type(QueryType::Temporal);
-        let results = store.query(&query, &planner).expect("temporal query should succeed");
+        let query = Query::new("When did event 10 happen?", Budget::new(50, 3))
+            .with_type(QueryType::Temporal);
+        let results = store
+            .query(&query, &planner)
+            .expect("temporal query should succeed");
 
         assert!(!results.is_empty());
         // Temporal results are ordered by timestamp; later events should appear first for Forward.
@@ -1314,8 +1360,11 @@ mod tests {
         let store = build_store_from_memories(&memories);
         let planner = GraphQueryPlanner::new();
 
-        let query = Query::new("Why did memory-0 cause memory-2?", Budget::new(50, 5)).with_type(QueryType::Causal);
-        let results = store.query(&query, &planner).expect("causal query should succeed");
+        let query = Query::new("Why did memory-0 cause memory-2?", Budget::new(50, 5))
+            .with_type(QueryType::Causal);
+        let results = store
+            .query(&query, &planner)
+            .expect("causal query should succeed");
 
         assert!(!results.is_empty());
         // The first causal link should be memory 0 -> memory 2.
@@ -1328,8 +1377,11 @@ mod tests {
         let store = build_store_from_memories(&memories);
         let planner = GraphQueryPlanner::new();
 
-        let query = Query::new("Who was involved in thread-3?", Budget::new(50, 2)).with_type(QueryType::Entity);
-        let results = store.query(&query, &planner).expect("entity query should succeed");
+        let query = Query::new("Who was involved in thread-3?", Budget::new(50, 2))
+            .with_type(QueryType::Entity);
+        let results = store
+            .query(&query, &planner)
+            .expect("entity query should succeed");
 
         assert!(!results.is_empty());
     }
@@ -1345,9 +1397,14 @@ mod tests {
             "What happened when entity-3 caused concept-7 to be involved?",
             Budget::new(100, 3),
         );
-        let results = store.query(&query, &planner).expect("composite query should succeed");
+        let results = store
+            .query(&query, &planner)
+            .expect("composite query should succeed");
 
-        assert!(!results.is_empty(), "RRF fusion should return merged results");
+        assert!(
+            !results.is_empty(),
+            "RRF fusion should return merged results"
+        );
         // Verify descending fused scores.
         for window in results.windows(2) {
             assert!(window[0].1 >= window[1].1);
@@ -1377,7 +1434,9 @@ mod tests {
         let query = Query::new("semantic query", Budget::new(50, 2)).with_type(QueryType::Semantic);
 
         let start = Instant::now();
-        let _results = store.query(&query, &planner).expect("benchmark query should succeed");
+        let _results = store
+            .query(&query, &planner)
+            .expect("benchmark query should succeed");
         let elapsed = start.elapsed();
 
         assert!(
@@ -1395,7 +1454,10 @@ mod tests {
             classifier.classify("What is X related to?"),
             QueryType::Semantic
         );
-        assert_eq!(classifier.classify("When did X happen?"), QueryType::Temporal);
+        assert_eq!(
+            classifier.classify("When did X happen?"),
+            QueryType::Temporal
+        );
         assert_eq!(classifier.classify("Why did X cause Y?"), QueryType::Causal);
         assert_eq!(
             classifier.classify("Who was involved in X?"),

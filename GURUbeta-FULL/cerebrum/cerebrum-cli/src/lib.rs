@@ -24,17 +24,32 @@ impl Default for CliConfig {
 /// Parsed CLI command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CliCommand {
-    Query { query: String },
-    Curate { subcommand: String, args: Vec<String> },
-    Retrieve { id: String },
-    Search { query: String },
-    Graph { query: String },
+    Query {
+        query: String,
+    },
+    Curate {
+        subcommand: String,
+        args: Vec<String>,
+    },
+    Retrieve {
+        id: String,
+    },
+    Search {
+        query: String,
+    },
+    Graph {
+        query: String,
+    },
     Consolidate,
-    Prefetch { task_type: String },
+    Prefetch {
+        task_type: String,
+    },
     Status,
     Serve,
     Help,
-    Unknown { argv: Vec<String> },
+    Unknown {
+        argv: Vec<String>,
+    },
 }
 
 /// Parse command-line arguments into a `CliCommand`.
@@ -156,9 +171,9 @@ mod tests {
 
     #[test]
     fn test_parse_help_and_unknown() {
-        assert_eq!(parse_args(&vec!["--help".to_string()]), CliCommand::Help);
+        assert_eq!(parse_args(&["--help".to_string()]), CliCommand::Help);
         assert_eq!(
-            parse_args(&vec!["unknown-cmd".to_string(), "arg".to_string()]),
+            parse_args(&["unknown-cmd".to_string(), "arg".to_string()]),
             CliCommand::Unknown {
                 argv: vec!["unknown-cmd".to_string(), "arg".to_string()]
             }

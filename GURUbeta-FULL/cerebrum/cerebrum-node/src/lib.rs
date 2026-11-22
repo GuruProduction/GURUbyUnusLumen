@@ -12,10 +12,10 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
-pub use cerebrum_server::state::CerebrumState;
 use cerebrum_core::MemoryId;
-use cerebrum_server::{frame_types, Frame};
 use cerebrum_server::handler::handle_frame;
+pub use cerebrum_server::state::CerebrumState;
+use cerebrum_server::{frame_types, Frame};
 
 pub type NodeSharedState = Arc<Mutex<CerebrumState>>;
 
@@ -104,7 +104,9 @@ impl NodeCerebrum {
 
     fn ensure_connected(&self) -> Result<(), NodeCerebrumError> {
         if !self.connected {
-            return Err(NodeCerebrumError::ConnectionFailed("not connected".to_string()));
+            return Err(NodeCerebrumError::ConnectionFailed(
+                "not connected".to_string(),
+            ));
         }
         Ok(())
     }
@@ -122,8 +124,7 @@ impl NodeCerebrum {
         let raw = handle_frame(frame, self.state.clone())
             .await
             .map_err(|e| NodeCerebrumError::InternalError(e.message))?;
-        serde_json::from_slice(&raw)
-            .map_err(|e| NodeCerebrumError::InternalError(e.to_string()))
+        serde_json::from_slice(&raw).map_err(|e| NodeCerebrumError::InternalError(e.to_string()))
     }
 
     /// Curate flow: pass CurateOp-array-shaped JSON through the CURATE frame.
@@ -154,7 +155,10 @@ impl NodeCerebrum {
     }
 
     /// Retrieve flow (Shallow/Deep per parameter), typed dereference shape.
-    pub async fn retrieve_shallow(&self, id_hex: &str) -> Result<serde_json::Value, NodeCerebrumError> {
+    pub async fn retrieve_shallow(
+        &self,
+        id_hex: &str,
+    ) -> Result<serde_json::Value, NodeCerebrumError> {
         let memory_id = self.memory_id_from_hex(id_hex)?;
         self.dispatch(
             frame_types::RETRIEVE,
@@ -182,8 +186,15 @@ impl NodeCerebrum {
         let body_bytes = response_bytes
             .get("data")
             .and_then(|bytes_json| bytes_json.as_array())
-            .map(|array| array.iter().filter_map(|v| v.as_u64().map(|n| n as u8)).collect::<Vec<u8>>())
-            .ok_or(NodeCerebrumError::InternalError("missing data body".to_string()))?;
+            .map(|array| {
+                array
+                    .iter()
+                    .filter_map(|v| v.as_u64().map(|n| n as u8))
+                    .collect::<Vec<u8>>()
+            })
+            .ok_or(NodeCerebrumError::InternalError(
+                "missing data body".to_string(),
+            ))?;
         Ok(body_bytes)
     }
 
@@ -220,12 +231,12 @@ impl NodeCerebrum {
 
     /// Trigger real consolidation (dream phase; mutates dream state).
     pub async fn consolidate(&self) -> Result<serde_json::Value, NodeCerebrumError> {
-        self.dispatch(frame_types::CONSOLIDATE, serde_json::json!({})).await
+        self.dispatch(frame_types::CONSOLIDATE, serde_json::json!({}))
+            .await
     }
 
     fn memory_id_from_hex(&self, input_hex: &str) -> Result<MemoryId, NodeCerebrumError> {
-        parse_memory_hex(input_hex)
-            .ok_or(NodeCerebrumError::NotFound)
+        parse_memory_hex(input_hex).ok_or(NodeCerebrumError::NotFound)
     }
 }
 
@@ -254,20 +265,19 @@ pub async fn bridge_upsert_content(
     subtopic: &str,
 ) -> Result<(String, serde_json::Value), NodeCerebrumError> {
     let memory_id = fresh_memory_id_of(content);
-    let id_hex: String = memory_id.0.iter().map(|value| format!("{:02x}", value)).collect();
+    let id_hex: String = memory_id
+        .0
+        .iter()
+        .map(|value| format!("{:02x}", value))
+        .collect();
 
     let curate_upsert_shape = {
         let mut marker = [0u8; 32];
         marker.copy_from_slice(&memory_id.0);
         serde_json::json!(marker)
     };
-    let raw_ops = bridged_wirings::make_core_curate_upsert(
-        memory_id,
-        domain,
-        topic,
-        subtopic,
-        content,
-    );
+    let raw_ops =
+        bridged_wirings::make_core_curate_upsert(memory_id, domain, topic, subtopic, content);
     let ops_arr = vec![serde_json::to_value(raw_ops)
         .map_err(|encode_error| NodeCerebrumError::InternalError(encode_error.to_string()))?];
     let response = bridge.clone().curate(ops_arr).await?;
@@ -298,7 +308,10 @@ pub mod bridged_wirings {
                 relations: vec![],
                 provenance: "node-bridge".to_string(),
                 rationale: "node upsert".to_string(),
-                created_at:chrono::Utc::now(),
+                // An automatic lane, so no agent owns these facts.
+                owner_agent_id: String::new(),
+                visibility: String::new(),
+                created_at: chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
             },
             reason: "node upsert".to_string(),
@@ -326,8 +339,7 @@ pub fn fresh_memory_id_of(content: &str) -> cerebrum_core::MemoryId {
     let seed1 = lane1.finish();
     let mut bytes_id_bytes = [0u8; 32];
     for byte_idx in 0..16 {
-        bytes_id_bytes[byte_idx] = ((seed0 >> (byte_idx % 8 * 8)) & 0xFF) as u8
-            ^ byte_idx as u8;
+        bytes_id_bytes[byte_idx] = ((seed0 >> (byte_idx % 8 * 8)) & 0xFF) as u8 ^ byte_idx as u8;
         bytes_id_bytes[16 + byte_idx] =
             ((seed1 >> (byte_idx % 8 * 8)) & 0xFF) as u8 ^ byte_idx as u8;
     }
@@ -391,8 +403,11 @@ mod tests {
         bridge.connect().await.unwrap();
 
         let result = bridge_upsert_content(
-            &bridge, "rust node bridge real battery content",
-            "node-battery", "real", "flows",
+            &bridge,
+            "rust node bridge real battery content",
+            "node-battery",
+            "real",
+            "flows",
         )
         .await;
         assert!(result.is_ok(), "{:?}", result.err());
