@@ -37,6 +37,14 @@ The pipeline now builds and proves:
 7. The APK provenance marker had no terminator, so the scanner ran into the next string
    in `.rodata` and produced `cerebrum-build-rev=<40 hex>payload`.
 
+A third build dependency, found after the first two were removed rather than by CI failing
+on it: `gradle/gradle-daemon-jvm.properties` was tracked and pinned Gradle's own daemon to
+a JetBrains JDK 21 fetched from `api.foojay.io`, on a project that compiles against 17.
+Nothing named the file because Gradle reads it implicitly, so removing the foojay plugin
+left it in place and it could only be seen in `./gradlew --version`. The developer machine
+had already downloaded a JetBrains 21 archive on its behalf. Both are gone now and the
+daemon resolves to the local JDK 17.
+
 **The device job now passes.** Run 45006933238: `Starting 8 tests on test(AVD) - 14`,
 `Finished 8 tests`, `0 skipped 0 failed`, `BUILD SUCCESSFUL in 16m 33s`. That is the
 packaged library executing the memory round trip, the backup/restore round trip and the
