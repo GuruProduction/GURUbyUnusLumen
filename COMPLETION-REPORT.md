@@ -76,16 +76,20 @@ matching a lowercased word against raw content fails all three entity tests.
 
 ## Item 5 — the pipeline, the fail-first record and the intermittent failures
 
-**The pipeline runs, and at the time of writing no CI run has concluded green end to end.**
-Four jobs, none of which existed before; `.github` held only `FUNDING.yml`. Fifteen CI runs
-so far: ten cancelled because a later push superseded them, four failed on a real defect,
-one in flight. Across them it found eight distinct real defects that no macOS build could
-see, including that the seccomp filter had never been installed on any build and that the
-packaged-APK provenance marker could not be read. The device job went green for the first
-time in this project's history: 8 tests, 0 skipped, 0 failed, on an API 34 emulator.
+**The pipeline is green end to end.** Run 45011527886 on commit `7aafcc1f` concluded
+success with all four jobs passing: the Rust workspace, all four native ABIs, the Android
+app with its unit suite and APK provenance check, and the shipped brain proved on an
+API 34 emulator. That is the first fully green CI run in this project's history, and none
+of it existed before: `.github` held only `FUNDING.yml`, so nothing checked a pull request.
 
-The count of fifteen is the CI workflow only. The repository also has security-scanning
-workflow runs that conclude success, and those are not this pipeline.
+Before that run there were fifteen CI runs: ten cancelled because a later push superseded
+them, and four failed on a real defect. Across them the pipeline found eight distinct
+defects that no macOS build could see, including that the seccomp filter had never been
+installed on any build and that the packaged-APK provenance marker could not be read. The
+device job reached green before the rest did: 8 tests, 0 skipped, 0 failed.
+
+The run count is the CI workflow only. The repository also has security-scanning workflow
+runs that conclude success, and those are not this pipeline.
 
 One failure in that set is environmental and must not be read as a defect in the code. The
 device job failed in 35 seconds at configuration time with
