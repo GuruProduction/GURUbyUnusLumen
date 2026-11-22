@@ -60,6 +60,16 @@ fn install_and_track() -> Result<bool, HardeningError> {
     }
 }
 
+/// The C `long` width for this platform, without naming a Linux-only crate.
+///
+/// THE ENUM MUST COMPILE ON macOS TOO. `HardeningError` is public and declared outside the
+/// Linux module, so naming `libc::c_long` in its fields made `libc` a hard requirement of the
+/// whole crate. `libc` is a Linux-only dependency here on purpose (the seccomp code is the
+/// only consumer), so on macOS the type was unresolvable. `isize` is the same width as C
+/// `long` on every target this crate builds for: 64-bit on x86_64 and aarch64, and `isize` is
+/// 32-bit on the 32-bit targets, matching `c_long` there as well.
+type CReturnValue = isize;
+
 /// Installation error from the hardening layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HardeningError {
@@ -70,16 +80,16 @@ pub enum HardeningError {
     /// 32-bit targets including armeabi-v7a and x86, and `c_long` on 64-bit ones. Declaring
     /// i64 made this enum unbuildable on Linux, which no macOS build could reveal because the
     /// whole module is Linux-gated. The values are converted at the boundary below.
-    NoNewPrivsFailed(libc::c_long),
+    NoNewPrivsFailed(CReturnValue),
     /// seccomp(2) with our BPF program failed: errno as negative number. `c_long`, see above.
-    SeccompFailed(libc::c_long),
+    SeccompFailed(CReturnValue),
     /// Filter assembly failed (BPF validation).
     FilterBuild(String),
 }
 
 #[cfg(target_os = "linux")]
 mod linux_impl {
-    use super::HardeningError;
+    use super::{CReturnValue, HardeningError};
 
     // ==== BPF plumbing (linux uapi) ====
     //
@@ -104,7 +114,10 @@ mod linux_impl {
     pub const BPF_JGE: u32 = 0x30 | BPF_JMP;
     pub const BPF_RET: u32 = 0x06;
     pub const BPF_K: u32 = 0x00;
-    pub const BPF_RET_ALLOW: u32 = 0x7FFF_FFFF & 0_0000;
+    /// The BPF code for an unconditional SECCOMP_RET_ALLOW statement, which is
+    /// `BPF_RET | BPF_K`. It was written as `0x7FFF_FFFF & 0_0000`, which is zero for every
+    /// input: a constant that looked like an allow mask and was actually the number 0.
+    pub const BPF_RET_ALLOW: u32 = BPF_RET | BPF_K;
     pub const SECCOMP_MODE_FILTER: u32 = 2;
     pub const SECCOMP_RET_ERRNO_MASK: u32 = 0x0005_0000; // ENOSYS on EPERM below.
     pub const SECCOMP_RET_ALLOW: u32 = 0x7FFF_FFFF;
@@ -180,21 +193,21 @@ mod linux_impl {
     pub const SYS_UNLINKAT: u32 = 35;
 
     pub fn assemble_filter() -> Vec<u64> {
-        let mut program: Vec<u64> = Vec::new();
-
-        // Load arch
-        program.push(bpf_stmt(BPF_LD | BPF_W | BPF_ABS, 4)); // offsetof(arch) in seccomp_data
-                                                             // if arch == AUDIT_ARCH_X86_64 || arch == AUDIT_ARCH_AARCH64: continue
-                                                             // else: kill process
-        let arch_check_x8664 = 0_u32;
-        program.push(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0));
-        program.push(bpf_jump(
-            BPF_JMP | BPF_JEQ | BPF_K,
-            AUDIT_ARCH_AARCH64,
-            3,
-            0,
-        ));
-        program.push(bpf_ret(SECCOMP_RET_KILL_PROCESS)); // unknown architecture, never allow
+        // THE ARCHITECTURE PREAMBLE, AS ONE LITERAL.
+        //
+        // Load `arch` from seccomp_data, continue when it is x86_64 or aarch64, and kill the
+        // process on anything else. Jump offsets count from the instruction AFTER the jump,
+        // which is why the two tests skip one and three instructions: each must land past the
+        // kill on the allow path.
+        //
+        // Written as a vec literal rather than a run of pushes so the program reads as the
+        // instruction sequence it is, and the offsets can be counted by eye.
+        let mut program: Vec<u64> = vec![
+            bpf_stmt(BPF_LD | BPF_W | BPF_ABS, 4), // offsetof(arch) in seccomp_data
+            bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+            bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_AARCH64, 3, 0),
+            bpf_ret(SECCOMP_RET_KILL_PROCESS), // unknown architecture, never allow
+        ];
 
         fn bpf_ret(action: u32) -> u64 {
             ((BPF_RET | BPF_K) as u64) << 32 | (action as u64 & 0xFFFF_FFFF)
@@ -275,9 +288,13 @@ mod linux_impl {
         program.push(bpf_stmt(BPF_LD | BPF_W | BPF_ABS, 0));
     }
 
-    fn reset_accumulator(program: &mut Vec<u64>) {
-        // The accumulator reload at the next instruction happens naturally by
-        // fallthrough: seccomp BPF continues at the next sequential load.
+    /// Nothing to do: the next instruction reloads the accumulator itself.
+    ///
+    /// Kept as a named no-op because the comment is the documentation for a subtle point in
+    /// the program above, and a reader looking for the accumulator reset should find this
+    /// rather than conclude the reset was forgotten.
+    fn reset_accumulator(_program: &mut [u64]) {
+        // seccomp BPF continues at the next sequential load, which reloads A.
     }
 
     /// Verify our BPF program via seccomp(2) PR_SET_SECCOMP with mode 2 and
@@ -296,7 +313,7 @@ mod linux_impl {
             )
         };
         if result != 0 {
-            return Err(HardeningError::NoNewPrivsFailed(result as libc::c_long));
+            return Err(HardeningError::NoNewPrivsFailed(result as CReturnValue));
         }
 
         // seccomp(2) with sock_fprog requires re-packing program into u16.
@@ -328,7 +345,7 @@ mod linux_impl {
         if ret_val != 0 {
             let err = std::io::Error::last_os_error();
             return Err(HardeningError::SeccompFailed(
-                -(err.raw_os_error().unwrap_or(22) as libc::c_long),
+                -(err.raw_os_error().unwrap_or(22) as CReturnValue),
             ));
         }
 
@@ -339,7 +356,6 @@ mod linux_impl {
 /// Linux-only bootstrap that installs the filter inside this process.
 #[cfg(target_os = "linux")]
 fn install_seccomp_linux() -> Result<(), HardeningError> {
-    use std::os::unix::io::AsFd as _;
     std::hint::black_box(());
     let assembled = linux_impl::assemble_filter();
     // Validation must never run with a zero-program (BPF programs need > 0
@@ -401,11 +417,13 @@ mod tests {
         // that the RET_ERRNO_EPERM constant appears in some word's k field.
         let af_unix_words = filter
             .iter()
-            .filter(|w| (*w & 0xFFFF_FFFF) == linux_impl::AF_UNIX)
+            .filter(|w| (*w & 0xFFFF_FFFF) as u32 == linux_impl::AF_UNIX)
             .count();
         let eperm_words = filter
             .iter()
-            .filter(|w| ((*w >> 32) & 0xFFFF_FFFF) == (linux_impl::BPF_RET | linux_impl::BPF_K))
+            .filter(|w| {
+                (((*w >> 32) & 0xFFFF_FFFF) as u32) == (linux_impl::BPF_RET | linux_impl::BPF_K)
+            })
             .count();
         assert!(af_unix_words >= 1, "AF_UNIX socket rule present");
         assert!(eperm_words >= 2, "reject paths are real");
