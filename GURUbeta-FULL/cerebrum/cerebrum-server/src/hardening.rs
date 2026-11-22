@@ -76,7 +76,20 @@ mod linux_impl {
     use super::HardeningError;
 
     // ==== BPF plumbing (linux uapi) ====
-    // Standard BPF jump codes from <linux/filter.h>:
+    //
+    // Standard codes from <linux/filter.h>, composed by OR-ing the class with the mode or
+    // operation, exactly as the kernel header defines them:
+    //   BPF_LD | BPF_W | BPF_ABS  = load a 32-bit word at an absolute offset
+    //   BPF_LD | BPF_IMM          = load an immediate (not used here)
+    //
+    // THESE WERE MISSING, AND ONLY A LINUX BUILD COULD TELL. The names BPF_LD, BPF_W and
+    // BPF_ABS were used in three places in `assemble_filter` while only the pre-composed
+    // BPF_LD_W and BPF_LD_ABS existed, and the whole module is `cfg(target_os = "linux")`,
+    // so every macOS build skipped it and the first Linux compile failed with "cannot find
+    // value `BPF_LD`". The composed constants above are kept because they are used too.
+    pub const BPF_LD: u32 = 0x00;
+    pub const BPF_W: u32 = 0x00;
+    pub const BPF_ABS: u32 = 0x20;
     pub const BPF_LD_W: u32 = 0x00;
     pub const BPF_LD_ABS: u32 = 0x20;
     pub const BPF_JMP: u32 = 0x05;

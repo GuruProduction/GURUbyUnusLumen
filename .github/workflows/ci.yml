@@ -136,10 +136,27 @@ jobs:
           build_one() {
             local abi="$1" triple="$2" clang="$3"
             echo "::group::${abi} (${triple})"
-            CARGO_TARGET_$(echo "$triple" | tr 'a-z-' 'A-Z_')_LINKER="${TOOLCHAIN_BIN}/${clang}" \
-              CC_$(echo "$triple" | tr '-' '_')="${TOOLCHAIN_BIN}/${clang}" \
-              AR_$(echo "$triple" | tr '-' '_')="${TOOLCHAIN_BIN}/llvm-ar" \
-              CEREBRUM_BUILD_REV="${REVISION}" \
+
+            # THE VARIABLES ARE NAMED WITH `env`, AND THE FIRST ATTEMPT DID NOT DO THAT.
+            #
+            # A command prefix like `VAR=x cargo build` sets an environment variable for that
+            # one command. `VAR=$(...)  ...` where the NAME is also computed does not: bash
+            # parses the word before expanding it, so `CARGO_TARGET_$(...)_LINKER=value` is not
+            # an assignment at all, and the whole line is read as "run the command named
+            # CARGO_TARGET_..._LINKER" which exits 127 with the assignment text as the error.
+            # That is exactly what the second CI run reported.
+            #
+            # `env` takes the assignment as an argument after word splitting, so a computed
+            # name works, and every variable lands in cargo's environment as intended.
+            local upper_triple lower_triple
+            upper_triple="$(echo "$triple" | tr 'a-z-' 'A-Z_')"
+            lower_triple="$(echo "$triple" | tr '-' '_')"
+
+            env \
+              "CARGO_TARGET_${upper_triple}_LINKER=${TOOLCHAIN_BIN}/${clang}" \
+              "CC_${lower_triple}=${TOOLCHAIN_BIN}/${clang}" \
+              "AR_${lower_triple}=${TOOLCHAIN_BIN}/llvm-ar" \
+              "CEREBRUM_BUILD_REV=${REVISION}" \
               cargo build --release --locked -p cerebrum-android --target "$triple"
 
             local so="target/${triple}/release/libcerebrum_android.so"
