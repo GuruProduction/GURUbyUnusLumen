@@ -361,7 +361,12 @@ jobs:
           # x86_64 because the runner is x86_64; the app packages that ABI from source, so
           # the binary under test is the one this build compiled rather than a shipped copy.
           script: |
-            set -euo pipefail
+            # `set -e` AND NOT `pipefail`: the emulator action runs this script through
+            # `/usr/bin/sh`, which is dash on this runner, and dash has no `pipefail`. The
+            # third CI run died on `/usr/bin/sh: 1: set: Illegal option -o pipefail` before
+            # Gradle started, after the emulator had booted fine. `-e` is the part that
+            # matters here, and there is no pipeline in the body for `pipefail` to guard.
+            set -eu
             cd GURUbeta-FULL
             # BOTH DEVICE CLASSES, AND THE SECOND ONE IS THE ROUND TRIP.
             #
