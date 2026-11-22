@@ -117,6 +117,7 @@ them is the point: a test nobody has seen fail is an assertion, not evidence.
 | what | result |
 |---|---|
 | Rust workspace | 593 passed, 0 failed, 1 ignored |
+| Kotlin unit suite | 1,811 tests, 0 failures, 0 errors, 0 skipped, 23 modules (run locally, because the app job has not completed on CI) |
 | Rust clippy, host and `x86_64-unknown-linux-gnu` | clean with `-D warnings` |
 | `cargo fmt --all -- --check` | clean |
 | Device job | 8 tests, 0 skipped, 0 failed, on API 34 |
