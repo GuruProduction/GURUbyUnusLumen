@@ -360,22 +360,21 @@ jobs:
           disable-animations: true
           # x86_64 because the runner is x86_64; the app packages that ABI from source, so
           # the binary under test is the one this build compiled rather than a shipped copy.
+          # EACH LINE OF `script` RUNS IN ITS OWN `sh -c`, SO THE DIRECTORY MUST BE IN THE
+          # COMMAND ITSELF. The previous version did `cd GURUbeta-FULL` on one line and
+          # `./gradlew ...` on the next, which the action executes as two separate shells: the
+          # second one started in the repo root, where there is no gradlew, and exited 127 with
+          # "./gradlew: not found". That is why the fourth run booted the emulator in 26 seconds
+          # and then failed without Gradle ever starting. It also cannot use `pipefail`, because
+          # `/usr/bin/sh` here is dash and dash has no such option.
+          #
+          # BOTH DEVICE CLASSES, AND THE SECOND ONE IS THE ROUND TRIP.
+          #
+          # The memory test drives create, search, update, history, delete, the resurrection
+          # refusal, QUERY and PREFETCH through the shipped .so. The backup test seals a brain
+          # with facts, a relationship, a superseded version and a deletion, deletes the vault,
+          # restores from the sealed bytes, and boots the restored vault with NO passphrase from
+          # the caller so the Keystore envelope is what opens it. Either class failing means the
+          # packaged library is not doing what the app claims.
           script: |
-            # `set -e` AND NOT `pipefail`: the emulator action runs this script through
-            # `/usr/bin/sh`, which is dash on this runner, and dash has no `pipefail`. The
-            # third CI run died on `/usr/bin/sh: 1: set: Illegal option -o pipefail` before
-            # Gradle started, after the emulator had booted fine. `-e` is the part that
-            # matters here, and there is no pipeline in the body for `pipefail` to guard.
-            set -eu
-            cd GURUbeta-FULL
-            # BOTH DEVICE CLASSES, AND THE SECOND ONE IS THE ROUND TRIP.
-            #
-            # The memory test drives create, search, update, history, delete, the resurrection
-            # refusal, QUERY and PREFETCH through the shipped .so. The backup test seals a brain
-            # with facts, a relationship, a superseded version and a deletion, deletes the vault,
-            # restores from the sealed bytes, and boots the restored vault with NO passphrase
-            # from the caller so the Keystore envelope is what opens it. Either class failing
-            # means the packaged library is not doing what the app claims.
-            ./gradlew :app:connectedDebugAndroidTest \
-              -Pandroid.testInstrumentationRunnerArguments.class=com.unuslumen.app.guru.CerebrumMemoryOnDeviceTest,com.unuslumen.app.guru.CerebrumBackupRestoreOnDeviceTest \
-              --console=plain --no-daemon
+            cd GURUbeta-FULL && ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.unuslumen.app.guru.CerebrumMemoryOnDeviceTest,com.unuslumen.app.guru.CerebrumBackupRestoreOnDeviceTest --console=plain --no-daemon
