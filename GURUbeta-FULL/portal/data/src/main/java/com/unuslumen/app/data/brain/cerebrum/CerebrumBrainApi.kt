@@ -721,14 +721,70 @@ object CerebrumBrainApi {
     // 4. dream (consolidation). Same call, real engine dispatch everywhere.
     // --------------------------------------------------------------------
 
-    fun runDreamConsolidation(): Boolean {
-        if (brainDown()) return false
-        val dreamReply = dispatchOrNull(FRAME_CONSOLIDATE, "{}") ?: return false
-        if (!dreamReply.contains("\"decayed_all\"")) {
-            Log.w(TAG, "dream: odd response shape: ${dreamReply.take(300)}")
+    fun runDreamConsolidation(): Boolean = consolidateWithReport() != null
+
+    /**
+     * One consolidation, with the engine's own report rather than a bare boolean.
+     *
+     * THE BOOLEAN PROVED ALMOST NOTHING. It answered whether the frame was dispatched, which is
+     * true for a handler that ran every step and for one that returned immediately. The handler
+     * returns a report saying what each stage did, and it was discarded at the last hop, so no
+     * caller anywhere could tell a pass that decayed, archived, hibernated and reconciled
+     * entities from a pass that changed nothing.
+     *
+     * Null means the brain did not answer, which is a different fact from a pass that ran and
+     * found nothing to do.
+     */
+    fun consolidateWithReport(): ConsolidationReport? {
+        if (brainDown()) return null
+        val reply = dispatchOrNull(FRAME_CONSOLIDATE, "{}") ?: return null
+        val root = runCatching { wire.parseToJsonElement(reply).jsonObject }.getOrNull()
+            ?: return null
+        fun count(key: String): Int = root[key]?.jsonPrimitive?.content?.toIntOrNull() ?: 0
+        if (!root.containsKey("decayed_all")) {
+            Log.w(TAG, "dream: response carries no report: ${reply.take(300)}")
         }
-        return true
+        return ConsolidationReport(
+            decayedAll = count("decayed_all"),
+            bufferPromotions = count("buffer_promotions"),
+            episodicPromotions = count("episodic_promotions"),
+            archived = count("archived"),
+            mergedIntoDwm = count("merged_into_dwm"),
+            removedFromDwm = count("removed_from_dwm"),
+            eventsEnriched = count("events_enriched"),
+            entitiesReconciled = count("entities_reconciled"),
+            aliasesRecorded = count("aliases_recorded"),
+        )
     }
+
+    /**
+     * What one consolidation pass did, stage by stage.
+     *
+     * EVERY FIELD IS A KEY THE HANDLER WRITES, named identically, so a reader can find it in
+     * `handle_consolidate` and check this decode still matches. A key the engine stops writing
+     * decodes as zero, which reads the same as a stage that did nothing; the only way to tell
+     * those apart is the handler itself, and that is where to look rather than here.
+     */
+    data class ConsolidationReport(
+        /** Decay rows the sweep visited. */
+        val decayedAll: Int,
+        /** Buffer to Episodic promotions this pass. */
+        val bufferPromotions: Int,
+        /** Episodic to Semantic promotions this pass. */
+        val episodicPromotions: Int,
+        /** Memories the decay engine retired, which the handler also publishes to the tree. */
+        val archived: Int,
+        /** Rows a dream merge wrote into the DWM. */
+        val mergedIntoDwm: Int,
+        /** Source rows a merge retired after their content was absorbed. */
+        val removedFromDwm: Int,
+        /** Events the enricher processed. */
+        val eventsEnriched: Int,
+        /** Same-referent entity label nodes reconciled in the graph sweep. */
+        val entitiesReconciled: Int,
+        /** Aliases recorded, so a merged spelling still resolves. */
+        val aliasesRecorded: Int,
+    )
 
     // --------------------------------------------------------------------
     // 5. graph query. Real wire, the engine's own shape; hits mirror SEARCH.
