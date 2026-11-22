@@ -317,51 +317,39 @@ mod linux_impl {
         }
 
         /*
-         * THE PROGRAM IS REBUILT AS THE KERNEL'S OWN sock_filter, NOT CAST FROM u64.
+         * INSTALLING THIS FILTER IS DISABLED UNTIL THE PROGRAM IS CORRECT.
          *
-         * `struct sock_filter` is { code: u16, jt: u8, jf: u8, k: u32 }, sixteen bytes. The
-         * assembler packs each instruction into a u64 so the program is readable as data, and
-         * the previous version reinterpreted those u64 words as sock_filter through a pointer.
-         * That is wrong by construction: the u64 layout puts `code` in bits 32..48 and `k` in
-         * bits 0..32, so reading the same bytes as a sock_filter gives the kernel `code` = 0,
-         * `jt`/`jf` = low bytes of `k`, and `k` = the real code. The kernel therefore received
-         * a program of BPF_LD instructions with nonsense operands and rejected it, which is why
-         * installation never succeeded and `harden_enabled()` stayed false on Linux.
+         * The previous installer cast the u64-packed program straight to `struct sock_filter`,
+         * whose layout is { code: u16, jt: u8, jf: u8, k: u32 } and does not match. That was a
+         * real bug, and fixing it revealed a worse one behind it: with a correctly shaped
+         * program the kernel ACCEPTS the filter, and the program contains no SECCOMP_RET_ALLOW
+         * for the syscalls it lists. They jump past the end of the program, and a jump past the
+         * end is invalid, so the kernel kills the process with SIGSYS - observed on CI as
+         * "signal: 31, SIGSYS: bad system call" the first time installation ever succeeded.
          *
-         * Unpacking explicitly also removes the pointer cast, so the bytes the kernel reads are
-         * a `Vec<sock_filter>` that lives until the syscall returns. The previous version held
-         * the buffer in a `Vec<u8>` that was never referenced again, so the pointer handed over
-         * was only valid by luck of the borrow checker's patience.
+         * So the filter has never run, and it cannot be switched on as it stands: enabling it
+         * would kill every brain at boot. Rather than ship a filter that terminates the process
+         * it is meant to protect, installation now refuses and says why. It returns an error the
+         * boot path already logs and carries on from, so behaviour is identical to every
+         * released build so far - the filter was never installed there either - and the defect
+         * is visible instead of silent.
+         *
+         * WHAT THE CORRECT PROGRAM NEEDS, for whoever picks this up:
+         *   - a `SECCOMP_RET_ALLOW` return at the END of the program, which is the default;
+         *   - each permitted-syscall jump landing on that allow, not past the end;
+         *   - the AF_UNIX socket check keeping its EPERM for every other family;
+         *   - a test that installs it in a child process and proves the child survives a
+         *     permitted syscall and dies or gets EPERM on `socket(AF_INET, ...)`.
+         *
+         * That is a security-critical rewrite and it belongs with its own test, not as a
+         * side-effect of making a lint pass.
          */
-        let filters: Vec<libc::sock_filter> = program
-            .iter()
-            .map(|word| libc::sock_filter {
-                code: (word >> 32) as u16,
-                jt: ((word >> 16) & 0xFF) as u8,
-                jf: ((word >> 8) & 0xFF) as u8,
-                k: (*word & 0xFFFF_FFFF) as u32,
-            })
-            .collect();
-        let fprog = libc::sock_fprog {
-            len: filters.len() as libc::c_ushort,
-            filter: filters.as_ptr() as *mut libc::sock_filter,
-        };
-        let ret_val = unsafe {
-            libc::syscall(
-                libc::SYS_seccomp,
-                libc::SECCOMP_SET_MODE_FILTER as libc::c_ulong,
-                0 as libc::c_ulong,
-                &fprog as *const _,
-            )
-        };
-        if ret_val != 0 {
-            let err = std::io::Error::last_os_error();
-            return Err(HardeningError::SeccompFailed(
-                -(err.raw_os_error().unwrap_or(22) as CReturnValue),
-            ));
-        }
-
-        Ok(())
+        let _ = program;
+        Err(HardeningError::FilterBuild(
+            "seccomp filter installation is disabled: the assembled program has no ALLOW return, \
+             so the kernel kills the process with SIGSYS when the filter is loaded"
+                .into(),
+        ))
     }
 }
 
@@ -458,20 +446,41 @@ mod tests {
         );
     }
 
+    /// The hardening marker never claims more than is true.
+    ///
+    /// THIS USED TO ASSERT THE OPPOSITE ON LINUX, and it was wrong to. It required
+    /// `harden_enabled()` to be true after install, which can only happen if the filter loads
+    /// into the kernel. When the installer was corrected well enough for the kernel to accept a
+    /// program, this test process was killed with `SIGSYS: bad system call`: the assembled
+    /// program contains no ALLOW return, so loading it terminates the process rather than
+    /// hardening it. Installation now refuses and names why, which means `hardened` is false
+    /// everywhere, and that is the honest state.
+    ///
+    /// The assertion therefore checks the property that matters and cannot rot into a lie: the
+    /// marker is only ever true when a filter is genuinely live, and this build does not claim
+    /// one. When the program is fixed, this test must be changed to install it in a CHILD
+    /// process and prove the child survives a permitted syscall, because asserting it in-process
+    /// would kill the test harness the moment it started working.
     #[test]
     fn hardening_marker_honesty() {
-        // On non-Linux this must report FALSE (kernel-level enforcement does
-        // not exist on macOS); on Linux it reflects the actual state.
-        let _result = install_no_network_filter_bool();
+        let result = install_no_network_filter_bool();
+
         #[cfg(target_os = "linux")]
         assert!(
-            harden_enabled(),
-            "linux must show HARDENED=true after install"
+            result.is_err(),
+            "on Linux this build must refuse to install the filter rather than load a program \
+             with no ALLOW return; got {result:?}",
         );
         #[cfg(not(target_os = "linux"))]
+        assert_eq!(
+            result,
+            Ok(false),
+            "a platform with no seccomp reports false rather than an error",
+        );
+
         assert!(
             !harden_enabled(),
-            "macOS remains honestly unhardenable at kernel level"
+            "the marker must never claim kernel hardening this build does not have",
         );
     }
 }
