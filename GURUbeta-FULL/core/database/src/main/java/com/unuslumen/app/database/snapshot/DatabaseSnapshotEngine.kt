@@ -73,6 +73,9 @@ class DatabaseSnapshotEngine(private val context: Context) {
     private fun cerebrumVaultFile(): File =
         File(File(File(context.filesDir, CEREBRUM_DIR), CEREBRUM_STATE_DIR), SnapshotFormat.CEREBRUM_VAULT_ENTRY)
 
+    /** Whether a brain has registered its flush, so a caller can report the state rather than guess. */
+    fun vaultFlushRegistered(): Boolean = flushVaultBeforeSeal != null
+
     private fun stagingRoot(): File = File(context.cacheDir, "brain_snapshot_staging")
 
     private fun newStagingDir(): File {
@@ -184,7 +187,39 @@ class DatabaseSnapshotEngine(private val context: Context) {
             // than by an empty entry: an empty vault file and no vault file are different,
             // and restoring an empty one over a real brain would be a silent wipe.
             val vault = cerebrumVaultFile()
-            val vaultBytes: ByteArray? = if (vault.isFile && vault.length() > 0) {
+            val vaultHasBytes = vault.isFile && vault.length() > 0
+            val vaultBytes: ByteArray? = if (vaultHasBytes) {
+                /*
+                 * FLUSH FIRST, OR REFUSE. A vault is a file the brain rewrites on its own
+                 * cadence while the live state sits in memory, so reading it without a flush
+                 * captures an older brain and every fact written since the last save is lost
+                 * inside a snapshot that verifies perfectly.
+                 *
+                 * Refusing is the only honest answer when nothing can flush: a snapshot that
+                 * omits the newest memories is worse than no snapshot at all, because the person
+                 * holding it believes they are covered.
+                 */
+                val flush = flushVaultBeforeSeal
+                    ?: return SnapshotWriteOutcome.Failed(
+                        "This device holds a Cerebrum vault but no running brain registered to flush " +
+                            "it, so a snapshot taken now could silently omit everything written since " +
+                            "the last save. Nothing was written. Start GURU and try again.",
+                    )
+                progress?.invoke("Flushing the Cerebrum vault so the newest memories are in the file")
+                runCatching { flush() }.getOrElse { flushError ->
+                    return SnapshotWriteOutcome.Failed(
+                        "The Cerebrum brain would not flush its memory to disk, so a snapshot taken now " +
+                            "could omit the newest facts. Nothing was written: ${flushError.message}.",
+                    )
+                }
+                // The flush rewrites the file, so the existence and length are re-read rather
+                // than trusted from before it ran.
+                if (!vault.isFile || vault.length() == 0L) {
+                    return SnapshotWriteOutcome.Failed(
+                        "The Cerebrum vault disappeared while it was being flushed, so there is no " +
+                            "memory to carry. Nothing was written.",
+                    )
+                }
                 progress?.invoke("Reading the Cerebrum vault so the memories travel with the transcript")
                 runCatching { vault.readBytes() }.getOrElse { readError ->
                     return SnapshotWriteOutcome.Failed(
@@ -953,7 +988,7 @@ class DatabaseSnapshotEngine(private val context: Context) {
         fun readAll(): ByteArray = file.readBytes()
     }
 
-    private companion object {
+    companion object VaultFlushRegistration {
         /**
          * The vault's directory names, mirroring `CerebrumHost` and `persistence.rs`.
          *
@@ -964,6 +999,33 @@ class DatabaseSnapshotEngine(private val context: Context) {
          */
         const val CEREBRUM_DIR = "cerebrum"
         const val CEREBRUM_STATE_DIR = "state"
+
+        /**
+         * How a snapshot asks the running brain to write its in-memory state to the vault.
+         *
+         * THE DEFECT THIS EXISTS FOR. Reading `cerebrum.vault` copies whatever the last save
+         * wrote. The brain keeps its whole state in memory and flushes on its own cadence, so a
+         * snapshot taken between two flushes carries a stale brain: every fact written since the
+         * last save is ABSENT, the snapshot verifies perfectly because the file is a valid vault,
+         * just an older one, and the loss is found only when somebody restores it and discovers
+         * the last hour missing.
+         *
+         * WHEN A VAULT EXISTS AND NOTHING CAN FLUSH, [sealSnapshot] REFUSES rather than sealing a
+         * snapshot that silently omits the newest memories. A person holding that snapshot
+         * believes they are covered, which makes it worse than no snapshot at all.
+         *
+         * `CerebrumHost` registers this when its class is first touched, because it is the only
+         * object that holds a brain. The module graph already points that way: `portal:data`
+         * depends on `core:database` and not the reverse.
+         */
+        @Volatile
+        var flushVaultBeforeSeal: (() -> Unit)? = null
+            private set
+
+        /** Called by the object that owns the brain, at its class-initialisation time. */
+        fun registerVaultFlush(flush: () -> Unit) {
+            flushVaultBeforeSeal = flush
+        }
     }
 
     /** How a rotation decides what to keep. */

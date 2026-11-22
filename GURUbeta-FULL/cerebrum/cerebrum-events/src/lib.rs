@@ -201,6 +201,60 @@ impl EventStore {
                             .to_string(),
                     });
                 }
+                /*
+                 * RETIREMENT IS PART OF THE TRAIL, NOT A FLAG BESIDE IT.
+                 *
+                 * These two were the hole. A deletion and an archival both write an event with
+                 * the text, the category and the reason the caller gave, and this function read
+                 * only creates and updates. So a deleted memory answered a history request with
+                 * its creation and nothing else: the row was gone, `ever_retired` was true, and
+                 * the trail could not say when it went, why, or what it said at the end.
+                 *
+                 * That is precisely the question the read exists for. "Who deleted this and why"
+                 * is asked after the deletion, and it was the one fact the answer omitted.
+                 *
+                 * `superseded` stays None: nothing replaced the text, the row was retired.
+                 */
+                "memory.deleted" => {
+                    revisions.push(MemoryRevision {
+                        event_id: event.event_id,
+                        recorded_at: event.timestamp,
+                        revision_kind: RevisionKind::Deleted,
+                        content: event
+                            .payload
+                            .get("text")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        superseded: None,
+                        reason: event
+                            .payload
+                            .get("reason")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    });
+                }
+                "memory.archived" => {
+                    revisions.push(MemoryRevision {
+                        event_id: event.event_id,
+                        recorded_at: event.timestamp,
+                        revision_kind: RevisionKind::Archived,
+                        content: event
+                            .payload
+                            .get("text")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        superseded: None,
+                        reason: event
+                            .payload
+                            .get("reason")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    });
+                }
                 _ => {}
             }
         }
@@ -252,10 +306,19 @@ impl ReplayState {
 // ============================================================================
 
 /// Which write produced a revision.
+///
+/// DELETED AND ARCHIVED ARE REVISIONS, NOT FLAGS. The trail used to carry only creates and
+/// updates, so a memory answered "what did I say, when was I changed" and then went silent at
+/// exactly the point somebody needed it: the moment it was retired. A deletion is the last state
+/// a memory had, and a trail that stops before it is a record with the ending torn off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RevisionKind {
     Created,
     Updated,
+    /// The row was retired by a delete.
+    Deleted,
+    /// The row was retired by the decay archive threshold, not by a caller.
+    Archived,
 }
 
 /// One recorded revision of a memory, reconstructed from the event trail.
@@ -425,6 +488,68 @@ mod tests {
         assert_eq!(unenriched.len(), 1);
         assert_ne!(unenriched[0].event_id, p1);
         assert_ne!(unenriched[0].event_id, p2);
+    }
+
+    /// A deletion appears in the trail, with its reason and the text it held.
+    ///
+    /// THE DEFECT THIS PINS. `history_for` read creates and updates only, so a deleted memory
+    /// answered with its creation and nothing else while `ever_retired` said true from a
+    /// different read. The one question the trail exists for, asked after a deletion, came back
+    /// with the deletion missing.
+    #[test]
+    fn a_deletion_is_a_revision_with_its_reason_and_final_text() {
+        let mut store = EventStore::new();
+        let mid = MemoryId::new();
+        store.append(
+            "memory.created",
+            mid,
+            serde_json::json!({"text": "the spare key is under the blue pot"}),
+        );
+        store.append(
+            "memory.deleted",
+            mid,
+            serde_json::json!({
+                "text": "the spare key is under the blue pot",
+                "category": "knowledge",
+                "reason": "the owner asked for this to be forgotten",
+            }),
+        );
+
+        let revisions = store.history_for(mid);
+        assert_eq!(2, revisions.len(), "the trail must carry both: {revisions:?}");
+        let deletion = revisions
+            .iter()
+            .find(|r| r.revision_kind == RevisionKind::Deleted)
+            .expect("the deletion must be in the trail");
+        assert_eq!("the owner asked for this to be forgotten", deletion.reason);
+        assert_eq!("the spare key is under the blue pot", deletion.content);
+        assert!(
+            deletion.superseded.is_none(),
+            "nothing replaced the text; the row was retired",
+        );
+    }
+
+    /// An archival appears too, and is distinguishable from a caller's deletion.
+    #[test]
+    fn an_archival_is_a_revision_and_is_not_a_deletion() {
+        let mut store = EventStore::new();
+        let mid = MemoryId::new();
+        store.append("memory.created", mid, serde_json::json!({"text": "an old note"}));
+        store.append(
+            "memory.archived",
+            mid,
+            serde_json::json!({"reason": "decay archive threshold reached"}),
+        );
+
+        let revisions = store.history_for(mid);
+        assert!(
+            revisions.iter().any(|r| r.revision_kind == RevisionKind::Archived),
+            "the archive must be in the trail: {revisions:?}",
+        );
+        assert!(
+            revisions.iter().all(|r| r.revision_kind != RevisionKind::Deleted),
+            "an archive is not a caller's deletion and must not be reported as one",
+        );
     }
 
     #[test]

@@ -70,6 +70,34 @@ object CerebrumHost {
             nativeLoadFailure = failure.message ?: failure::class.java.simpleName
             Log.e(TAG, "cerebrum_android.so could not be loaded: $nativeLoadFailure")
         }
+
+        /*
+         * A SNAPSHOT MAY NOT BE TAKEN FROM A STALE VAULT.
+         *
+         * `DatabaseSnapshotEngine` reads `cerebrum.vault` from disk, and this brain keeps its
+         * whole state in memory and rewrites that file on its own cadence. So a backup taken
+         * between two saves carries an older brain, verifies perfectly, and loses everything
+         * written since the last flush. The engine cannot call `saveNow` itself: `core:database`
+         * sits below `portal:data` and must not depend on it. It exposes a registration instead,
+         * and this is the registration.
+         *
+         * A BOOTED BRAIN IS THE ONLY VALID FLUSHER. `saveNow` returns zero when the brain is
+         * not running, and a zero is a failure rather than "nothing to save", so the engine
+         * reports it rather than sealing a file it knows is behind.
+         */
+        runCatching {
+            com.unuslumen.app.database.snapshot.DatabaseSnapshotEngine.registerVaultFlush {
+                if (isBooted.get()) {
+                    val written = cerebrumSaveNowJNI()
+                    check(written > 0) { "the brain reported $written records written; refusing to call that a flush" }
+                    Log.d(TAG, "vault flushed before snapshot ($written records)")
+                } else {
+                    error("no brain is running, so there is nothing to flush")
+                }
+            }
+        }.onFailure { registrationError ->
+            Log.e(TAG, "could not register the snapshot flush: ${registrationError.message}")
+        }
     }
 
     /** Whether the brain's native library is present in this process. */
