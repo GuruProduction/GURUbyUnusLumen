@@ -196,6 +196,17 @@ jobs:
         working-directory: GURUbeta-FULL
         run: ./gradlew testDebugUnitTest --console=plain --no-daemon
 
+      - name: The snapshot engine, including the stale-vault refusal
+        working-directory: GURUbeta-FULL
+        # NAMED RATHER THAN LEFT INSIDE THE SUITE. A testDebugUnitTest run reports a total, and
+        # a total cannot tell a reviewer whether the two tests that guard a silent data-loss
+        # path actually executed. They are in the suite above as well; this invocation makes
+        # their names appear in the log, and a missing or renamed class fails here loudly.
+        run: |
+          ./gradlew :core:database:testDebugUnitTest \
+            --tests "com.unuslumen.app.database.snapshot.DatabaseSnapshotEngineTest" \
+            --console=plain --no-daemon
+
       - name: The APK contains the brain built from this revision
         working-directory: GURUbeta-FULL
         # THE END-TO-END ASSERTION. Everything above could be green while the APK shipped a
@@ -297,7 +308,16 @@ jobs:
           # x86_64 because the runner is x86_64; the app packages that ABI from source, so
           # the binary under test is the one this build compiled rather than a shipped copy.
           script: |
+            set -euo pipefail
             cd GURUbeta-FULL
+            # BOTH DEVICE CLASSES, AND THE SECOND ONE IS THE ROUND TRIP.
+            #
+            # The memory test drives create, search, update, history, delete, the resurrection
+            # refusal, QUERY and PREFETCH through the shipped .so. The backup test seals a brain
+            # with facts, a relationship, a superseded version and a deletion, deletes the vault,
+            # restores from the sealed bytes, and boots the restored vault with NO passphrase
+            # from the caller so the Keystore envelope is what opens it. Either class failing
+            # means the packaged library is not doing what the app claims.
             ./gradlew :app:connectedDebugAndroidTest \
-              -Pandroid.testInstrumentationRunnerArguments.class=com.unuslumen.app.guru.CerebrumMemoryOnDeviceTest \
+              -Pandroid.testInstrumentationRunnerArguments.class=com.unuslumen.app.guru.CerebrumMemoryOnDeviceTest,com.unuslumen.app.guru.CerebrumBackupRestoreOnDeviceTest \
               --console=plain --no-daemon
