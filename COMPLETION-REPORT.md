@@ -1,7 +1,10 @@
 # Completion report — Cerebrum remediation, the five outstanding items
 
-Branch `lux/cerebrum-remediation`, 37 commits ahead of `origin/main` at `366208c`, draft PR
+Branch `lux/cerebrum-remediation`, 39 commits ahead of `origin/main` at `366208c`, draft PR
 547. No release, tag, version bump or publication, as instructed. Written 2026-11-22.
+
+The commit count moves with every doc correction, so treat it as a reading rather than a
+fact: `git rev-list --count origin/main..HEAD` on the branch is the number.
 
 ## Standing constraints, honoured
 
