@@ -64,9 +64,15 @@ fn install_and_track() -> Result<bool, HardeningError> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HardeningError {
     /// prctl(PR_SET_NO_NEW_PRIVS) failed: seccomp cannot be applied safely.
-    NoNewPrivsFailed(i64),
-    /// seccomp(2) with our BPF program failed: errno as negative number.
-    SeccompFailed(i64),
+    ///
+    /// `c_long` rather than `i64`, because that is what the platform's C ABI returns and the
+    /// two are not the same type everywhere: `prctl` and `syscall` return `c_int` (i32) on
+    /// 32-bit targets including armeabi-v7a and x86, and `c_long` on 64-bit ones. Declaring
+    /// i64 made this enum unbuildable on Linux, which no macOS build could reveal because the
+    /// whole module is Linux-gated. The values are converted at the boundary below.
+    NoNewPrivsFailed(libc::c_long),
+    /// seccomp(2) with our BPF program failed: errno as negative number. `c_long`, see above.
+    SeccompFailed(libc::c_long),
     /// Filter assembly failed (BPF validation).
     FilterBuild(String),
 }
@@ -278,7 +284,8 @@ mod linux_impl {
     /// the assembled program. Returns errno as negative on failure.
     pub fn install_seccomp(program: &[u64]) -> Result<(), HardeningError> {
         // PR_SET_NO_NEW_PRIVS, arg 38; mandatory pre-step before mode-2 filters.
-        let pr_set_no_new_privs: i64 = 38;
+        // `c_int`: prctl's first argument is an int on every Linux ABI.
+        let pr_set_no_new_privs: libc::c_int = 38;
         let result = unsafe {
             libc::prctl(
                 pr_set_no_new_privs,
@@ -289,7 +296,7 @@ mod linux_impl {
             )
         };
         if result != 0 {
-            return Err(HardeningError::NoNewPrivsFailed(result));
+            return Err(HardeningError::NoNewPrivsFailed(result as libc::c_long));
         }
 
         // seccomp(2) with sock_fprog requires re-packing program into u16.
@@ -321,7 +328,7 @@ mod linux_impl {
         if ret_val != 0 {
             let err = std::io::Error::last_os_error();
             return Err(HardeningError::SeccompFailed(
-                -err.raw_os_error().unwrap_or(22),
+                -(err.raw_os_error().unwrap_or(22) as libc::c_long),
             ));
         }
 
