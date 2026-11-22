@@ -102,3 +102,45 @@ data class FactListing(
     val totalMatching: Int,
     val brainReachable: Boolean,
 )
+
+/**
+ * One revision of a memory, as the brain's event trail recorded it.
+ *
+ * A MEMORY HAS A HISTORY WHETHER OR NOT ANYTHING SHOWS IT. The engine has always written an
+ * append-only event per mutation, including the text an update replaced, and
+ * `EventStore::history_for` has always answered from it. Until this existed there was no
+ * route from the app, so "what did this say before", "who deleted it" and "why" were stored
+ * and unreadable.
+ *
+ * [superseded] is the text this revision replaced, present only on an update. [actor] is the
+ * provenance label the mutation carried, which is where the writer's identity lives. A
+ * memory that was deleted still answers, because the trail is the one read that must
+ * outlive the row.
+ */
+data class MemoryRevision(
+    /** Created, Updated, Deleted, Archived, Hibernated, Revived or Consolidated. */
+    val kind: String,
+    /** The memory's text as of this revision. */
+    val content: String,
+    /** The text this revision replaced, or null when it replaced nothing. */
+    val superseded: String?,
+    /** Why the change was made, as the writer stated it. Empty when none was given. */
+    val reason: String,
+    /** The provenance label of whoever made the change. */
+    val actor: String,
+    /** When the brain recorded it, from the event's own timestamp. */
+    val recordedAt: String,
+)
+
+/** One memory's full trail, including the identity and whether it was ever retired. */
+data class MemoryHistory(
+    val memoryId: String,
+    /** The row's current lifecycle: Active, Archived or Hibernated. */
+    val lifecycle: String,
+    /** The category the row was filed under. */
+    val category: String,
+    /** True when the row was retired at any point, even if it is live again. */
+    val everRetired: Boolean,
+    /** Every revision, oldest first. */
+    val revisions: List<MemoryRevision>,
+)

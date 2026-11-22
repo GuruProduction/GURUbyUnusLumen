@@ -344,6 +344,68 @@ class MemoryToolExecutor(
             }
         }
 
+        MemoryToolDefinitions.MEMORY_HISTORY -> {
+            /*
+             * A HISTORY READ DELIBERATELY DOES NOT REQUIRE THE ROW TO BE LIVE.
+             *
+             * Every other verb here refuses a retired memory, and this one must not: the
+             * question "what did it say, who removed it and why" is asked exactly once the
+             * memory is gone. So the id is validated as a brain id and NOT resolved through
+             * `resolveFactOrError`, because that resolution answers "Fact not found" for a
+             * deleted row.
+             *
+             * Ownership still applies. A caller that may not read a live fact may not read
+             * its trail either, and the trail is checked against the row when the row still
+             * exists. When it does not exist there is nothing to partition on and the
+             * deletion record is the owner's own audit material, so it answers.
+             */
+            val factId = args["factId"] as? String ?: return ToolExecutionResult.error("Missing 'factId'")
+            if (factId.isBlank()) return ToolExecutionResult.error("Missing 'factId'")
+            if (!isBrainId(factId)) {
+                return ToolExecutionResult.error(
+                    "Not a memory id: $factId. " +
+                        "Use the 64-character id from an addMemoryFact or searchMemoryFacts result."
+                )
+            }
+            val live = memoryRepository.getFact(factId)
+            if (live != null && visibleToCaller(listOf(live)).isEmpty()) {
+                // Reported as absent, not refused, for the same reason the resolution path
+                // does: a refusal confirms the row exists.
+                return ToolExecutionResult.error("Fact not found: $factId")
+            }
+            try {
+                val history = memoryRepository.getFactHistory(factId)
+                    ?: return ToolExecutionResult.error(
+                        "The brain did not answer for $factId, so this is not a statement that it has no history."
+                    )
+                if (history.revisions.isEmpty() && live == null) {
+                    return ToolExecutionResult.error(
+                        "No memory and no recorded history for $factId. That id does not belong to anything this brain holds."
+                    )
+                }
+                val result = MemoryHistoryResult(
+                    memoryId = history.memoryId,
+                    lifecycle = history.lifecycle,
+                    category = history.category,
+                    everRetired = history.everRetired,
+                    revisionCount = history.revisions.size,
+                    revisions = history.revisions.map { revision ->
+                        MemoryRevisionInfo(
+                            kind = revision.kind,
+                            content = revision.content,
+                            superseded = revision.superseded,
+                            reason = revision.reason,
+                            actor = revision.actor,
+                            recordedAt = revision.recordedAt,
+                        )
+                    },
+                )
+                ToolExecutionResult.success(result, json.encodeToString(MemoryHistoryResult.serializer(), result))
+            } catch (e: Exception) {
+                ToolExecutionResult.error("brain history rejected: ${e.message?.take(200)}")
+            }
+        }
+
         MemoryToolDefinitions.TRAVERSE_MEMORY_GRAPH -> {
             val subject = args["subject"] as? String ?: return ToolExecutionResult.error("Missing 'subject'")
             if (subject.trim().length < 2) {

@@ -103,6 +103,16 @@ interface MemoryRepository {
         reason: String,
     ): MemoryFact
 
+    /**
+     * One memory's revision trail, or null when the brain does not answer for that id.
+     *
+     * THE READ THAT OUTLIVES THE ROW. Every other path here refuses a retired memory, and
+     * this one must not: "who deleted it, when, and what did it say" is asked precisely once
+     * the memory is gone. Null means the brain did not answer, so a caller can tell an
+     * unreachable brain from a memory with no recorded history.
+     */
+    suspend fun getFactHistory(factId: String): MemoryHistory?
+
     suspend fun getFactsByCategory(category: String): List<MemoryFact>
     suspend fun searchFacts(query: String, category: String? = null): List<MemoryFact>
     suspend fun markFactRecalled(factId: String)

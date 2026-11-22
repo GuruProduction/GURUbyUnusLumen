@@ -10,6 +10,7 @@ import com.unuslumen.app.domain.memory.ConversationMessage
 import com.unuslumen.app.domain.memory.FactListing
 import com.unuslumen.app.domain.memory.MemoryCategories
 import com.unuslumen.app.domain.memory.MemoryFact
+import com.unuslumen.app.domain.memory.MemoryHistory
 import com.unuslumen.app.domain.memory.MemoryRepository
 import com.unuslumen.app.domain.memory.ConversationThread
 import com.unuslumen.app.domain.memory.RetrievedContext
@@ -215,6 +216,18 @@ class MemoryRepositoryImpl(
             brainReachable = true,
         )
     }
+
+    /**
+     * One memory's revision trail.
+     *
+     * NO OWNERSHIP FILTER HERE, and that is deliberate rather than an omission. The caller
+     * that can name an id has already been through [MemoryToolExecutor]'s resolution, which
+     * asks the same visibility question a read does; and the trail of a retired row has to
+     * be readable by the person asking who deleted it. What this must not do is answer
+     * "no history" for a brain that did not reply, so null is passed through.
+     */
+    override suspend fun getFactHistory(factId: String): MemoryHistory? =
+        brainService.factHistory(factId)
 
     override suspend fun getFactsByCategory(category: String): List<MemoryFact> =
         brainService.getFactsByCategory(category)

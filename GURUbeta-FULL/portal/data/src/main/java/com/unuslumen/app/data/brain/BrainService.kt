@@ -9,7 +9,9 @@ import com.unuslumen.app.data.brain.cerebrum.CerebrumBrainApi
 import com.unuslumen.app.data.brain.cerebrum.CerebrumHost
 import com.unuslumen.app.data.memory.LocalEmbeddingService
 import com.unuslumen.app.domain.memory.MemoryFact
+import com.unuslumen.app.domain.memory.MemoryHistory
 import com.unuslumen.app.domain.memory.MemoryOwnership
+import com.unuslumen.app.domain.memory.MemoryRevision
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -604,6 +606,37 @@ class BrainService(
         val body = brainApi.retrieveDeepOrShallow(factId, wantDeep = true)
             ?: error("the update was accepted but the row could not be read back")
         buildDomainFactFrom(body)
+    }
+
+    /**
+     * One memory's revision trail, read from the brain's own event store.
+     *
+     * THIS IS THE READ THAT WORKS AFTER THE ROW IS GONE. Every other path in this class
+     * refuses a retired memory; a deletion makes the question "what did it say and who
+     * removed it" more urgent, not less, so the answer has to survive the row.
+     *
+     * Null means the brain did not answer, which is a different fact from a memory with no
+     * recorded history: the first is a machine state, the second is an answer.
+     */
+    suspend fun factHistory(factId: String): MemoryHistory? = withContext(Dispatchers.Default) {
+        if (!isBrainId(factId)) return@withContext null
+        val frame = brainApi.history(factId.lowercase()) ?: return@withContext null
+        MemoryHistory(
+            memoryId = factId.lowercase(),
+            lifecycle = frame.lifecycle,
+            category = frame.category,
+            everRetired = frame.everRetired,
+            revisions = frame.revisions.map { revision ->
+                MemoryRevision(
+                    kind = revision.kind,
+                    content = revision.content,
+                    superseded = revision.superseded,
+                    reason = revision.reason,
+                    actor = revision.actor,
+                    recordedAt = revision.recordedAt,
+                )
+            },
+        )
     }
 
     /** Dream = one CONSOLIDATE frame: real decay refresh + dream merges inside the brain. */
