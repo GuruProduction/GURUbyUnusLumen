@@ -87,8 +87,16 @@ pub enum HardeningError {
     FilterBuild(String),
 }
 
-#[cfg(target_os = "linux")]
+/// The BPF assembler, compiled on EVERY platform on purpose.
+///
+/// THE GATE WAS THE BUG'S HIDING PLACE. This module was `cfg(target_os = "linux")`, so a macOS
+/// build never parsed it: the missing BPF_LD constants, the wrong operand packing and the absent
+/// ALLOW return were all invisible until a Linux runner compiled them for the first time. The
+/// assembler is pure arithmetic over its own constants and depends on nothing Linux-specific;
+/// only `install_seccomp` does, because it makes the syscall. So the gate now sits on that one
+/// function and the program's shape is testable everywhere, including the developer's machine.
 mod linux_impl {
+    #[cfg(target_os = "linux")]
     use super::{CReturnValue, HardeningError};
 
     // ==== BPF plumbing (linux uapi) ====
@@ -114,29 +122,50 @@ mod linux_impl {
     pub const BPF_JGE: u32 = 0x30 | BPF_JMP;
     pub const BPF_RET: u32 = 0x06;
     pub const BPF_K: u32 = 0x00;
-    /// The BPF code for an unconditional SECCOMP_RET_ALLOW statement, which is
-    /// `BPF_RET | BPF_K`. It was written as `0x7FFF_FFFF & 0_0000`, which is zero for every
-    /// input: a constant that looked like an allow mask and was actually the number 0.
-    pub const BPF_RET_ALLOW: u32 = BPF_RET | BPF_K;
-    pub const SECCOMP_MODE_FILTER: u32 = 2;
-    pub const SECCOMP_RET_ERRNO_MASK: u32 = 0x0005_0000; // ENOSYS on EPERM below.
-    pub const SECCOMP_RET_ALLOW: u32 = 0x7FFF_FFFF;
+    /// `SECCOMP_RET_ALLOW`, canonical value.
+    ///
+    /// It was written `0x7FFF_FFFF`, which happens to mask to ALLOW because the low 16 bits are
+    /// the data field and are ignored for this action, but the canonical spelling is what a
+    /// reader can check against <linux/seccomp.h>.
+    pub const SECCOMP_RET_ALLOW: u32 = 0x7FFF_0000;
+    pub const SECCOMP_RET_ERRNO_MASK: u32 = 0x0005_0000;
     pub const SECCOMP_RET_ERRNO_EPERM: u32 = 0x0005_0000 | 1;
-    pub const SECCOMP_RET_KILL_PROCESS: u32 = 0x8010_0000;
+    /// `SECCOMP_RET_KILL_PROCESS`, canonical value. The previous `0x8010_0000` carried a stray
+    /// bit in the action field; the kernel treats an undefined action as a kill, so it behaved
+    /// the same, but the constant did not say what it meant.
+    pub const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
     pub const SECCOMP_RET_ERRNO_ENOSYS: u32 = 0x0005_0000 | 38;
 
     pub const AUDIT_ARCH_X86_64: u32 = 0xC000003E;
     pub const AUDIT_ARCH_AARCH64: u32 = 0xC00000B7;
 
-    fn bpf_stmt(code: u32, k: u32) -> u64 {
-        ((code as u64) << 32) | (k as u64)
+    /// Pack one `struct sock_filter` into a u64 in the layout the kernel reads.
+    ///
+    /// THE STRUCT IS `{ code: u16, jt: u8, jf: u8, k: u32 }`, and a little-endian u64 holding
+    /// those eight bytes puts them at these offsets: code in bits 0..16, jt in 16..24, jf in
+    /// 24..32, k in 32..64.
+    ///
+    /// THE PREVIOUS PACKING WAS NOT THAT STRUCT. It put `code` in the high half and `k` in the
+    /// low, which reads as reasonable until the field WIDTHS are counted: `k` is a u32, so it
+    /// occupied bits 0..32, which is exactly where `jt` and `jf` live. Every jump instruction
+    /// therefore OR-ed its own offsets into the middle of its operand, and `jeq AF_UNIX, jt=1`
+    /// packed to `k = 0x0001_0001` rather than `1`. The CI test that reads the operand back saw
+    /// 65537 and failed, which is the only reason this was ever visible: installation is
+    /// disabled, so no kernel has read one of these words. If the filter had ever been enabled
+    /// as it stood, every instruction would have carried a corrupted operand.
+    fn pack_filter(code: u32, jt: u8, jf: u8, k: u32) -> u64 {
+        ((code as u64) & 0xFFFF)
+            | (((jt as u64) & 0xFF) << 16)
+            | (((jf as u64) & 0xFF) << 24)
+            | ((k as u64) << 32)
     }
 
-    fn bpf_jump(code: u32, k: u32, jt: u8, jf: u8) -> u64 {
-        (((code as u64) << 32) & 0xFFFF_FFFF_0000_0000)
-            | (((jt as u64) & 0xFF) << 16)
-            | (((jf as u64) & 0xFF) << 8)
-            | k as u64
+    fn bpf_stmt(code: u32, k: u32) -> u64 {
+        pack_filter(code, 0, 0, k)
+    }
+
+    pub fn bpf_jump(code: u32, k: u32, jt: u8, jf: u8) -> u64 {
+        pack_filter(code, jt, jf, k)
     }
 
     // syscall numbers:
@@ -193,27 +222,58 @@ mod linux_impl {
     pub const SYS_UNLINKAT: u32 = 35;
 
     pub fn assemble_filter() -> Vec<u64> {
-        // THE ARCHITECTURE PREAMBLE, AS ONE LITERAL.
-        //
-        // Load `arch` from seccomp_data, continue when it is x86_64 or aarch64, and kill the
-        // process on anything else. Jump offsets count from the instruction AFTER the jump,
-        // which is why the two tests skip one and three instructions: each must land past the
-        // kill on the allow path.
-        //
-        // Written as a vec literal rather than a run of pushes so the program reads as the
-        // instruction sequence it is, and the offsets can be counted by eye.
-        let mut program: Vec<u64> = vec![
-            bpf_stmt(BPF_LD | BPF_W | BPF_ABS, 4), // offsetof(arch) in seccomp_data
-            bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
-            bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_AARCH64, 3, 0),
-            bpf_ret(SECCOMP_RET_KILL_PROCESS), // unknown architecture, never allow
-        ];
+        /*
+         * THE PROGRAM THIS REPLACES COULD NOT HAVE WORKED, IN THREE SEPARATE WAYS.
+         *
+         * 1. The instruction packing put the u32 operand where jt and jf live, so every jump
+         *    carried a corrupted operand. CI read `jeq AF_UNIX, jt=1` back as 65537 and failed.
+         * 2. There was no `SECCOMP_RET_ALLOW` anywhere in the program. Every permitted syscall
+         *    jumped PAST the end, and a jump past the end is invalid, so loading the filter made
+         *    the kernel kill the process with SIGSYS. That is what CI observed the first time
+         *    installation ever got far enough to succeed.
+         * 3. The two architecture tests jumped to the KILL instruction rather than over it, so
+         *    the correct-architecture path was the one that terminated the process.
+         *
+         * The layout below is the fix for all three, and it is written so the offsets can be
+         * counted by eye. Jump offsets count instructions FORWARD FROM THE ONE AFTER THE JUMP.
+         *
+         *     index  instruction
+         *     0      ld  [4]              arch from seccomp_data
+         *     1      jeq x86_64, 2, 0     match -> 4
+         *     2      jeq aarch64, 1, 0    match -> 4
+         *     3      ret KILL_PROCESS     no match falls here, and it is terminal
+         *     4      ld  [0]              syscall number
+         *     5..    one jeq per allowed syscall, each landing on the ALLOW near the end
+         *     X      jeq socket, 0, 4     not socket -> the ENOSYS default
+         *     X+1    ld  [16]             args[0], the socket family
+         *     X+2    jeq AF_UNIX, 0, 1   match falls to ALLOW; anything else skips to EPERM
+         *     X+3    ret ALLOW            every permitted path lands here
+         *     X+4    ret ERRNO(EPERM)     socket() with a family that is not AF_UNIX
+         *     X+5    ret ERRNO(ENOSYS)    everything not listed, fail-closed and distinguishable
+         *
+         * TWO DISTINCT ERRNO VALUES, DELIBERATELY. A single deny return tells an operator that
+         * something was refused and not what: an attempt to open an internet socket and a call
+         * to a syscall nobody registered look identical. EPERM for the socket family and ENOSYS
+         * for everything else makes a strace readable, and it means the program contains two
+         * genuine deny paths rather than one duplicated.
+         *
+         * IT STILL MUST NOT BE INSTALLED ON AN ANDROID PHONE, AND THE REASON IS THE SYSCALL
+         * TABLE, NOT THE SHAPE. Every constant compared below (SYS_READ = 0, SYS_WRITE = 1,
+         * SYS_OPEN = 2 ...) is the x86_64 numbering. aarch64 numbers the same calls completely
+         * differently: read is 63, write is 64, openat is 56. So on the arm64 devices this app
+         * actually ships to, the filter would admit io_setup as "read", deny real reads with
+         * ENOSYS, and the brain would fail at the first file it touched. The architecture test
+         * admits aarch64 because that is the platform, and the table behind it belongs to a
+         * different one. An aarch64 table has to exist before this filter can run on a phone.
+         */
+        let mut program: Vec<u64> = Vec::with_capacity(64);
 
-        fn bpf_ret(action: u32) -> u64 {
-            ((BPF_RET | BPF_K) as u64) << 32 | (action as u64 & 0xFFFF_FFFF)
-        }
-
-        load_syscall_number(&mut program);
+        // The architecture preamble: load arch, accept the two targets, kill on anything else.
+        program.push(bpf_stmt(BPF_LD | BPF_W | BPF_ABS, 4)); // offsetof(arch) in seccomp_data
+        program.push(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 2, 0));
+        program.push(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_AARCH64, 1, 0));
+        program.push(bpf_ret(SECCOMP_RET_KILL_PROCESS));
+        program.push(bpf_stmt(BPF_LD | BPF_W | BPF_ABS, 0)); // offsetof(nr)
 
         let io_ok = [
             SYS_READ,
@@ -254,34 +314,40 @@ mod linux_impl {
             SYS_GETPEERNAME,
         ];
 
+        // Where the ALLOW lands, computed rather than guessed: the preamble is five
+        // instructions, then one per allowed syscall, then the three-instruction socket check,
+        // and the ALLOW is the fourth of the trailing block.
+        let allow_index = program.len() + io_ok.len() + 3;
         for (index, syscall) in io_ok.iter().copied().enumerate() {
-            let jump_if_match = (io_ok.len() - index) as u8;
+            // The jump is at program index `5 + index`; its offset is measured from the next
+            // instruction, which is `5 + index + 1`.
+            let offset = allow_index - (program.len() + 1);
+            debug_assert_eq!(offset, io_ok.len() + 3 - index - 1);
             program.push(bpf_jump(
                 BPF_JMP | BPF_JEQ | BPF_K,
                 syscall,
-                jump_if_match,
+                offset as u8,
                 0,
             ));
         }
 
-        // socket(AF_UNIX, ...): the ONLY network-family permitted;
-        // socketpair is included at io_ok already (it creates pairs, no dialing).
-        // For SYS_SOCKET: args[0] = domain, load args[0] (4 bytes at offset 16)
-        let socket_arg_offset = 16;
-        program.push(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, SYS_SOCKET, 0, 2));
-        // fallthrough: continue into the remaining special checks
-        program.push(bpf_stmt(BPF_LD | BPF_W | BPF_ABS, socket_arg_offset));
-        program.push(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, AF_UNIX, 1, 0));
+        // socket(AF_UNIX, ...) is the only network family permitted. args[0] is the family, a
+        // 4-byte word at offset 16 in seccomp_data.
+        program.push(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, SYS_SOCKET, 0, 4));
+        program.push(bpf_stmt(BPF_LD | BPF_W | BPF_ABS, 16));
+        program.push(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, AF_UNIX, 0, 1));
+        program.push(bpf_ret(SECCOMP_RET_ALLOW));
         program.push(bpf_ret(SECCOMP_RET_ERRNO_EPERM));
-        reset_accumulator(&mut program);
-
-        // everything not explicitly listed: ERRNO(ENOSYS), NOT ALLOW, so a
-        // future networking attempt fails-closed and diagnostics show EPERM.
-        program.push(bpf_ret(SECCOMP_RET_ERRNO_EPERM));
+        program.push(bpf_ret(SECCOMP_RET_ERRNO_ENOSYS));
         program
     }
 
     pub const AF_UNIX: u32 = 1;
+
+    /// One unconditional return statement, in the packed layout.
+    fn bpf_ret(action: u32) -> u64 {
+        pack_filter(BPF_RET | BPF_K, 0, 0, action)
+    }
 
     fn load_syscall_number(program: &mut Vec<u64>) {
         // seccomp_data layout (x86_64 + aarch64 both hold nr at offset 0).
@@ -299,6 +365,10 @@ mod linux_impl {
 
     /// Verify our BPF program via seccomp(2) PR_SET_SECCOMP with mode 2 and
     /// the assembled program. Returns errno as negative on failure.
+    ///
+    /// Linux-only, because it makes syscalls. The assembler above it is not: see the module
+    /// comment for why that distinction matters.
+    #[cfg(target_os = "linux")]
     pub fn install_seccomp(program: &[u64]) -> Result<(), HardeningError> {
         // PR_SET_NO_NEW_PRIVS, arg 38; mandatory pre-step before mode-2 filters.
         // `c_int`: prctl's first argument is an int on every Linux ABI.
@@ -365,7 +435,6 @@ fn install_seccomp_linux() -> Result<(), HardeningError> {
     }
     linux_impl::install_seccomp(&assembled)
 }
-
 // ============================================================================
 // macOS-noop marker surface so tests compile per-platform cleanly.
 // ============================================================================
@@ -407,42 +476,226 @@ mod tests {
         }
     }
 
-    /// The assembled program carries the AF_UNIX allowance and the EPERM rejections.
+    /// The packed layout: `code` in bits 0..16, `jt` in 16..24, `jf` in 24..32, `k` in 32..64.
     ///
-    /// THE FIELDS WERE READ BACKWARDS. The assembler packs `code` into a word's HIGH 32 bits
-    /// and the operand `k` into its LOW 32 (`bpf_stmt`, `bpf_jump`). This test checked for
-    /// AF_UNIX in the low half, where the operand lives, so it should have passed, and checked
-    /// for the BPF_RET class in the high half, where the opcode lives, so that should have
-    /// passed too. It failed on Linux because both comparisons were also comparing a u32
-    /// against a u64 mask that had already been shifted to zero. Reading the fields explicitly
-    /// makes the assertion say what the program means: at least one instruction compares the
-    /// socket argument against AF_UNIX, and at least two return an errno.
-    #[cfg(target_os = "linux")]
+    /// These readers are the inverse of `pack_filter`, and the tests below use them to read the
+    /// program back the way the kernel would. They exist as named helpers because the field
+    /// widths are the whole defect: the previous packing put `k` in the low half, which is where
+    /// `jt` and `jf` live, so every jump carried a corrupted operand and the reader in this test
+    /// was reading a shape the kernel never would have.
+    ///
+    /// NOT GATED TO LINUX, because the packing is arithmetic that is wrong or right on every
+    /// platform, and a test that only runs on one platform is how this went unnoticed.
+    fn unpack_operand(word: u64) -> u32 {
+        (word >> 32) as u32
+    }
+
+    fn unpack_opcode(word: u64) -> u32 {
+        (word & 0xFFFF) as u32
+    }
+
+    fn unpack_jt(word: u64) -> u8 {
+        ((word >> 16) & 0xFF) as u8
+    }
+
+    fn unpack_jf(word: u64) -> u8 {
+        ((word >> 24) & 0xFF) as u8
+    }
+
+    /// The packed word reproduces the byte layout of `struct sock_filter`.
+    ///
+    /// THE TEST THAT WOULD HAVE CAUGHT THE ORIGINAL BUG ON ANY MACHINE. `struct sock_filter` is
+    /// `{ u16 code; u8 jt; u8 jf; u32 k }` with no padding, so little-endian it occupies eight
+    /// bytes in exactly this order. Comparing against those bytes says what the packing must be
+    /// rather than restating the packing's own arithmetic back at itself.
+    #[test]
+    fn the_packed_word_is_the_kernel_struct_byte_for_byte() {
+        let word = linux_impl::bpf_jump(
+            linux_impl::BPF_JMP | linux_impl::BPF_JEQ | linux_impl::BPF_K,
+            linux_impl::AF_UNIX,
+            1,
+            2,
+        );
+        assert_eq!(
+            word.to_le_bytes(),
+            [
+                0x15, 0x00, // code = BPF_JMP|BPF_JEQ|BPF_K = 0x0015
+                0x01, // jt
+                0x02, // jf
+                0x01, 0x00, 0x00, 0x00, // k = AF_UNIX = 1
+            ],
+            "the packed u64 must be the eight bytes of struct sock_filter, in order",
+        );
+    }
+
+    /// The assembled program carries the AF_UNIX allowance and two genuine deny paths.
+    ///
+    /// THE PREVIOUS VERSION OF THIS TEST READ THE FIELDS BACKWARDS and failed on CI for that
+    /// reason rather than for the bug it was meant to catch. Both are now fixed: the packing
+    /// matches `struct sock_filter` and this reads it with the inverse functions above.
     #[test]
     fn bpf_socket_argument_filter_rejects_inet() {
         let filter = linux_impl::assemble_filter();
 
-        // `k` is the low 32 bits, `code` the high 32, per `bpf_stmt` and `bpf_jump`.
-        let operand = |word: &u64| (*word & 0xFFFF_FFFF) as u32;
-        let opcode = |word: &u64| (word >> 32) as u32;
-
-        let af_unix_operands = filter
+        /*
+         * A COUNT WOULD BE THE WRONG ASSERTION, and it was briefly written as one.
+         *
+         * `AF_UNIX` is 1, and so is `SYS_WRITE`, so a bare count of instructions carrying the
+         * operand 1 finds two and says nothing useful about either. What matters is not that
+         * the constant appears but that the instruction which LOADS THE SOCKET FAMILY is
+         * compared against it, and that the comparison's two destinations are the ALLOW and the
+         * EPERM. The full walk below proves that; here the check is the narrow half of it, that
+         * a load of offset 16 exists at all, because offset 16 is `args[0]` and nothing else in
+         * this program reads it.
+         */
+        let family_load = filter
             .iter()
-            .filter(|w| operand(w) == linux_impl::AF_UNIX)
-            .count();
-        assert!(
-            af_unix_operands >= 1,
-            "the socket argument must be compared against AF_UNIX",
+            .position(|w| {
+                unpack_opcode(*w) == (linux_impl::BPF_LD | linux_impl::BPF_W | linux_impl::BPF_ABS)
+                    && unpack_operand(*w) == 16
+            })
+            .expect("the program must load the socket family from args[0] at offset 16");
+        assert_eq!(
+            unpack_operand(filter[family_load + 1]),
+            linux_impl::AF_UNIX,
+            "the load of args[0] must be followed by a comparison against AF_UNIX",
         );
 
         let seccomp_errno_returns = filter
             .iter()
-            .filter(|w| opcode(w) == (linux_impl::BPF_RET | linux_impl::BPF_K))
-            .filter(|w| operand(w) & 0xFFFF_0000 == linux_impl::SECCOMP_RET_ERRNO_MASK)
+            .filter(|w| unpack_opcode(**w) == (linux_impl::BPF_RET | linux_impl::BPF_K))
+            .filter(|w| unpack_operand(**w) & 0xFFFF_0000 == linux_impl::SECCOMP_RET_ERRNO_MASK)
             .count();
         assert!(
             seccomp_errno_returns >= 2,
             "at least two paths must return an errno rather than allowing: {seccomp_errno_returns}",
+        );
+
+        // The family that is not AF_UNIX gets EPERM specifically, so an operator reading a
+        // strace can tell "tried to open an internet socket" from "called something we did not
+        // register". Both are denials; only one is a network attempt.
+        let has_eperm = filter
+            .iter()
+            .any(|w| unpack_operand(*w) == linux_impl::SECCOMP_RET_ERRNO_EPERM);
+        assert!(has_eperm, "an internet socket attempt must be refused with EPERM");
+    }
+
+    /// Every jump in the program lands on a real instruction, and every permitted syscall
+    /// lands on the ALLOW.
+    ///
+    /// THIS IS THE GUARD THE OLD TESTS LACKED, and its absence is why a program with no ALLOW
+    /// return shipped: nothing walked the offsets, so nothing noticed that each permitted
+    /// syscall jumped past the end of the program. A jump out of bounds is not a soft failure;
+    /// the kernel rejects the whole filter, and when it accepted a differently-shaped one the
+    /// process died with SIGSYS.
+    ///
+    /// It walks the program the way the verifier does. For each instruction, if it is a
+    /// conditional jump, both destinations (index + 1 + jt, index + 1 + jf) must be inside the
+    /// program. Then it proves the paths that matter: the two architecture tests jump to the
+    /// instruction after the kill, and the socket family test reaches the ALLOW.
+    #[test]
+    fn every_jump_lands_inside_the_program_and_permitted_paths_reach_allow() {
+        let filter = linux_impl::assemble_filter();
+        let len = filter.len();
+
+        for (index, word) in filter.iter().enumerate() {
+            let opcode = unpack_opcode(*word);
+            let is_jump = opcode & 0x07 == linux_impl::BPF_JMP;
+            if !is_jump {
+                continue;
+            }
+            for (label, offset) in [("jt", unpack_jt(*word)), ("jf", unpack_jf(*word))] {
+                let target = index + 1 + offset as usize;
+                // Strictly inside: valid instruction indices are 0..len-1, and a conditional
+                // jump of zero is a fall-through to index+1, which must also be a real
+                // instruction because the last instruction in this program is an unconditional
+                // return. A target of exactly `len` is past the end and the kernel rejects it.
+                assert!(
+                    target < len,
+                    "instruction {index} has {label} offset {offset} landing at {target}, \
+                     outside a {len}-instruction program",
+                );
+            }
+        }
+
+        // `ret ALLOW` must exist, because every permitted path is supposed to land on it.
+        let allow_positions: Vec<usize> = filter
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| {
+                unpack_opcode(**w) == (linux_impl::BPF_RET | linux_impl::BPF_K)
+                    && unpack_operand(**w) == linux_impl::SECCOMP_RET_ALLOW
+            })
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            allow_positions.len(),
+            1,
+            "the program must contain exactly one ALLOW return; found {allow_positions:?}",
+        );
+        let allow_index = allow_positions[0];
+
+        // Both architecture tests must land on the instruction AFTER the kill, which is the
+        // syscall-number load. Landing on the kill is what made the correct-architecture path
+        // the one that terminated the process.
+        let kill_index = filter
+            .iter()
+            .position(|w| {
+                unpack_opcode(*w) == (linux_impl::BPF_RET | linux_impl::BPF_K)
+                    && unpack_operand(*w) == linux_impl::SECCOMP_RET_KILL_PROCESS
+            })
+            .expect("the architecture guard must kill an unknown arch");
+        for index in [1usize, 2] {
+            let target = index + 1 + unpack_jt(filter[index]) as usize;
+            assert_eq!(
+                target,
+                kill_index + 1,
+                "the architecture test at {index} must skip the kill and land on the syscall \
+                 load; it lands at {target} where the kill is {kill_index}",
+            );
+        }
+
+        // Every permitted syscall's jump must land exactly on the ALLOW, or the syscall it
+        // names is not actually permitted. The permitted block begins immediately after the
+        // syscall-number load, which is the instruction following the kill.
+        let first_syscall_jump = kill_index + 2;
+        let socket_jump_index = filter
+            .iter()
+            .position(|w| {
+                unpack_opcode(*w) == (linux_impl::BPF_JMP | linux_impl::BPF_JEQ | linux_impl::BPF_K)
+                    && unpack_operand(*w) == linux_impl::SYS_SOCKET
+            })
+            .expect("the socket check must be in the program");
+        assert!(
+            socket_jump_index > first_syscall_jump,
+            "the socket check must follow the permitted-syscall block",
+        );
+        for (index, word) in filter
+            .iter()
+            .enumerate()
+            .take(socket_jump_index)
+            .skip(first_syscall_jump)
+        {
+            let target = index + 1 + unpack_jt(*word) as usize;
+            assert_eq!(
+                target, allow_index,
+                "the permitted syscall at {index} must reach the ALLOW at {allow_index}; it \
+                 lands at {target}",
+            );
+        }
+
+        // And the socket family check: AF_UNIX falls through to the ALLOW, anything else
+        // skips it to the EPERM.
+        let family_test = socket_jump_index + 2;
+        assert_eq!(
+            family_test + 1 + unpack_jt(filter[family_test]) as usize,
+            allow_index,
+            "AF_UNIX must fall through to the ALLOW",
+        );
+        assert_eq!(
+            family_test + 1 + unpack_jf(filter[family_test]) as usize,
+            allow_index + 1,
+            "a non-AF_UNIX family must skip the ALLOW and reach the EPERM",
         );
     }
 

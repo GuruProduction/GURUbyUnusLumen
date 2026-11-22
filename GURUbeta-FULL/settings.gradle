@@ -5,9 +5,25 @@ pluginManagement {
         mavenCentral()
     }
 }
-plugins {
-    id 'org.gradle.toolchains.foojay-resolver-convention' version '0.10.0'
-}
+/*
+ * NO TOOLCHAIN RESOLVER PLUGIN, DELIBERATELY.
+ *
+ * `org.gradle.toolchains.foojay-resolver-convention` exists to download a JDK when the one a
+ * build asks for is not installed. Nothing here asks for one: the app targets Java 17, the
+ * Android Gradle Plugin brings its own toolchain handling, and every environment that builds
+ * this repository installs JDK 17 first - CI does it explicitly with `setup-java`, and the
+ * developer machine has it on PATH.
+ *
+ * What it did cost was real. The plugin resolves `com.google.code.gson:gson` from Maven Central
+ * on EVERY build, including a build whose only job is to compile Rust, and twice in a row it
+ * failed the whole Android pipeline with
+ *
+ *     Could not GET .../gson-2.10.1.pom. Received status code 429 from server: Too Many Requests
+ *
+ * A plugin that provides nothing and can fail the build on someone else's rate limit is not a
+ * dependency worth carrying. If a future build genuinely needs to provision a JDK, add it back
+ * with the reason written here.
+ */
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
