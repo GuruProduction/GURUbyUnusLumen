@@ -448,6 +448,28 @@ class CerebrumBackupRestoreOnDeviceTest {
                 "consolidation must not make a memory unfindable: ${live.map { it.idHex }}",
                 live.any { it.content.contains("bristol heating") },
             )
+
+            /*
+             * EVERY ID THE LISTING NAMES MUST RESOLVE. This is the integrity property the
+             * consolidation pass is allowed to change things under: it may merge, archive or
+             * hibernate, but a row it leaves in the live listing must still answer a RETRIEVE.
+             * An id that lists and does not retrieve is a memory the owner can see and cannot
+             * act on, because delete and update both resolve by id.
+             *
+             * This runs after the pass, through the packaged library, on rows the pass has just
+             * touched. The Rust suite asserts the same property against a host build; this is
+             * the shipped binary saying it.
+             */
+            // `retrieveDeepOrShallow` is the production RETRIEVE path the tool layer's delete and
+            // update resolve through, so a null here is exactly the "listed but unusable" state.
+            val unresolvable = live.filter { row ->
+                CerebrumBrainApi.retrieveDeepOrShallow(row.idHex, wantDeep = false) == null
+            }
+            assertTrue(
+                "every live memory must still resolve after a consolidation: " +
+                    "${unresolvable.map { it.idHex }}",
+                unresolvable.isEmpty(),
+            )
         } finally {
             CerebrumHost.stop()
         }
