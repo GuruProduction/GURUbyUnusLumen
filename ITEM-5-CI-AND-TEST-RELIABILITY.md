@@ -72,6 +72,7 @@ proved this way is higher than the row count.
 | seccomp ALLOW (`every_jump_lands_inside...`) | removed the ALLOW return | the walk, reporting zero ALLOWs |
 | entity edge creation | disabled the entity pass | the edge-count test |
 | entity edge walkability | disabled the entity pass | the traversal test |
+| entity match case-insensitivity | matched the lowercased word against raw content | three entity tests, including the one written for this |
 | decay retirement published to the tree | removed the publication | the retirement test, tree said `Active` |
 | APK provenance marker | removed the `;` and rebuilt the APK | the workflow step, `[NO TERMINATOR]` |
 | stale last-error slot | emptied `clear_last_error` | the stale-rejection test |

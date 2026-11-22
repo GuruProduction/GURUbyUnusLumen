@@ -154,6 +154,65 @@ async fn two_memories_naming_the_same_proper_noun_get_an_entity_edge() {
     );
 }
 
+/// The entity match is case-insensitive on both sides, which is the whole point of the pass.
+///
+/// THE DEFECT THIS PINS. `entity_words_from` lowercases every word it collects, because the
+/// entity has to resolve to the same node however a name was capitalised in one sentence. The
+/// matching pass then compared those LOWERCASE words against each other memory's RAW content
+/// with `contains`, so it searched for `harbourside` inside `"...Harbourside Boiler Company..."`
+/// and never matched. The entity view stayed empty no matter how many memories named the same
+/// organisation, and every entity walk answered "nothing connected" about a name the brain
+/// held facts about.
+///
+/// The two memories below name the company in DIFFERENT CASE and share no other word, so the
+/// only way an edge can exist is a case-insensitive comparison. Content with a shared common
+/// word would create an edge through that word instead and pass whether the comparison was
+/// case-insensitive or not, which is why the wording avoids one.
+#[tokio::test]
+async fn the_entity_match_is_case_insensitive_on_both_sides() {
+    let state = fresh_state().await;
+
+    let first = MemoryId::new();
+    let second = MemoryId::new();
+
+    curate(
+        &state,
+        vec![
+            // Title case. Its entity words lowercase to harbourside, boiler, company.
+            add(
+                first,
+                "Harbourside Boiler Company replaced the unit on tuesday",
+                "home",
+            ),
+            // Upper case, and sharing no other word with the sentence above.
+            add(
+                second,
+                "HARBOURSIDE BOILER COMPANY quoted four hundred",
+                "home",
+            ),
+        ],
+    )
+    .await;
+
+    // Bound to a local before the block ends, so the iterator's borrow of the lock is
+    // released while the guard is still alive rather than at the block's closing brace.
+    let linked = {
+        let locked = state.lock().await;
+        let found = locked.graph_store.entity.all_edges().any(|edge| {
+            (edge.source == first && edge.target == second)
+                || (edge.source == second && edge.target == first)
+        });
+        found
+    };
+
+    assert!(
+        linked,
+        "two memories naming the same organisation in different case must be joined; a \
+         comparison against raw content finds nothing because the stored entity words are \
+         lowercase and the other body is not",
+    );
+}
+
 /// An entity edge is walkable, which is the point of having one.
 ///
 /// THE EDGE EXISTING IS NOT THE SAME AS THE EDGE BEING REACHABLE. `find_start_node` chooses a
