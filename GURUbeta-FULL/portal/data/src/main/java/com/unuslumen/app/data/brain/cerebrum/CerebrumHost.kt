@@ -114,6 +114,23 @@ object CerebrumHost {
     private external fun cerebrumLastErrorJNI(): String
 
     /**
+     * Whether the last start failure was the vault's own header refusing the passphrase.
+     *
+     * A SEPARATE QUESTION, NOT A SUBSTRING, because the answer deletes the user's memory.
+     * [attemptWasKeyOrphan] used to search the last-error text for `PassphraseRejected`, and
+     * the error slot is one string for the whole process. A `PassphraseRejected` left there by
+     * an earlier operation therefore became the diagnosis for a later, unrelated failure, and
+     * `healOrphanedKeyPair` then deleted the Keystore alias and the envelope on the strength of
+     * a stale sentence. That is what made a device test fail intermittently at the point where
+     * it booted a restored vault with no caller-supplied passphrase: the key was healthy and the
+     * heal had removed it.
+     *
+     * The slot is now cleared at the start of every boot, so this reads this attempt's failure
+     * or an empty string, and it is asked as its own yes/no rather than by searching prose.
+     */
+    private external fun cerebrumLastErrorWasPassphraseRejectionJNI(): Boolean
+
+    /**
      * The Cerebrum source revision compiled into the loaded library.
      *
      * The library carries `cerebrum-build-rev=<git revision>` as a compile-time
@@ -283,9 +300,22 @@ object CerebrumHost {
      * `PassphraseRejected` is raised by the header verifier and by nothing
      * else. Record-level failures report `AeadOpenFailed`, which is NOT an
      * orphan signal and must never trigger the wipe.
+     *
+     * THE TEXT IS NO LONGER THE TEST. This used to search `bootError` for the word, and the
+     * error it was given comes from a single process-wide slot: a rejection recorded by an
+     * earlier operation stayed there, so an unrelated failure inherited it and this returned
+     * true, and the heal deleted a healthy key. The native side now answers the question
+     * directly and clears the slot at the start of every boot, so what arrives here is this
+     * boot's own cause.
+     *
+     * `bootError` is still consulted, because a start that fails for a different reason must
+     * never heal and the caller's string is the only thing that says so.
      */
-    private fun attemptWasKeyOrphan(bootError: String?): Boolean =
-        bootError?.contains("PassphraseRejected", ignoreCase = true) == true
+    private fun attemptWasKeyOrphan(bootError: String?): Boolean {
+        if (bootError.isNullOrBlank()) return false
+        return runCatching { cerebrumLastErrorWasPassphraseRejectionJNI() }
+            .getOrDefault(false)
+    }
 
     private fun healOrphanedKeyPair(context: Context) {
         runCatching {

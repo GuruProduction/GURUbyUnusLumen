@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock};
 
 use jni::objects::{JClass, JString};
-use jni::sys::{jint, jlong};
+use jni::sys::{jboolean, jint, jlong};
 use jni::JNIEnv;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -46,6 +46,32 @@ fn record_error(error_text: &str) {
     *LAST_ERROR
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = error_text.to_string();
+}
+
+/// Empty the last-error slot, so the next failure is described by its own cause.
+///
+/// THE DEFECT THIS EXISTS FOR, and it cost a red CI run.
+///
+/// `LAST_ERROR` is one string for the whole process and nothing ever cleared it. Kotlin's
+/// `bootOnce` reads it back immediately after a failed start and hands it to
+/// `attemptWasKeyOrphan`, which treats a `PassphraseRejected` in that string as permission to
+/// delete the Keystore alias and the vault. So a `PassphraseRejected` left in the slot by ANY
+/// earlier operation - a previous app launch, an earlier test in the same instrumentation
+/// process - became the diagnosis for an unrelated start failure, and the heal destroyed the
+/// key on the strength of a stale sentence.
+///
+/// The symptom was a device test failing intermittently with `pass missing, fail closed` at the
+/// point where it booted a restored vault with no caller-supplied passphrase. The vault was
+/// fine. The envelope had been deleted by a heal that fired on a message about something else.
+///
+/// A failed start now describes itself or says nothing, which is the only reading `bootOnce` can
+/// safely act on. A start that records no error is reported by Kotlin as the empty string, and
+/// an empty string is not a keyword match.
+fn clear_last_error() {
+    LAST_ERROR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
 }
 
 // ============================================================================
@@ -516,6 +542,15 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
     socket_input: JString<'local>,
     pass_input: JString<'local>,
 ) -> jlong {
+    /*
+     * A START BEGINS WITH A CLEAN SLOT. Kotlin reads `lastError` straight after a failed start
+     * and treats a `PassphraseRejected` in it as permission to wipe the Keystore alias and the
+     * vault. Without this clear, a failure from any earlier operation in this process could be
+     * read as the cause of THIS start, and the heal would destroy a healthy key on a stale
+     * sentence. That is exactly what made a device test fail intermittently.
+     */
+    clear_last_error();
+
     let mut env_value_ref_borrow = env_value;
     let data_extract = jstring_to_owned_value(&mut env_value_ref_borrow, &data_input);
     let socket_extract = jstring_to_owned_value(&mut env_value_ref_borrow, &socket_input);
@@ -539,6 +574,8 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
         Ok(stamp_value) => stamp_value as jlong,
         Err(boot_failure) => {
             eprintln!("{}", boot_failure);
+            // The slot was cleared at the top of this call, so this is THIS start's failure
+            // and nothing else. A caller reading it back gets a cause, not a leftover.
             record_error(&boot_failure);
             0
         }
@@ -706,6 +743,49 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
     jni_string(env_value, &error_text_value)
 }
 
+/// Ask whether this boot's failure was the vault's own header refusing the passphrase.
+///
+/// THE KEY-VAULT ORPHAN SIGNAL, ASKED AS ITS OWN QUESTION rather than found by searching prose.
+///
+/// Kotlin's heal path deletes the Keystore alias and the vault, so it must fire on exactly one
+/// condition. It used to search the last-error text for `PassphraseRejected`, and that string is
+/// a single process-wide slot: a rejection recorded by an earlier operation stayed there, so a
+/// later unrelated failure inherited it, the heal ran, and it destroyed a healthy key. A device
+/// test failed intermittently at exactly that point - booting a restored vault with no
+/// caller-supplied passphrase - because the envelope had been deleted by a heal triggered by a
+/// sentence about something else.
+///
+/// The slot is cleared at the start of every boot now, so this reads THIS attempt's failure.
+/// The substring test remains the mechanism, but it is over a string with one writer and one
+/// lifetime rather than over whatever happened to be in there.
+#[no_mangle]
+pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_cerebrumLastErrorWasPassphraseRejectionJNI<
+    'local,
+>(
+    _env_value: JNIEnv<'local>,
+    _class_value: JClass<'local>,
+) -> jboolean {
+    let was_rejection = LAST_ERROR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains("PassphraseRejected");
+    jboolean::from(was_rejection)
+}
+
+/// Empty the last-error slot on demand.
+///
+/// The start path already clears it, so this exists for a caller that has read the slot and
+/// wants the next read to describe a new attempt rather than the one it just handled.
+#[no_mangle]
+pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_cerebrumClearLastErrorJNI<
+    'local,
+>(
+    _env_value: JNIEnv<'local>,
+    _class_value: JClass<'local>,
+) {
+    clear_last_error();
+}
+
 // ============================================================================
 // build identity
 // ============================================================================
@@ -777,6 +857,74 @@ fn jni_string<'local>(env_value: JNIEnv<'local>, text_value: &str) -> JString<'l
                 .new_string("")
                 .expect("jvm cannot even allocate empty string; hard stop")
         }
+    }
+}
+
+#[cfg(test)]
+mod last_error_slot_tests {
+    use super::{clear_last_error, record_error};
+
+    /// The slot describes the attempt that just failed, and nothing older.
+    ///
+    /// THE DEFECT THAT FAILED A DEVICE TEST INTERMITTENTLY. This slot is one string for the
+    /// whole process. Kotlin reads it after a failed boot and treats a `PassphraseRejected` in
+    /// it as permission to delete the Keystore alias and the vault. Nothing cleared it, so a
+    /// rejection from an earlier operation was inherited by a later unrelated failure and the
+    /// heal destroyed a healthy key. The device test then found no envelope and reported
+    /// `pass missing, fail closed` against a vault that was never opened.
+    ///
+    /// Clearing at the start of each attempt is what makes a stale sentence unreachable. These
+    /// tests exist because the sequence, not the string, is the entire defect; a test that only
+    /// checked the error text would pass with the clear removed.
+    ///
+    /// THE TESTS SERIALISE ON A MUTEX because the slot is process-global and `cargo test` runs
+    /// tests in parallel. Without it, two of these would clear each other's writes and fail for
+    /// a reason that has nothing to do with the behaviour.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_lock<R>(body: impl FnOnce() -> R) -> R {
+        let _guard = SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        body()
+    }
+
+    #[test]
+    fn a_stale_rejection_is_not_readable_after_the_slot_is_cleared() {
+        with_lock(|| {
+            record_error("restore failed: PassphraseRejected");
+            assert!(
+                super::LAST_ERROR
+                    .lock()
+                    .unwrap()
+                    .contains("PassphraseRejected"),
+                "precondition: the slot holds a rejection",
+            );
+
+            clear_last_error();
+            assert!(
+                !super::LAST_ERROR
+                    .lock()
+                    .unwrap()
+                    .contains("PassphraseRejected"),
+                "after the clear, an earlier rejection must not be readable as this attempt's cause",
+            );
+        });
+    }
+
+    #[test]
+    fn a_later_failure_replaces_an_earlier_rejection_rather_than_joining_it() {
+        with_lock(|| {
+            record_error("restore failed: PassphraseRejected");
+            // A different failure on the next attempt, as the start path writes it.
+            record_error("cerebrum-android boot refused: empty passphrase (fail closed)");
+
+            let slot = super::LAST_ERROR.lock().unwrap().clone();
+            assert!(
+                !slot.contains("PassphraseRejected"),
+                "the slot must carry only the newest failure; got {slot:?}",
+            );
+        });
     }
 }
 
