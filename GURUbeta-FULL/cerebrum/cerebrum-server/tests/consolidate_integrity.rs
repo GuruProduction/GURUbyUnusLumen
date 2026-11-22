@@ -36,15 +36,13 @@ async fn fresh_state() -> Arc<Mutex<CerebrumState>> {
     Arc::new(Mutex::new(CerebrumState::new(dir)))
 }
 
-async fn call_frame(
-    state: &Arc<Mutex<CerebrumState>>,
-    frame_type: u8,
-    payload: &[u8],
-) -> Vec<u8> {
+async fn call_frame(state: &Arc<Mutex<CerebrumState>>, frame_type: u8, payload: &[u8]) -> Vec<u8> {
     let frame = Frame::new(frame_type, 9001, payload.to_vec());
     match handle_frame(frame, state.clone()).await {
         Ok(bytes) => bytes,
-        Err(e) => serde_json::to_vec(&serde_json::json!({ "error": e.message })).expect("error bytes"),
+        Err(e) => {
+            serde_json::to_vec(&serde_json::json!({ "error": e.message })).expect("error bytes")
+        }
     }
 }
 
@@ -59,8 +57,8 @@ fn add_op_with_id(id: MemoryId, content: &str, domain: &str, topic: &str) -> Cur
             relations: vec![],
             provenance: "consolidate-integrity".into(),
             rationale: "integrity test".into(),
-                owner_agent_id: String::new(),
-                visibility: String::new(),
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: Utc::now(),
             modified_at: Utc::now(),
         },
@@ -70,6 +68,9 @@ fn add_op_with_id(id: MemoryId, content: &str, domain: &str, topic: &str) -> Cur
 
 #[derive(serde::Deserialize)]
 struct SearchHit {
+    /// The id the hit names. Asserted on in the merge test, because a hit whose id does not
+    /// resolve through RETRIEVE is a memory the caller can see and cannot act on, which is
+    /// the exact failure mode this suite exists to catch.
     memory_id: MemoryId,
     #[allow(dead_code)]
     score: f32,
@@ -77,7 +78,8 @@ struct SearchHit {
 }
 
 async fn search(state: &Arc<Mutex<CerebrumState>>, query: &str, limit: usize) -> Vec<SearchHit> {
-    let payload = serde_json::to_vec(&serde_json::json!({ "query": query, "limit": limit })).unwrap();
+    let payload =
+        serde_json::to_vec(&serde_json::json!({ "query": query, "limit": limit })).unwrap();
     let bytes = call_frame(state, frame_types::SEARCH, &payload).await;
     serde_json::from_slice(&bytes).unwrap_or_default()
 }
@@ -107,7 +109,7 @@ async fn probe_unrelated_text_similarity() {
     ];
 
     {
-        let mut locked = state.lock().await;
+        let locked = state.lock().await;
         let sigs: Vec<_> = samples
             .iter()
             .map(|s| (s, locked.signature_engine.generate(s)))
@@ -132,8 +134,10 @@ async fn probe_unrelated_text_similarity() {
         println!("  MAX unrelated similarity: {:.4}", max);
         println!("  merge_threshold default: 0.8000");
         println!("  dedup_threshold default: 0.9500");
-        println!("  unrelated pairs at or above merge threshold: {}",
-            pairs.iter().filter(|p| p.0 >= 0.8).count());
+        println!(
+            "  unrelated pairs at or above merge threshold: {}",
+            pairs.iter().filter(|p| p.0 >= 0.8).count()
+        );
         println!("=================================================\n");
     }
 }
@@ -149,7 +153,8 @@ async fn consolidate_never_makes_a_memory_unfindable() {
     let state = fresh_state().await;
 
     let phrase_a = "the landlord still has not fixed the boiler in the flat";
-    let phrase_b = "the landlord still has not fixed the boiler in the flat and the radiator is cold";
+    let phrase_b =
+        "the landlord still has not fixed the boiler in the flat and the radiator is cold";
     let id_a = MemoryId::new();
     let id_b = MemoryId::new();
 
@@ -176,7 +181,10 @@ async fn consolidate_never_makes_a_memory_unfindable() {
         let locked = state.lock().await;
         (locked.context_tree.len(), locked.dwm.count())
     };
-    assert_eq!(tree_before, 2, "both rows must exist in the tree before the pass");
+    assert_eq!(
+        tree_before, 2,
+        "both rows must exist in the tree before the pass"
+    );
     assert_eq!(dwm_before, 2, "both rows must be indexed before the pass");
 
     // The pass under test.
@@ -269,7 +277,10 @@ async fn merge_of_real_duplicates_leaves_a_findable_replacement() {
     };
     println!("after duplicate merge: tree={tree_len} dwm={dwm_len} sig={sig_len}");
     assert_eq!(tree_len, dwm_len, "tree and DWM must agree after a merge");
-    assert_eq!(tree_len, sig_len, "tree and signature index must agree after a merge");
+    assert_eq!(
+        tree_len, sig_len,
+        "tree and signature index must agree after a merge"
+    );
 
     // The whole point: the content is still retrievable after being merged.
     let hits = search(&state, "landlord boiler flat", 10).await;
@@ -279,6 +290,27 @@ async fn merge_of_real_duplicates_leaves_a_findable_replacement() {
         hits.len()
     );
 
+    // AND EVERY HIT'S ID MUST RESOLVE. A search result the caller cannot then act on is a
+    // dead end: delete and update both resolve by id, so an id that answers SEARCH and not
+    // RETRIEVE is a memory the owner can see and cannot remove. That is the shape of the
+    // identity defects this whole suite was written for, so it is asserted rather than
+    // assumed, and it is what reads `memory_id`.
+    for hit in &hits {
+        let retrieve_payload = serde_json::to_vec(&serde_json::json!({
+            "memory_id": hit.memory_id.0.to_vec(),
+            "level": "Shallow"
+        }))
+        .unwrap();
+        let retrieve_bytes = call_frame(&state, frame_types::RETRIEVE, &retrieve_payload).await;
+        let retrieved: serde_json::Value =
+            serde_json::from_slice(&retrieve_bytes).unwrap_or_default();
+        assert!(
+            retrieved.get("error").is_none(),
+            "a search hit named an id that RETRIEVE refuses: {:?} -> {retrieved}",
+            hit.memory_id
+        );
+    }
+
     // Identity: one of the two ids the caller could be holding still resolves,
     // and it resolves to the merged content. The other was absorbed.
     let (survivor, absorbed) = {
@@ -287,7 +319,12 @@ async fn merge_of_real_duplicates_leaves_a_findable_replacement() {
             .context_tree
             .find(id_a)
             .map(|entry| entry.content.clone())
-            .or_else(|| locked.context_tree.find(id_b).map(|entry| entry.content.clone()));
+            .or_else(|| {
+                locked
+                    .context_tree
+                    .find(id_b)
+                    .map(|entry| entry.content.clone())
+            });
         let survived_a = locked.context_tree.find(id_a).is_some();
         let survived_b = locked.context_tree.find(id_b).is_some();
         ((survived_a, survived_b), survivor_entry)

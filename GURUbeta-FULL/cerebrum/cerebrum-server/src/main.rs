@@ -22,12 +22,12 @@ use std::sync::Arc;
 use cerebrum_server::{frame_types, Frame, FrameHeader, HEADER_SIZE};
 use clap::Parser;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{UnixListener, TcpListener};
+use tokio::net::{TcpListener, UnixListener};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::Mutex;
 
-use cerebrum_server::persistence::restore_state;
 use cerebrum_server::handler::{handle_frame, ErrorResponse};
+use cerebrum_server::persistence::restore_state;
 use cerebrum_server::state::CerebrumState;
 
 /// Cerebrum server command-line options.
@@ -62,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_writer(std::io::stderr)
         .init();
 
-    let passphrase = resolve_passphrase(&cli).ok_or_else(|| {
+    let passphrase = resolve_passphrase(&cli).ok_or({
         "Cerebrum refuses to run without vault credentials: \
          pass --passphrase or set CEREBRUM_PASSPHRASE (never log it)"
     })?;
@@ -106,7 +106,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 );
             }
             Err(cerebrum_server::persistence::PersistError::Crypto(_)) => {
-                return Err("Cerebrum vault rejected the provided passphrase (wrong or damaged)".into());
+                return Err(
+                    "Cerebrum vault rejected the provided passphrase (wrong or damaged)".into(),
+                );
             }
             Err(e) => {
                 return Err(format!("Cerebrum vault restore failed: {:?}", e).into());
@@ -146,11 +148,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // One verified key for the whole process: the passphrase is derived once
     // here instead of on every save pass.
     let session = Arc::new(
-        cerebrum_server::persistence::VaultSession::open(
-            cli.data_dir.clone(),
-            passphrase.trim(),
-        )
-        .map_err(|e| format!("Cerebrum vault session failed: {:?}", e))?,
+        cerebrum_server::persistence::VaultSession::open(cli.data_dir.clone(), passphrase.trim())
+            .map_err(|e| format!("Cerebrum vault session failed: {:?}", e))?,
     );
 
     let save_state = Arc::clone(&state);

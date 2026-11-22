@@ -38,40 +38,132 @@ const MEMORIES: &[&str] = &[
 /// Queries that SHOULD find the memory above them. Each is a realistic shortening
 /// or paraphrase a user or the agent would actually type.
 const RELEVANT: &[(&str, &str)] = &[
-    ("the landlord still has not fixed the boiler in the flat", "boiler not fixed"),
-    ("the landlord still has not fixed the boiler in the flat", "is the boiler sorted yet"),
-    ("the landlord still has not fixed the boiler in the flat", "landlord boiler flat"),
-    ("the landlord still has not fixed the boiler in the flat", "heating still broken"),
-    ("the spare key hangs in the kitchen cupboard behind the microwave", "where is the spare key"),
-    ("the spare key hangs in the kitchen cupboard behind the microwave", "kitchen cupboard key"),
-    ("the spare key hangs in the kitchen cupboard behind the microwave", "spare key location"),
-    ("rust borrow checker enforces safe memory rules at compile stage", "borrow checker rules"),
-    ("rust borrow checker enforces safe memory rules at compile stage", "rust memory safety"),
-    ("rust borrow checker enforces safe memory rules at compile stage", "compile time safety"),
-    ("my sister is flying lisbon thursday conference", "sister lisbon conference"),
-    ("my sister is flying lisbon thursday conference", "when is the lisbon trip"),
-    ("italian pasta recipe uses fresh tomato and basil", "pasta tomato basil recipe"),
-    ("italian pasta recipe uses fresh tomato and basil", "what goes in the pasta"),
-    ("italian pasta recipe uses fresh tomato and basil", "tomato basil recipe"),
-    ("the quarterly invoice from the accountant arrived this morning", "accountant invoice"),
-    ("the quarterly invoice from the accountant arrived this morning", "quarterly invoice arrived"),
-    ("the car insurance renews on the fourteenth of november", "car insurance renewal"),
-    ("the car insurance renews on the fourteenth of november", "when does insurance renew"),
-    ("she does not eat mushrooms and hates coriander", "mushrooms coriander"),
-    ("she does not eat mushrooms and hates coriander", "food she dislikes"),
-    ("the router is in the hallway cupboard next to the fuse box", "where is the router"),
-    ("the router is in the hallway cupboard next to the fuse box", "router fuse box"),
-    ("the passport expires in april so it needs renewing before the trip", "passport expires"),
-    ("the passport expires in april so it needs renewing before the trip", "passport renewal"),
-    ("the gym membership is frozen until march", "gym membership frozen"),
-    ("the deposit for the new flat is three months rent", "flat deposit rent"),
-    ("the last dentist appointment was a filling on the lower left molar", "dentist filling molar"),
-    ("the last dentist appointment was a filling on the lower left molar", "dentist appointment"),
-    ("he works best in the morning before anyone else is awake", "when does he work best"),
+    (
+        "the landlord still has not fixed the boiler in the flat",
+        "boiler not fixed",
+    ),
+    (
+        "the landlord still has not fixed the boiler in the flat",
+        "is the boiler sorted yet",
+    ),
+    (
+        "the landlord still has not fixed the boiler in the flat",
+        "landlord boiler flat",
+    ),
+    (
+        "the landlord still has not fixed the boiler in the flat",
+        "heating still broken",
+    ),
+    (
+        "the spare key hangs in the kitchen cupboard behind the microwave",
+        "where is the spare key",
+    ),
+    (
+        "the spare key hangs in the kitchen cupboard behind the microwave",
+        "kitchen cupboard key",
+    ),
+    (
+        "the spare key hangs in the kitchen cupboard behind the microwave",
+        "spare key location",
+    ),
+    (
+        "rust borrow checker enforces safe memory rules at compile stage",
+        "borrow checker rules",
+    ),
+    (
+        "rust borrow checker enforces safe memory rules at compile stage",
+        "rust memory safety",
+    ),
+    (
+        "rust borrow checker enforces safe memory rules at compile stage",
+        "compile time safety",
+    ),
+    (
+        "my sister is flying lisbon thursday conference",
+        "sister lisbon conference",
+    ),
+    (
+        "my sister is flying lisbon thursday conference",
+        "when is the lisbon trip",
+    ),
+    (
+        "italian pasta recipe uses fresh tomato and basil",
+        "pasta tomato basil recipe",
+    ),
+    (
+        "italian pasta recipe uses fresh tomato and basil",
+        "what goes in the pasta",
+    ),
+    (
+        "italian pasta recipe uses fresh tomato and basil",
+        "tomato basil recipe",
+    ),
+    (
+        "the quarterly invoice from the accountant arrived this morning",
+        "accountant invoice",
+    ),
+    (
+        "the quarterly invoice from the accountant arrived this morning",
+        "quarterly invoice arrived",
+    ),
+    (
+        "the car insurance renews on the fourteenth of november",
+        "car insurance renewal",
+    ),
+    (
+        "the car insurance renews on the fourteenth of november",
+        "when does insurance renew",
+    ),
+    (
+        "she does not eat mushrooms and hates coriander",
+        "mushrooms coriander",
+    ),
+    (
+        "she does not eat mushrooms and hates coriander",
+        "food she dislikes",
+    ),
+    (
+        "the router is in the hallway cupboard next to the fuse box",
+        "where is the router",
+    ),
+    (
+        "the router is in the hallway cupboard next to the fuse box",
+        "router fuse box",
+    ),
+    (
+        "the passport expires in april so it needs renewing before the trip",
+        "passport expires",
+    ),
+    (
+        "the passport expires in april so it needs renewing before the trip",
+        "passport renewal",
+    ),
+    (
+        "the gym membership is frozen until march",
+        "gym membership frozen",
+    ),
+    (
+        "the deposit for the new flat is three months rent",
+        "flat deposit rent",
+    ),
+    (
+        "the last dentist appointment was a filling on the lower left molar",
+        "dentist filling molar",
+    ),
+    (
+        "the last dentist appointment was a filling on the lower left molar",
+        "dentist appointment",
+    ),
+    (
+        "he works best in the morning before anyone else is awake",
+        "when does he work best",
+    ),
 ];
 
 fn distance(engine: &SignatureEngine, memory: &str, query: &str) -> u32 {
-    engine.generate(memory).hamming_distance(&engine.generate(query))
+    engine
+        .generate(memory)
+        .hamming_distance(&engine.generate(query))
 }
 
 fn percentile(sorted: &[u32], p: f64) -> u32 {
@@ -87,7 +179,10 @@ fn eval_radius_separation_across_pairs() {
     let engine = SignatureEngine::new().unwrap();
 
     // Every relevant (memory, query) pair.
-    let mut rel: Vec<u32> = RELEVANT.iter().map(|(m, q)| distance(&engine, m, q)).collect();
+    let mut rel: Vec<u32> = RELEVANT
+        .iter()
+        .map(|(m, q)| distance(&engine, m, q))
+        .collect();
 
     // Every unrelated (memory, query-that-belongs-to-a-different-memory) pair.
     // This is the realistic junk set: the query is a genuine query, it just is
@@ -103,7 +198,11 @@ fn eval_radius_separation_across_pairs() {
             if memory_of.get(i) == Some(memory) {
                 continue;
             }
-            irr.push(engine.generate(memory).hamming_distance(&engine.generate(query)));
+            irr.push(
+                engine
+                    .generate(memory)
+                    .hamming_distance(&engine.generate(query)),
+            );
         }
     }
 
@@ -137,10 +236,8 @@ fn eval_radius_separation_across_pairs() {
         let recall = rel.iter().filter(|d| **d <= r).count() as f64 / rel.len() as f64;
         let junk = irr.iter().filter(|d| **d <= r).count() as f64 / irr.len() as f64;
         // Maximise recall subject to admitting under 2% junk.
-        if junk <= 0.02 {
-            if best.map(|(_, br, _)| recall > br).unwrap_or(true) {
-                best = Some((r, recall, junk));
-            }
+        if junk <= 0.02 && best.map(|(_, br, _)| recall > br).unwrap_or(true) {
+            best = Some((r, recall, junk));
         }
     }
 

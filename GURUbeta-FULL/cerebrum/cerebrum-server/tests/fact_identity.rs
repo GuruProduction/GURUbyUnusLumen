@@ -39,11 +39,7 @@ async fn fresh_state() -> Arc<Mutex<CerebrumState>> {
     Arc::new(Mutex::new(CerebrumState::new(dir)))
 }
 
-async fn call_frame(
-    state: &Arc<Mutex<CerebrumState>>,
-    frame_type: u8,
-    payload: &[u8],
-) -> Vec<u8> {
+async fn call_frame(state: &Arc<Mutex<CerebrumState>>, frame_type: u8, payload: &[u8]) -> Vec<u8> {
     let frame = Frame::new(frame_type, 4242, payload.to_vec());
     match handle_frame(frame, state.clone()).await {
         Ok(bytes) => bytes,
@@ -65,8 +61,8 @@ fn upsert_op(id: MemoryId, content: &str, category: &str, confidence: f32) -> Cu
             relations: vec![],
             provenance: format!("guru.confidence={confidence}"),
             rationale: format!("guru storeFact: {category}"),
-                owner_agent_id: String::new(),
-                visibility: String::new(),
+            owner_agent_id: String::new(),
+            visibility: String::new(),
             created_at: Utc::now(),
             modified_at: Utc::now(),
         },
@@ -140,7 +136,10 @@ async fn a_written_id_can_be_deleted_without_a_search() {
     )
     .await;
     let ack: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(ack["executed"]["success"], true, "the write must land: {ack}");
+    assert_eq!(
+        ack["executed"]["success"], true,
+        "the write must land: {ack}"
+    );
 
     // The id resolves straight away, with no search in between. This is the
     // lookup the tool lane's delete is built on.
@@ -157,7 +156,10 @@ async fn a_written_id_can_be_deleted_without_a_search() {
     )
     .await;
     let ack: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(ack["executed"]["success"], true, "the delete must land: {ack}");
+    assert_eq!(
+        ack["executed"]["success"], true,
+        "the delete must land: {ack}"
+    );
 
     // Immediately gone from every read surface.
     assert!(
@@ -167,7 +169,8 @@ async fn a_written_id_can_be_deleted_without_a_search() {
 
     let hits = {
         let payload =
-            serde_json::to_vec(&serde_json::json!({ "query": "kettle kitchen", "limit": 10 })).unwrap();
+            serde_json::to_vec(&serde_json::json!({ "query": "kettle kitchen", "limit": 10 }))
+                .unwrap();
         let bytes = call_frame(&state, frame_types::SEARCH, &payload).await;
         serde_json::from_slice::<Vec<serde_json::Value>>(&bytes).unwrap_or_default()
     };
@@ -222,7 +225,10 @@ async fn a_search_id_still_resolves_after_consolidation() {
     )
     .await;
     let ack: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(ack["executed"]["success"], true, "both adds must land: {ack}");
+    assert_eq!(
+        ack["executed"]["success"], true,
+        "both adds must land: {ack}"
+    );
 
     // The consolidation pass under test.
     let report_bytes = call_frame(&state, frame_types::CONSOLIDATE, b"{}").await;
@@ -268,16 +274,14 @@ async fn a_listing_enumerates_every_live_memory() {
     let ops: Vec<CurateOp> = contents
         .iter()
         .enumerate()
-        .map(|(index, text)| {
-            upsert_op(
-                MemoryId([(index as u8) + 1; 32]),
-                text,
-                "knowledge",
-                0.7,
-            )
-        })
+        .map(|(index, text)| upsert_op(MemoryId([(index as u8) + 1; 32]), text, "knowledge", 0.7))
         .collect();
-    let bytes = call_frame(&state, frame_types::CURATE, &serde_json::to_vec(&ops).unwrap()).await;
+    let bytes = call_frame(
+        &state,
+        frame_types::CURATE,
+        &serde_json::to_vec(&ops).unwrap(),
+    )
+    .await;
     let ack: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(ack["executed"]["success"], true);
 
@@ -294,7 +298,8 @@ async fn a_listing_enumerates_every_live_memory() {
     // Every memory is represented, whichever words it happens to use.
     for expected in contents {
         assert!(
-            rows.iter().any(|row| row["content"].as_str() == Some(expected)),
+            rows.iter()
+                .any(|row| row["content"].as_str() == Some(expected)),
             "listing omitted {expected:?}: {listing}"
         );
     }
@@ -322,7 +327,9 @@ async fn category_and_confidence_round_trip_through_retrieve() {
     let ack: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(ack["executed"]["success"], true);
 
-    let body = retrieve_shallow(&state, id).await.expect("body after write");
+    let body = retrieve_shallow(&state, id)
+        .await
+        .expect("body after write");
     assert_eq!(
         body["rationale"].as_str().unwrap_or(""),
         "guru storeFact: home",
@@ -345,13 +352,18 @@ async fn a_limited_listing_reports_the_true_total() {
     let mut ops: Vec<CurateOp> = Vec::new();
     for index in 0..5u8 {
         ops.push(upsert_op(
-            MemoryId([(index as u8) + 40; 32]),
+            MemoryId([index + 40; 32]),
             &format!("numbered memory {index}"),
             "knowledge",
             0.5,
         ));
     }
-    let bytes = call_frame(&state, frame_types::CURATE, &serde_json::to_vec(&ops).unwrap()).await;
+    let bytes = call_frame(
+        &state,
+        frame_types::CURATE,
+        &serde_json::to_vec(&ops).unwrap(),
+    )
+    .await;
     let ack: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(ack["executed"]["success"], true);
 
@@ -360,7 +372,10 @@ async fn a_limited_listing_reports_the_true_total() {
     let listing: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
     assert_eq!(
-        listing["memories"].as_array().map(|rows| rows.len()).unwrap_or(0),
+        listing["memories"]
+            .as_array()
+            .map(|rows| rows.len())
+            .unwrap_or(0),
         2,
         "the page must respect the limit: {listing}"
     );

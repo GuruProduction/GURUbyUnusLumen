@@ -38,13 +38,13 @@ pub mod vault;
 
 pub use error::CryptoError;
 pub use header::{
-    HeaderParseError, VaultHeaderRaw, DEFAULT_KDF_M_COST_KIB, DEFAULT_KDF_T_COST,
-    DEFAULT_KDF_P_COST, FILE_ID_LEN, HEADER_LEN_BYTES_V1, LAYOUT_VERSION_V1, MAGIC_PREFIX,
+    HeaderParseError, VaultHeaderRaw, DEFAULT_KDF_M_COST_KIB, DEFAULT_KDF_P_COST,
+    DEFAULT_KDF_T_COST, FILE_ID_LEN, HEADER_LEN_BYTES_V1, LAYOUT_VERSION_V1, MAGIC_PREFIX,
     SALT_LEN_V1, VERIFIER_CIPHERTEXT_LEN_V1, VERIFIER_NONCE_LEN,
 };
 pub use record::{
-    record_decrypt_with_key, record_encrypt_with_key, RamKey, VerifiedPassphrase,
-    RecordNonceCounter, AAD_RECORD_TAG, AAD_VERIFIER_TAG, AAD_NONCE_DERIVE_TAG,
-    RECORD_NONCE_LEN, record_nonce, record_aad,
+    record_aad, record_decrypt_with_key, record_encrypt_with_key, record_nonce, RamKey,
+    RecordNonceCounter, VerifiedPassphrase, AAD_NONCE_DERIVE_TAG, AAD_RECORD_TAG, AAD_VERIFIER_TAG,
+    RECORD_NONCE_LEN,
 };
 pub use vault::{EncryptedVault, VaultBuilder};

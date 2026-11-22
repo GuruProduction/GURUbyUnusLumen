@@ -123,8 +123,11 @@ impl Default for RecordNonceCounter {
 /// stream order; the AAD bind is what enforces it.
 pub fn record_nonce(base: &[u8; RECORD_NONCE_LEN], counter: u64) -> [u8; RECORD_NONCE_LEN] {
     let mut nonce = *base;
-    for byte_index in 0..8 {
-        nonce[byte_index] ^= (counter >> (byte_index * 8)) as u8;
+    // The counter's 8 little-endian bytes XOR into the nonce's first 8. Iterating the
+    // destination rather than indexing it by a range is the same bytes in the same order, and
+    // it cannot drift from the byte order if the nonce length ever changes.
+    for (target_byte, counter_byte) in nonce.iter_mut().zip(counter.to_le_bytes()) {
+        *target_byte ^= counter_byte;
     }
     nonce
 }
@@ -167,7 +170,13 @@ pub fn record_encrypt_with_key(
     let aad = record_aad(counter, file_id);
 
     let ct = aead
-        .encrypt(&nonce, Payload { msg: plaintext, aad: &aad })
+        .encrypt(
+            &nonce,
+            Payload {
+                msg: plaintext,
+                aad: &aad,
+            },
+        )
         .map_err(|_e| CryptoError::AeadSealFailed {
             reason: "AEAD seal integrity failure".into(),
         })?;
@@ -197,8 +206,7 @@ pub fn record_decrypt_with_key(
         .map_err(|_| CryptoError::MalformedRecord)?;
     let aad = record_aad(counter, file_id);
 
-    aead
-        .decrypt(&nonce, Payload { msg: ct, aad: &aad })
+    aead.decrypt(&nonce, Payload { msg: ct, aad: &aad })
         .map(|v| v.to_vec())
         .map_err(|_e| CryptoError::AeadOpenFailed {
             reason: "AEAD open integrity failure".into(),

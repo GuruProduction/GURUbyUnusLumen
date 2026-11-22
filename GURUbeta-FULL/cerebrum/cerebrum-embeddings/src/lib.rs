@@ -96,8 +96,14 @@ impl Default for EmbeddingConfig {
 impl EmbeddingConfig {
     /// Validate the configuration. Panics if dimensions or vocab_size are 0.
     pub fn validate(&self) {
-        assert!(self.dimensions > 0, "EmbeddingConfig: dimensions must be > 0");
-        assert!(self.vocab_size > 0, "EmbeddingConfig: vocab_size must be > 0");
+        assert!(
+            self.dimensions > 0,
+            "EmbeddingConfig: dimensions must be > 0"
+        );
+        assert!(
+            self.vocab_size > 0,
+            "EmbeddingConfig: vocab_size must be > 0"
+        );
     }
 }
 
@@ -106,7 +112,7 @@ impl EmbeddingConfig {
 // ============================================================================
 
 /// A dense embedding vector produced by the engine.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EmbeddingVector {
     /// The vector values. Length must equal `dimensions`.
     pub values: Vec<f32>,
@@ -155,16 +161,6 @@ impl EmbeddingVector {
     }
 }
 
-impl Default for EmbeddingVector {
-    fn default() -> Self {
-        Self {
-            values: Vec::new(),
-            dimensions: 0,
-            model: String::new(),
-        }
-    }
-}
-
 // ============================================================================
 // 3. SIMILARITY METRICS
 // ============================================================================
@@ -186,17 +182,15 @@ pub enum SimilarityMetric {
 
 /// Common English stop words filtered before tokenization.
 const STOP_WORDS: &[&str] = &[
-    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
-    "of", "with", "by", "from", "as", "is", "was", "are", "were", "been",
-    "be", "have", "has", "had", "do", "does", "did", "will", "would",
-    "could", "should", "may", "might", "must", "shall", "can", "need",
-    "it", "its", "this", "that", "these", "those", "i", "you", "he", "she",
-    "we", "they", "what", "which", "who", "whom", "when", "where", "why",
-    "how", "all", "each", "every", "both", "few", "more", "most", "other",
-    "some", "such", "no", "nor", "not", "only", "own", "same", "so", "than",
-    "too", "very", "just", "also", "now", "here", "there", "then", "once",
-    "if", "about", "into", "through", "during", "before", "after", "above",
-    "below", "between", "under", "again", "further", "any", "being",
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by",
+    "from", "as", "is", "was", "are", "were", "been", "be", "have", "has", "had", "do", "does",
+    "did", "will", "would", "could", "should", "may", "might", "must", "shall", "can", "need",
+    "it", "its", "this", "that", "these", "those", "i", "you", "he", "she", "we", "they", "what",
+    "which", "who", "whom", "when", "where", "why", "how", "all", "each", "every", "both", "few",
+    "more", "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so",
+    "than", "too", "very", "just", "also", "now", "here", "there", "then", "once", "if", "about",
+    "into", "through", "during", "before", "after", "above", "below", "between", "under", "again",
+    "further", "any", "being",
 ];
 
 // ============================================================================
@@ -330,7 +324,11 @@ impl EmbeddingEngine {
             projection_matrix: Vec::new(),
             df: self.df.clone(),
             doc_count: self.doc_count,
-            cache: self.cache.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            cache: self
+                .cache
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
             query_cache: self
                 .query_cache
                 .iter()
@@ -420,7 +418,9 @@ impl EmbeddingEngine {
     fn projection_row(&self, row_index: u32) -> Vec<f32> {
         let dimensions = self.config.dimensions;
         // SplitMix64-style mix so adjacent row indices produce unrelated streams.
-        let mut mixed = self.config.seed
+        let mut mixed = self
+            .config
+            .seed
             .wrapping_add((row_index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
         mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
         mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
@@ -559,11 +559,8 @@ impl EmbeddingEngine {
             Self::l2_normalize(&mut projected);
         }
 
-        let vector = EmbeddingVector::new(
-            projected,
-            self.config.dimensions,
-            self.config.model.clone(),
-        );
+        let vector =
+            EmbeddingVector::new(projected, self.config.dimensions, self.config.model.clone());
 
         // Now update document frequency AFTER computing the embedding
         self.doc_count += 1;
@@ -644,10 +641,7 @@ impl EmbeddingEngine {
             })
             .collect();
 
-        scored.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.into_iter().take(limit).collect()
     }
 
@@ -744,7 +738,10 @@ pub fn batch_cosine_search(
         .flat_map(|(chunk_idx, chunk)| {
             let base = chunk_idx * 32;
             chunk.iter().enumerate().map(move |(local_idx, candidate)| {
-                (base + local_idx, dot_product(&query.values, &candidate.values))
+                (
+                    base + local_idx,
+                    dot_product(&query.values, &candidate.values),
+                )
             })
         })
         .collect();
@@ -766,10 +763,7 @@ fn dot_product(a: &[f32], b: &[f32]) -> f32 {
         a.len(),
         b.len()
     );
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| x * y)
-        .sum()
+    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
 /// Euclidean distance between two float slices. Caller must ensure equal lengths.
@@ -812,7 +806,10 @@ mod tests {
     fn test_embed_non_zero() {
         let mut engine = EmbeddingEngine::with_default_config();
         let vector = engine.embed("the quick brown fox jumps over the lazy dog");
-        assert!(!vector.is_zero(), "embedding should not be all zeros for non-trivial text");
+        assert!(
+            !vector.is_zero(),
+            "embedding should not be all zeros for non-trivial text"
+        );
     }
 
     #[test]
@@ -827,7 +824,10 @@ mod tests {
         let mut engine = EmbeddingEngine::with_default_config();
         let vector = engine.embed("the a an and or but in on at to for of with by from as is was are were been be have has had do does did will would could should may might must shall can");
         // All stop words filtered out -> empty word list -> zero vector
-        assert!(vector.is_zero(), "text with only stop words should produce a zero vector");
+        assert!(
+            vector.is_zero(),
+            "text with only stop words should produce a zero vector"
+        );
     }
 
     // ------------------------------------------------------------------------
@@ -871,8 +871,14 @@ mod tests {
 
     #[test]
     fn test_different_seeds_different_vectors() {
-        let config1 = EmbeddingConfig { seed: 42, ..Default::default() };
-        let config2 = EmbeddingConfig { seed: 99, ..Default::default() };
+        let config1 = EmbeddingConfig {
+            seed: 42,
+            ..Default::default()
+        };
+        let config2 = EmbeddingConfig {
+            seed: 99,
+            ..Default::default()
+        };
         let mut engine1 = EmbeddingEngine::new(config1);
         let mut engine2 = EmbeddingEngine::new(config2);
 
@@ -971,11 +977,7 @@ mod tests {
     #[test]
     fn test_batch_embed() {
         let mut engine = EmbeddingEngine::with_default_config();
-        let texts = vec![
-            "one".to_string(),
-            "two".to_string(),
-            "three".to_string(),
-        ];
+        let texts = vec!["one".to_string(), "two".to_string(), "three".to_string()];
         let vectors = engine.embed_batch(&texts);
         assert_eq!(vectors.len(), 3);
         assert_eq!(vectors[0].dimensions, 256);
@@ -1053,9 +1055,16 @@ mod tests {
     fn test_search_dimension_mismatch_returns_empty() {
         let engine = EmbeddingEngine::with_default_config();
         let query = EmbeddingVector::new(vec![0.0; 128], 128, "test".to_string());
-        let candidates = vec![EmbeddingVector::new(vec![0.0; 256], 256, "test".to_string())];
+        let candidates = vec![EmbeddingVector::new(
+            vec![0.0; 256],
+            256,
+            "test".to_string(),
+        )];
         let results = engine.search(&query, &candidates, SimilarityMetric::Cosine, 10);
-        assert!(results.is_empty(), "dimension mismatch should return empty results");
+        assert!(
+            results.is_empty(),
+            "dimension mismatch should return empty results"
+        );
     }
 
     // ------------------------------------------------------------------------
@@ -1120,7 +1129,7 @@ mod tests {
 
     #[test]
     fn test_embed_query_not_in_document_cache() {
-        let mut engine = EmbeddingEngine::with_default_config();
+        let engine = EmbeddingEngine::with_default_config();
         engine.embed_query("test query");
         assert_eq!(
             engine.cache_size(),
@@ -1167,7 +1176,10 @@ mod tests {
         let vector = engine.embed("test text with some content here");
         // Without normalization, magnitude should not be 1.0
         let mag = vector.magnitude();
-        assert!(mag > 0.0, "non-normalized vector should have positive magnitude");
+        assert!(
+            mag > 0.0,
+            "non-normalized vector should have positive magnitude"
+        );
     }
 
     #[test]
@@ -1180,7 +1192,10 @@ mod tests {
         // Use words longer than 1 character that are also stop words
         let vector = engine.embed("the and but from with");
         // Without stop word filtering, these words produce a non-zero vector
-        assert!(!vector.is_zero(), "stop words should produce non-zero vector when filtering is off");
+        assert!(
+            !vector.is_zero(),
+            "stop words should produce non-zero vector when filtering is off"
+        );
     }
 
     #[test]
@@ -1249,7 +1264,10 @@ mod tests {
 
         // If they hash to the same bucket, skip this test (collision in small vocab)
         if common_idx == rare_idx {
-            eprintln!("Hash collision between 'programming' and 'giraffe' at vocab index {}, skipping", common_idx);
+            eprintln!(
+                "Hash collision between 'programming' and 'giraffe' at vocab index {}, skipping",
+                common_idx
+            );
             return;
         }
 
@@ -1308,9 +1326,16 @@ mod tests {
     #[test]
     fn test_batch_cosine_search_dimension_mismatch() {
         let query = EmbeddingVector::new(vec![0.0; 128], 128, "test".to_string());
-        let candidates = vec![EmbeddingVector::new(vec![0.0; 256], 256, "test".to_string())];
+        let candidates = vec![EmbeddingVector::new(
+            vec![0.0; 256],
+            256,
+            "test".to_string(),
+        )];
         let results = batch_cosine_search(&query, &candidates, 10);
-        assert!(results.is_empty(), "dimension mismatch should return empty results");
+        assert!(
+            results.is_empty(),
+            "dimension mismatch should return empty results"
+        );
     }
 
     // ------------------------------------------------------------------------
@@ -1387,7 +1412,10 @@ mod tests {
         ]);
 
         let results = engine.search(&query, &candidates, SimilarityMetric::Cosine, 1);
-        assert_eq!(results[0].0, 0, "rust query should match rust candidate first");
+        assert_eq!(
+            results[0].0, 0,
+            "rust query should match rust candidate first"
+        );
     }
 
     // ------------------------------------------------------------------------
@@ -1454,7 +1482,7 @@ mod tests {
             // But TF-IDF values are always positive, so projected values
             // tend to be positive, making cosine typically in [0, 1]
             // Allow [-1.1, 1.1] for floating point tolerance
-            prop_assert!(cosine >= -1.1 && cosine <= 1.1,
+            prop_assert!((-1.1..=1.1).contains(&cosine),
                 "cosine similarity {} out of bounds for normalized vectors", cosine);
         }
 

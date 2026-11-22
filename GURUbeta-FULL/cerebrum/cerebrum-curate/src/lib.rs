@@ -49,17 +49,12 @@ pub struct SubtopicNode {
 // ============================================================================
 
 /// Lifecycle state of a context entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EntryLifecycle {
+    #[default]
     Active,
     Hibernated,
     Archived,
-}
-
-impl Default for EntryLifecycle {
-    fn default() -> Self {
-        EntryLifecycle::Active
-    }
 }
 
 /// A typed relation between two context entries, carrying a weight.
@@ -99,22 +94,16 @@ impl Default for Provenance {
 /// typed into by any writer that composes a label by hand.
 ///
 /// These are the two facts a permission decision needs, so they get their own slots.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EntryVisibility {
-    /// Written by the person or by an automatic lane: the shared scope, owned by nobody.
+    /// Written by the person or by an automatic lane: the shared scope, owned by nobody. That
+    /// is what an entry which says nothing about visibility means, so it is the default.
+    #[default]
     Shared,
     /// Written by an agent for itself. Only that agent reads it through an own-only scope.
     Owned,
     /// Written by an agent and explicitly offered to the shared scope.
     OwnedAndShared,
-}
-
-impl Default for EntryVisibility {
-    fn default() -> Self {
-        // An entry that says nothing about visibility is the person's, which is the
-        // conservative reading: it is never another agent's private fact.
-        EntryVisibility::Shared
-    }
 }
 
 /// A single curated memory entry in the Context Tree.
@@ -266,10 +255,11 @@ impl ContextTree {
         let old = self
             .entries
             .get(&entry.id)
-            .ok_or_else(|| CurationError::NotFound(entry.id))?
+            .ok_or(CurationError::NotFound(entry.id))?
             .clone();
 
-        if old.domain != entry.domain || old.topic != entry.topic || old.subtopic != entry.subtopic {
+        if old.domain != entry.domain || old.topic != entry.topic || old.subtopic != entry.subtopic
+        {
             self.remove_from_hierarchy(&old);
             let domain = self
                 .root
@@ -552,7 +542,9 @@ impl<'a> CurateExecutor<'a> {
                     return Err(CurationError::NotFound(*id));
                 }
             }
-            CurateOperation::Merge { source_ids, target, .. } => {
+            CurateOperation::Merge {
+                source_ids, target, ..
+            } => {
                 if source_ids.is_empty() {
                     return Err(CurationError::Invalid(
                         "merge requires at least one source id".into(),
@@ -621,13 +613,15 @@ impl<'a> CurateExecutor<'a> {
                     detail: reason,
                 })
             }
-            CurateOperation::Update { id, entry, reason, .. } => {
+            CurateOperation::Update {
+                id, entry, reason, ..
+            } => {
                 let old = self
                     .tree
                     .find(id)
                     .ok_or(CurationError::NotFound(id))?
                     .clone();
-                rollback.push(RollbackAction::Restore(old));
+                rollback.push(RollbackAction::Restore(Box::new(old)));
                 self.tree.update(entry)?;
                 Ok(CurateResult {
                     memory_id: id,
@@ -639,7 +633,7 @@ impl<'a> CurateExecutor<'a> {
                 let id = entry.id;
                 let status = if self.tree.find(id).is_some() {
                     let old = self.tree.find(id).unwrap().clone();
-                    rollback.push(RollbackAction::Restore(old));
+                    rollback.push(RollbackAction::Restore(Box::new(old)));
                     CurateStatus::Updated
                 } else {
                     rollback.push(RollbackAction::Remove(id));
@@ -699,7 +693,7 @@ impl<'a> CurateExecutor<'a> {
 
                 let old_target = self.tree.find(target.id).cloned();
                 if let Some(old) = old_target {
-                    rollback.push(RollbackAction::Restore(old));
+                    rollback.push(RollbackAction::Restore(Box::new(old)));
                 } else {
                     rollback.push(RollbackAction::Remove(target.id));
                 }
@@ -712,8 +706,12 @@ impl<'a> CurateExecutor<'a> {
                 })
             }
             CurateOperation::Delete { id, reason, .. } => {
-                let old = self.tree.find(id).ok_or(CurationError::NotFound(id))?.clone();
-                rollback.push(RollbackAction::Restore(old));
+                let old = self
+                    .tree
+                    .find(id)
+                    .ok_or(CurationError::NotFound(id))?
+                    .clone();
+                rollback.push(RollbackAction::Restore(Box::new(old)));
                 let mut entry = self.tree.remove(id).ok_or(CurationError::NotFound(id))?;
                 entry.lifecycle = EntryLifecycle::Archived;
                 entry.touch();
@@ -735,7 +733,9 @@ impl<'a> CurateExecutor<'a> {
                     self.tree.remove(id);
                 }
                 RollbackAction::Restore(entry) => {
-                    self.tree.upsert(entry);
+                    // Boxed at construction so the enum stays pointer-sized; the tree wants
+                    // the entry itself, so the box is unwrapped here.
+                    self.tree.upsert(*entry);
                 }
                 RollbackAction::RestoreMany(entries) => {
                     for entry in entries {
@@ -747,10 +747,18 @@ impl<'a> CurateExecutor<'a> {
     }
 }
 
+/// One undo step for a curate operation.
+///
+/// `Restore` holds the single largest member of any variant here: a whole `ContextEntry`, which
+/// is several strings and a `MemoryId`. `RestoreMany` is already a heap vector of those, so it is
+/// small. Leaving `Restore` inline made every `RollbackAction` in a rollback list as big as a
+/// context entry, which the compiler flags as a large size difference between variants. Boxing
+/// the one large payload keeps the enum pointer-sized and costs an allocation only when a
+/// restore actually happens.
 #[derive(Debug, Clone)]
 enum RollbackAction {
     Remove(MemoryId),
-    Restore(ContextEntry),
+    Restore(Box<ContextEntry>),
     RestoreMany(Vec<ContextEntry>),
 }
 
@@ -789,7 +797,9 @@ impl ContextTree {
             .entries
             .get(&entry.id)
             .map(|old| {
-                old.domain != entry.domain || old.topic != entry.topic || old.subtopic != entry.subtopic
+                old.domain != entry.domain
+                    || old.topic != entry.topic
+                    || old.subtopic != entry.subtopic
             })
             .unwrap_or(true);
 
@@ -843,12 +853,7 @@ impl CrossReferenceEngine {
     }
 
     /// Add a unidirectional reference from `source` to `target`.
-    pub fn add_reference(
-        &mut self,
-        source: MemoryId,
-        target: MemoryId,
-        provenance: Provenance,
-    ) {
+    pub fn add_reference(&mut self, source: MemoryId, target: MemoryId, provenance: Provenance) {
         if source == target {
             return;
         }
@@ -867,12 +872,7 @@ impl CrossReferenceEngine {
     }
 
     /// Add a bidirectional reference between `a` and `b`.
-    pub fn add_bidirectional(
-        &mut self,
-        a: MemoryId,
-        b: MemoryId,
-        provenance: Provenance,
-    ) {
+    pub fn add_bidirectional(&mut self, a: MemoryId, b: MemoryId, provenance: Provenance) {
         self.add_reference(a, b, provenance.clone());
         self.add_reference(b, a, provenance);
     }
@@ -914,7 +914,9 @@ impl CrossReferenceEngine {
     pub fn remove(&mut self, id: MemoryId) {
         if let Some(targets) = self.references.remove(&id) {
             for target in &targets {
-                self.reverse.entry(*target).and_modify(|v| v.retain(|x| *x != id));
+                self.reverse
+                    .entry(*target)
+                    .and_modify(|v| v.retain(|x| *x != id));
                 self.provenance.remove(&(id, *target));
             }
         }
@@ -959,12 +961,7 @@ impl CrossReferenceEngine {
 mod tests {
     use super::*;
 
-    fn make_entry(
-        domain: &str,
-        topic: &str,
-        subtopic: &str,
-        content: &str,
-    ) -> ContextEntry {
+    fn make_entry(domain: &str, topic: &str, subtopic: &str, content: &str) -> ContextEntry {
         ContextEntry::new(
             MemoryId::new(),
             domain.to_string(),
@@ -980,12 +977,7 @@ mod tests {
         let mut ops = Vec::new();
 
         for i in 0..100 {
-            let entry = make_entry(
-                "knowledge",
-                "facts",
-                "batch",
-                &format!("fact number {}", i),
-            );
+            let entry = make_entry("knowledge", "facts", "batch", &format!("fact number {}", i));
             ops.push(CurateOperation::add(entry, format!("curate fact {}", i)));
         }
 
@@ -1032,12 +1024,7 @@ mod tests {
         let mut ops = Vec::new();
 
         for i in 0..100 {
-            let entry = make_entry(
-                "knowledge",
-                "facts",
-                "batch",
-                &format!("fact number {}", i),
-            );
+            let entry = make_entry("knowledge", "facts", "batch", &format!("fact number {}", i));
             ops.push(CurateOperation::add(entry, format!("curate fact {}", i)));
         }
 
@@ -1056,17 +1043,16 @@ mod tests {
         let mut executor = CurateExecutor::new(&mut tree);
         let result = executor.execute(ops);
         assert!(!result.success);
-        assert_eq!(tree.len(), 0, "tree must remain empty after atomic rollback");
+        assert_eq!(
+            tree.len(),
+            0,
+            "tree must remain empty after atomic rollback"
+        );
 
         // Retry with the failing operation removed.
         let mut retry_ops = Vec::new();
         for i in 0..100 {
-            let entry = make_entry(
-                "knowledge",
-                "facts",
-                "batch",
-                &format!("fact number {}", i),
-            );
+            let entry = make_entry("knowledge", "facts", "batch", &format!("fact number {}", i));
             retry_ops.push(CurateOperation::add(entry, format!("retry fact {}", i)));
         }
 
@@ -1111,7 +1097,12 @@ mod tests {
         let mut tree = ContextTree::new();
         // The same content twice means the same id twice, which is exactly how a
         // deleted fact comes back: the write resolves to the retired row.
-        let entry = make_entry("home", "security", "keys", "the spare key is under the blue pot");
+        let entry = make_entry(
+            "home",
+            "security",
+            "keys",
+            "the spare key is under the blue pot",
+        );
         let id = entry.id;
 
         {
@@ -1144,7 +1135,10 @@ mod tests {
             "keys",
             "the spare key is under the blue pot",
         );
-        assert_eq!(same_content_again.id, id, "the repeat write must land on the retired id");
+        assert_eq!(
+            same_content_again.id, id,
+            "the repeat write must land on the retired id"
+        );
         let mut executor = CurateExecutor::new(&mut tree);
         let resurrected = executor.execute(vec![CurateOperation::upsert(
             same_content_again,
@@ -1170,7 +1164,10 @@ mod tests {
         let entry = make_entry("home", "security", "keys", "a different sentence entirely");
         let mut executor = CurateExecutor::new(&mut tree);
         let result = executor.execute(vec![CurateOperation::upsert(entry, "ordinary write")]);
-        assert!(result.success, "an upsert of live content is the normal path");
+        assert!(
+            result.success,
+            "an upsert of live content is the normal path"
+        );
     }
 
     #[test]
@@ -1227,12 +1224,7 @@ mod tests {
             CurateOperation::add(source_b.clone(), "add source b"),
         ]);
 
-        let target = make_entry(
-            "project",
-            "api",
-            "endpoints",
-            "Base API user routes.",
-        );
+        let target = make_entry("project", "api", "endpoints", "Base API user routes.");
         let merged_id = target.id;
         let merge_op = CurateOperation::merge(
             vec![source_a.id, source_b.id],
@@ -1244,7 +1236,9 @@ mod tests {
         assert!(result.success);
 
         let merged = tree.find(merged_id).unwrap();
-        assert!(merged.content.contains("GET /users returns a list of users."));
+        assert!(merged
+            .content
+            .contains("GET /users returns a list of users."));
         assert!(merged.content.contains("POST /users creates a new user."));
         assert_eq!(merged.relations.len(), 1);
         assert_eq!(tree.find(source_a.id), None);

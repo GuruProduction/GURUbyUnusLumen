@@ -34,7 +34,12 @@ fn main() {
     // the caller and is better refused at build time than embedded broken.
     let safe_revision: String = revision
         .chars()
-        .filter(|character| character.is_ascii_alphanumeric() || *character == '-' || *character == '_' || *character == '.')
+        .filter(|character| {
+            character.is_ascii_alphanumeric()
+                || *character == '-'
+                || *character == '_'
+                || *character == '.'
+        })
         .collect();
     let safe_revision = if safe_revision.is_empty() {
         "unknown".to_string()

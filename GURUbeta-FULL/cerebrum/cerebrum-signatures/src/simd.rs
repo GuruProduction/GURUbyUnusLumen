@@ -98,7 +98,10 @@ unsafe fn hamming_distance_sse2(a: &BinarySignature, b: &BinarySignature) -> u32
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[inline]
-unsafe fn hamming_distance_batch_avx2(query: &BinarySignature, candidates: &[BinarySignature; 8]) -> [u32; 8] {
+unsafe fn hamming_distance_batch_avx2(
+    query: &BinarySignature,
+    candidates: &[BinarySignature; 8],
+) -> [u32; 8] {
     let q = _mm256_loadu_si256(query.0.as_ptr() as *const __m256i);
 
     let mut results = [0u32; 8];
@@ -274,7 +277,10 @@ pub fn hamming_distance_fast(a: &BinarySignature, b: &BinarySignature) -> u32 {
 /// Processes 8 signatures at once for maximum throughput.
 /// Returns 8 Hamming distances.
 #[cfg(target_arch = "x86_64")]
-pub fn hamming_distance_batch8(query: &BinarySignature, candidates: &[BinarySignature; 8]) -> [u32; 8] {
+pub fn hamming_distance_batch8(
+    query: &BinarySignature,
+    candidates: &[BinarySignature; 8],
+) -> [u32; 8] {
     if is_avx2_supported() {
         // SAFETY: AVX2 verified available.
         unsafe { hamming_distance_batch_avx2(query, candidates) }
@@ -290,7 +296,10 @@ pub fn hamming_distance_batch8(query: &BinarySignature, candidates: &[BinarySign
 
 /// Portable fallback for batch Hamming distance on non-x86_64 architectures.
 #[cfg(not(target_arch = "x86_64"))]
-pub fn hamming_distance_batch8(query: &BinarySignature, candidates: &[BinarySignature; 8]) -> [u32; 8] {
+pub fn hamming_distance_batch8(
+    query: &BinarySignature,
+    candidates: &[BinarySignature; 8],
+) -> [u32; 8] {
     let mut results = [0u32; 8];
     for (i, candidate) in candidates.iter().enumerate() {
         results[i] = hamming_distance_fast(query, candidate);
@@ -336,9 +345,9 @@ mod tests {
         let mut rng_state: u64 = 12345;
         let mut next_sig = || -> BinarySignature {
             let mut bytes = [0u8; 32];
-            for b in 0..32 {
+            for byte in bytes.iter_mut() {
                 rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
-                bytes[b] = (rng_state >> 8) as u8;
+                *byte = (rng_state >> 8) as u8;
             }
             BinarySignature(bytes)
         };
@@ -348,8 +357,11 @@ mod tests {
             let b = next_sig();
             let scalar_dist = hamming_distance_scalar(&a, &b);
             let simd_dist = hamming_distance_fast(&a, &b);
-            assert_eq!(scalar_dist, simd_dist,
-                "AVX2 distance {} != scalar distance {}", simd_dist, scalar_dist);
+            assert_eq!(
+                scalar_dist, simd_dist,
+                "AVX2 distance {} != scalar distance {}",
+                simd_dist, scalar_dist
+            );
         }
     }
 
@@ -389,7 +401,10 @@ mod tests {
         let mut b = [0u8; 32];
         a[16] = 0b0000_0001;
         b[16] = 0b0000_0010;
-        assert_eq!(hamming_distance_fast(&BinarySignature(a), &BinarySignature(b)), 2);
+        assert_eq!(
+            hamming_distance_fast(&BinarySignature(a), &BinarySignature(b)),
+            2
+        );
     }
 
     #[test]
@@ -402,25 +417,33 @@ mod tests {
         let mut rng_state: u64 = 54321;
         let mut next_sig = || -> BinarySignature {
             let mut bytes = [0u8; 32];
-            for b in 0..32 {
+            for byte in bytes.iter_mut() {
                 rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
-                bytes[b] = (rng_state >> 8) as u8;
+                *byte = (rng_state >> 8) as u8;
             }
             BinarySignature(bytes)
         };
 
         let query = next_sig();
         let candidates: [BinarySignature; 8] = [
-            next_sig(), next_sig(), next_sig(), next_sig(),
-            next_sig(), next_sig(), next_sig(), next_sig(),
+            next_sig(),
+            next_sig(),
+            next_sig(),
+            next_sig(),
+            next_sig(),
+            next_sig(),
+            next_sig(),
+            next_sig(),
         ];
 
         let batch_results = hamming_distance_batch8(&query, &candidates);
         for i in 0..8 {
             let individual = hamming_distance_fast(&query, &candidates[i]);
-            assert_eq!(batch_results[i], individual,
+            assert_eq!(
+                batch_results[i], individual,
                 "Batch result {} ({}) != individual result ({})",
-                i, batch_results[i], individual);
+                i, batch_results[i], individual
+            );
         }
     }
 

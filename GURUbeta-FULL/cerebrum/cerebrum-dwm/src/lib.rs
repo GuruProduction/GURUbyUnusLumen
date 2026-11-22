@@ -22,20 +22,19 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
-
-pub mod succinct;
 pub mod dynamic_succinct;
-pub mod wavelet_tree;
-pub mod dynamic_wavelet_tree;
 pub mod dynamic_wavelet_matrix;
+pub mod dynamic_wavelet_tree;
 pub mod persistence;
+pub mod succinct;
+pub mod wavelet_tree;
 
-pub use succinct::SuccinctBitVec;
 pub use dynamic_succinct::DynamicSuccinctBitVec;
-pub use wavelet_tree::WaveletTree;
-pub use dynamic_wavelet_tree::DynamicWaveletTree;
 pub use dynamic_wavelet_matrix::DynamicWaveletMatrix;
+pub use dynamic_wavelet_tree::DynamicWaveletTree;
 pub use persistence::DwmPersistence;
+pub use succinct::SuccinctBitVec;
+pub use wavelet_tree::WaveletTree;
 
 // Re-export DwmStore-implementing type
 pub use dynamic_wavelet_matrix::DynamicWaveletMatrix as Dwm;

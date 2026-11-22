@@ -64,10 +64,7 @@ fn entry_with_id(id: MemoryId, content: &str, domain: &str, topic: &str) -> Cont
     }
 }
 
-async fn run_curate(
-    state: &Arc<Mutex<CerebrumState>>,
-    ops: Vec<CurateOp>,
-) -> serde_json::Value {
+async fn run_curate(state: &Arc<Mutex<CerebrumState>>, ops: Vec<CurateOp>) -> serde_json::Value {
     let payload = serde_json::to_vec(&ops).unwrap();
     let frame = Frame::new(frame_types::CURATE, 21, payload);
     let bytes = handle_frame(frame, state.clone())
@@ -82,10 +79,11 @@ async fn run_curate(
 }
 
 async fn search(state: &Arc<Mutex<CerebrumState>>, query: &str, limit: usize) -> Vec<MemoryId> {
-    let payload =
-        serde_json::to_vec(&serde_json::json!({"query": query, "limit": limit})).unwrap();
+    let payload = serde_json::to_vec(&serde_json::json!({"query": query, "limit": limit})).unwrap();
     let frame = Frame::new(frame_types::SEARCH, 22, payload);
-    let bytes = handle_frame(frame, state.clone()).await.expect("search must answer");
+    let bytes = handle_frame(frame, state.clone())
+        .await
+        .expect("search must answer");
     let hits: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap_or_default();
     hits.iter()
         .filter_map(|hit| {
@@ -103,7 +101,9 @@ async fn traverse(state: &Arc<Mutex<CerebrumState>>, text: &str) -> Vec<MemoryId
     }))
     .unwrap();
     let frame = Frame::new(frame_types::GRAPH_TRAVERSE, 23, payload);
-    let bytes = handle_frame(frame, state.clone()).await.expect("traverse must answer");
+    let bytes = handle_frame(frame, state.clone())
+        .await
+        .expect("traverse must answer");
     let pairs: Vec<(MemoryId, f32)> = serde_json::from_slice(&bytes).unwrap_or_default();
     pairs.into_iter().map(|(id, _)| id).collect()
 }
@@ -121,7 +121,8 @@ async fn a_merged_source_cannot_be_retrieved_and_is_archived_not_destroyed() {
 
     let content_a = "the landlord has not fixed the boiler in the flat";
     let content_b = "the flat radiator is cold and the landlord has been told";
-    let merged_content = "the landlord has not fixed the boiler in the flat; the flat radiator is cold";
+    let merged_content =
+        "the landlord has not fixed the boiler in the flat; the flat radiator is cold";
 
     // Both sources must share the target's domain and topic: the curate
     // executor refuses a merge across a hierarchy boundary, which is a real
@@ -143,12 +144,18 @@ async fn a_merged_source_cannot_be_retrieved_and_is_archived_not_destroyed() {
 
     // Both are findable, and both are walked to, before the merge.
     assert!(
-        search(&state, "boiler landlord flat", 10).await.contains(&id_a),
+        search(&state, "boiler landlord flat", 10)
+            .await
+            .contains(&id_a),
         "precondition: source a must be findable before the merge"
     );
     assert!(
-        traverse(&state, "landlord boiler flat radiator").await.contains(&id_a)
-            || traverse(&state, "landlord boiler flat radiator").await.contains(&id_b),
+        traverse(&state, "landlord boiler flat radiator")
+            .await
+            .contains(&id_a)
+            || traverse(&state, "landlord boiler flat radiator")
+                .await
+                .contains(&id_b),
         "precondition: at least one source must be reachable by a walk before the merge"
     );
 
@@ -229,11 +236,21 @@ async fn delete_and_merge_retire_a_memory_the_same_way() {
         &state,
         vec![
             CurateOp::Add {
-                entry: entry_with_id(deleted_id, "a fact that is going to be deleted", "home", "notes"),
+                entry: entry_with_id(
+                    deleted_id,
+                    "a fact that is going to be deleted",
+                    "home",
+                    "notes",
+                ),
                 reason: "add the row to be deleted".into(),
             },
             CurateOp::Add {
-                entry: entry_with_id(source_id, "a fact that is going to be merged away", "home", "notes"),
+                entry: entry_with_id(
+                    source_id,
+                    "a fact that is going to be merged away",
+                    "home",
+                    "notes",
+                ),
                 reason: "add the row to be merged".into(),
             },
         ],

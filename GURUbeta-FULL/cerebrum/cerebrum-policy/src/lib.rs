@@ -73,8 +73,16 @@ impl IndexedExperienceStore {
     }
 
     /// Update an existing index entry.
-    pub fn update_index(&mut self, id: MemoryId, summary: Option<String>, relevance: Option<f32>) -> Result<(), CerebrumError> {
-        let entry = self.entries.get_mut(&id).ok_or_else(|| CerebrumError::NotFound(id))?;
+    pub fn update_index(
+        &mut self,
+        id: MemoryId,
+        summary: Option<String>,
+        relevance: Option<f32>,
+    ) -> Result<(), CerebrumError> {
+        let entry = self
+            .entries
+            .get_mut(&id)
+            .ok_or(CerebrumError::NotFound(id))?;
         if let Some(s) = summary {
             entry.summary = s;
         }
@@ -136,7 +144,11 @@ impl IndexedExperienceStore {
     /// List entries sorted by relevance (highest first).
     pub fn list_by_relevance(&self) -> Vec<&IndexEntry> {
         let mut entries: Vec<&IndexEntry> = self.entries.values().collect();
-        entries.sort_by(|a, b| b.relevance.partial_cmp(&a.relevance).unwrap_or(std::cmp::Ordering::Equal));
+        entries.sort_by(|a, b| {
+            b.relevance
+                .partial_cmp(&a.relevance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         entries
     }
 
@@ -200,8 +212,8 @@ pub struct DereferencingController {
 impl Default for DereferencingController {
     fn default() -> Self {
         Self {
-            shallow_cost: 50,    // ~50 tokens for a summary
-            deep_cost: 500,      // ~500 tokens for a full artifact
+            shallow_cost: 50,              // ~50 tokens for a summary
+            deep_cost: 500,                // ~500 tokens for a full artifact
             partial_cost_per_section: 100, // ~100 tokens per section
         }
     }
@@ -209,7 +221,11 @@ impl Default for DereferencingController {
 
 impl DereferencingController {
     pub fn new(shallow_cost: usize, deep_cost: usize, partial_cost_per_section: usize) -> Self {
-        Self { shallow_cost, deep_cost, partial_cost_per_section }
+        Self {
+            shallow_cost,
+            deep_cost,
+            partial_cost_per_section,
+        }
     }
 
     /// Decide dereferencing level for a set of index entries given a task and budget.
@@ -234,7 +250,11 @@ impl DereferencingController {
         // Sort entries by relevance (highest first) so we allocate budget
         // to the most relevant entries first.
         let mut sorted: Vec<&IndexEntry> = entries.to_vec();
-        sorted.sort_by(|a, b| b.relevance.partial_cmp(&a.relevance).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(|a, b| {
+            b.relevance
+                .partial_cmp(&a.relevance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         for entry in sorted {
             let decision = if budget_pct > 0.8 {
@@ -246,8 +266,12 @@ impl DereferencingController {
                     if entry.sections.is_empty() {
                         DereferenceDecision::ShallowDeref { id: entry.id }
                     } else {
-                        let section_names: Vec<String> = entry.sections.keys().take(2).cloned().collect();
-                        DereferenceDecision::PartialDeref { id: entry.id, sections: section_names }
+                        let section_names: Vec<String> =
+                            entry.sections.keys().take(2).cloned().collect();
+                        DereferenceDecision::PartialDeref {
+                            id: entry.id,
+                            sections: section_names,
+                        }
                     }
                 } else {
                     DereferenceDecision::ShallowDeref { id: entry.id }
@@ -258,8 +282,12 @@ impl DereferencingController {
                     if entry.sections.is_empty() {
                         DereferenceDecision::ShallowDeref { id: entry.id }
                     } else {
-                        let section_names: Vec<String> = entry.sections.keys().take(1).cloned().collect();
-                        DereferenceDecision::PartialDeref { id: entry.id, sections: section_names }
+                        let section_names: Vec<String> =
+                            entry.sections.keys().take(1).cloned().collect();
+                        DereferenceDecision::PartialDeref {
+                            id: entry.id,
+                            sections: section_names,
+                        }
                     }
                 } else if entry.relevance >= 0.4 {
                     DereferenceDecision::ShallowDeref { id: entry.id }
@@ -313,7 +341,11 @@ pub enum PolicyAction {
     /// Create a new index entry for a memory.
     CreateIndex { summary: String, relevance: f32 },
     /// Update an existing index entry (new summary or relevance).
-    UpdateIndex { id: MemoryId, summary: Option<String>, relevance: Option<f32> },
+    UpdateIndex {
+        id: MemoryId,
+        summary: Option<String>,
+        relevance: Option<f32>,
+    },
     /// Dereference at shallow level (summary only).
     DereferenceShallow { id: MemoryId },
     /// Dereference at deep level (full artifact).
@@ -337,17 +369,9 @@ pub struct PolicyDecision {
 
 /// The policy network. Initially hand-coded rules.
 /// Later, cerebrum-rl will train this via GRPO.
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct PolicyNetwork {
     controller: DereferencingController,
-}
-
-impl Default for PolicyNetwork {
-    fn default() -> Self {
-        Self {
-            controller: DereferencingController::default(),
-        }
-    }
 }
 
 impl PolicyNetwork {
@@ -380,9 +404,13 @@ impl PolicyNetwork {
                 DereferenceDecision::ShallowDeref { id } => {
                     (PolicyAction::DereferenceShallow { id: *id }, *id)
                 }
-                DereferenceDecision::PartialDeref { id, sections } => {
-                    (PolicyAction::DereferencePartial { id: *id, sections: sections.clone() }, *id)
-                }
+                DereferenceDecision::PartialDeref { id, sections } => (
+                    PolicyAction::DereferencePartial {
+                        id: *id,
+                        sections: sections.clone(),
+                    },
+                    *id,
+                ),
                 DereferenceDecision::NoDeref { id } => {
                     // No dereference needed — check if we should compress or archive
                     let entry_relevance = entry.map(|e| e.relevance).unwrap_or(0.0);
@@ -396,8 +424,12 @@ impl PolicyNetwork {
                 }
             };
 
-            let rationale = format!("{:?} for task {:?} with {:.0}% budget remaining",
-                deref, task_type, budget.remaining() as f64 / budget.max_tokens as f64 * 100.0);
+            let rationale = format!(
+                "{:?} for task {:?} with {:.0}% budget remaining",
+                deref,
+                task_type,
+                budget.remaining() as f64 / budget.max_tokens as f64 * 100.0
+            );
 
             let confidence = match deref {
                 DereferenceDecision::DeepDeref { .. } => 0.9,
@@ -444,14 +476,22 @@ impl PolicyNetwork {
             PolicyDecision {
                 action: PolicyAction::CreateIndex { summary, relevance },
                 target_id: id,
-                rationale: format!("Medium relevance ({:.2}) with budget ({:.0}%) — index", relevance, budget_remaining_pct * 100.0),
+                rationale: format!(
+                    "Medium relevance ({:.2}) with budget ({:.0}%) — index",
+                    relevance,
+                    budget_remaining_pct * 100.0
+                ),
                 confidence: 0.6,
             }
         } else {
             PolicyDecision {
                 action: PolicyAction::Compress { id },
                 target_id: id,
-                rationale: format!("Low relevance ({:.2}) or low budget ({:.0}%) — compress", relevance, budget_remaining_pct * 100.0),
+                rationale: format!(
+                    "Low relevance ({:.2}) or low budget ({:.0}%) — compress",
+                    relevance,
+                    budget_remaining_pct * 100.0
+                ),
                 confidence: 0.4,
             }
         }
@@ -482,9 +522,18 @@ mod tests {
 
     fn make_entry_with_sections(id_byte: u8, relevance: f32, summary: &str) -> IndexEntry {
         let mut entry = make_entry(id_byte, relevance, summary);
-        entry.sections.insert("intro".to_string(), "Introduction content here.".to_string());
-        entry.sections.insert("body".to_string(), "Main body content here with more detail.".to_string());
-        entry.sections.insert("conclusion".to_string(), "Conclusion and summary.".to_string());
+        entry.sections.insert(
+            "intro".to_string(),
+            "Introduction content here.".to_string(),
+        );
+        entry.sections.insert(
+            "body".to_string(),
+            "Main body content here with more detail.".to_string(),
+        );
+        entry.sections.insert(
+            "conclusion".to_string(),
+            "Conclusion and summary.".to_string(),
+        );
         entry
     }
 
@@ -549,7 +598,9 @@ mod tests {
         let id = entry.id;
         store.create_index(entry);
 
-        let result = store.get_partial(id, &["intro".to_string(), "conclusion".to_string()]).unwrap();
+        let result = store
+            .get_partial(id, &["intro".to_string(), "conclusion".to_string()])
+            .unwrap();
         assert!(result.sections.contains_key("intro"));
         assert!(result.sections.contains_key("conclusion"));
         assert!(!result.sections.contains_key("body")); // Not requested
@@ -560,7 +611,9 @@ mod tests {
     fn test_budget_adherence() {
         let controller = DereferencingController::default();
         let entries: Vec<IndexEntry> = (0..20)
-            .map(|i| make_entry_with_sections(i as u8, 0.5 + (i as f32 * 0.02), &format!("Entry {}", i)))
+            .map(|i| {
+                make_entry_with_sections(i as u8, 0.5 + (i as f32 * 0.02), &format!("Entry {}", i))
+            })
             .collect();
         let entry_refs: Vec<&IndexEntry> = entries.iter().collect();
 
@@ -578,7 +631,11 @@ mod tests {
                 DereferenceDecision::NoDeref { .. } => 0,
             };
         }
-        assert!(total_cost <= 500, "Total cost {} exceeds budget 500", total_cost);
+        assert!(
+            total_cost <= 500,
+            "Total cost {} exceeds budget 500",
+            total_cost
+        );
     }
 
     // Test 6: Policy network — high budget gets deep dereference
@@ -595,10 +652,14 @@ mod tests {
 
         // High budget + high relevance = should dereference at least shallow
         assert!(!decisions.is_empty());
-        let has_deref = decisions.iter().any(|d| matches!(
-            d.action,
-            PolicyAction::DereferenceDeep { .. } | PolicyAction::DereferenceShallow { .. } | PolicyAction::DereferencePartial { .. }
-        ));
+        let has_deref = decisions.iter().any(|d| {
+            matches!(
+                d.action,
+                PolicyAction::DereferenceDeep { .. }
+                    | PolicyAction::DereferenceShallow { .. }
+                    | PolicyAction::DereferencePartial { .. }
+            )
+        });
         assert!(has_deref, "Expected at least one dereference decision");
     }
 
@@ -609,7 +670,7 @@ mod tests {
 
         let decision = policy.should_index("some low relevance content", 0.1, 0.2);
         match decision.action {
-            PolicyAction::Compress { .. } => {},
+            PolicyAction::Compress { .. } => {}
             _ => panic!("Expected Compress action for low relevance content with low budget"),
         }
     }
@@ -628,8 +689,14 @@ mod tests {
         let decisions = controller.decide(TaskType::FactLookup, &budget, &entry_refs);
 
         // With 0.1 relevance and 100 token budget, some should be NoDeref
-        let no_deref_count = decisions.iter().filter(|d| matches!(d, DereferenceDecision::NoDeref { .. })).count();
-        assert!(no_deref_count > 0, "Expected some NoDeref decisions for low relevance entries");
+        let no_deref_count = decisions
+            .iter()
+            .filter(|d| matches!(d, DereferenceDecision::NoDeref { .. }))
+            .count();
+        assert!(
+            no_deref_count > 0,
+            "Expected some NoDeref decisions for low relevance entries"
+        );
     }
 
     // Test 9: Index update works correctly
@@ -640,7 +707,9 @@ mod tests {
         let id = entry.id;
         store.create_index(entry);
 
-        store.update_index(id, Some("Updated summary".to_string()), Some(0.9)).unwrap();
+        store
+            .update_index(id, Some("Updated summary".to_string()), Some(0.9))
+            .unwrap();
 
         let updated = store.get_shallow(id).unwrap();
         assert_eq!(updated.summary, "Updated summary");

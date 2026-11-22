@@ -201,7 +201,8 @@ impl TrainablePolicy {
         match &example.action {
             PolicyAction::DereferenceDeep { .. } => {
                 if desired_reward > 0.7 {
-                    self.relevance_threshold = (self.relevance_threshold - 0.05 * lr).clamp(0.0, 1.0);
+                    self.relevance_threshold =
+                        (self.relevance_threshold - 0.05 * lr).clamp(0.0, 1.0);
                 }
             }
             PolicyAction::DereferenceShallow { .. } => {
@@ -331,7 +332,12 @@ impl PolicyTrainer {
             let avg_reward = epoch_reward / count;
             let budget_adherence = avg_reward * 0.5 + 0.5;
 
-            self.metrics.record(epoch + 1, avg_loss, avg_reward, budget_adherence.clamp(0.0, 1.0));
+            self.metrics.record(
+                epoch + 1,
+                avg_loss,
+                avg_reward,
+                budget_adherence.clamp(0.0, 1.0),
+            );
         }
     }
 
@@ -349,11 +355,8 @@ impl PolicyTrainer {
         }
 
         let count = comparisons.len().max(1) as f32;
-        self.reward_model = RewardModel::new(
-            total_task / count,
-            total_eff / count,
-            total_budget / count,
-        );
+        self.reward_model =
+            RewardModel::new(total_task / count, total_eff / count, total_budget / count);
     }
 
     /// Stage 3: GRPO — generate candidates, rank by reward, update the policy.
@@ -386,7 +389,8 @@ impl PolicyTrainer {
                 action: winner.clone(),
                 reward: winner_reward,
             };
-            self.policy.apply_sft_step(&example, self.grpo_config.learning_rate);
+            self.policy
+                .apply_sft_step(&example, self.grpo_config.learning_rate);
 
             if winner_reward > best_reward {
                 best_reward = winner_reward;
@@ -401,7 +405,10 @@ impl PolicyTrainer {
             );
         }
 
-        (best_action.unwrap_or_else(|| self.policy.decide(seed_state)), best_reward)
+        (
+            best_action.unwrap_or_else(|| self.policy.decide(seed_state)),
+            best_reward,
+        )
     }
 }
 
@@ -437,7 +444,11 @@ pub struct PolicyDecision {
 // 6. CANDIDATE GENERATION & EVALUATION
 // ============================================================================
 
-fn generate_candidate(state: &PolicyState, policy: &TrainablePolicy, variant: usize) -> PolicyAction {
+fn generate_candidate(
+    state: &PolicyState,
+    policy: &TrainablePolicy,
+    variant: usize,
+) -> PolicyAction {
     let mut synthetic = state.clone();
     // Perturb state slightly so each candidate is distinct.
     synthetic.budget_remaining = state
@@ -447,7 +458,11 @@ fn generate_candidate(state: &PolicyState, policy: &TrainablePolicy, variant: us
     policy.decide(&synthetic)
 }
 
-fn evaluate_candidate(state: &PolicyState, action: &PolicyAction, reward_model: &RewardModel) -> f32 {
+fn evaluate_candidate(
+    state: &PolicyState,
+    action: &PolicyAction,
+    reward_model: &RewardModel,
+) -> f32 {
     let budget_pct = state.budget_remaining_pct();
 
     let task_score = match action {

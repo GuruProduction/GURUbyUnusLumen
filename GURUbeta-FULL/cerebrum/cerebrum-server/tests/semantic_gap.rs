@@ -25,26 +25,83 @@ use cerebrum_server::Frame;
 /// (memory as stored, paraphrase that means the same thing with no shared
 /// content words). The second element is what a human would type.
 const PARAPHRASES: &[(&str, &str)] = &[
-    ("the landlord still has not fixed the boiler in the flat", "the heating is broken"),
-    ("the landlord still has not fixed the boiler in the flat", "nothing has been done about the hot water"),
-    ("the spare key hangs in the kitchen cupboard behind the microwave", "where do I keep the thing that opens the door"),
-    ("the spare key hangs in the kitchen cupboard behind the microwave", "how do I get in when I am locked out"),
-    ("my sister is flying to lisbon on thursday for a conference", "what is happening at the end of the week abroad"),
-    ("my sister is flying to lisbon on thursday for a conference", "when is she travelling to portugal"),
-    ("italian pasta recipe uses fresh tomato and basil", "what do I cook for dinner tonight"),
-    ("italian pasta recipe uses fresh tomato and basil", "something quick with herbs and sauce"),
-    ("they want to be called steven", "what is their preferred name"),
+    (
+        "the landlord still has not fixed the boiler in the flat",
+        "the heating is broken",
+    ),
+    (
+        "the landlord still has not fixed the boiler in the flat",
+        "nothing has been done about the hot water",
+    ),
+    (
+        "the spare key hangs in the kitchen cupboard behind the microwave",
+        "where do I keep the thing that opens the door",
+    ),
+    (
+        "the spare key hangs in the kitchen cupboard behind the microwave",
+        "how do I get in when I am locked out",
+    ),
+    (
+        "my sister is flying to lisbon on thursday for a conference",
+        "what is happening at the end of the week abroad",
+    ),
+    (
+        "my sister is flying to lisbon on thursday for a conference",
+        "when is she travelling to portugal",
+    ),
+    (
+        "italian pasta recipe uses fresh tomato and basil",
+        "what do I cook for dinner tonight",
+    ),
+    (
+        "italian pasta recipe uses fresh tomato and basil",
+        "something quick with herbs and sauce",
+    ),
+    (
+        "they want to be called steven",
+        "what is their preferred name",
+    ),
     ("they want to be called steven", "how should I address them"),
-    ("the car insurance renews on the fourteenth of november", "when does the policy expire"),
-    ("the car insurance renews on the fourteenth of november", "motoring cover runs out soon"),
-    ("she does not eat mushrooms and hates coriander", "what food should I avoid serving"),
-    ("she does not eat mushrooms and hates coriander", "any dietary things I should know"),
-    ("the router is in the hallway cupboard next to the fuse box", "where is the internet box"),
-    ("the router is in the hallway cupboard next to the fuse box", "location of the broadband equipment"),
-    ("the passport expires in april so it needs renewing before the trip", "travel document runs out soon"),
-    ("the passport expires in april so it needs renewing before the trip", "will I be able to go abroad later this year"),
-    ("the deposit for the new flat is three months rent", "how much do I need up front for the place"),
-    ("the deposit for the new flat is three months rent", "upfront cost of moving"),
+    (
+        "the car insurance renews on the fourteenth of november",
+        "when does the policy expire",
+    ),
+    (
+        "the car insurance renews on the fourteenth of november",
+        "motoring cover runs out soon",
+    ),
+    (
+        "she does not eat mushrooms and hates coriander",
+        "what food should I avoid serving",
+    ),
+    (
+        "she does not eat mushrooms and hates coriander",
+        "any dietary things I should know",
+    ),
+    (
+        "the router is in the hallway cupboard next to the fuse box",
+        "where is the internet box",
+    ),
+    (
+        "the router is in the hallway cupboard next to the fuse box",
+        "location of the broadband equipment",
+    ),
+    (
+        "the passport expires in april so it needs renewing before the trip",
+        "travel document runs out soon",
+    ),
+    (
+        "the passport expires in april so it needs renewing before the trip",
+        "will I be able to go abroad later this year",
+    ),
+    (
+        "the deposit for the new flat is three months rent",
+        "how much do I need up front for the place",
+    ),
+    (
+        "the deposit for the new flat is three months rent",
+        "upfront cost of moving",
+    ),
 ];
 
 async fn fresh_state() -> Arc<Mutex<CerebrumState>> {
@@ -59,11 +116,7 @@ async fn fresh_state() -> Arc<Mutex<CerebrumState>> {
     Arc::new(Mutex::new(CerebrumState::new(dir)))
 }
 
-async fn call_frame(
-    state: &Arc<Mutex<CerebrumState>>,
-    frame_type: u8,
-    payload: &[u8],
-) -> Vec<u8> {
+async fn call_frame(state: &Arc<Mutex<CerebrumState>>, frame_type: u8, payload: &[u8]) -> Vec<u8> {
     let frame = Frame::new(frame_type, 5150, payload.to_vec());
     match handle_frame(frame, state.clone()).await {
         Ok(bytes) => bytes,

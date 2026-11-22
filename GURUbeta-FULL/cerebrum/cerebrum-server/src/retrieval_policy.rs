@@ -152,8 +152,8 @@ impl RetrievalPolicy {
         };
 
         let clamped_confidence = confidence.clamp(0.0, 1.0);
-        let confidence_factor =
-            self.minimum_confidence_weight + (1.0 - self.minimum_confidence_weight) * clamped_confidence;
+        let confidence_factor = self.minimum_confidence_weight
+            + (1.0 - self.minimum_confidence_weight) * clamped_confidence;
 
         decay_factor * layer_factor * confidence_factor
     }
@@ -174,7 +174,12 @@ impl RetrievalPolicy {
     /// and consolidation cannot drift on the question. It delegates to the decay
     /// crate's own predicate rather than restating the ninety-day rule, because a
     /// second copy of a threshold is a second answer waiting to disagree.
-    pub fn should_archive(&self, entry: &DecayEntry, config: &cerebrum_decay::DecayConfig, now: DateTime<Utc>) -> bool {
+    pub fn should_archive(
+        &self,
+        entry: &DecayEntry,
+        config: &cerebrum_decay::DecayConfig,
+        now: DateTime<Utc>,
+    ) -> bool {
         if entry.archived {
             return false;
         }
@@ -182,7 +187,8 @@ impl RetrievalPolicy {
         // condition against the caller's `now` so a test can stand at any point in
         // time. The threshold values come from the config, never from a literal.
         let is_faint = entry.strength < config.hibernation_threshold;
-        let age_days = (now - entry.last_accessed).num_seconds().max(0) as f64 / (60.0 * 60.0 * 24.0);
+        let age_days =
+            (now - entry.last_accessed).num_seconds().max(0) as f64 / (60.0 * 60.0 * 24.0);
         is_faint && age_days >= config.archive_threshold_days as f64
     }
 
@@ -197,7 +203,11 @@ impl RetrievalPolicy {
     ///
     /// It is deliberately not terminal: a hibernated memory is still eligible for
     /// retrieval above the faintness floor, and a recall strengthens it back out.
-    pub fn should_hibernate(&self, entry: &DecayEntry, config: &cerebrum_decay::DecayConfig) -> bool {
+    pub fn should_hibernate(
+        &self,
+        entry: &DecayEntry,
+        config: &cerebrum_decay::DecayConfig,
+    ) -> bool {
         if entry.archived {
             return false;
         }
@@ -212,11 +222,7 @@ mod tests {
     use chrono::Duration;
 
     fn entry(id_byte: u8, layer: MemoryLayer, strength: f32) -> DecayEntry {
-        let mut created = DecayEntry::new(
-            cerebrum_core::MemoryId([id_byte; 32]),
-            layer,
-            "body",
-        );
+        let mut created = DecayEntry::new(cerebrum_core::MemoryId([id_byte; 32]), layer, "body");
         created.strength = strength;
         created
     }
@@ -292,7 +298,11 @@ mod tests {
         assert!(policy.should_hibernate(&almost, &config));
 
         // The same memory on the threshold day: archivable.
-        let mut reached = entry(10, MemoryLayer::Episodic, config.hibernation_threshold * 0.5);
+        let mut reached = entry(
+            10,
+            MemoryLayer::Episodic,
+            config.hibernation_threshold * 0.5,
+        );
         reached.last_accessed = now - Duration::days(config.archive_threshold_days as i64);
         assert!(policy.should_archive(&reached, &config, now));
 
@@ -315,7 +325,13 @@ mod tests {
     #[test]
     fn layer_names_match_the_wire() {
         assert_eq!(RetrievalPolicy::layer_name(MemoryLayer::Buffer), "BUFFER");
-        assert_eq!(RetrievalPolicy::layer_name(MemoryLayer::Episodic), "EPISODIC");
-        assert_eq!(RetrievalPolicy::layer_name(MemoryLayer::Semantic), "SEMANTIC");
+        assert_eq!(
+            RetrievalPolicy::layer_name(MemoryLayer::Episodic),
+            "EPISODIC"
+        );
+        assert_eq!(
+            RetrievalPolicy::layer_name(MemoryLayer::Semantic),
+            "SEMANTIC"
+        );
     }
 }

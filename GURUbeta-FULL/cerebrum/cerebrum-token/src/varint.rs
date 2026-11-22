@@ -50,9 +50,7 @@ pub fn decode_varint_u64(data: &[u8]) -> TokenResult<(u64, usize)> {
 
         // Check for overflow: u64 max bits = 64, so shift must be < 64. 10 bytes max (7*10 = 70).
         if shift >= 70 {
-            return Err(TokenError::VarintDecode(
-                "varint exceeds u64 range".into(),
-            ));
+            return Err(TokenError::VarintDecode("varint exceeds u64 range".into()));
         }
 
         value |= chunk << shift;
@@ -132,9 +130,7 @@ pub fn decode_varint(data: &[u8]) -> TokenResult<(u32, usize)> {
         // Check for overflow: if shift >= 35, we'd exceed u32 on the next shift.
         // u32 max bits = 32, so shift must be < 32. 5 bytes max (7*5 = 35).
         if shift >= 35 {
-            return Err(TokenError::VarintDecode(
-            "varint exceeds u32 range".into(),
-            ));
+            return Err(TokenError::VarintDecode("varint exceeds u32 range".into()));
         }
 
         value |= chunk << shift;
@@ -378,7 +374,19 @@ mod tests {
 
     #[test]
     fn test_signed_varint_roundtrip() {
-        let values = vec![0i32, -1, 1, -127, 127, -128, 128, -1000, 1000, i32::MIN, i32::MAX];
+        let values = vec![
+            0i32,
+            -1,
+            1,
+            -127,
+            127,
+            -128,
+            128,
+            -1000,
+            1000,
+            i32::MIN,
+            i32::MAX,
+        ];
         let encoded = encode_signed_varint_sequence(&values);
         let decoded = decode_signed_varint_sequence(&encoded).unwrap();
         assert_eq!(decoded, values);

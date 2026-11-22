@@ -16,7 +16,10 @@ use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 mod simd;
-pub use simd::{hamming_distance_fast, hamming_distance_scalar, hamming_distance_bytes_fast, hamming_distance_bytes_scalar, hamming_distance_batch8, is_avx2_supported};
+pub use simd::{
+    hamming_distance_batch8, hamming_distance_bytes_fast, hamming_distance_bytes_scalar,
+    hamming_distance_fast, hamming_distance_scalar, is_avx2_supported,
+};
 
 // ============================================================================
 // 1. CONFIGURATION
@@ -274,10 +277,7 @@ impl RandomIndexing {
             ThresholdStrategy::Adaptive => {
                 // Use mean + 0.5 * std as adaptive threshold
                 let mean = projected.iter().sum::<f32>() / projected.len() as f32;
-                let variance = projected
-                    .iter()
-                    .map(|v| (v - mean).powi(2))
-                    .sum::<f32>()
+                let variance = projected.iter().map(|v| (v - mean).powi(2)).sum::<f32>()
                     / projected.len() as f32;
                 let std = variance.sqrt();
                 mean + 0.5 * std
@@ -385,10 +385,7 @@ impl HammingSearcher {
             let idx = self.entries.len() - 1;
             let substrings = Self::split_signature(&signature.0, self.num_substrings);
             for (sub_idx, sub) in substrings.iter().enumerate() {
-                mi.tables[sub_idx]
-                    .entry(sub.clone())
-                    .or_default()
-                    .push(idx);
+                mi.tables[sub_idx].entry(sub.clone()).or_default().push(idx);
             }
         }
     }
@@ -400,10 +397,7 @@ impl HammingSearcher {
 
     /// Remove a signature by memory ID.
     pub fn remove(&mut self, memory_id: MemoryId) -> bool {
-        let pos = self
-            .entries
-            .iter()
-            .position(|(id, _)| *id == memory_id);
+        let pos = self.entries.iter().position(|(id, _)| *id == memory_id);
         match pos {
             Some(idx) => {
                 self.entries.swap_remove(idx);
@@ -464,8 +458,8 @@ impl HammingSearcher {
 
         for batch in chunks {
             let candidates: [BinarySignature; 8] = [
-                batch[0].1, batch[1].1, batch[2].1, batch[3].1,
-                batch[4].1, batch[5].1, batch[6].1, batch[7].1,
+                batch[0].1, batch[1].1, batch[2].1, batch[3].1, batch[4].1, batch[5].1, batch[6].1,
+                batch[7].1,
             ];
             let distances = simd::hamming_distance_batch8(query, &candidates);
             for (i, dist) in distances.iter().enumerate() {
@@ -608,10 +602,7 @@ impl HammingSearcher {
         for (idx, (_, signature)) in self.entries.iter().enumerate() {
             let substrings = Self::split_signature(&signature.0, self.num_substrings);
             for (sub_idx, sub) in substrings.iter().enumerate() {
-                mi.tables[sub_idx]
-                    .entry(sub.clone())
-                    .or_default()
-                    .push(idx);
+                mi.tables[sub_idx].entry(sub.clone()).or_default().push(idx);
             }
         }
 
@@ -719,7 +710,12 @@ impl SignatureEngine {
     }
 
     /// Search for similar signatures.
-    pub fn search(&self, query: &BinarySignature, radius: u32, limit: usize) -> Vec<(MemoryId, u32)> {
+    pub fn search(
+        &self,
+        query: &BinarySignature,
+        radius: u32,
+        limit: usize,
+    ) -> Vec<(MemoryId, u32)> {
         self.searcher.search(query, radius, limit)
     }
 
@@ -810,10 +806,7 @@ impl SignatureGenerator for SignatureEngine {
 ///
 /// Returns the percentage of signature pairs with Hamming distance below
 /// a given threshold. Useful for tuning signature_bits and radius.
-pub fn collision_analysis(
-    signatures: &[BinarySignature],
-    distance_threshold: u32,
-) -> f64 {
+pub fn collision_analysis(signatures: &[BinarySignature], distance_threshold: u32) -> f64 {
     if signatures.len() < 2 {
         return 0.0;
     }
@@ -840,7 +833,8 @@ pub fn mean_hamming_distance(signatures: &[BinarySignature]) -> f64 {
     let mut count = 0u64;
     for i in 0..signatures.len() {
         for j in (i + 1)..signatures.len() {
-            total_dist += HammingSearcher::hamming_distance_simd(&signatures[i], &signatures[j]) as u64;
+            total_dist +=
+                HammingSearcher::hamming_distance_simd(&signatures[i], &signatures[j]) as u64;
             count += 1;
         }
     }
@@ -918,7 +912,11 @@ mod tests {
         // Similar inputs should have relatively small Hamming distance
         // (roughly 20-30% of bits different, not 50% which is random)
         let dist = sig_a.hamming_distance(&sig_b);
-        assert!(dist < 180, "Similar inputs should have Hamming distance < 180, got {}", dist);
+        assert!(
+            dist < 180,
+            "Similar inputs should have Hamming distance < 180, got {}",
+            dist
+        );
     }
 
     #[test]
@@ -932,11 +930,7 @@ mod tests {
     #[test]
     fn test_batch_generation() {
         let ri = RandomIndexing::new(SignatureConfig::default()).unwrap();
-        let token_seqs = vec![
-            vec![1u32, 2, 3],
-            vec![4u32, 5, 6],
-            vec![7u32, 8, 9],
-        ];
+        let token_seqs = vec![vec![1u32, 2, 3], vec![4u32, 5, 6], vec![7u32, 8, 9]];
         let sigs = ri.generate_batch_from_tokens(&token_seqs);
         assert_eq!(sigs.len(), 3);
         // All signatures should be different
@@ -1158,7 +1152,7 @@ mod tests {
         let candidates = vec![
             engine.generate("rust programming language"), // identical
             engine.generate("python programming language"), // similar
-            engine.generate("cooking recipe dinner"), // different
+            engine.generate("cooking recipe dinner"),     // different
         ];
         let results = engine.hamming_ball(&query, 256, &candidates);
         assert!(!results.is_empty());
@@ -1186,7 +1180,11 @@ mod tests {
         // With well-separated token sequences, no two signatures should be identical
         for i in 0..sigs.len() {
             for j in (i + 1)..sigs.len() {
-                assert_ne!(sigs[i].0, sigs[j].0, "Signatures {} and {} are identical", i, j);
+                assert_ne!(
+                    sigs[i].0, sigs[j].0,
+                    "Signatures {} and {} are identical",
+                    i, j
+                );
             }
         }
     }

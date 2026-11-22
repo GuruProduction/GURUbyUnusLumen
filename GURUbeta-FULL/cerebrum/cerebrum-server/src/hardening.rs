@@ -101,7 +101,10 @@ mod linux_impl {
     }
 
     fn bpf_jump(code: u32, k: u32, jt: u8, jf: u8) -> u64 {
-        (((code as u64) << 32) & 0xFFFF_FFFF_0000_0000) | (((jt as u64) & 0xFF) << 16) | (((jf as u64) & 0xFF) << 8) | k as u64
+        (((code as u64) << 32) & 0xFFFF_FFFF_0000_0000)
+            | (((jt as u64) & 0xFF) << 16)
+            | (((jf as u64) & 0xFF) << 8)
+            | k as u64
     }
 
     // syscall numbers:
@@ -162,11 +165,16 @@ mod linux_impl {
 
         // Load arch
         program.push(bpf_stmt(BPF_LD | BPF_W | BPF_ABS, 4)); // offsetof(arch) in seccomp_data
-        // if arch == AUDIT_ARCH_X86_64 || arch == AUDIT_ARCH_AARCH64: continue
-        // else: kill process
+                                                             // if arch == AUDIT_ARCH_X86_64 || arch == AUDIT_ARCH_AARCH64: continue
+                                                             // else: kill process
         let arch_check_x8664 = 0_u32;
         program.push(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0));
-        program.push(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_AARCH64, 3, 0));
+        program.push(bpf_jump(
+            BPF_JMP | BPF_JEQ | BPF_K,
+            AUDIT_ARCH_AARCH64,
+            3,
+            0,
+        ));
         program.push(bpf_ret(SECCOMP_RET_KILL_PROCESS)); // unknown architecture, never allow
 
         fn bpf_ret(action: u32) -> u64 {
@@ -176,20 +184,52 @@ mod linux_impl {
         load_syscall_number(&mut program);
 
         let io_ok = [
-            SYS_READ,             SYS_WRITE,     SYS_OPEN,      SYS_CLOSE,
-            SYS_FSTAT,            SYS_LSEEK,     SYS_MMAP,      SYS_MPROTECT,
-            SYS_MUNMAP,           SYS_RT_SIGACTION, SYS_RT_SIGPROCMASK, SYS_RT_SIGRETURN,
-            SYS_NANOSLEEP,        SYS_GETPID,    SYS_UNLINK,    SYS_RENAME,
-            SYS_MKDIRAT,          SYS_FSYNC,     SYS_IOCTL,     SYS_PREAD64,
-            SYS_PWRITE64,         SYS_READV,     SYS_WRITEV,    SYS_GETCWD,
-            SYS_SOCKETPAIR,       SYS_PIPE,      SYS_EXIT_GROUP, SYS_EXIT,
-            SYS_EPOLL_CREATE1, SYS_EPOLL_CTL,   SYS_EPOLL_PWAIT, SYS_EVENTFD2, SYS_PIPE2,
-            SYS_OPENAT, SYS_GETSOCKNAME, SYS_GETPEERNAME,
+            SYS_READ,
+            SYS_WRITE,
+            SYS_OPEN,
+            SYS_CLOSE,
+            SYS_FSTAT,
+            SYS_LSEEK,
+            SYS_MMAP,
+            SYS_MPROTECT,
+            SYS_MUNMAP,
+            SYS_RT_SIGACTION,
+            SYS_RT_SIGPROCMASK,
+            SYS_RT_SIGRETURN,
+            SYS_NANOSLEEP,
+            SYS_GETPID,
+            SYS_UNLINK,
+            SYS_RENAME,
+            SYS_MKDIRAT,
+            SYS_FSYNC,
+            SYS_IOCTL,
+            SYS_PREAD64,
+            SYS_PWRITE64,
+            SYS_READV,
+            SYS_WRITEV,
+            SYS_GETCWD,
+            SYS_SOCKETPAIR,
+            SYS_PIPE,
+            SYS_EXIT_GROUP,
+            SYS_EXIT,
+            SYS_EPOLL_CREATE1,
+            SYS_EPOLL_CTL,
+            SYS_EPOLL_PWAIT,
+            SYS_EVENTFD2,
+            SYS_PIPE2,
+            SYS_OPENAT,
+            SYS_GETSOCKNAME,
+            SYS_GETPEERNAME,
         ];
 
         for (index, syscall) in io_ok.iter().copied().enumerate() {
             let jump_if_match = (io_ok.len() - index) as u8;
-            program.push(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, syscall, jump_if_match, 0));
+            program.push(bpf_jump(
+                BPF_JMP | BPF_JEQ | BPF_K,
+                syscall,
+                jump_if_match,
+                0,
+            ));
         }
 
         // socket(AF_UNIX, ...): the ONLY network-family permitted;
@@ -226,7 +266,15 @@ mod linux_impl {
     pub fn install_seccomp(program: &[u64]) -> Result<(), HardeningError> {
         // PR_SET_NO_NEW_PRIVS, arg 38; mandatory pre-step before mode-2 filters.
         let pr_set_no_new_privs: i64 = 38;
-        let result = unsafe { libc::prctl(pr_set_no_new_privs, 1 as libc::c_ulong, 0 as libc::c_ulong, 0 as libc::c_ulong, 0 as libc::c_ulong) };
+        let result = unsafe {
+            libc::prctl(
+                pr_set_no_new_privs,
+                1 as libc::c_ulong,
+                0 as libc::c_ulong,
+                0 as libc::c_ulong,
+                0 as libc::c_ulong,
+            )
+        };
         if result != 0 {
             return Err(HardeningError::NoNewPrivsFailed(result));
         }
@@ -259,7 +307,9 @@ mod linux_impl {
         };
         if ret_val != 0 {
             let err = std::io::Error::last_os_error();
-            return Err(HardeningError::SeccompFailed(-err.raw_os_error().unwrap_or(22)));
+            return Err(HardeningError::SeccompFailed(
+                -err.raw_os_error().unwrap_or(22),
+            ));
         }
 
         Ok(())
@@ -347,8 +397,14 @@ mod tests {
         // not exist on macOS); on Linux it reflects the actual state.
         let _result = install_no_network_filter_bool();
         #[cfg(target_os = "linux")]
-        assert!(harden_enabled(), "linux must show HARDENED=true after install");
+        assert!(
+            harden_enabled(),
+            "linux must show HARDENED=true after install"
+        );
         #[cfg(not(target_os = "linux"))]
-        assert!(!harden_enabled(), "macOS remains honestly unhardenable at kernel level");
+        assert!(
+            !harden_enabled(),
+            "macOS remains honestly unhardenable at kernel level"
+        );
     }
 }

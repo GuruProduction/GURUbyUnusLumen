@@ -43,8 +43,9 @@ use cerebrum_server::{frame_types, Frame, FrameHeader, HEADER_SIZE};
 static LAST_ERROR: StdMutex<String> = StdMutex::new(String::new());
 
 fn record_error(error_text: &str) {
-    *LAST_ERROR.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
-        error_text.to_string();
+    *LAST_ERROR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = error_text.to_string();
 }
 
 // ============================================================================
@@ -170,7 +171,7 @@ fn hex_to_bytes(hex_input: &str) -> Result<Vec<u8>, String> {
         return Ok(Vec::new());
     }
     let clean_value = hex_input.trim().to_lowercase();
-    if clean_value.len() % 2 != 0 {
+    if !clean_value.len().is_multiple_of(2) {
         return Err("odd-length hex payload".to_string());
     }
     let clean_bytes = clean_value.as_bytes();
@@ -206,8 +207,7 @@ async fn socket_read_frame(reader_stream: &mut UnixStream) -> Result<Option<Fram
         }
     }
     let frame_header_value = FrameHeader::decode(&header_space);
-    let raw_payload_len =
-        (frame_header_value.length as usize).saturating_sub(HEADER_SIZE);
+    let raw_payload_len = (frame_header_value.length as usize).saturating_sub(HEADER_SIZE);
     let mut body_buffer = vec![0u8; raw_payload_len];
     if raw_payload_len > 0 {
         reader_stream
@@ -226,7 +226,10 @@ fn payload_read_capture_to_string<T: std::fmt::Debug>(value: T) -> String {
     format!("{:?}", value)
 }
 
-async fn socket_write_frame(writer_stream: &mut UnixStream, frame_value: &Frame) -> Result<(), String> {
+async fn socket_write_frame(
+    writer_stream: &mut UnixStream,
+    frame_value: &Frame,
+) -> Result<(), String> {
     writer_stream
         .write_all(&frame_value.encode())
         .await
@@ -250,8 +253,7 @@ async fn android_connection_loop(
             return Ok(()); // client closed; the standard disconnect
         };
         let frame_request_value = one_frame.header.request_id;
-        let dispatch_value =
-            handle_frame(one_frame, Arc::clone(&working_target.state)).await;
+        let dispatch_value = handle_frame(one_frame, Arc::clone(&working_target.state)).await;
         let outgoing_frame = match dispatch_value {
             Ok(response_bytes) => {
                 Frame::new(frame_types::RESPONSE, frame_request_value, response_bytes)
@@ -259,12 +261,13 @@ async fn android_connection_loop(
             Err(ErrorResponse { message }) => Frame::new(
                 frame_types::ERROR,
                 frame_request_value,
-                serde_json::to_vec(&serde_json::json!({ "error": message }))
-                    .unwrap_or_default(),
+                serde_json::to_vec(&serde_json::json!({ "error": message })).unwrap_or_default(),
             ),
         };
         socket_write_frame(&mut active_stream, &outgoing_frame).await?;
-        working_target.requests_handled.fetch_add(1, Ordering::SeqCst);
+        working_target
+            .requests_handled
+            .fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -282,7 +285,7 @@ fn spawn_periodic_save_cell(brain_shared: Arc<AndroidBrain>) {
         interval_cell.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval_cell.tick().await;
-            if tick_brain.save_loop_alive.load(Ordering::SeqCst) == false {
+            if !tick_brain.save_loop_alive.load(Ordering::SeqCst) {
                 break;
             }
             if let Err(save_fail) = tick_brain.save_pass().await {
@@ -304,7 +307,7 @@ fn spawn_periodic_save_cell(brain_shared: Arc<AndroidBrain>) {
     runtime().spawn(async move {
         let mut gen_seen: u64 = 0;
         loop {
-            if tail_brain.save_loop_alive.load(Ordering::SeqCst) == false {
+            if !tail_brain.save_loop_alive.load(Ordering::SeqCst) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -388,17 +391,11 @@ fn spawn_socket_listener_cell(brain_shared: Arc<AndroidBrain>) {
 // boot internal
 // ============================================================================
 
-fn brain_boot(
-    data_dir_in: &str,
-    socket_value: &str,
-    pass_value: String,
-) -> Result<u64, String> {
+fn brain_boot(data_dir_in: &str, socket_value: &str, pass_value: String) -> Result<u64, String> {
     if pass_value.trim().is_empty() {
         return Err("cerebrum-android boot refused: empty passphrase (fail closed)".into());
     }
-    if let Some(already) =
-        brain_registered().filter(|registered_one| registered_one.running())
-    {
+    if let Some(already) = brain_registered().filter(|registered_one| registered_one.running()) {
         return Ok(already.started_at_unix_ms);
     }
 
@@ -426,10 +423,7 @@ fn brain_boot(
             Err(failure_value_in) => Err(format!("{:?}", failure_value_in)),
         }
     });
-    let restore_report = match restore_value {
-        Ok(report_value) => report_value,
-        Err(restore_fail) => return Err(restore_fail),
-    };
+    let restore_report = restore_value?;
     if !restore_report.clean() {
         eprintln!(
             "cerebrum-android restore: {} records, {} skipped{}",
@@ -564,10 +558,16 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
         Ok(mut writer_slot) => writer_slot.take(),
         Err(_) => None,
     };
-    let Some(stop_brain_target) = target_brain else { return; };
+    let Some(stop_brain_target) = target_brain else {
+        return;
+    };
 
-    stop_brain_target.listener_alive.store(false, Ordering::SeqCst);
-    stop_brain_target.save_loop_alive.store(false, Ordering::SeqCst);
+    stop_brain_target
+        .listener_alive
+        .store(false, Ordering::SeqCst);
+    stop_brain_target
+        .save_loop_alive
+        .store(false, Ordering::SeqCst);
 
     let save_attempt = runtime().block_on(stop_brain_target.save_pass());
     if let Err(fail_to_run) = save_attempt {
@@ -580,15 +580,11 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
     let _ = std::fs::remove_file(&stale_socket_path);
 
     // The passphrase slot empties now. Zeroizing wrapper's own drop wipes it.
-    let wipe_outcome: Option<Option<Zeroizing<String>>> = match Arc::clone(
-        &stop_brain_target,
-    )
-    .passphrase_ram
-        .write()
-    {
-        Ok(mut holder_slot) => Some(holder_slot.take()),
-        Err(_) => None,
-    };
+    let wipe_outcome: Option<Option<Zeroizing<String>>> =
+        match Arc::clone(&stop_brain_target).passphrase_ram.write() {
+            Ok(mut holder_slot) => Some(holder_slot.take()),
+            Err(_) => None,
+        };
     let _ = wipe_outcome;
 }
 
@@ -600,8 +596,7 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
     _class_value: JClass<'local>,
 ) -> jint {
     // Some brain, and alive, or zero records.
-    let Some(living_target) = brain_registered().filter(|check_value| check_value.running())
-    else {
+    let Some(living_target) = brain_registered().filter(|check_value| check_value.running()) else {
         return 0;
     };
     match runtime().block_on(living_target.save_pass()) {
@@ -624,15 +619,16 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
 ) -> JString<'local> {
     let now_mutable_environment = env_value;
     let mut env_value_borrow_cell = now_mutable_environment;
-    let Some(current_brain) =
-        brain_registered().filter(|running_brain| running_brain.running())
+    let Some(current_brain) = brain_registered().filter(|running_brain| running_brain.running())
     else {
         let offline_json =
             serde_json::json!({ "error": "cerebrum brain is not running" }).to_string();
         return jni_string(env_value_borrow_cell, &offline_json);
     };
 
-    let Some(payload_hex_text) = jstring_to_owned_value(&mut env_value_borrow_cell, &payload_hex_input) else {
+    let Some(payload_hex_text) =
+        jstring_to_owned_value(&mut env_value_borrow_cell, &payload_hex_input)
+    else {
         let null_arg_json =
             serde_json::json!({ "error": "payload hex argument null or unreadable" }).to_string();
         return jni_string(env_value_borrow_cell, &null_arg_json);
@@ -650,12 +646,18 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
 
     let dispatched_result = runtime().block_on(async {
         handle_frame(
-            Frame::new(frame_type_value as u8, next_request_id(), payload_input_value),
+            Frame::new(
+                frame_type_value as u8,
+                next_request_id(),
+                payload_input_value,
+            ),
             Arc::clone(&current_brain.state),
         )
         .await
     });
-    current_brain.requests_handled.fetch_add(1, Ordering::SeqCst);
+    current_brain
+        .requests_handled
+        .fetch_add(1, Ordering::SeqCst);
 
     // Trailing-save arm: ANY successful mutating frame (curate/consolidate)
     // bumps the dirty count so the 10-second tail-save watcher comes in and
@@ -697,8 +699,10 @@ pub extern "system" fn Java_com_unuslumen_app_data_brain_cerebrum_CerebrumHost_c
     env_value: JNIEnv<'local>,
     _class_value: JClass<'local>,
 ) -> JString<'local> {
-    let error_text_value =
-        LAST_ERROR.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+    let error_text_value = LAST_ERROR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     jni_string(env_value, &error_text_value)
 }
 

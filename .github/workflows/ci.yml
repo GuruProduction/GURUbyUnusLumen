@@ -100,7 +100,19 @@ jobs:
         run: rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
 
       - name: Install the pinned NDK
+        # THE ACTION IS HERE ONLY TO PUT THE SDK ON PATH, WITH ITS OWN PACKAGE STEP OFF.
+        #
+        # `android-actions/setup-android` runs `sdkmanager tools` as part of its install, and
+        # the runner's cmdline-tools 16.0 no longer publishes a package by that name. It fails
+        # with "Failed to find package 'tools'" before any step of this workflow runs, which is
+        # how the first ever CI run ended: three jobs dead on an action's own package list, and
+        # the Rust job dead on formatting. Neither was a defect in the app.
+        #
+        # An empty package list leaves the action doing the one thing needed, and the NDK is
+        # installed by the exact version this repository pins rather than by the action's guess.
         uses: android-actions/setup-android@v3
+        with:
+          packages: ""
 
       - name: Install NDK ${{ env.NDK_VERSION }}
         run: sdkmanager --install "ndk;${{ env.NDK_VERSION }}"
@@ -170,7 +182,19 @@ jobs:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
 
       - name: Install the pinned NDK
+        # THE ACTION IS HERE ONLY TO PUT THE SDK ON PATH, WITH ITS OWN PACKAGE STEP OFF.
+        #
+        # `android-actions/setup-android` runs `sdkmanager tools` as part of its install, and
+        # the runner's cmdline-tools 16.0 no longer publishes a package by that name. It fails
+        # with "Failed to find package 'tools'" before any step of this workflow runs, which is
+        # how the first ever CI run ended: three jobs dead on an action's own package list, and
+        # the Rust job dead on formatting. Neither was a defect in the app.
+        #
+        # An empty package list leaves the action doing the one thing needed, and the NDK is
+        # installed by the exact version this repository pins rather than by the action's guess.
         uses: android-actions/setup-android@v3
+        with:
+          packages: ""
 
       - name: Install NDK ${{ env.NDK_VERSION }}
         run: sdkmanager --install "ndk;${{ env.NDK_VERSION }}"
@@ -277,7 +301,19 @@ jobs:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
 
       - name: Install the pinned NDK
+        # THE ACTION IS HERE ONLY TO PUT THE SDK ON PATH, WITH ITS OWN PACKAGE STEP OFF.
+        #
+        # `android-actions/setup-android` runs `sdkmanager tools` as part of its install, and
+        # the runner's cmdline-tools 16.0 no longer publishes a package by that name. It fails
+        # with "Failed to find package 'tools'" before any step of this workflow runs, which is
+        # how the first ever CI run ended: three jobs dead on an action's own package list, and
+        # the Rust job dead on formatting. Neither was a defect in the app.
+        #
+        # An empty package list leaves the action doing the one thing needed, and the NDK is
+        # installed by the exact version this repository pins rather than by the action's guess.
         uses: android-actions/setup-android@v3
+        with:
+          packages: ""
 
       - name: Install NDK ${{ env.NDK_VERSION }}
         run: sdkmanager --install "ndk;${{ env.NDK_VERSION }}"

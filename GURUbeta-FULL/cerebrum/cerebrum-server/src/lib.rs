@@ -142,7 +142,9 @@ impl Frame {
             return Err(ServerError::InvalidFrame("incomplete frame".to_string()));
         }
         if total_len < HEADER_SIZE {
-            return Err(ServerError::InvalidFrame("length below header size".to_string()));
+            return Err(ServerError::InvalidFrame(
+                "length below header size".to_string(),
+            ));
         }
 
         let payload = bytes[HEADER_SIZE..total_len].to_vec();
@@ -195,7 +197,9 @@ impl CerebrumServer {
         let listener = TcpListener::bind(&self.config.bind_address)
             .await
             .map_err(|e| ServerError::BindFailed(e.to_string()))?;
-        let addr = listener.local_addr().map_err(|e| ServerError::BindFailed(e.to_string()))?;
+        let addr = listener
+            .local_addr()
+            .map_err(|e| ServerError::BindFailed(e.to_string()))?;
         self.listener = Some(listener);
         self.running = true;
         Ok(addr)

@@ -366,7 +366,7 @@ impl Enricher {
 
         // Extract simple noun-phrase facts from text payloads.
         if let Some(text) = event.payload.get("text").and_then(|v| v.as_str()) {
-            for sentence in text.split(|c| c == '.' || c == '!') {
+            for sentence in text.split(['.', '!']) {
                 let trimmed = sentence.trim();
                 if !trimmed.is_empty() {
                     result.facts.push(trimmed.to_string());
@@ -387,7 +387,10 @@ impl Enricher {
     }
 
     /// Process all pending events.
-    pub fn enrich_all(&self, store: &mut EventStore) -> Vec<Result<EnrichmentResult, CerebrumError>> {
+    pub fn enrich_all(
+        &self,
+        store: &mut EventStore,
+    ) -> Vec<Result<EnrichmentResult, CerebrumError>> {
         let pending: Vec<Uuid> = store.enrichment_queue.clone();
         pending
             .into_iter()
@@ -477,9 +480,21 @@ mod tests {
     fn test_get_unenriched_returns_only_pending() {
         let mut store = EventStore::new();
         let enricher = Enricher::new();
-        let p1 = store.append("memory.created", MemoryId::new(), serde_json::json!({"a": 1}));
-        let p2 = store.append("memory.created", MemoryId::new(), serde_json::json!({"b": 2}));
-        let _p3 = store.append("memory.created", MemoryId::new(), serde_json::json!({"c": 3}));
+        let p1 = store.append(
+            "memory.created",
+            MemoryId::new(),
+            serde_json::json!({"a": 1}),
+        );
+        let p2 = store.append(
+            "memory.created",
+            MemoryId::new(),
+            serde_json::json!({"b": 2}),
+        );
+        let _p3 = store.append(
+            "memory.created",
+            MemoryId::new(),
+            serde_json::json!({"c": 3}),
+        );
 
         enricher.enrich(&mut store, p1).unwrap();
         enricher.enrich(&mut store, p2).unwrap();
@@ -516,7 +531,11 @@ mod tests {
         );
 
         let revisions = store.history_for(mid);
-        assert_eq!(2, revisions.len(), "the trail must carry both: {revisions:?}");
+        assert_eq!(
+            2,
+            revisions.len(),
+            "the trail must carry both: {revisions:?}"
+        );
         let deletion = revisions
             .iter()
             .find(|r| r.revision_kind == RevisionKind::Deleted)
@@ -534,7 +553,11 @@ mod tests {
     fn an_archival_is_a_revision_and_is_not_a_deletion() {
         let mut store = EventStore::new();
         let mid = MemoryId::new();
-        store.append("memory.created", mid, serde_json::json!({"text": "an old note"}));
+        store.append(
+            "memory.created",
+            mid,
+            serde_json::json!({"text": "an old note"}),
+        );
         store.append(
             "memory.archived",
             mid,
@@ -543,11 +566,15 @@ mod tests {
 
         let revisions = store.history_for(mid);
         assert!(
-            revisions.iter().any(|r| r.revision_kind == RevisionKind::Archived),
+            revisions
+                .iter()
+                .any(|r| r.revision_kind == RevisionKind::Archived),
             "the archive must be in the trail: {revisions:?}",
         );
         assert!(
-            revisions.iter().all(|r| r.revision_kind != RevisionKind::Deleted),
+            revisions
+                .iter()
+                .all(|r| r.revision_kind != RevisionKind::Deleted),
             "an archive is not a caller's deletion and must not be reported as one",
         );
     }
@@ -556,7 +583,13 @@ mod tests {
     fn test_append_order_preserved() {
         let mut store = EventStore::new();
         let ids: Vec<Uuid> = (0..10)
-            .map(|i| store.append("memory.created", MemoryId::new(), serde_json::json!({"i": i})))
+            .map(|i| {
+                store.append(
+                    "memory.created",
+                    MemoryId::new(),
+                    serde_json::json!({"i": i}),
+                )
+            })
             .collect();
 
         let stored: Vec<Uuid> = store.events.iter().map(|e| e.event_id).collect();

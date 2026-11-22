@@ -251,9 +251,15 @@ mod tests {
     #[test]
     fn exact_term_match_ranks_first() {
         let mut index = LexicalIndex::new();
-        index.upsert(id(1), "the landlord still has not fixed the boiler in the flat");
+        index.upsert(
+            id(1),
+            "the landlord still has not fixed the boiler in the flat",
+        );
         index.upsert(id(2), "italian pasta recipe uses fresh tomato and basil");
-        index.upsert(id(3), "quantum particles behave probabilistically under measurement");
+        index.upsert(
+            id(3),
+            "quantum particles behave probabilistically under measurement",
+        );
 
         let results = index.search("boiler", 3);
         assert_eq!(results.len(), 1, "only the boiler memory shares a term");
@@ -263,7 +269,10 @@ mod tests {
     #[test]
     fn no_shared_term_returns_nothing() {
         let mut index = LexicalIndex::new();
-        index.upsert(id(1), "the landlord still has not fixed the boiler in the flat");
+        index.upsert(
+            id(1),
+            "the landlord still has not fixed the boiler in the flat",
+        );
         index.upsert(id(2), "italian pasta recipe uses fresh tomato and basil");
 
         let results = index.search("quantum particles", 5);
@@ -277,7 +286,10 @@ mod tests {
     #[test]
     fn multi_term_query_prefers_document_sharing_more_terms() {
         let mut index = LexicalIndex::new();
-        index.upsert(id(1), "spare key hangs in the kitchen cupboard behind the microwave");
+        index.upsert(
+            id(1),
+            "spare key hangs in the kitchen cupboard behind the microwave",
+        );
         index.upsert(id(2), "the kitchen is painted green");
         index.upsert(id(3), "car insurance renews in november");
 
@@ -362,7 +374,11 @@ mod tests {
             index.upsert(id(i), "unrelated memory about something else entirely");
         }
         let results = index.search("kitchen cupboard key", 5);
-        assert_eq!(results[0].0, id(1), "relevant memory must stay rank 1 at scale");
+        assert_eq!(
+            results[0].0,
+            id(1),
+            "relevant memory must stay rank 1 at scale"
+        );
         assert!(results.len() <= 5, "top-k must stay capped");
     }
 }

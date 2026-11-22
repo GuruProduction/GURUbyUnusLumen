@@ -108,9 +108,8 @@ impl DwmPersistence {
     pub fn snapshot(dwm: &mut DynamicWaveletMatrix, path: &Path) -> Result<(), CerebrumError> {
         let tmp_path = path.with_extension("tmp");
         Self::save_internal(dwm, &tmp_path)?;
-        fs::rename(&tmp_path, path).map_err(|e| {
-            CerebrumError::StorageError(format!("Failed to rename snapshot: {}", e))
-        })
+        fs::rename(&tmp_path, path)
+            .map_err(|e| CerebrumError::StorageError(format!("Failed to rename snapshot: {}", e)))
     }
 
     /// Save a DWM to disk (non-atomic, use snapshot() for crash safety).
@@ -125,9 +124,8 @@ impl DwmPersistence {
             })?;
         }
 
-        let file = fs::File::create(path).map_err(|e| {
-            CerebrumError::StorageError(format!("Failed to create file: {}", e))
-        })?;
+        let file = fs::File::create(path)
+            .map_err(|e| CerebrumError::StorageError(format!("Failed to create file: {}", e)))?;
         let mut writer = BufWriter::new(file);
 
         // Write header
@@ -167,7 +165,10 @@ impl DwmPersistence {
             CerebrumError::StorageError(format!("Failed to read back for CRC: {}", e))
         })?;
         let checksum = crc32(&data);
-        let mut file = fs::OpenOptions::new().append(true).open(path).map_err(write_err)?;
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .map_err(write_err)?;
         file.write_all(&checksum.to_le_bytes()).map_err(write_err)?;
 
         Ok(())
@@ -181,9 +182,8 @@ impl DwmPersistence {
     ///
     /// Verifies CRC32 checksum before loading.
     pub fn load(path: &Path) -> Result<DynamicWaveletMatrix, CerebrumError> {
-        let data = fs::read(path).map_err(|e| {
-            CerebrumError::StorageError(format!("Failed to read file: {}", e))
-        })?;
+        let data = fs::read(path)
+            .map_err(|e| CerebrumError::StorageError(format!("Failed to read file: {}", e)))?;
 
         if data.len() < HEADER_SIZE + 4 {
             return Err(CerebrumError::StorageError("File too small".into()));
@@ -191,9 +191,9 @@ impl DwmPersistence {
 
         // Verify CRC32: last 4 bytes are the checksum of everything before
         let stored_crc = u32::from_le_bytes(
-            data[data.len() - 4..].try_into().map_err(|_| {
-                CerebrumError::StorageError("CRC read failed".into())
-            })?,
+            data[data.len() - 4..]
+                .try_into()
+                .map_err(|_| CerebrumError::StorageError("CRC read failed".into()))?,
         );
         let computed_crc = crc32(&data[..data.len() - 4]);
         if stored_crc != computed_crc {
@@ -225,19 +225,22 @@ impl DwmPersistence {
         })?;
 
         if (metadata.len() as usize) < HEADER_SIZE + 4 {
-            return Err(CerebrumError::StorageError("File too small for mmap".into()));
+            return Err(CerebrumError::StorageError(
+                "File too small for mmap".into(),
+            ));
         }
 
-        let mmap = unsafe { Mmap::map(&file).map_err(|e| {
-            CerebrumError::StorageError(format!("Failed to mmap file: {}", e))
-        })? };
+        let mmap = unsafe {
+            Mmap::map(&file)
+                .map_err(|e| CerebrumError::StorageError(format!("Failed to mmap file: {}", e)))?
+        };
 
         // Verify CRC32
         let len = mmap.len();
         let stored_crc = u32::from_le_bytes(
-            mmap[len - 4..].try_into().map_err(|_| {
-                CerebrumError::StorageError("CRC read from mmap failed".into())
-            })?,
+            mmap[len - 4..]
+                .try_into()
+                .map_err(|_| CerebrumError::StorageError("CRC read from mmap failed".into()))?,
         );
         let computed_crc = crc32(&mmap[..len - 4]);
         if stored_crc != computed_crc {
@@ -253,7 +256,9 @@ impl DwmPersistence {
     /// Parse DWM from raw bytes (shared by load and load_mmap).
     fn load_from_bytes(data: &[u8]) -> Result<DynamicWaveletMatrix, CerebrumError> {
         if data.len() < HEADER_SIZE {
-            return Err(CerebrumError::StorageError("Data too small for header".into()));
+            return Err(CerebrumError::StorageError(
+                "Data too small for header".into(),
+            ));
         }
 
         // Verify magic
@@ -303,7 +308,8 @@ impl DwmPersistence {
             if offset + 4 > data.len() {
                 return Err(CerebrumError::StorageError("Truncated token count".into()));
             }
-            let token_count = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+            let token_count =
+                u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
             offset += 4;
 
             // Token IDs: token_count × 4 bytes
@@ -314,7 +320,7 @@ impl DwmPersistence {
             let mut tokens = Vec::with_capacity(token_count);
             for j in 0..token_count {
                 let tid = u32::from_le_bytes(
-                    data[offset + j * 4..offset + j * 4 + 4].try_into().unwrap()
+                    data[offset + j * 4..offset + j * 4 + 4].try_into().unwrap(),
                 );
                 tokens.push(tid);
             }
@@ -345,9 +351,7 @@ impl DwmPersistence {
             .create(true)
             .append(true)
             .open(wal_path)
-            .map_err(|e| {
-                CerebrumError::StorageError(format!("Failed to open WAL: {}", e))
-            })?;
+            .map_err(|e| CerebrumError::StorageError(format!("Failed to open WAL: {}", e)))?;
 
         // Build payload
         let mut payload = Vec::new();
@@ -368,9 +372,11 @@ impl DwmPersistence {
         let entry_crc = crc32(&crc_data);
 
         file.write_all(&[entry_type]).map_err(write_err)?;
-        file.write_all(&entry_len.to_le_bytes()).map_err(write_err)?;
+        file.write_all(&entry_len.to_le_bytes())
+            .map_err(write_err)?;
         file.write_all(&payload).map_err(write_err)?;
-        file.write_all(&entry_crc.to_le_bytes()).map_err(write_err)?;
+        file.write_all(&entry_crc.to_le_bytes())
+            .map_err(write_err)?;
         file.flush().map_err(write_err)?;
 
         Ok(())
@@ -382,9 +388,7 @@ impl DwmPersistence {
             .create(true)
             .append(true)
             .open(wal_path)
-            .map_err(|e| {
-                CerebrumError::StorageError(format!("Failed to open WAL: {}", e))
-            })?;
+            .map_err(|e| CerebrumError::StorageError(format!("Failed to open WAL: {}", e)))?;
 
         let entry_type = WalEntryType::Delete as u8;
         let payload = memory_id.0;
@@ -395,23 +399,27 @@ impl DwmPersistence {
         let entry_crc = crc32(&crc_data);
 
         file.write_all(&[entry_type]).map_err(write_err)?;
-        file.write_all(&entry_len.to_le_bytes()).map_err(write_err)?;
+        file.write_all(&entry_len.to_le_bytes())
+            .map_err(write_err)?;
         file.write_all(&payload).map_err(write_err)?;
-        file.write_all(&entry_crc.to_le_bytes()).map_err(write_err)?;
+        file.write_all(&entry_crc.to_le_bytes())
+            .map_err(write_err)?;
         file.flush().map_err(write_err)?;
 
         Ok(())
     }
 
     /// Replay a WAL against a DWM to recover operations since the last snapshot.
-    pub fn wal_replay(wal_path: &Path, dwm: &mut DynamicWaveletMatrix) -> Result<usize, CerebrumError> {
+    pub fn wal_replay(
+        wal_path: &Path,
+        dwm: &mut DynamicWaveletMatrix,
+    ) -> Result<usize, CerebrumError> {
         if !wal_path.exists() {
             return Ok(0);
         }
 
-        let data = fs::read(wal_path).map_err(|e| {
-            CerebrumError::StorageError(format!("Failed to read WAL: {}", e))
-        })?;
+        let data = fs::read(wal_path)
+            .map_err(|e| CerebrumError::StorageError(format!("Failed to read WAL: {}", e)))?;
 
         if data.is_empty() {
             return Ok(0);
@@ -422,22 +430,31 @@ impl DwmPersistence {
 
         while offset < data.len() {
             // Read entry type
-            if offset + 1 > data.len() { break; }
+            if offset + 1 > data.len() {
+                break;
+            }
             let entry_type = data[offset];
             offset += 1;
 
             // Read entry length
-            if offset + 4 > data.len() { break; }
-            let entry_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+            if offset + 4 > data.len() {
+                break;
+            }
+            let entry_len =
+                u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
             offset += 4;
 
             // Read payload
-            if offset + entry_len > data.len() { break; }
+            if offset + entry_len > data.len() {
+                break;
+            }
             let payload = &data[offset..offset + entry_len];
             offset += entry_len;
 
             // Read and verify CRC
-            if offset + 4 > data.len() { break; }
+            if offset + 4 > data.len() {
+                break;
+            }
             let stored_crc = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
             offset += 4;
 
@@ -461,7 +478,8 @@ impl DwmPersistence {
                     id_bytes.copy_from_slice(&payload[0..32]);
                     let mut sig_bytes = [0u8; 32];
                     sig_bytes.copy_from_slice(&payload[32..64]);
-                    let token_count = u32::from_le_bytes(payload[64..68].try_into().unwrap()) as usize;
+                    let token_count =
+                        u32::from_le_bytes(payload[64..68].try_into().unwrap()) as usize;
 
                     if payload.len() < 68 + token_count * 4 {
                         break;
@@ -469,13 +487,17 @@ impl DwmPersistence {
                     let mut tokens = Vec::with_capacity(token_count);
                     for j in 0..token_count {
                         let tid = u32::from_le_bytes(
-                            payload[68 + j * 4..68 + j * 4 + 4].try_into().unwrap()
+                            payload[68 + j * 4..68 + j * 4 + 4].try_into().unwrap(),
                         );
                         tokens.push(tid);
                     }
 
                     let token_seq = TokenSequence::new(dwm.token_vocab_id(), tokens);
-                    let _ = dwm.insert_memory(MemoryId(id_bytes), BinarySignature(sig_bytes), token_seq);
+                    let _ = dwm.insert_memory(
+                        MemoryId(id_bytes),
+                        BinarySignature(sig_bytes),
+                        token_seq,
+                    );
                     replayed += 1;
                 }
                 2 => {
@@ -590,7 +612,11 @@ mod tests {
         for i in 0..dwm.count() {
             let orig_sig = dwm.reconstruct_signature(i).unwrap();
             let loaded_sig = loaded.reconstruct_signature(i).unwrap();
-            assert_eq!(orig_sig.0, loaded_sig.0, "Signature mismatch at position {}", i);
+            assert_eq!(
+                orig_sig.0, loaded_sig.0,
+                "Signature mismatch at position {}",
+                i
+            );
         }
     }
 

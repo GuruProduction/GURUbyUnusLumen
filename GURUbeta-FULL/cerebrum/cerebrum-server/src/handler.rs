@@ -18,22 +18,17 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::Utc;
-use cerebrum_core::{
-    CurateOp, DereferenceLevel, MemoryId, Query, QueryType, TokenSequence,
-};
-use cerebrum_curate::{
-    ContextEntry, CurateExecutor, CurateOperation, Provenance,
-};
+use cerebrum_core::{CurateOp, DereferenceLevel, MemoryId, Query, QueryType, TokenSequence};
+use cerebrum_curate::{ContextEntry, CurateExecutor, CurateOperation, Provenance};
 use cerebrum_decay::MemoryLayer;
 use cerebrum_events::Enricher;
 use cerebrum_graph::{
-    Budget as GraphBudget, Edge as GraphEdge, Query as GraphQuery,
-    Relation as GraphRelation, SemanticRelation, TemporalRelation, EntityRelation,
-    reconcile_entities,
+    reconcile_entities, Budget as GraphBudget, Edge as GraphEdge, EntityRelation,
+    Query as GraphQuery, Relation as GraphRelation, SemanticRelation, TemporalRelation,
 };
 use cerebrum_policy::IndexEntry;
 use cerebrum_prefetch::PrefetchTrigger;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
@@ -175,14 +170,15 @@ async fn handle_query(
 
     // Tier 1 + Tier 2 feeds: signature-space hits from both live searches.
     let query_sig = state.signature_engine.generate(&query.text);
-    let mut dwm_hits = state
-        .signature_engine
-        .search(&query_sig, SEARCH_RADIUS_DEFAULT, SEARCH_LIMIT_DEFAULT);
+    let mut dwm_hits =
+        state
+            .signature_engine
+            .search(&query_sig, SEARCH_RADIUS_DEFAULT, SEARCH_LIMIT_DEFAULT);
     dwm_hits.extend(
         state
             .dwm
             .search(&query_sig, SEARCH_RADIUS_DEFAULT, SEARCH_LIMIT_DEFAULT),
-        );
+    );
 
     // Deduplicate by memory id, keep the best distance.
     let mut best: HashMap<MemoryId, u32> = HashMap::new();
@@ -198,8 +194,8 @@ async fn handle_query(
 
     // Tier 3 feed: graph neighbours for the classified view.
     let graph_neighbors: Vec<MemoryId> = {
-        let graph_query = GraphQuery::new(query.text.clone(), GraphBudget::new(50, 3))
-            .with_type(query_type);
+        let graph_query =
+            GraphQuery::new(query.text.clone(), GraphBudget::new(50, 3)).with_type(query_type);
         state
             .graph_store
             .query(&graph_query, &state.graph_planner)
@@ -214,7 +210,10 @@ async fn handle_query(
         .iter()
         .take(64 + 1)
         .filter_map(|(id, _)| {
-            state.context_tree.find(*id).map(|entry| (*id, entry.content.clone()))
+            state
+                .context_tree
+                .find(*id)
+                .map(|entry| (*id, entry.content.clone()))
         })
         .collect();
     let candidates: Vec<(MemoryId, cerebrum_core::BinarySignature)> = tree_snapshot
@@ -227,7 +226,7 @@ async fn handle_query(
         .plan(Query {
             query_type,
             text: query.text.clone(),
-            budget: query.budget.clone(),
+            budget: query.budget,
         })
         .map_err(|e| ErrorResponse::new(e.to_string()))?;
 
@@ -440,7 +439,7 @@ async fn handle_curate(
         executed: executed_result,
         side_effects: summary,
     }
-    .to_response()
+    .into_response()
 }
 
 // ============================================================================
@@ -612,10 +611,7 @@ fn run_full_add_pipeline(
     let id = entry.id;
 
     // 1+2. Signature + token sequence from the real content.
-    let tokens: Vec<u32> = state
-        .signature_engine
-        .tokenizer()
-        .tokenize(&entry.content);
+    let tokens: Vec<u32> = state.signature_engine.tokenizer().tokenize(&entry.content);
     let signature = state.signature_engine.generate(&entry.content);
     let token_sequence = TokenSequence::from_tokens(&tokens);
     let _vocabulary_id = token_sequence.vocabulary_id;
@@ -661,9 +657,7 @@ fn run_full_add_pipeline(
         let shared: Vec<String> = new_entry_words
             .iter()
             .filter(|w| {
-                existing_words.contains(w)
-                    && w.len() >= 3
-                    && !stop_word_set().contains(w.as_str())
+                existing_words.contains(w) && w.len() >= 3 && !stop_word_set().contains(w.as_str())
             })
             .take(2)
             .cloned()
@@ -674,7 +668,9 @@ fn run_full_add_pipeline(
                 confidence: CROSS_REF_CONFIDENCE,
                 timestamp: Utc::now(),
             };
-            state.cross_ref.add_bidirectional(id, existing.id, provenance);
+            state
+                .cross_ref
+                .add_bidirectional(id, existing.id, provenance);
         }
     }
 
@@ -687,10 +683,9 @@ fn run_full_add_pipeline(
             1.0,
         );
         edge = edge.with_timestamp(Utc::now());
-        state
-            .graph_store
-            .graph_for_mut(QueryType::Temporal)
-            .map(|g| g.add_edge(edge));
+        if let Some(g) = state.graph_store.graph_for_mut(QueryType::Temporal) {
+            g.add_edge(edge)
+        }
     }
     state.last_curated_id = Some(id);
 
@@ -735,7 +730,7 @@ fn run_full_add_pipeline(
                     context: format!("topic={} domain={}", entry.topic, entry.domain),
                     discovered_at: Utc::now(),
                 },
-                valence: infer_valence_from(&reason, &entry.content),
+                valence: infer_valence_from(reason, &entry.content),
                 before_context: String::new(),
                 after_context: String::new(),
                 related_episodes: Vec::new(),
@@ -749,11 +744,7 @@ fn run_full_add_pipeline(
     state.embedding_engine.embed(&entry.content);
 
     // 15. Experience/policy entry for shallow dereferences.
-    let summary_text: String = entry
-        .content
-        .chars()
-        .take(POLICY_SUMMARY_MAX)
-        .collect();
+    let summary_text: String = entry.content.chars().take(POLICY_SUMMARY_MAX).collect();
     state.experience_store.create_index(IndexEntry::new(
         id,
         summary_text,
@@ -762,7 +753,10 @@ fn run_full_add_pipeline(
     ));
 
     // 16. Hot cache warm for query Engine's tier-1.
-    state.query_engine.hot_cache.insert(id, entry.content.clone());
+    state
+        .query_engine
+        .hot_cache
+        .insert(id, entry.content.clone());
 
     summary.created += 1;
 }
@@ -798,10 +792,7 @@ fn run_full_update_pipeline(
 
     let old_sig = current_signature_for_id(state, id);
 
-    let tokens: Vec<u32> = state
-        .signature_engine
-        .tokenizer()
-        .tokenize(&new_content);
+    let tokens: Vec<u32> = state.signature_engine.tokenizer().tokenize(&new_content);
     let signature = state.signature_engine.generate(&new_content);
     if old_sig.is_some() {
         let _ = state.dwm.remove_memory(id);
@@ -861,9 +852,11 @@ fn run_full_update_pipeline(
         ),
     );
 
-    state
-        .embedding_engine
-        .embed(serde_json::json!({ "text": new_content }).as_str().unwrap_or_default());
+    state.embedding_engine.embed(
+        serde_json::json!({ "text": new_content })
+            .as_str()
+            .unwrap_or_default(),
+    );
 
     let summary_truncated: String = new_content.chars().take(POLICY_SUMMARY_MAX).collect();
     let _ = state
@@ -921,10 +914,7 @@ fn run_full_merge_pipeline(
 ) {
     let merged_id = target.id;
 
-    let tokens: Vec<u32> = state
-        .signature_engine
-        .tokenizer()
-        .tokenize(&target.content);
+    let tokens: Vec<u32> = state.signature_engine.tokenizer().tokenize(&target.content);
     let signature = state.signature_engine.generate(&target.content);
     let _ = state
         .dwm
@@ -942,11 +932,9 @@ fn run_full_merge_pipeline(
     // like a memory that vanished.
     state.lexical.upsert(merged_id, &target.content);
 
-    state.decay_engine.insert(
-        merged_id,
-        MemoryLayer::Semantic,
-        target.content.clone(),
-    );
+    state
+        .decay_engine
+        .insert(merged_id, MemoryLayer::Semantic, target.content.clone());
     state.event_store.append(
         "memory.merged",
         merged_id,
@@ -976,7 +964,9 @@ fn run_full_merge_pipeline(
         ),
     );
     state.last_curated_id = Some(merged_id);
-    state.prefetch_engine.register(merged_id, target.content.clone());
+    state
+        .prefetch_engine
+        .register(merged_id, target.content.clone());
     state
         .query_engine
         .hot_cache
@@ -1085,9 +1075,10 @@ fn build_semantic_and_entity_edges(
     let mut candidate_edges: Vec<(MemoryId, f32)> = Vec::new();
     if let Some(sig) = current_signature {
         // Borrow-split: collect distances first, then write edges.
-        let pairs: Vec<(MemoryId, u32)> = state
-            .signature_engine
-            .search(&sig, SEMANTIC_EDGE_RADIUS, SEMANTIC_EDGE_LIMIT);
+        let pairs: Vec<(MemoryId, u32)> =
+            state
+                .signature_engine
+                .search(&sig, SEMANTIC_EDGE_RADIUS, SEMANTIC_EDGE_LIMIT);
         for (id, dist) in pairs {
             if id == current_id {
                 continue;
@@ -1097,17 +1088,14 @@ fn build_semantic_and_entity_edges(
         }
     }
     for (other_id, weight) in candidate_edges {
-        state
-            .graph_store
-            .graph_for_mut(QueryType::Semantic)
-            .map(|g| {
-                g.add_edge(GraphEdge::new(
-                    current_id,
-                    other_id,
-                    GraphRelation::SemanticEdge(SemanticRelation::RelatedTo),
-                    weight,
-                ))
-            });
+        if let Some(g) = state.graph_store.graph_for_mut(QueryType::Semantic) {
+            g.add_edge(GraphEdge::new(
+                current_id,
+                other_id,
+                GraphRelation::SemanticEdge(SemanticRelation::RelatedTo),
+                weight,
+            ))
+        }
     }
 
     // Entity pass: match this memory's proper nouns against every other memory.
@@ -1144,10 +1132,9 @@ fn build_semantic_and_entity_edges(
                 0.8,
             )
             .with_metadata("entity", word);
-            state
-                .graph_store
-                .graph_for_mut(QueryType::Entity)
-                .map(|g| g.add_edge(edge));
+            if let Some(g) = state.graph_store.graph_for_mut(QueryType::Entity) {
+                g.add_edge(edge)
+            }
         }
         // The deduplication pass lives at consolidation; see Phase E.
     }
@@ -1158,9 +1145,9 @@ const SEMANTIC_EDGE_LIMIT: usize = 24;
 /// Stop word set for shared-concept reference filtering; small, exact, static.
 fn stop_word_set() -> std::collections::HashSet<&'static str> {
     [
-        "the", "and", "for", "that", "with", "this", "was", "are", "were", "has", "had",
-        "have", "are", "does", "what", "when", "why", "which", "you", "your", "our",
-        "from", "its", "_", "his", "but", "all", "not", "into", "will", "they",
+        "the", "and", "for", "that", "with", "this", "was", "are", "were", "has", "had", "have",
+        "are", "does", "what", "when", "why", "which", "you", "your", "our", "from", "its", "_",
+        "his", "but", "all", "not", "into", "will", "they",
     ]
     .into_iter()
     .collect()
@@ -1230,7 +1217,11 @@ fn infer_valence_from(reason: &str, content: &str) -> cerebrum_episodic::Emotion
 /// normalised body are the same memory written twice, which is the one
 /// duplicate claim this layer makes without measuring anything.
 fn normalised_content(content: &str) -> String {
-    content.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    content
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// Write a consolidated replacement so it is findable the same way any other
@@ -1284,10 +1275,9 @@ fn write_merged_record(
         }),
     );
 
-    state.graph_store.add_label(
-        id,
-        format!("{domain} {topic} {subtopic} {content}"),
-    );
+    state
+        .graph_store
+        .add_label(id, format!("{domain} {topic} {subtopic} {content}"));
     state.prefetch_engine.register(id, content.to_string());
     state.embedding_engine.embed(content);
     let summary_text: String = content.chars().take(POLICY_SUMMARY_MAX).collect();
@@ -1351,25 +1341,24 @@ fn update_consolidated_record(state: &mut CerebrumState, id: MemoryId, content: 
 
 fn summarize_final_counts(state: &mut CerebrumState, summary: &mut CurateSideEffectsSummary) {
     summary.dwm_count = state.dwm.count();
-    summary.hamming_count = state
-        .signature_engine
-        .searcher()
-        .len();
+    summary.hamming_count = state.signature_engine.searcher().len();
     // Count node coverage from labels (one label per curated memory).
     summary.graph_nodes = state.graph_store.total_nodes();
     summary.graph_edges = state.graph_store.total_edges();
     summary.events = state.event_store.count();
     summary.cross_references = state.cross_ref.reference_count();
-    summary.episodic = state
-        .episodic_store
-        .episodes
-        .len();
+    summary.episodic = state.episodic_store.episodes.len();
     summary.hot_cache = state.query_engine.hot_cache.len();
     summary.experience_store = state.experience_store.count();
 }
 
 impl CurateFullResponse {
-    fn to_response(self) -> Result<Vec<u8>, ErrorResponse> {
+    /// Serialise this reply for the wire.
+    ///
+    /// NAMED FOR THE ACTION, NOT THE TYPE. `to_*` on a `self` that is not `Copy` reads as a
+    /// borrowing accessor, and this consumes the value: it is the last thing a handler does
+    /// with the response before the bytes go back. `into_response` says that.
+    fn into_response(self) -> Result<Vec<u8>, ErrorResponse> {
         serde_json::to_vec(&self).map_err(|e| ErrorResponse::new(e.to_string()))
     }
 }
@@ -1420,14 +1409,10 @@ async fn handle_retrieve(
         .context_tree
         .find(req.memory_id)
         .cloned()
-        .ok_or_else(|| {
-            ErrorResponse::new(format!("memory not found: {:?}", req.memory_id))
-        })?;
+        .ok_or_else(|| ErrorResponse::new(format!("memory not found: {:?}", req.memory_id)))?;
     // The layer name is read from the policy so the wire spelling is one fact.
-    let decay_metadata: Option<(String, f32, u32, bool)> = state
-        .decay_engine
-        .access(req.memory_id)
-        .map(|e| {
+    let decay_metadata: Option<(String, f32, u32, bool)> =
+        state.decay_engine.access(req.memory_id).map(|e| {
             (
                 RetrievalPolicy::layer_name(e.layer).to_string(),
                 e.strength,
@@ -1501,9 +1486,9 @@ async fn handle_retrieve(
                 .content
                 .split("\n\n")
                 .filter(|paragraph| {
-                    sections.iter().any(|section| {
-                        paragraph.to_lowercase().contains(&section.to_lowercase())
-                    })
+                    sections
+                        .iter()
+                        .any(|section| paragraph.to_lowercase().contains(&section.to_lowercase()))
                 })
                 .collect();
             let body: String = if matched_paragraphs.is_empty() {
@@ -1620,9 +1605,10 @@ async fn handle_search(
     // anything the lexical lane did not also surface.
     let query_sig = state.signature_engine.generate(&req.query);
     const SIGNATURE_RECALL_RADIUS: u32 = 110;
-    let mut signature_pairs: Vec<(MemoryId, u32)> = state
-        .signature_engine
-        .search(&query_sig, SIGNATURE_RECALL_RADIUS, limit * 3);
+    let mut signature_pairs: Vec<(MemoryId, u32)> =
+        state
+            .signature_engine
+            .search(&query_sig, SIGNATURE_RECALL_RADIUS, limit * 3);
     signature_pairs.extend(
         state
             .dwm
@@ -1704,7 +1690,11 @@ async fn handle_search(
     // offered at all, and an eligible one is weighted by how established, how
     // consolidated and how recently reinforced it is.
     let policy = RetrievalPolicy::default();
-    let top_fused = ordered.first().map(|(_, s)| *s).unwrap_or(1.0).max(f32::EPSILON);
+    let top_fused = ordered
+        .first()
+        .map(|(_, s)| *s)
+        .unwrap_or(1.0)
+        .max(f32::EPSILON);
     let mut scored: Vec<SearchResult> = Vec::new();
     for (memory_id, fused_score) in ordered.iter() {
         if is_retired(&state, memory_id) {
@@ -2021,12 +2011,8 @@ async fn handle_consolidate(
         for (index, (id, content, layer, strength, last_accessed)) in
             decay_snapshot.iter().enumerate()
         {
-            let mut dream_memory = cerebrum_dream::DreamMemory::new(
-                *id,
-                content.clone(),
-                layer.clone(),
-                *strength,
-            );
+            let mut dream_memory =
+                cerebrum_dream::DreamMemory::new(*id, content.clone(), layer.clone(), *strength);
             dream_memory.last_accessed_at = *last_accessed;
             for (other_index, (other_id, other_content)) in normalised.iter().enumerate() {
                 if other_index == index {
@@ -2093,14 +2079,19 @@ async fn handle_consolidate(
                 // separated here rather than papered over downstream.
                 let mut written: Vec<MemoryId> = Vec::new();
                 for replacement_id in &replacements {
-                    let Some(dream_memory) = state.dream_engine.get(*replacement_id).cloned() else {
+                    let Some(dream_memory) = state.dream_engine.get(*replacement_id).cloned()
+                    else {
                         continue;
                     };
                     if state.context_tree.find(*replacement_id).is_some() {
                         // The replacement is an EXISTING memory, which is the
                         // survivor case: refresh its body and re-index it in
                         // place so its id, hierarchy and metadata all stand.
-                        update_consolidated_record(&mut state, *replacement_id, &dream_memory.content);
+                        update_consolidated_record(
+                            &mut state,
+                            *replacement_id,
+                            &dream_memory.content,
+                        );
                         written.push(*replacement_id);
                         continue;
                     }
@@ -2189,7 +2180,7 @@ async fn handle_consolidate(
     report.entities_reconciled = reconciliation_rows.len();
     report.aliases_recorded = reconciliation_rows
         .iter()
-        .filter(|row| row.alias_row.is_empty() == false)
+        .filter(|row| !row.alias_row.is_empty())
         .count();
 
     // 8. Summary report is returned to the caller.
@@ -2296,7 +2287,11 @@ async fn handle_list(
 
     let state = state.lock().await;
     let domain_filter = req.domain.trim();
-    let limit = if req.limit == 0 { usize::MAX } else { req.limit };
+    let limit = if req.limit == 0 {
+        usize::MAX
+    } else {
+        req.limit
+    };
 
     // THE LISTING USES THE SAME RETIREMENT RULE AS SEARCH.
     //
@@ -2499,7 +2494,7 @@ async fn handle_prefetch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cerebrum_core::{ContextEntry as CoreContextEntry, TokenBudget};
+    use cerebrum_core::ContextEntry as CoreContextEntry;
     use std::path::PathBuf;
 
     fn fresh_state() -> CerebrumState {
@@ -2539,7 +2534,10 @@ mod tests {
     }
 
     /// Drive handle_curate payload-building helpers through serde on arrays.
-    async fn run_curate(state: Arc<Mutex<CerebrumState>>, ops: Vec<CurateOp>) -> CurateFullResponse {
+    async fn run_curate(
+        state: Arc<Mutex<CerebrumState>>,
+        ops: Vec<CurateOp>,
+    ) -> CurateFullResponse {
         let bytes = serde_json::to_vec(&ops).unwrap();
         let payload = handle_curate(&bytes, state).await.unwrap();
         serde_json::from_slice::<CurateFullResponse>(&payload).unwrap()
@@ -2550,7 +2548,11 @@ mod tests {
         let state = Arc::new(Mutex::new(fresh_state()));
         let response = run_curate(
             state.clone(),
-            vec![core_add("Rust borrow checker prevents bugs", "programming", "rust-ownership")],
+            vec![core_add(
+                "Rust borrow checker prevents bugs",
+                "programming",
+                "rust-ownership",
+            )],
         )
         .await;
         assert!(response.executed.success);
@@ -2562,7 +2564,7 @@ mod tests {
         assert!(summary.events >= 1);
         assert!(summary.hot_cache >= 1);
         assert!(summary.experience_store >= 1);
-        let mut state_locked = state.lock().await;
+        let state_locked = state.lock().await;
         assert_eq!(state_locked.dwm.count(), 1);
         assert_eq!(state_locked.event_store.count(), 1);
         assert_eq!(state_locked.query_engine.hot_cache.len(), 1);
@@ -2611,11 +2613,18 @@ mod tests {
     #[tokio::test]
     async fn an_archived_memory_is_absent_from_search_and_from_the_listing() {
         let state = Arc::new(Mutex::new(fresh_state()));
-        let id = add_one(state.clone(), "the router is in the hallway cupboard", "home").await;
+        let id = add_one(
+            state.clone(),
+            "the router is in the hallway cupboard",
+            "home",
+        )
+        .await;
 
         // Present before retirement, so the assertion after it means something.
         assert!(
-            search_ids(state.clone(), "router hallway").await.contains(&id),
+            search_ids(state.clone(), "router hallway")
+                .await
+                .contains(&id),
             "the memory must be findable before it is retired, or the test proves nothing"
         );
 
@@ -2633,15 +2642,16 @@ mod tests {
         );
 
         assert!(
-            !search_ids(state.clone(), "router hallway").await.contains(&id),
+            !search_ids(state.clone(), "router hallway")
+                .await
+                .contains(&id),
             "a memory retired by decay must not be served by search"
         );
 
         let list_bytes = serde_json::to_vec(&serde_json::json!({})).unwrap();
-        let listed: ListResponse = serde_json::from_slice(
-            &handle_list(&list_bytes, state.clone()).await.unwrap(),
-        )
-        .unwrap();
+        let listed: ListResponse =
+            serde_json::from_slice(&handle_list(&list_bytes, state.clone()).await.unwrap())
+                .unwrap();
         assert!(
             !listed.memories.iter().any(|row| row.memory_id == id),
             "a memory retired by decay must not appear in the listing"
@@ -2652,15 +2662,30 @@ mod tests {
     #[tokio::test]
     async fn retrieval_strengthens_only_what_it_returns() {
         let state = Arc::new(Mutex::new(fresh_state()));
-        let returned = add_one(state.clone(), "the boiler service is booked for tuesday", "home").await;
+        let returned = add_one(
+            state.clone(),
+            "the boiler service is booked for tuesday",
+            "home",
+        )
+        .await;
         let unrelated = add_one(state.clone(), "the garden gate hinge needs oil", "home").await;
 
         let hits = search_ids(state.clone(), "boiler service tuesday").await;
         assert!(hits.contains(&returned));
 
         let locked = state.lock().await;
-        let returned_accesses = locked.decay_engine.entries.get(&returned).unwrap().access_count;
-        let unrelated_accesses = locked.decay_engine.entries.get(&unrelated).unwrap().access_count;
+        let returned_accesses = locked
+            .decay_engine
+            .entries
+            .get(&returned)
+            .unwrap()
+            .access_count;
+        let unrelated_accesses = locked
+            .decay_engine
+            .entries
+            .get(&unrelated)
+            .unwrap()
+            .access_count;
         assert!(
             returned_accesses > 0,
             "a returned memory is a used memory and must be strengthened"
@@ -2674,7 +2699,12 @@ mod tests {
     #[tokio::test]
     async fn consolidation_publishes_its_archival_decision_to_the_tree() {
         let state = Arc::new(Mutex::new(fresh_state()));
-        let id = add_one(state.clone(), "an old fact that is about to fade away entirely", "home").await;
+        let id = add_one(
+            state.clone(),
+            "an old fact that is about to fade away entirely",
+            "home",
+        )
+        .await;
 
         // Age it past the archive threshold and faint it, exactly as ninety days of
         // neglect would, then run the real consolidation pass.
@@ -2686,7 +2716,10 @@ mod tests {
         }
         let report_bytes = handle_consolidate(state.clone()).await.unwrap();
         let report: ConsolidationReportFull = serde_json::from_slice(&report_bytes).unwrap();
-        assert!(report.archived >= 1, "the pass must have archived the faint old memory");
+        assert!(
+            report.archived >= 1,
+            "the pass must have archived the faint old memory"
+        );
 
         let locked = state.lock().await;
         assert_eq!(
@@ -2707,7 +2740,12 @@ mod tests {
     #[tokio::test]
     async fn hibernated_has_a_real_producer_and_is_reversible() {
         let state = Arc::new(Mutex::new(fresh_state()));
-        let id = add_one(state.clone(), "a fact that will fade but not yet be archived", "home").await;
+        let id = add_one(
+            state.clone(),
+            "a fact that will fade but not yet be archived",
+            "home",
+        )
+        .await;
 
         // Faint but recent: below the hibernation threshold, nowhere near ninety days.
         {
@@ -2771,12 +2809,19 @@ mod tests {
             "the caller's reason must be recorded as given, never replaced with an operation name"
         );
         assert_eq!(
-            deletion.payload.get("previous_lifecycle").and_then(|v| v.as_str()),
+            deletion
+                .payload
+                .get("previous_lifecycle")
+                .and_then(|v| v.as_str()),
             Some("Active"),
             "the lifecycle before retirement is part of the audit"
         );
         assert!(
-            deletion.payload.get("content_id").and_then(|v| v.as_str()).is_some(),
+            deletion
+                .payload
+                .get("content_id")
+                .and_then(|v| v.as_str())
+                .is_some(),
             "the content identity must be recorded so the retired row can be traced"
         );
     }
@@ -2828,12 +2873,19 @@ mod tests {
 
         let live_bytes = serde_json::to_vec(&serde_json::json!({})).unwrap();
         let live_listing: ListResponse =
-            serde_json::from_slice(&handle_list(&live_bytes, state.clone()).await.unwrap()).unwrap();
+            serde_json::from_slice(&handle_list(&live_bytes, state.clone()).await.unwrap())
+                .unwrap();
         assert!(
-            !live_listing.memories.iter().any(|row| row.memory_id == retired),
+            !live_listing
+                .memories
+                .iter()
+                .any(|row| row.memory_id == retired),
             "an ordinary listing must not show a retired row"
         );
-        assert!(live_listing.memories.iter().any(|row| row.memory_id == live));
+        assert!(live_listing
+            .memories
+            .iter()
+            .any(|row| row.memory_id == live));
 
         let archived_bytes =
             serde_json::to_vec(&serde_json::json!({ "include_archived": true })).unwrap();
@@ -2841,12 +2893,18 @@ mod tests {
             serde_json::from_slice(&handle_list(&archived_bytes, state.clone()).await.unwrap())
                 .unwrap();
         assert!(
-            archive_listing.memories.iter().any(|row| row.memory_id == retired),
+            archive_listing
+                .memories
+                .iter()
+                .any(|row| row.memory_id == retired),
             "the deduplication pass must be able to see retired rows, or it will propose a write \
              that resolves to one"
         );
         assert!(
-            !archive_listing.memories.iter().any(|row| row.memory_id == live),
+            !archive_listing
+                .memories
+                .iter()
+                .any(|row| row.memory_id == live),
             "the archive listing is the archive, not a second live listing"
         );
     }
@@ -2860,12 +2918,9 @@ mod tests {
     /// route is what is exercised.
     async fn history_of(state: Arc<Mutex<CerebrumState>>, id: MemoryId) -> HistoryResponse {
         let payload = serde_json::to_vec(&HistoryRequest { memory_id: id }).unwrap();
-        let reply = handle_frame(
-            Frame::new(frame_types::HISTORY, 1, payload),
-            state,
-        )
-        .await
-        .expect("the HISTORY frame must be routed and answered");
+        let reply = handle_frame(Frame::new(frame_types::HISTORY, 1, payload), state)
+            .await
+            .expect("the HISTORY frame must be routed and answered");
         serde_json::from_slice(&reply).unwrap()
     }
 
@@ -2901,8 +2956,7 @@ mod tests {
         assert_eq!("Created", history.revisions[0].kind);
         assert_eq!("the meeting is on monday", history.revisions[0].content);
         assert_eq!(
-            None,
-            history.revisions[0].superseded,
+            None, history.revisions[0].superseded,
             "a create replaced nothing, and saying otherwise would invent a prior version"
         );
 
@@ -2914,13 +2968,11 @@ mod tests {
             "the superseded text is the whole point of the native Update"
         );
         assert_eq!(
-            "the meeting moved a day",
-            history.revisions[1].reason,
+            "the meeting moved a day", history.revisions[1].reason,
             "the caller's reason, never the operation name"
         );
         assert_eq!(
-            "Active",
-            history.lifecycle,
+            "Active", history.lifecycle,
             "and the lifecycle now, which is not the lifecycle at every revision"
         );
         assert!(!history.ever_retired);
@@ -2944,10 +2996,16 @@ mod tests {
         handle_curate(&delete_op, state.clone()).await.unwrap();
 
         let history = history_of(state.clone(), id).await;
-        assert!(history.ever_retired, "the trail must say this memory was retired");
+        assert!(
+            history.ever_retired,
+            "the trail must say this memory was retired"
+        );
         assert_eq!("Archived", history.lifecycle);
         assert!(
-            history.revisions.iter().any(|r| r.content.contains("blue pot")),
+            history
+                .revisions
+                .iter()
+                .any(|r| r.content.contains("blue pot")),
             "the text it held must still be readable from the trail: {:?}",
             history.revisions
         );
@@ -2961,7 +3019,10 @@ mod tests {
         let absent = MemoryId::new();
         let payload = serde_json::to_vec(&HistoryRequest { memory_id: absent }).unwrap();
         let refused = handle_frame(Frame::new(frame_types::HISTORY, 1, payload), state).await;
-        assert!(refused.is_err(), "an unknown id must be refused, not answered with nothing");
+        assert!(
+            refused.is_err(),
+            "an unknown id must be refused, not answered with nothing"
+        );
     }
 
     #[tokio::test]

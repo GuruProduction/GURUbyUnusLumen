@@ -228,7 +228,7 @@ mod tests {
         let entry = leader.propose(b"cmd1".to_vec());
 
         let mut follower = make_node("f1", &["leader", "f2"]);
-        assert!(follower.append_entries(leader.current_term, &[entry.clone()]));
+        assert!(follower.append_entries(leader.current_term, std::slice::from_ref(&entry)));
         assert_eq!(follower.log.len(), 1);
         assert_eq!(follower.log[0].command, b"cmd1".to_vec());
     }
@@ -246,8 +246,8 @@ mod tests {
         let mut f1 = make_node("f1", &["leader", "f2"]);
         let mut f2 = make_node("f2", &["leader", "f1"]);
 
-        assert!(f1.append_entries(leader.current_term, &[entry.clone()]));
-        assert!(f2.append_entries(leader.current_term, &[entry.clone()]));
+        assert!(f1.append_entries(leader.current_term, std::slice::from_ref(&entry)));
+        assert!(f2.append_entries(leader.current_term, std::slice::from_ref(&entry)));
 
         // Leader learns that majority (leader + 2 followers = 3) has the entry.
         leader.commit(entry.index);

@@ -76,7 +76,9 @@ impl DynamicWaveletTree {
         Self {
             alphabet_size: wt.alphabet_size,
             bits_per_symbol: wt.bits_per_symbol,
-            levels: (0..wt.bits_per_symbol).map(|_| SuccinctBitVec::new()).collect(),
+            levels: (0..wt.bits_per_symbol)
+                .map(|_| SuccinctBitVec::new())
+                .collect(),
             len: 0,
         }
     }
@@ -166,7 +168,12 @@ impl DynamicWaveletTree {
     /// If the value exceeds the current alphabet size, the tree is rebuilt
     /// with an expanded alphabet. Otherwise, uses efficient bit-level insertion.
     pub fn insert(&mut self, i: usize, value: usize) {
-        assert!(i <= self.len, "insert index out of bounds: {} > {}", i, self.len);
+        assert!(
+            i <= self.len,
+            "insert index out of bounds: {} > {}",
+            i,
+            self.len
+        );
 
         // If value exceeds alphabet, rebuild with expanded alphabet
         if value >= self.alphabet_size {
@@ -252,7 +259,11 @@ impl DynamicWaveletTree {
     /// Build from values with a known alphabet size.
     fn from_values_with_alphabet(values: &[usize], alphabet_size: usize) -> Self {
         if values.is_empty() {
-            let bits_per_symbol = if alphabet_size <= 1 { 1 } else { (alphabet_size - 1).ilog2() as usize + 1 };
+            let bits_per_symbol = if alphabet_size <= 1 {
+                1
+            } else {
+                (alphabet_size - 1).ilog2() as usize + 1
+            };
             return Self {
                 alphabet_size,
                 bits_per_symbol,
@@ -263,7 +274,11 @@ impl DynamicWaveletTree {
 
         let max_val: usize = *values.iter().max().unwrap_or(&0);
         let actual_alphabet = (max_val + 1).next_power_of_two().max(alphabet_size);
-        let bits_per_symbol = if actual_alphabet <= 1 { 1 } else { (actual_alphabet - 1).ilog2() as usize + 1 };
+        let bits_per_symbol = if actual_alphabet <= 1 {
+            1
+        } else {
+            (actual_alphabet - 1).ilog2() as usize + 1
+        };
 
         let n = values.len();
         let mut levels = Vec::with_capacity(bits_per_symbol);
@@ -345,7 +360,8 @@ impl DynamicWaveletTree {
                 pos = zeros_total + ones_before;
             } else {
                 let zeros_before = self.levels[level].rank(pos, false) as usize;
-                let partition_zeros_start = self.levels[level].rank(partition_start, false) as usize;
+                let partition_zeros_start =
+                    self.levels[level].rank(partition_start, false) as usize;
                 partition_start = partition_zeros_start;
                 pos = zeros_before;
             }

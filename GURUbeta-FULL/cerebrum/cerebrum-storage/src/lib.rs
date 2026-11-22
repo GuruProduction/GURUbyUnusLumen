@@ -75,14 +75,16 @@ impl WriteAheadLog {
     /// Append a `Put` operation and return its sequence number.
     pub fn append_put(&mut self, key: Vec<u8>, value: Vec<u8>) -> u64 {
         let seq = self.next_sequence();
-        self.entries.push(WalEntry::new(seq, WalOp::Put, key, value));
+        self.entries
+            .push(WalEntry::new(seq, WalOp::Put, key, value));
         seq
     }
 
     /// Append a `Delete` operation and return its sequence number.
     pub fn append_delete(&mut self, key: Vec<u8>) -> u64 {
         let seq = self.next_sequence();
-        self.entries.push(WalEntry::new(seq, WalOp::Delete, key, Vec::new()));
+        self.entries
+            .push(WalEntry::new(seq, WalOp::Delete, key, Vec::new()));
         seq
     }
 
@@ -98,8 +100,9 @@ impl WriteAheadLog {
 
     /// Truncate the WAL after creating a checkpoint.
     pub fn checkpoint(&mut self) -> Vec<WalEntry> {
-        let taken = std::mem::take(&mut self.entries);
-        taken
+        // `take` already leaves the WAL empty and hands back what it held, so returning it
+        // directly says the same thing without a binding that exists only to be returned.
+        std::mem::take(&mut self.entries)
     }
 
     /// Recover from a serialized snapshot plus any WAL entries that occurred

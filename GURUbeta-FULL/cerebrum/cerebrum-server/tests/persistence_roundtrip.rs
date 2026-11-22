@@ -39,7 +39,10 @@ fn add_op(content: &str) -> CurateOp {
     }
 }
 
-async fn curate_through_frame(state: &Arc<Mutex<CerebrumState>>, ops: Vec<CurateOp>) -> CurateFullResponse {
+async fn curate_through_frame(
+    state: &Arc<Mutex<CerebrumState>>,
+    ops: Vec<CurateOp>,
+) -> CurateFullResponse {
     let payload = serde_json::to_vec(&ops).unwrap();
     let frame = Frame::new(frame_types::CURATE, 77, payload);
     let bytes = handle_frame(frame, state.clone()).await.unwrap();
@@ -62,7 +65,13 @@ async fn test_ten_curated_save_and_restore() {
     let state = state_in(dir.clone()).await;
 
     let ops: Vec<CurateOp> = (0..10)
-        .map(|i| add_op(&format!("persist battery record number {} details about theme {}", i, i * 29)))
+        .map(|i| {
+            add_op(&format!(
+                "persist battery record number {} details about theme {}",
+                i,
+                i * 29
+            ))
+        })
         .collect();
     let result = curate_through_frame(&state, ops).await;
     assert!(result.executed.success);
@@ -74,7 +83,10 @@ async fn test_ten_curated_save_and_restore() {
         assert_eq!(locked.event_store.count(), 10);
         assert_eq!(locked.query_engine.hot_cache.len(), 10);
         assert_eq!(locked.experience_store.count(), 10);
-        assert!(locked.graph_store.total_edges() >= 9, "temporal chain present pre-save");
+        assert!(
+            locked.graph_store.total_edges() >= 9,
+            "temporal chain present pre-save"
+        );
     }
 
     // Durability write pass (synchronous; the loop holds the state lock).
@@ -85,7 +97,11 @@ async fn test_ten_curated_save_and_restore() {
         // One record per engine surface: tree, decay, graph, episodic,
         // cross-refs, events, embeddings, policy, hot cache, prefetch,
         // last-id, hamming, dwm, wal = 14.
-        assert_eq!(report.subsystem_tags.len(), 14, "one record per engine surface");
+        assert_eq!(
+            report.subsystem_tags.len(),
+            14,
+            "one record per engine surface"
+        );
     }
 
     // FRESH, clean state with an identical dir. All engines restart defaults.
@@ -103,10 +119,24 @@ async fn test_ten_curated_save_and_restore() {
     assert_eq!(restored.context_tree.len(), 10, "context tree restored");
     assert_eq!(restored.decay_engine.entries.len(), 10, "decay restored");
     assert_eq!(restored.event_store.count(), 10, "events restored");
-    assert_eq!(restored.query_engine.hot_cache.len(), 10, "hot cache restored");
-    assert_eq!(restored.experience_store.count(), 10, "policy index restored");
-    assert!(restored.graph_store.total_edges() >= 9, "graph edges restored");
-    assert!(restored.graph_store.total_nodes() >= 10, "graph nodes restored");
+    assert_eq!(
+        restored.query_engine.hot_cache.len(),
+        10,
+        "hot cache restored"
+    );
+    assert_eq!(
+        restored.experience_store.count(),
+        10,
+        "policy index restored"
+    );
+    assert!(
+        restored.graph_store.total_edges() >= 9,
+        "graph edges restored"
+    );
+    assert!(
+        restored.graph_store.total_nodes() >= 10,
+        "graph nodes restored"
+    );
     assert!(
         restored.last_curated_id.is_some(),
         "last curated id restored so the temporal chain can continue"
@@ -150,9 +180,18 @@ async fn test_repeated_saves_do_not_grow_or_corrupt_the_vault() {
     let persist = CerebrumPersistence::new(dir.clone());
 
     // Save pass one: three memories.
-    curate_through_frame(&state, (0..3).map(|i| add_op(&format!(
-        "first pass memory number {} holding a distinctive first-pass phrase", i
-    ))).collect()).await;
+    curate_through_frame(
+        &state,
+        (0..3)
+            .map(|i| {
+                add_op(&format!(
+                    "first pass memory number {} holding a distinctive first-pass phrase",
+                    i
+                ))
+            })
+            .collect(),
+    )
+    .await;
     {
         let mut unlocked = state.lock().await;
         let report = persist.save_all(&mut unlocked, PASSPHRASE).unwrap();
@@ -177,9 +216,18 @@ async fn test_repeated_saves_do_not_grow_or_corrupt_the_vault() {
 
     // Save pass three: three more memories. Content grew, so the file grows,
     // but it must stay near one live set rather than the sum of every pass.
-    curate_through_frame(&state, (0..3).map(|i| add_op(&format!(
-        "second pass memory number {} holding a distinctive second-pass phrase", i
-    ))).collect()).await;
+    curate_through_frame(
+        &state,
+        (0..3)
+            .map(|i| {
+                add_op(&format!(
+                    "second pass memory number {} holding a distinctive second-pass phrase",
+                    i
+                ))
+            })
+            .collect(),
+    )
+    .await;
     {
         let mut unlocked = state.lock().await;
         persist.save_all(&mut unlocked, PASSPHRASE).unwrap();
@@ -200,10 +248,24 @@ async fn test_repeated_saves_do_not_grow_or_corrupt_the_vault() {
         "restore after two saves skipped records: {:?}",
         report.skipped_records
     );
-    assert!(!report.legacy_salvage, "a current vault must not need salvage");
-    assert_eq!(restored.dwm.count(), 6, "both passes present in the restored brain");
-    assert_eq!(restored.context_tree.len(), 6, "context tree carries both passes");
-    assert!(restored.query_engine.hot_cache.len() >= 6, "hot cache carries both passes");
+    assert!(
+        !report.legacy_salvage,
+        "a current vault must not need salvage"
+    );
+    assert_eq!(
+        restored.dwm.count(),
+        6,
+        "both passes present in the restored brain"
+    );
+    assert_eq!(
+        restored.context_tree.len(),
+        6,
+        "context tree carries both passes"
+    );
+    assert!(
+        restored.query_engine.hot_cache.len() >= 6,
+        "hot cache carries both passes"
+    );
 
     let contents: Vec<String> = restored
         .context_tree
@@ -211,7 +273,9 @@ async fn test_repeated_saves_do_not_grow_or_corrupt_the_vault() {
         .map(|entry| entry.content.clone())
         .collect();
     assert!(
-        contents.iter().any(|row| row.contains("second-pass phrase")),
+        contents
+            .iter()
+            .any(|row| row.contains("second-pass phrase")),
         "the newest generation must be the one restored"
     );
 }
@@ -237,7 +301,9 @@ async fn test_vault_file_carries_no_plaintext() {
     let persist = CerebrumPersistence::new(dir.clone());
     {
         let mut unlocked = state.lock().await;
-        persist.save_all(&mut unlocked, "leak battery passive").unwrap();
+        persist
+            .save_all(&mut unlocked, "leak battery passive")
+            .unwrap();
     }
 
     // Scan the vault file for the canary plaintext.
@@ -250,7 +316,10 @@ async fn test_vault_file_carries_no_plaintext() {
     // The DWM staging file moved out of the data directory, so the vault must
     // be the only thing here.
     let stray_files = std::fs::read_dir(&dir).unwrap().count();
-    assert_eq!(stray_files, 1, "only the vault file must remain in the data dir");
+    assert_eq!(
+        stray_files, 1,
+        "only the vault file must remain in the data dir"
+    );
 }
 /// OWNERSHIP AND VISIBILITY SURVIVE THE VAULT.
 ///
@@ -313,7 +382,8 @@ async fn ownership_and_visibility_survive_a_save_and_restore() {
     // One save, through the session, exactly as the app does it at boot.
     {
         let mut locked = state.lock().await;
-        let session = cerebrum_server::persistence::VaultSession::open(dir.clone(), PASSPHRASE).unwrap();
+        let session =
+            cerebrum_server::persistence::VaultSession::open(dir.clone(), PASSPHRASE).unwrap();
         session.save_all(&mut locked).unwrap();
     }
 
@@ -324,21 +394,35 @@ async fn ownership_and_visibility_survive_a_save_and_restore() {
     }
     let locked = restored_state.lock().await;
 
-    let owned_row = locked.context_tree.find(owned_id).expect("the owned row must restore");
+    let owned_row = locked
+        .context_tree
+        .find(owned_id)
+        .expect("the owned row must restore");
     assert_eq!(
-        "11111111-1111-1111-1111-111111111111",
-        owned_row.owner_agent_id,
+        "11111111-1111-1111-1111-111111111111", owned_row.owner_agent_id,
         "the owner is a stored field, so a restart must not lose it"
     );
     assert!(
-        matches!(owned_row.visibility, cerebrum_curate::EntryVisibility::Owned),
+        matches!(
+            owned_row.visibility,
+            cerebrum_curate::EntryVisibility::Owned
+        ),
         "and the visibility with it, or an agent's private fact becomes readable after a restart"
     );
 
-    let shared_row = locked.context_tree.find(shared_id).expect("the shared row must restore");
-    assert_eq!("", shared_row.owner_agent_id, "an unattributed fact is owned by nobody");
+    let shared_row = locked
+        .context_tree
+        .find(shared_id)
+        .expect("the shared row must restore");
+    assert_eq!(
+        "", shared_row.owner_agent_id,
+        "an unattributed fact is owned by nobody"
+    );
     assert!(
-        matches!(shared_row.visibility, cerebrum_curate::EntryVisibility::Shared),
+        matches!(
+            shared_row.visibility,
+            cerebrum_curate::EntryVisibility::Shared
+        ),
         "and belongs to the shared scope"
     );
 }

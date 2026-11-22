@@ -11,21 +11,33 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+// THE ONE ALLOWED NETWORK-ISH DEPENDENCY, recorded here because the list below is the
+// only place a reader looks. `tokio` is present in cerebrum-server for its in-tree
+// async net (AF_UNIX and loopback TCP), and the loopback gate lives in hardening.rs.
+// It is deliberately NOT in the forbidden list, and it is deliberately not a separate
+// "approved" constant either: a constant that no assertion reads is a comment that
+// happens to compile, which is what this used to be.
 const FORBIDDEN_CLIENT_TOKENS: &[&str] = &[
-    "reqwest", "hyper", "ureq", "curl", "isahc", "attohttpc", "openssl",
-    "native_tls", "rustls", "_surf", "quinn", "tokio-tungstenite", "websocket",
-    "async-compression::http", "libp2p", "mdns", "libseccomp-rs",
+    "reqwest",
+    "hyper",
+    "ureq",
+    "curl",
+    "isahc",
+    "attohttpc",
+    "openssl",
+    "native_tls",
+    "rustls",
+    "_surf",
+    "quinn",
+    "tokio-tungstenite",
+    "websocket",
+    "async-compression::http",
+    "libp2p",
+    "mdns",
+    "libseccomp-rs",
     // DNS dialers:
-    "trust-dns", "hickory",
-];
-
-/// The only network-ish token allowed in any Cargo.toml: NONE, since socket
-/// paths ride tokio's in-tree implementations (tokio-net "unix/tcp" surfaces
-/// used for the loopback-only debug listener ride the tokio "net" feature
-/// already present in cerebrum-server: allowed, it's in-tree and AF_UNIX
-// + loopback-gated by hardening.rs).
-const APPROVED_SURFACE_NETWORK_TOKENS: &[&str] = &[
-    "tokio", // in-tree async net (unix + tcp): gated in code, allowed by design
+    "trust-dns",
+    "hickory",
 ];
 
 fn workspace_root() -> PathBuf {
@@ -43,7 +55,10 @@ fn cargo_tomls_under(root: &Path, out: &mut Vec<PathBuf>) {
             if path.is_dir() {
                 let dir_name = path.file_name().map(|s| s.to_string_lossy().to_string());
                 // Compiled artifacts + hidden dirs never matter.
-                if matches!(dir_name.as_deref(), Some("target") | Some(".git") | Some("examples")) {
+                if matches!(
+                    dir_name.as_deref(),
+                    Some("target") | Some(".git") | Some("examples")
+                ) {
                     continue;
                 }
                 cargo_tomls_under(&path, out);

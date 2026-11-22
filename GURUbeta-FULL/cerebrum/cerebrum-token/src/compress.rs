@@ -199,7 +199,8 @@ pub fn decode_deltas(data: &[u8]) -> TokenResult<Vec<u32>> {
     if tokens.len() != expected_count as usize {
         return Err(TokenError::Other(format!(
             "token count mismatch: expected {}, got {}",
-            expected_count, tokens.len()
+            expected_count,
+            tokens.len()
         )));
     }
 
@@ -234,9 +235,7 @@ impl TokenCompressor {
     }
 
     /// Decompress a [`CompressedTokenSequence`] back to token IDs.
-    pub fn decompress(&self,
-        compressed: &CompressedTokenSequence,
-    ) -> TokenResult<Vec<u32>> {
+    pub fn decompress(&self, compressed: &CompressedTokenSequence) -> TokenResult<Vec<u32>> {
         decode_deltas(&compressed.data)
     }
 
@@ -244,7 +243,8 @@ impl TokenCompressor {
     ///
     /// Returns the compressed sequence on success, or a token error
     /// if the roundtrip does not produce identical tokens.
-    pub fn roundtrip(&self,
+    pub fn roundtrip(
+        &self,
         vocabulary_id: u32,
         tokens: &[u32],
     ) -> TokenResult<CompressedTokenSequence> {
@@ -353,7 +353,11 @@ mod tests {
         // The exact ratio depends on the count prefix encoding
         assert!(ratio > 3.9, "compression ratio too low: {}", ratio);
         assert!(ratio <= 4.0, "compression ratio too high: {}", ratio);
-        assert!(compressed.bytes_saved() > 2990, "bytes saved too low: {}", compressed.bytes_saved());
+        assert!(
+            compressed.bytes_saved() > 2990,
+            "bytes saved too low: {}",
+            compressed.bytes_saved()
+        );
     }
 
     #[test]
