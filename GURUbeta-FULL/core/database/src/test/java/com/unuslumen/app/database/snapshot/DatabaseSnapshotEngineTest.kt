@@ -142,6 +142,93 @@ class DatabaseSnapshotEngineTest {
         assertEquals(7L, written.manifest.tableRowCounts["memory_facts"] ?: -1L)
     }
 
+    /**
+     * A vault on disk with nothing registered to flush it is REFUSED, not sealed.
+     *
+     * THE DEFECT THIS PINS. The engine read `cerebrum.vault` directly, and the brain keeps its
+     * state in memory and rewrites that file on its own cadence. A snapshot taken between two
+     * flushes therefore carried an older brain, verified perfectly, and lost everything written
+     * since the last save. It was found by restoring a snapshot on a device and discovering the
+     * newest facts were absent while the file itself was flawless.
+     *
+     * So this proves the refusal, and it is deliberately the test that would pass silently if
+     * somebody made the flush optional again.
+     */
+    @Test
+    fun `a vault with nothing registered to flush it is refused rather than sealed stale`() = runTest {
+        val writer = createBrainWithRows(messages = 2, memoryFacts = 1)
+        writer.close()
+
+        // A vault the engine will find, written by the "brain" as an opaque sealed file, because
+        // the engine must not care what is inside it.
+        val vaultDir = File(File(context.filesDir, "cerebrum"), "state").apply { mkdirs() }
+        val vault = File(vaultDir, SnapshotFormat.CEREBRUM_VAULT_ENTRY)
+        vault.writeBytes(ByteArray(512) { 0x2A })
+        try {
+            DatabaseSnapshotEngine.clearVaultFlushForTest()
+            val destination = File(context.cacheDir, "snapshot-stale.${SnapshotFormat.FILE_EXTENSION}")
+            val outcome = engine.writeSnapshot(destination, "a passphrase".toCharArray())
+
+            assertTrue(
+                "a snapshot taken with no way to flush the brain must be refused: " +
+                    (outcome as? SnapshotWriteOutcome.Written)?.message,
+                outcome is SnapshotWriteOutcome.Failed,
+            )
+            assertTrue(
+                "and the refusal must say the memories could be stale: " +
+                    (outcome as SnapshotWriteOutcome.Failed).message,
+                outcome.message.contains("omit", ignoreCase = true) ||
+                    outcome.message.contains("flush", ignoreCase = true),
+            )
+            assertFalse("nothing may be written to the destination", destination.exists())
+        } finally {
+            vault.delete()
+            vaultDir.delete()
+        }
+    }
+
+    /**
+     * And with a flush registered, the same setup succeeds and the flush actually runs.
+     *
+     * THE PAIR MATTERS. A refusal test alone would pass for an engine that refuses everything,
+     * so this proves the registration is what changes the answer, and that the flush is invoked
+     * rather than merely present.
+     */
+    @Test
+    fun `with a flush registered the snapshot is taken and the flush runs first`() = runTest {
+        val writer = createBrainWithRows(messages = 2, memoryFacts = 1)
+        writer.close()
+
+        val vaultDir = File(File(context.filesDir, "cerebrum"), "state").apply { mkdirs() }
+        val vault = File(vaultDir, SnapshotFormat.CEREBRUM_VAULT_ENTRY)
+        var flushes = 0
+        try {
+            DatabaseSnapshotEngine.registerVaultFlush {
+                flushes++
+                // The brain rewrites the file on a flush, so the test rewrites it too: the engine
+                // must read what is on disk AFTER the flush, not before.
+                vault.writeBytes(ByteArray(768) { 0x3B })
+            }
+            vault.writeBytes(ByteArray(512) { 0x2A })
+
+            val destination = File(context.cacheDir, "snapshot-fresh.${SnapshotFormat.FILE_EXTENSION}")
+            val outcome = engine.writeSnapshot(destination, "a passphrase".toCharArray())
+
+            assertTrue(
+                "with a flush available the snapshot must be taken: " +
+                    (outcome as? SnapshotWriteOutcome.Failed)?.message,
+                outcome.succeeded,
+            )
+            assertEquals("the flush must run exactly once", 1, flushes)
+            val included = (outcome as SnapshotWriteOutcome.Written).manifest.cerebrumVaultIncluded
+            assertTrue("and the vault must travel with it", included)
+        } finally {
+            DatabaseSnapshotEngine.clearVaultFlushForTest()
+            vault.delete()
+            vaultDir.delete()
+        }
+    }
+
     @Test
     fun `the snapshot leaves no plaintext sidecar in the staging area`() = runTest {
         val writer = createBrainWithRows(messages = 5, memoryFacts = 2)

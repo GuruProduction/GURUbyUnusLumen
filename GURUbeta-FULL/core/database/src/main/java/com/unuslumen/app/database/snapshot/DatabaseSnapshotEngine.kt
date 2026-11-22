@@ -1026,6 +1026,18 @@ class DatabaseSnapshotEngine(private val context: Context) {
         fun registerVaultFlush(flush: () -> Unit) {
             flushVaultBeforeSeal = flush
         }
+
+        /**
+         * Remove the registration, so a test can exercise the absent case.
+         *
+         * INTERNAL RATHER THAN PUBLIC, because production never unregisters: there is one brain
+         * for the life of the process, and a snapshot taken when it is not running is exactly the
+         * case the refusal exists for. A test has to be able to put the world back into the
+         * "nothing can flush" state, and without this it could only do so by running first.
+         */
+        internal fun clearVaultFlushForTest() {
+            flushVaultBeforeSeal = null
+        }
     }
 
     /** How a rotation decides what to keep. */
